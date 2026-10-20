@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import type { CronJob } from "../cron/types.js";
+import { makeCronJob } from "../cron/delivery.test-helpers.js";
 import type { GuardedFetchOptions } from "../infra/net/fetch-guard.js";
 import { createDeferredCore } from "../shared/deferred.js";
 
@@ -13,20 +13,19 @@ vi.mock("../infra/net/fetch-guard.js", () => ({
 
 import { sendGatewayCronWebhook } from "./server-cron-notifications.js";
 
-function createWebhookJob(): CronJob {
-  return {
+function sendWebhook(overrides: Partial<Parameters<typeof sendGatewayCronWebhook>[0]> = {}) {
+  const job = makeCronJob({
     id: "primary-webhook-deadline",
     name: "primary webhook deadline",
-    enabled: true,
     createdAtMs: 1,
     updatedAtMs: 1,
-    schedule: { kind: "every", everyMs: 60_000 },
-    sessionTarget: "isolated",
-    wakeMode: "next-heartbeat",
-    payload: { kind: "agentTurn", message: "hello" },
     delivery: { mode: "webhook", to: "https://example.invalid/cron" },
-    state: {},
-  };
+  });
+  return sendGatewayCronWebhook({
+    event: { jobId: job.id, action: "finished", status: "ok", summary: "done" },
+    job,
+    ...overrides,
+  });
 }
 
 describe("sendGatewayCronWebhook", () => {
@@ -53,27 +52,20 @@ describe("sendGatewayCronWebhook", () => {
         );
       });
     });
-    const job = createWebhookJob();
     const deadlineAtMs = Date.now() + 5_000;
-    const delivery = sendGatewayCronWebhook({
-      event: { jobId: job.id, action: "finished", status: "ok", summary: "done" },
-      job,
+    const delivery = sendWebhook({
       abortSignal: controller.signal,
       deadlineAtMs,
       ssrfPolicy,
     });
 
     await started.promise;
-    const request = mocks.fetchWithSsrFGuard.mock.calls[0]?.[0] as
-      | { signal?: AbortSignal; timeoutMs?: number }
-      | undefined;
+    const request: GuardedFetchOptions = mocks.fetchWithSsrFGuard.mock.calls[0]?.[0];
     expect(request?.signal).toBe(controller.signal);
     expect(request?.timeoutMs).toEqual(expect.any(Number));
     expect(request?.timeoutMs).toBeGreaterThan(0);
     expect(request?.timeoutMs).toBeLessThanOrEqual(5_000);
-    expect(
-      (mocks.fetchWithSsrFGuard.mock.calls[0]?.[0] as { policy?: unknown } | undefined)?.policy,
-    ).toBe(ssrfPolicy);
+    expect(request.policy).toBe(ssrfPolicy);
 
     controller.abort("Cancelled by operator.");
     await expect(delivery).resolves.toMatchObject({
@@ -101,11 +93,8 @@ describe("sendGatewayCronWebhook", () => {
           syscall: "getaddrinfo",
         });
       });
-      const job = createWebhookJob();
       await expect(
-        sendGatewayCronWebhook({
-          event: { jobId: job.id, action: "finished", status: "ok", summary: "done" },
-          job,
+        sendWebhook({
           abortSignal: controller.signal,
         }),
       ).resolves.toEqual({ status, error: "getaddrinfo ENOTFOUND" });

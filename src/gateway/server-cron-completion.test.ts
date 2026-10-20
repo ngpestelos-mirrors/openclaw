@@ -174,6 +174,11 @@ async function createCompletionFixture(
       .map(readTranscriptEventMessage)
       .filter((message) => message?.role === "assistant");
   };
+  const assertText = async (expectedText: string) => {
+    expect(await messages(destination)).toEqual([
+      expect.objectContaining({ content: [{ type: "text", text: expectedText }] }),
+    ]);
+  };
   const assertResult = async (scope = destination) => {
     expect(await messages(scope)).toEqual([
       expect.objectContaining({
@@ -223,7 +228,12 @@ async function createCompletionFixture(
     warn,
     messages,
     assertResult,
+    assertText,
     assertNoOtherResults,
+    async assertNoResults() {
+      expect(await messages(destination)).toEqual([]);
+      await assertNoOtherResults();
+    },
     finalize,
     async loadReleasedRows() {
       // v2026.9.9: types.ts CronStoredJob and store/row-codec.ts persisted config.
@@ -313,13 +323,23 @@ async function createCompletionFixture(
   };
 }
 
+function deliveryDiagnostics(message: string, contains = false, substring = false) {
+  const entry = expect.objectContaining({
+    source: "delivery",
+    severity: "warn",
+    message: substring ? expect.stringContaining(message) : message,
+  });
+  return { diagnostics: { entries: contains ? expect.arrayContaining([entry]) : [entry] } };
+}
+
 async function withCompletionFixture(
   kind: "script" | "command",
   run: (fixture: Awaited<ReturnType<typeof createCompletionFixture>>) => Promise<void>,
+  hookText?: string,
 ) {
   await withOpenClawTestState({ layout: "state-only" }, async (state) => {
     const registry = captureActivePluginRegistrySnapshot();
-    const fixture = await createCompletionFixture(state, kind);
+    const fixture = await createCompletionFixture(state, kind, hookText);
     try {
       await run(fixture);
     } finally {
@@ -337,28 +357,20 @@ describe("completion announcement", () => {
   const kind = "script";
 
   it("commits the effective post-hook payload shown to the recipient", async () => {
-    await withOpenClawTestState({ layout: "state-only" }, async (state) => {
-      const registry = captureActivePluginRegistrySnapshot();
-      const fixture = await createCompletionFixture(state, "command", "Redacted cron update");
-      try {
+    await withCompletionFixture(
+      "command",
+      async (fixture) => {
         await expect(fixture.finalize({ text: "Sensitive cron update" })).resolves.toMatchObject({
           delivered: true,
         });
         expect(fixture.sendText).toHaveBeenCalledExactlyOnceWith(
           expect.objectContaining({ text: "Redacted cron update" }),
         );
-        expect(await fixture.messages(fixture.destination)).toEqual([
-          expect.objectContaining({
-            content: [{ type: "text", text: "Redacted cron update" }],
-          }),
-        ]);
+        await fixture.assertText("Redacted cron update");
         await fixture.assertNoOtherResults();
-      } finally {
-        await fixture.dispose();
-        vi.restoreAllMocks();
-        restoreActivePluginRegistrySnapshot(registry);
-      }
-    });
+      },
+      "Redacted cron update",
+    );
   });
 
   it.each([
@@ -420,15 +432,10 @@ describe("completion announcement", () => {
           expect(await fixture.messages(fixture.destination)).toEqual([]);
           if (failure === "uncertain") {
             expect(result).toMatchObject({
-              diagnostics: {
-                entries: expect.arrayContaining([
-                  expect.objectContaining({
-                    source: "delivery",
-                    severity: "warn",
-                    message: "result may have been delivered but was not added to the conversation",
-                  }),
-                ]),
-              },
+              ...deliveryDiagnostics(
+                "result may have been delivered but was not added to the conversation",
+                true,
+              ),
             });
           }
         }
@@ -448,20 +455,12 @@ describe("completion announcement", () => {
       expect(result).toMatchObject({
         delivered: true,
         deliveryError: undefined,
-        diagnostics: {
-          entries: [
-            expect.objectContaining({
-              source: "delivery",
-              severity: "warn",
-              message:
-                "result was delivered but was not added to the conversation: conversation binding unavailable",
-            }),
-          ],
-        },
+        ...deliveryDiagnostics(
+          "result was delivered but was not added to the conversation: conversation binding unavailable",
+        ),
       });
       expect(fixture.sendText).toHaveBeenCalledOnce();
-      await fixture.assertNoOtherResults();
-      expect(await fixture.messages(fixture.destination)).toEqual([]);
+      await fixture.assertNoResults();
     });
   });
 
@@ -504,24 +503,16 @@ describe("completion announcement", () => {
       expect(result).toMatchObject({
         delivered: true,
         deliveryError: undefined,
-        diagnostics: {
-          entries: [
-            expect.objectContaining({
-              source: "delivery",
-              severity: "warn",
-              message:
-                "Conversation context skipped: the destination belongs to a different agent.",
-            }),
-          ],
-        },
+        ...deliveryDiagnostics(
+          "Conversation context skipped: the destination belongs to a different agent.",
+        ),
       });
       expect(fixture.sendText).toHaveBeenCalledOnce();
       expect(fixture.sendText.mock.calls[0]?.[0]).toMatchObject({
         to: "123",
         accountId: "default",
       });
-      await fixture.assertNoOtherResults();
-      expect(await fixture.messages(fixture.destination)).toEqual([]);
+      await fixture.assertNoResults();
       expect(await fixture.messages(otherDestination)).toEqual([]);
     });
   });
@@ -571,8 +562,7 @@ describe("completion announcement", () => {
         deliveryError: "cron result is missing its occurrence start time",
       });
       expect(fixture.sendText).not.toHaveBeenCalled();
-      expect(await fixture.messages(fixture.destination)).toEqual([]);
-      await fixture.assertNoOtherResults();
+      await fixture.assertNoResults();
     });
   });
 
@@ -620,9 +610,7 @@ describe("completion announcement", () => {
           expect.objectContaining({ text: deliveredText }),
         );
         expect(fixture.warn).not.toHaveBeenCalled();
-        expect(await fixture.messages(fixture.destination)).toEqual([
-          expect.objectContaining({ content: [{ type: "text", text: deliveredText }] }),
-        ]);
+        await fixture.assertText(deliveredText);
         await fixture.assertNoOtherResults();
       });
     },
@@ -639,8 +627,7 @@ describe("completion announcement", () => {
           delivered: false,
         });
         expect(fixture.sendText).not.toHaveBeenCalled();
-        expect(await fixture.messages(fixture.destination)).toEqual([]);
-        await fixture.assertNoOtherResults();
+        await fixture.assertNoResults();
       });
     },
   );
@@ -656,8 +643,7 @@ describe("completion announcement", () => {
         deliveryError: expect.stringContaining("occurrence aborted"),
       });
       expect(fixture.sendText).not.toHaveBeenCalled();
-      expect(await fixture.messages(fixture.destination)).toEqual([]);
-      await fixture.assertNoOtherResults();
+      await fixture.assertNoResults();
     });
   });
 
@@ -698,21 +684,14 @@ describe("completion announcement", () => {
           deliveryAttempted: true,
           delivered: true,
           deliveryError: undefined,
-          diagnostics: {
-            entries: expect.arrayContaining([
-              expect.objectContaining({
-                source: "delivery",
-                severity: "warn",
-                message: expect.stringContaining(
-                  "result was delivered but was not added to the conversation: cron delivery owner retired",
-                ),
-              }),
-            ]),
-          },
+          ...deliveryDiagnostics(
+            "result was delivered but was not added to the conversation: cron delivery owner retired",
+            true,
+            true,
+          ),
         });
         expect(fixture.sendText).toHaveBeenCalledOnce();
-        expect(await fixture.messages(fixture.destination)).toEqual([]);
-        await fixture.assertNoOtherResults();
+        await fixture.assertNoResults();
       });
     },
   );

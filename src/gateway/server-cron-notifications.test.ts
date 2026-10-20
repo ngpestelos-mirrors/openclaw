@@ -7,6 +7,7 @@ import {
 } from "../../test/helpers/promise.js";
 import type { CliDeps } from "../cli/deps.types.js";
 import { CRON_AGENT_SELECTION_REQUIRED_MESSAGE } from "../cron/agent-id.js";
+import { makeCronJob } from "../cron/delivery.test-helpers.js";
 import type * as deliveryTarget from "../cron/isolated-agent/delivery-target.js";
 import type { CronJob } from "../cron/types.js";
 import type { GuardedFetchOptions } from "../infra/net/fetch-guard.js";
@@ -60,16 +61,20 @@ import {
   sendGatewayCronFailureAlert as sendGatewayCronFailureAlertBase,
 } from "./server-cron-notifications.js";
 
-const sendGatewayCronFailureAlert = (
-  params: Omit<
-    Parameters<typeof sendGatewayCronFailureAlertBase>[0],
-    "onDeliverySettled" | "routing"
-  >,
-) =>
+type FailureAlertParams = Parameters<typeof sendGatewayCronFailureAlertBase>[0];
+const sendGatewayCronFailureAlert = (params: Partial<FailureAlertParams>) =>
   sendGatewayCronFailureAlertBase({
-    ...params,
+    job: createCompletionWebhookJob(),
+    channel: "discord",
+    to: "channel:ops",
+    mode: "announce",
+    deps: {} as CliDeps,
+    logger: { warn: vi.fn() },
+    resolveCronAgent: () => ({ agentId: "main", cfg: {} }),
+    payload: { text: "cron failed" },
     routing: { defaultAgentId: "main" },
     onDeliverySettled: async () => {},
+    ...params,
   });
 
 function sentFailureAlert() {
@@ -93,19 +98,14 @@ function webhookRequestBody() {
 }
 
 function createWebhookJob(delivery: NonNullable<CronJob["delivery"]>): CronJob {
-  return {
+  return makeCronJob({
     id: "cron-notification-admission",
     name: "notification admission",
-    enabled: true,
     createdAtMs: 1,
     updatedAtMs: 1,
-    schedule: { kind: "every", everyMs: 60_000 },
-    sessionTarget: "isolated",
-    wakeMode: "next-heartbeat",
     payload: { kind: "agentTurn", message: "hello" },
     delivery,
-    state: {},
-  };
+  });
 }
 
 function createCompletionWebhookJob(url = "https://example.invalid/cron"): CronJob {
@@ -120,6 +120,59 @@ const webhookSsrfPolicyRequest = expect.objectContaining({ policy: webhookSsrfPo
 
 function expectWebhookSsrfPolicy() {
   expect(mocks.fetchWithSsrFGuard).toHaveBeenCalledWith(webhookSsrfPolicyRequest);
+}
+
+function dispatchCompletion(
+  job: CronJob,
+  overrides: Partial<Parameters<typeof dispatchGatewayCronFinishedNotifications>[0]> = {},
+) {
+  dispatchGatewayCronFinishedNotifications({
+    evt: { jobId: job.id, action: "finished", status: "ok", summary: "done" },
+    job,
+    logger: { warn: vi.fn() },
+    ...overrides,
+  });
+}
+
+const runAtMs = Date.parse("2026-01-15T15:30:00.000Z");
+const presentation = {
+  blocks: [
+    {
+      type: "buttons" as const,
+      buttons: [
+        { label: "Log in to Codex", action: { type: "command" as const, command: "/login codex" } },
+      ],
+    },
+  ],
+};
+
+const sensitiveSummary =
+  "action-required output preserved:\nVisit www.example.com/device and enter code 123456\nLog in with token=opaque-secret-value";
+
+function commandDiagnostics(severity: "warn" | "error", message = sensitiveSummary) {
+  return {
+    summary: sensitiveSummary,
+    entries: [{ ts: 1, source: "exec" as const, severity, message }],
+  };
+}
+
+function commandJob(id: string, argv: string[], severity: "warn" | "error") {
+  return {
+    ...createCompletionWebhookJob(),
+    id,
+    name: id,
+    payload: { kind: "command" as const, argv },
+    state: {
+      lastDiagnosticSummary: sensitiveSummary,
+      lastDiagnostics: commandDiagnostics(severity),
+    },
+  };
+}
+
+function expectSecretsRedacted(text: string) {
+  for (const secret of ["www.example.com/device", "123456", "opaque-secret-value"]) {
+    expect(text).not.toContain(secret);
+  }
 }
 
 describe("dispatchGatewayCronFinishedNotifications", () => {
@@ -179,18 +232,14 @@ describe("dispatchGatewayCronFinishedNotifications", () => {
           mode: "explicit",
         });
       }
-      const delivery = sendGatewayCronFailureAlertBase({
+      const delivery = sendGatewayCronFailureAlert({
         deps: {} as CliDeps,
         logger: { warn: vi.fn() },
         resolveCronAgent,
         job,
         routing: defaultAgentId ? { defaultAgentId } : {},
-        payload: { text: "cron failed" },
-        channel: "discord",
-        to: "channel:ops",
         accountId: "requested-account",
         threadId: 42,
-        mode: "announce",
         onDeliverySettled,
       });
       if (recipient) {
@@ -245,15 +294,8 @@ describe("dispatchGatewayCronFinishedNotifications", () => {
       markGatewayRestartDraining();
       const onDeliverySettled = vi.fn(async () => {});
       await expect(
-        sendGatewayCronFailureAlertBase({
-          routing: { defaultAgentId: "main" },
-          deps: {} as CliDeps,
-          logger: { warn: vi.fn() },
-          resolveCronAgent: () => ({ agentId: "main", cfg: {} }),
-          job: createCompletionWebhookJob(),
-          payload: { text: "cron failed" },
+        sendGatewayCronFailureAlert({
           mode,
-          channel: "discord",
           to: mode === "webhook" ? "https://example.invalid/failure" : "channel:ops",
           onDeliverySettled,
         }),
@@ -295,19 +337,9 @@ describe("dispatchGatewayCronFinishedNotifications", () => {
     try {
       let failureAlert: Promise<void> | undefined;
       await parentAdmission.run(async () => {
-        dispatchGatewayCronFinishedNotifications({
-          evt: { jobId: job.id, action: "finished", status: "ok", summary: "done" },
-          job,
-          logger: { warn: vi.fn() },
-        });
+        dispatchCompletion(job);
         failureAlert = sendGatewayCronFailureAlert({
-          deps: {} as CliDeps,
-          logger: { warn: vi.fn() },
-          resolveCronAgent: () => ({ agentId: "main", cfg: {} }),
           job,
-          payload: { text: "cron failed" },
-          channel: "discord",
-          to: "channel:ops",
           accountId: "bot-a",
           threadId: 42,
           mode: "announce",
@@ -353,11 +385,7 @@ describe("dispatchGatewayCronFinishedNotifications", () => {
       },
     ]);
 
-    dispatchGatewayCronFinishedNotifications({
-      evt: { jobId: job.id, action: "finished", status: "ok", summary: "done" },
-      job,
-      logger,
-    });
+    dispatchCompletion(job, { logger });
 
     await waitForFast(() =>
       expect(logger.warn).toHaveBeenCalledWith(
@@ -382,11 +410,7 @@ describe("dispatchGatewayCronFinishedNotifications", () => {
     const logger = { warn: vi.fn() };
     const job = createCompletionWebhookJob("https://example.invalid/cron?token=must-not-be-logged");
 
-    dispatchGatewayCronFinishedNotifications({
-      evt: { jobId: job.id, action: "finished", status: "ok", summary: "done" },
-      job,
-      logger,
-    });
+    dispatchCompletion(job, { logger });
 
     await waitForFast(() =>
       expect(logger.warn).toHaveBeenCalledWith(
@@ -423,16 +447,11 @@ describe("dispatchGatewayCronFinishedNotifications", () => {
       }),
     });
 
-    await sendGatewayCronFailureAlertBase({
-      routing: { defaultAgentId: "main" },
-      deps: {} as CliDeps,
-      logger: { warn: vi.fn() },
-      resolveCronAgent: () => ({ agentId: "main", cfg: {} }),
+    await sendGatewayCronFailureAlert({
       job: createWebhookJob({
         mode: "webhook",
         to: "https://example.invalid/cron",
       }),
-      payload: { text: "cron failed" },
       channel: "last",
       mode: "webhook",
       to: "https://example.invalid/cron",
@@ -460,14 +479,10 @@ describe("dispatchGatewayCronFinishedNotifications", () => {
       });
 
       const delivery = sendGatewayCronFailureAlert({
-        deps: {} as CliDeps,
-        logger: { warn: vi.fn() },
-        resolveCronAgent: () => ({ agentId: "main", cfg: {} }),
         job: createWebhookJob({
           mode: "webhook",
           to: "https://example.invalid/cron",
         }),
-        payload: { text: "cron failed" },
         channel: "last",
         mode: "webhook",
         to: "https://example.invalid/cron",
@@ -493,16 +508,7 @@ describe("dispatchGatewayCronFinishedNotifications", () => {
     { name: "invalid", to: "ftp://example.invalid/failure" },
   ])("rejects a $name failure-alert webhook target", async ({ to }) => {
     await expect(
-      sendGatewayCronFailureAlert({
-        deps: {} as CliDeps,
-        logger: { warn: vi.fn() },
-        resolveCronAgent: () => ({ agentId: "main", cfg: {} }),
-        job: createCompletionWebhookJob(),
-        payload: { text: "cron failed" },
-        channel: "last",
-        mode: "webhook",
-        to,
-      }),
+      sendGatewayCronFailureAlert({ channel: "last", mode: "webhook", to }),
     ).rejects.toThrow(/webhook requires/);
     expect(mocks.fetchWithSsrFGuard).not.toHaveBeenCalled();
   });
@@ -544,16 +550,10 @@ describe("dispatchGatewayCronFinishedNotifications", () => {
       });
 
       await expect(
-        sendGatewayCronFailureAlertBase({
-          deps: {} as CliDeps,
-          logger: { warn: vi.fn() },
-          resolveCronAgent: () => ({ agentId: "main", cfg: {} }),
-          job: createCompletionWebhookJob(),
-          payload: { text: "cron failed" },
+        sendGatewayCronFailureAlert({
           channel: "last",
           mode: "webhook",
           to: "https://example.invalid/failure",
-          routing: { defaultAgentId: "main" },
           onDeliverySettled,
         }),
       ).rejects.toThrow(errorMessage);
@@ -623,18 +623,7 @@ describe("dispatchGatewayCronFinishedNotifications", () => {
     });
     const job = createWebhookJob({ mode: "announce", channel: "discord", to: "channel:ops" });
 
-    const delivery = sendGatewayCronFailureAlertBase({
-      routing: { defaultAgentId: "main" },
-      deps: {} as CliDeps,
-      logger: { warn: vi.fn() },
-      resolveCronAgent: () => ({ agentId: "main", cfg: {} }),
-      job,
-      payload: { text: "cron failed" },
-      channel: "discord",
-      to: "channel:ops",
-      mode: "announce",
-      onDeliverySettled,
-    });
+    const delivery = sendGatewayCronFailureAlert({ job, onDeliverySettled });
 
     await waitForFast(() => expect(onDeliverySettled).toHaveBeenCalledOnce());
     expect(getActiveGatewayRootWorkCount()).toBe(1);
@@ -675,18 +664,7 @@ describe("dispatchGatewayCronFinishedNotifications", () => {
         );
         const job = createWebhookJob({ mode: "announce", channel: "discord", to: "channel:ops" });
 
-        const delivery = sendGatewayCronFailureAlertBase({
-          routing: { defaultAgentId: "main" },
-          deps: {} as CliDeps,
-          logger: { warn: vi.fn() },
-          resolveCronAgent: () => ({ agentId: "main", cfg: {} }),
-          job,
-          payload: { text: "cron failed" },
-          channel: "discord",
-          to: "channel:ops",
-          mode: "announce",
-          onDeliverySettled,
-        });
+        const delivery = sendGatewayCronFailureAlert({ job, onDeliverySettled });
         const deliveryOutcome = delivery.then(
           () => undefined,
           (error: unknown) => error,
@@ -729,11 +707,7 @@ describe("dispatchGatewayCronFinishedNotifications", () => {
     const suspensionAdmission = tryBeginGatewaySuspendAdmission(() => {});
     expect(suspensionAdmission?.commit()).toBe(true);
 
-    dispatchGatewayCronFinishedNotifications({
-      evt: { jobId: job.id, action: "finished", status: "ok", summary: "done" },
-      job,
-      logger: { warn: vi.fn() },
-    });
+    dispatchCompletion(job);
 
     await Promise.resolve();
     expect(mocks.fetchWithSsrFGuard).not.toHaveBeenCalled();
@@ -776,40 +750,7 @@ describe("dispatchGatewayCronFinishedNotifications", () => {
 
   it("redacts command action-required summaries before webhook completion delivery", async () => {
     const logger = { warn: vi.fn() };
-    const sensitiveSummary =
-      "action-required output preserved:\nVisit www.example.com/device and enter code 123456\nLog in with token=opaque-secret-value";
-    const job = {
-      id: "cron-command-webhook-redact",
-      name: "command webhook redact",
-      enabled: true,
-      createdAtMs: 1,
-      updatedAtMs: 1,
-      schedule: { kind: "every", everyMs: 60_000 },
-      sessionTarget: "isolated",
-      wakeMode: "next-heartbeat",
-      payload: { kind: "command", argv: ["echo", "ok"] },
-      delivery: {
-        mode: "announce",
-        completionDestination: {
-          mode: "webhook",
-          to: "https://example.invalid/cron",
-        },
-      },
-      state: {
-        lastDiagnosticSummary: sensitiveSummary,
-        lastDiagnostics: {
-          summary: sensitiveSummary,
-          entries: [
-            {
-              ts: 1,
-              source: "exec",
-              severity: "warn",
-              message: sensitiveSummary,
-            },
-          ],
-        },
-      },
-    } satisfies CronJob;
+    const job = commandJob("cron-command-webhook-redact", ["echo", "ok"], "warn");
 
     dispatchGatewayCronFinishedNotifications({
       evt: {
@@ -817,18 +758,10 @@ describe("dispatchGatewayCronFinishedNotifications", () => {
         action: "finished",
         status: "ok",
         summary: sensitiveSummary,
-        diagnostics: {
-          summary: sensitiveSummary,
-          entries: [
-            {
-              ts: 1,
-              source: "exec",
-              severity: "warn",
-              message:
-                "argv: node -e Visit www.example.com/device and enter code 123456; Log in with token=opaque-secret-value",
-            },
-          ],
-        },
+        diagnostics: commandDiagnostics(
+          "warn",
+          "argv: node -e Visit www.example.com/device and enter code 123456; Log in with token=opaque-secret-value",
+        ),
         job,
       },
       job,
@@ -837,59 +770,24 @@ describe("dispatchGatewayCronFinishedNotifications", () => {
 
     await waitForFast(() => expect(mocks.fetchWithSsrFGuard).toHaveBeenCalledTimes(1));
     const body = webhookRequestBody();
-    expect(body.summary).toContain("[redacted-url]");
-    expect(body.summary).toContain("[redacted-code]");
-    expect(body.summary).toContain("token=***");
-    expect(body.summary).not.toContain("www.example.com/device");
-    expect(body.summary).not.toContain("123456");
-    expect(body.summary).not.toContain("opaque-secret-value");
     expect(body.diagnostics.summary).toBe(body.summary);
-    expect(body.diagnostics.entries[0].message).toContain("[redacted-url]");
-    expect(body.diagnostics.entries[0].message).toContain("[redacted-code]");
-    expect(body.diagnostics.entries[0].message).toContain("token=***");
-    expect(body.diagnostics.entries[0].message).not.toContain("www.example.com/device");
-    expect(body.diagnostics.entries[0].message).not.toContain("123456");
-    expect(body.diagnostics.entries[0].message).not.toContain("opaque-secret-value");
+    for (const text of [body.summary, body.diagnostics.entries[0].message]) {
+      for (const marker of ["[redacted-url]", "[redacted-code]", "token=***"]) {
+        expect(text).toContain(marker);
+      }
+      expectSecretsRedacted(text);
+    }
     expect(body.job.state).not.toHaveProperty("lastDiagnosticSummary");
     expect(body.job.state).not.toHaveProperty("lastDiagnostics");
   });
 
   it("omits failed command summaries and diagnostics from completion webhook delivery", async () => {
     const logger = { warn: vi.fn() };
-    const sensitiveSummary =
-      "action-required output preserved:\nVisit www.example.com/device and enter code 123456\nLog in with token=opaque-secret-value";
-    const job = {
-      id: "cron-command-webhook-failed-redact",
-      name: "command webhook failed redact",
-      enabled: true,
-      createdAtMs: 1,
-      updatedAtMs: 1,
-      schedule: { kind: "every", everyMs: 60_000 },
-      sessionTarget: "isolated",
-      wakeMode: "next-heartbeat",
-      payload: { kind: "command", argv: ["node", "-e", "process.exit(7)"] },
-      delivery: {
-        mode: "announce",
-        completionDestination: {
-          mode: "webhook",
-          to: "https://example.invalid/cron",
-        },
-      },
-      state: {
-        lastDiagnosticSummary: sensitiveSummary,
-        lastDiagnostics: {
-          summary: sensitiveSummary,
-          entries: [
-            {
-              ts: 1,
-              source: "exec",
-              severity: "error",
-              message: sensitiveSummary,
-            },
-          ],
-        },
-      },
-    } satisfies CronJob;
+    const job = commandJob(
+      "cron-command-webhook-failed-redact",
+      ["node", "-e", "process.exit(7)"],
+      "error",
+    );
 
     dispatchGatewayCronFinishedNotifications({
       evt: {
@@ -898,17 +796,7 @@ describe("dispatchGatewayCronFinishedNotifications", () => {
         status: "error",
         error: "command exited with code 7",
         summary: sensitiveSummary,
-        diagnostics: {
-          summary: sensitiveSummary,
-          entries: [
-            {
-              ts: 1,
-              source: "exec",
-              severity: "error",
-              message: sensitiveSummary,
-            },
-          ],
-        },
+        diagnostics: commandDiagnostics("error"),
         job,
       },
       job,
@@ -927,8 +815,91 @@ describe("dispatchGatewayCronFinishedNotifications", () => {
     expect(body).not.toHaveProperty("diagnostics");
     expect(body.job.state).not.toHaveProperty("lastDiagnosticSummary");
     expect(body.job.state).not.toHaveProperty("lastDiagnostics");
-    expect(JSON.stringify(body)).not.toContain("www.example.com/device");
-    expect(JSON.stringify(body)).not.toContain("123456");
-    expect(JSON.stringify(body)).not.toContain("opaque-secret-value");
+    expectSecretsRedacted(JSON.stringify(body));
   });
+
+  it("keeps failure webhook messages stable and adds structured runAtMs", async () => {
+    const job = makeCronJob({
+      delivery: {
+        mode: "announce",
+        completionDestination: { mode: "webhook", to: "https://example.invalid/cron" },
+      },
+    });
+    await sendGatewayCronFailureAlert({
+      runAtMs,
+      resolveCronAgent: () => ({
+        agentId: "main",
+        cfg: { agents: { defaults: { userTimezone: "America/New_York" } } },
+      }),
+      job,
+      payload: { text: "cron failed" },
+      channel: "last",
+      mode: "webhook",
+      to: "https://example.invalid/cron",
+      ssrfPolicy: webhookSsrfPolicy,
+    });
+
+    expect(mocks.fetchWithSsrFGuard).toHaveBeenCalledWith(
+      expect.objectContaining({ policy: webhookSsrfPolicy }),
+    );
+    expect(webhookRequestBody()).toEqual({
+      jobId: job.id,
+      jobName: job.name,
+      message: "cron failed",
+      runAtMs,
+    });
+  });
+
+  it.each([
+    {
+      name: "without a public origin",
+      gateway: undefined,
+      expectedText: "cron failed\nRun started: 2026-01-15 10:30 EST",
+    },
+    {
+      name: "with a public origin",
+      gateway: {
+        publicOrigin: "https://gateway.example",
+        controlUi: { basePath: "/control" },
+      },
+      expectedText:
+        "cron failed\nRun started: 2026-01-15 10:30 EST\nInspect: https://gateway.example/control/automations?job=job-1&run=cron%3Ajob-1%3A1768491000000",
+    },
+  ])(
+    "composes failure alert details $name without dropping presentation",
+    async ({ gateway, expectedText }) => {
+      const job = makeCronJob({
+        delivery: {
+          mode: "announce",
+          channel: "telegram",
+          to: "channel:ops",
+        },
+      });
+
+      await sendGatewayCronFailureAlert({
+        runAtMs,
+        resolveCronAgent: () => ({
+          agentId: "main",
+          cfg: { agents: { defaults: { userTimezone: "America/New_York" } }, gateway },
+        }),
+        job,
+        payload: {
+          text: "cron failed",
+          presentation: structuredClone(presentation),
+        },
+        channel: "telegram",
+        to: "channel:ops",
+        mode: "announce",
+      });
+
+      expect(mocks.sendCronAnnouncePayloadStrict).toHaveBeenCalledWith(
+        expect.objectContaining({
+          payload: {
+            text: expectedText,
+            presentation,
+          },
+        }),
+      );
+    },
+  );
 });

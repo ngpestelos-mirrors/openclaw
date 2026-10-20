@@ -1,16 +1,24 @@
 import { describe, expect, it, vi } from "vitest";
+import { createDeferred } from "../../test/helpers/promise.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { createGatewayCronReconciliation } from "./server-cron-reconciled.js";
 
 type RunHook = Parameters<typeof createGatewayCronReconciliation>[0]["runHook"];
 
 function createReconciliation(runHook: RunHook, isClosing = () => false) {
-  return createGatewayCronReconciliation({
+  const reconciliation = createGatewayCronReconciliation({
     port: 18789,
     workspaceDir: "/tmp/openclaw-workspace",
     isClosing,
     runHook,
   });
+  return {
+    ...reconciliation,
+    arm(reason: "startup" | "reload", id: string = reason, enabled = true) {
+      return reconciliation.arm({ reason, config: {}, cronState: createCronState(id, enabled) });
+    },
+    armSnapshot: reconciliation.arm,
+  };
 }
 
 describe("gateway cron reconciliation lifecycle", () => {
@@ -24,7 +32,7 @@ describe("gateway cron reconciliation lifecycle", () => {
       storePath: "/private/cron.json",
       cronEnabled: false,
     };
-    const armed = reconciliation.arm({
+    const armed = reconciliation.armSnapshot({
       reason: "startup",
       config,
       cronState: cronState as never,
@@ -50,16 +58,8 @@ describe("gateway cron reconciliation lifecycle", () => {
   it("suppresses a startup completion superseded by reload", async () => {
     const runHook = vi.fn<RunHook>(async () => undefined);
     const reconciliation = createReconciliation(runHook);
-    const startup = reconciliation.arm({
-      reason: "startup",
-      config: {} as OpenClawConfig,
-      cronState: createCronState("startup", true),
-    });
-    const reload = reconciliation.arm({
-      reason: "reload",
-      config: {} as OpenClawConfig,
-      cronState: createCronState("reload", true),
-    });
+    const startup = reconciliation.arm("startup");
+    const reload = reconciliation.arm("reload");
 
     await startup.complete();
     await reload.complete();
@@ -72,19 +72,11 @@ describe("gateway cron reconciliation lifecycle", () => {
     let closing = false;
     const runHook = vi.fn<RunHook>(async () => undefined);
     const reconciliation = createReconciliation(runHook, () => closing);
-    const invalidated = reconciliation.arm({
-      reason: "reload",
-      config: {} as OpenClawConfig,
-      cronState: createCronState("invalidated", true),
-    });
+    const invalidated = reconciliation.arm("reload", "invalidated", true);
     reconciliation.invalidate();
     await invalidated.complete();
 
-    const shutdown = reconciliation.arm({
-      reason: "reload",
-      config: {} as OpenClawConfig,
-      cronState: createCronState("shutdown", false),
-    });
+    const shutdown = reconciliation.arm("reload", "shutdown", false);
     closing = true;
     await shutdown.complete();
 
@@ -92,69 +84,47 @@ describe("gateway cron reconciliation lifecycle", () => {
   });
 
   it("aborts a superseded snapshot without blocking the replacement", async () => {
-    let releaseStartup: (() => void) | undefined;
+    const startupGate = createDeferred();
     let startupSignal: AbortSignal | undefined;
     const order: string[] = [];
     const runHook = vi.fn<RunHook>(async (event, ctx) => {
       order.push(`${event.reason}:start`);
       if (event.reason === "startup") {
         startupSignal = ctx.abortSignal;
-        await new Promise<void>((resolve) => {
-          releaseStartup = resolve;
-        });
+        await startupGate.promise;
       }
       order.push(`${event.reason}:end`);
     });
     const reconciliation = createReconciliation(runHook);
-    const startup = reconciliation.arm({
-      reason: "startup",
-      config: {} as OpenClawConfig,
-      cronState: createCronState("startup", true),
-    });
+    const startup = reconciliation.arm("startup");
     const startupCompletion = startup.complete();
     await vi.waitFor(() => expect(order).toEqual(["startup:start"]));
-    const reload = reconciliation.arm({
-      reason: "reload",
-      config: {} as OpenClawConfig,
-      cronState: createCronState("reload", true),
-    });
+    const reload = reconciliation.arm("reload");
     expect(startupSignal?.aborted).toBe(true);
     await reload.complete();
 
     expect(order).toEqual(["startup:start", "reload:start", "reload:end"]);
-    if (!releaseStartup) {
-      throw new Error("Expected startup hook to be pending");
-    }
-    releaseStartup();
+    startupGate.resolve();
     await startupCompletion;
 
     expect(order).toEqual(["startup:start", "reload:start", "reload:end", "startup:end"]);
   });
 
   it("aborts an active snapshot when reconciliation is invalidated", async () => {
-    let releaseHook: (() => void) | undefined;
+    const hookGate = createDeferred();
     let activeSignal: AbortSignal | undefined;
     const runHook = vi.fn<RunHook>(async (_event, ctx) => {
       activeSignal = ctx.abortSignal;
-      await new Promise<void>((resolve) => {
-        releaseHook = resolve;
-      });
+      await hookGate.promise;
     });
     const reconciliation = createReconciliation(runHook);
-    const armed = reconciliation.arm({
-      reason: "startup",
-      config: {} as OpenClawConfig,
-      cronState: createCronState("startup", true),
-    });
+    const armed = reconciliation.arm("startup");
     const completion = armed.complete();
     await vi.waitFor(() => expect(runHook).toHaveBeenCalledTimes(1));
 
     reconciliation.invalidate();
     expect(activeSignal?.aborted).toBe(true);
-    if (!releaseHook) {
-      throw new Error("Expected cron reconciliation hook to be pending");
-    }
-    releaseHook();
+    hookGate.resolve();
     await completion;
   });
 });
