@@ -13,13 +13,10 @@ beforeEach(() => {
   vi.useFakeTimers();
   storage = createStorageMock();
   reload = vi.fn();
-  documentFetch.mockReset().mockResolvedValue(new Response("ok"));
-  vi.stubGlobal("fetch", documentFetch);
+  vi.stubGlobal("fetch", documentFetch.mockReset().mockResolvedValue(new Response("ok")));
 });
 afterEach(() => {
-  vi.unstubAllGlobals();
-  vi.restoreAllMocks();
-  vi.useRealTimers();
+  vi.unstubAllGlobals().restoreAllMocks().useRealTimers();
 });
 
 it("persists before navigation and refuses later attempts, even after the cooldown", async () => {
@@ -53,16 +50,11 @@ it("leaves the error visible when the document is unreachable", async () => {
 it.each(["surface", "draft"])("rechecks %s ownership after the probe", async (blocked) => {
   const response = deferred<Response>();
   documentFetch.mockReturnValue(response.promise);
-  let current = true;
-  let safe = true;
-  const release = registerControlUiReloadGuard(() => safe, vi.fn());
+  let allowed = true;
+  const release = registerControlUiReloadGuard(() => blocked === "surface" || allowed, vi.fn());
   try {
-    const pending = attempt({ canReload: () => current });
-    if (blocked === "surface") {
-      current = false;
-    } else {
-      safe = false;
-    }
+    const pending = attempt({ canReload: () => blocked === "draft" || allowed });
+    allowed = false;
     response.resolve(new Response("ok"));
     expect(await pending).toBe(false);
     expect(reload).not.toHaveBeenCalled();
@@ -75,9 +67,8 @@ it.each(["surface", "draft"])("rechecks %s ownership after the probe", async (bl
 it("admits only one of two failing surfaces sharing a document probe", async () => {
   const response = deferred<Response>();
   documentFetch.mockReturnValue(response.promise);
-  const first = attempt();
-  const second = attempt();
+  const pending = Promise.all([attempt(), attempt()]);
   response.resolve(new Response("ok"));
-  expect(await Promise.all([first, second])).toEqual([true, false]);
+  expect(await pending).toEqual([true, false]);
   expect(reload).toHaveBeenCalledOnce();
 });

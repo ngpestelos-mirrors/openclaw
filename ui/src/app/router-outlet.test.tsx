@@ -1,7 +1,5 @@
-import type { Router } from "@openclaw/uirouter";
 import { afterEach, expect, it, vi } from "vitest";
 import { createDeferredCore } from "../../../src/shared/deferred.js";
-import type { SolidRouteProps } from "../app-route-types.ts";
 import { defineSolidBridge } from "../lib/solid-bridge.ts";
 import { registerControlUiReloadGuard } from "./document-reload-guard.ts";
 import {
@@ -13,7 +11,6 @@ import {
   disposeRouterOutlets,
   mountRouterOutlet,
   settleRouterOutlet as settleOutlet,
-  type MountedRouterOutlet,
 } from "./router-outlet.test-support.tsx";
 
 type RouteId = "page" | "next";
@@ -21,13 +18,22 @@ type TestContext = { label: string };
 type TestData = { label: string };
 
 type TestModule = OutletModule<TestData>;
-type TestRouter = Router<RouteId, TestContext, TestModule, TestData>;
-type RouterOutletElement = MountedRouterOutlet;
 
 const routes = routeFixtures<RouteId, TestContext, TestData>();
 
-function createOutlet(router: TestRouter, context: TestContext): RouterOutletElement {
-  return mountRouterOutlet({ router, retryContext: context });
+function labelModule(
+  testId: string,
+  fallback?: string,
+  teardown?: () => Promise<void>,
+): TestModule {
+  return {
+    renderSolid: (props) => (
+      <>
+        {teardown ? <McpView teardown={teardown} /> : null}
+        <div data-testid={testId}>{props.data?.label ?? fallback}</div>
+      </>
+    ),
+  };
 }
 
 afterEach(() => {
@@ -57,7 +63,7 @@ it("publishes native and Solid route hosts and retires their references with the
     }),
     routes.page("next", { renderSolid: () => <p>Next</p> }),
   );
-  const outlet = createOutlet(router, context);
+  const outlet = mountRouterOutlet({ router, retryContext: context });
   await router.navigate("page", context);
   await settleOutlet(outlet);
   const hosts = outlet.renderedElements?.("openclaw-route-ref-test");
@@ -88,7 +94,7 @@ it("settles the active route when a parked descendant's update fails", async () 
     ),
     routes.page("next", { renderSolid: () => <p>Current destination</p> }),
   );
-  const outlet = createOutlet(router, context);
+  const outlet = mountRouterOutlet({ router, retryContext: context });
   const childUpdate = createDeferredCore<boolean>();
   // Background work observes its own failure independently of route presentation.
   void childUpdate.promise.catch(() => undefined);
@@ -113,25 +119,16 @@ it("settles the active route when a parked descendant's update fails", async () 
 it("retains MCP Apps across route IDs that share an explicit owner", async () => {
   const teardownView = vi.fn(async () => undefined);
   const nextData = createDeferredCore<TestData>();
-  const OwnedRoute = (props: { label: string }) => (
-    <>
-      <McpView teardown={teardownView} />
-      <div data-testid="owned-route">{props.label}</div>
-    </>
-  );
-  const renderOwnedRoute = (props: SolidRouteProps<TestData>) => (
-    <OwnedRoute label={props.data?.label ?? ""} />
-  );
   const ownedModule: TestModule = {
     renderOwnerKey: () => "shared-owner",
-    renderSolid: renderOwnedRoute,
+    ...labelModule("owned-route", "", teardownView),
   };
   const context = { label: "page" };
   const router = routes.router(
     routes.page("page", ownedModule, { label: "page" }),
     routes.page("next", ownedModule, nextData.promise),
   );
-  const outlet = createOutlet(router, context);
+  const outlet = mountRouterOutlet({ router, retryContext: context });
   await router.navigate("page", context);
   await settleOutlet(outlet);
   const appView = outlet.querySelector("mcp-app-view");
@@ -157,7 +154,7 @@ it("replaces the loading skeleton with the resolved route", async () => {
   const router = routes.router(
     routes.page("page", routeModule.promise, (loadContext) => ({ label: loadContext.label })),
   );
-  const outlet = createOutlet(router, context);
+  const outlet = mountRouterOutlet({ router, retryContext: context });
   const navigation = router.navigate("page", context);
 
   await settleOutlet(outlet);
@@ -171,9 +168,7 @@ it("replaces the loading skeleton with the resolved route", async () => {
   expect(loadingState?.textContent?.trim()).toBe("");
   expect(outlet.textContent).not.toContain("Loading panel");
 
-  routeModule.resolve({
-    renderSolid: (props) => <div data-testid="route-page">{props.data?.label}</div>,
-  });
+  routeModule.resolve(labelModule("route-page"));
   await navigation;
   await settleOutlet(outlet);
 
@@ -185,30 +180,12 @@ it("replaces the loading skeleton with the resolved route", async () => {
 it.each(["finish", "disconnect"])("settles a retiring MCP route after %s", async (completion) => {
   const teardown = createDeferredCore();
   const teardownView = vi.fn(() => teardown.promise);
-  const RetiringRoute = () => (
-    <>
-      <McpView teardown={teardownView} />
-      <div data-testid="route-page">page</div>
-    </>
-  );
   const context = { label: "loaded" };
   const router = routes.router(
-    routes.page(
-      "page",
-      {
-        renderSolid: () => <RetiringRoute />,
-      },
-      { label: "page" },
-    ),
-    routes.page(
-      "next",
-      {
-        renderSolid: () => <div data-testid="route-next">next</div>,
-      },
-      { label: "next" },
-    ),
+    routes.page("page", labelModule("route-page", "page", teardownView), { label: "page" }),
+    routes.page("next", labelModule("route-next", "next"), { label: "next" }),
   );
-  const outlet = createOutlet(router, context);
+  const outlet = mountRouterOutlet({ router, retryContext: context });
   await router.navigate("page", context);
   await settleOutlet(outlet);
 
@@ -243,22 +220,14 @@ it("keeps a loaded route visible with an error and retries through the latest co
   const firstLoad = createDeferredCore<TestData>();
   let loadCount = 0;
   const router = routes.router(
-    routes.page(
-      "page",
-      {
-        renderSolid: (props: SolidRouteProps<TestData>) => (
-          <div data-testid="route-page">{props.data?.label ?? "pending"}</div>
-        ),
-      },
-      (context) => {
-        loadCount += 1;
-        return loadCount === 1 ? firstLoad.promise : { label: context.label };
-      },
-    ),
+    routes.page("page", labelModule("route-page", "pending"), (context) => {
+      loadCount += 1;
+      return loadCount === 1 ? firstLoad.promise : { label: context.label };
+    }),
   );
   const initialContext = { label: "initial" };
   const retryContext = { label: "retried" };
-  const outlet = createOutlet(router, initialContext);
+  const outlet = mountRouterOutlet({ router, retryContext: initialContext });
   const navigation = router.navigate("page", initialContext);
   await settleOutlet(outlet);
   firstLoad.reject(new Error("load failed"));
@@ -307,7 +276,7 @@ it("keeps asset recovery retryable after the reachability wait expires", async (
     ),
   );
   const context = { label: "stale" };
-  const outlet = createOutlet(router, context);
+  const outlet = mountRouterOutlet({ router, retryContext: context });
 
   await expect(router.navigate("page", context)).rejects.toThrow(
     "Importing a module script failed.",
@@ -372,7 +341,7 @@ it("keeps the Reload banner while unsaved work blocks recovery, then reloads whe
     ),
   );
   const context = { label: "offline" };
-  const outlet = createOutlet(router, context);
+  const outlet = mountRouterOutlet({ router, retryContext: context });
   try {
     await expect(router.navigate("page", context)).rejects.toThrow("Unable to preload CSS");
     await settleOutlet(outlet);
