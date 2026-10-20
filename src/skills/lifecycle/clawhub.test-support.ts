@@ -19,24 +19,24 @@ import type {
 } from "../../infra/clawhub-skills.js";
 import { createTrackedTempDirs } from "../../test-utils/tracked-temp-dirs.js";
 
-const fetchClawHubSkillDetailMock = vi.fn();
-const fetchClawHubSkillInstallResolutionMock = vi.fn();
-const fetchClawHubSkillVerificationMock = vi.fn();
-const fetchClawHubSkillSecurityVerdictsMock = vi.fn();
-const downloadClawHubSkillArchiveMock = vi.fn();
-const downloadClawHubSkillArchiveUrlMock = vi.fn();
-const downloadClawHubGitHubSkillArchiveMock = vi.fn();
-const reportClawHubSkillInstallTelemetryMock = vi.fn();
-const resolveClawHubBaseUrlMock = vi.fn(() => "https://clawhub.ai");
-const isDefaultClawHubBaseUrlMock = vi.fn((baseUrl?: string) => !baseUrl);
-const searchClawHubSkillsMock = vi.fn();
-const archiveCleanupMock = vi.fn();
-const withExtractedArchiveRootMock = vi.fn();
-const installPackageDirMock = vi.fn();
-const evaluateSkillInstallPolicyMock = vi.fn();
-const pathExistsMock = vi.fn();
-const digestClawHubSkillTreeMock = vi.fn(async () => `sha256:${"a".repeat(64)}`);
-const tempDirs = createTrackedTempDirs();
+export const fetchClawHubSkillDetailMock = vi.fn();
+export const fetchClawHubSkillInstallResolutionMock = vi.fn();
+export const fetchClawHubSkillVerificationMock = vi.fn();
+export const fetchClawHubSkillSecurityVerdictsMock = vi.fn();
+export const downloadClawHubSkillArchiveMock = vi.fn();
+export const downloadClawHubSkillArchiveUrlMock = vi.fn();
+export const downloadClawHubGitHubSkillArchiveMock = vi.fn();
+export const reportClawHubSkillInstallTelemetryMock = vi.fn();
+export const resolveClawHubBaseUrlMock = vi.fn(() => "https://clawhub.ai");
+export const isDefaultClawHubBaseUrlMock = vi.fn((baseUrl?: string) => !baseUrl);
+export const searchClawHubSkillsMock = vi.fn();
+export const archiveCleanupMock = vi.fn();
+export const withExtractedArchiveRootMock = vi.fn();
+export const installPackageDirMock = vi.fn();
+export const evaluateSkillInstallPolicyMock = vi.fn();
+export const pathExistsMock = vi.fn();
+export const digestClawHubSkillTreeMock = vi.fn(async () => `sha256:${"a".repeat(64)}`);
+export const tempDirs = createTrackedTempDirs();
 
 vi.mock("../../infra/clawhub-skills.js", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../../infra/clawhub-skills.js")>()),
@@ -108,7 +108,7 @@ const {
 const { guardTrackedSkillLocalState, planClawHubSkillUninstall, applyClawHubSkillUninstall } =
   await import("./clawhub-uninstall.js");
 
-function bindHostWorkspace(gateway: string, host: string) {
+export function bindHostWorkspace(gateway: string, host: string) {
   return registerAgentWorkspaceAccess(gateway, {
     bridge: { readFile: vi.fn(), writeFile: vi.fn(), stat: vi.fn() },
     loadSkills: vi.fn(),
@@ -149,15 +149,11 @@ const {
   updateSkillsFromClawHub,
 } = await import("./clawhub.js");
 
-function expectInstallPackageSourceDir(sourceDir: string) {
-  const call = installPackageDirMock.mock.calls.at(0);
-  if (!call) {
-    throw new Error("expected installPackageDir call");
-  }
-  expect(call[0]?.sourceDir).toBe(sourceDir);
+export function expectInstallPackageSourceDir(sourceDir: string) {
+  expect(installPackageDirMock.mock.calls[0]?.[0]?.sourceDir).toBe(sourceDir);
 }
 
-function installPolicyInput() {
+export function installPolicyInput() {
   const call = evaluateSkillInstallPolicyMock.mock.calls.at(0);
   if (!call) {
     throw new Error("expected evaluateSkillInstallPolicy call");
@@ -171,26 +167,14 @@ function installPolicyInput() {
     | undefined;
 }
 
-function expectInstalledSkill(
+export function expectInstalledSkill(
   result: Awaited<ReturnType<typeof installSkillFromClawHub>>,
   expected: { slug?: string; version?: string; targetDir?: string } = {},
 ) {
-  expect(result.ok).toBe(true);
-  if (!result.ok) {
-    throw new Error(`expected skill install success, got ${result.error}`);
-  }
-  if (expected.slug) {
-    expect(result.slug).toBe(expected.slug);
-  }
-  if (expected.version) {
-    expect(result.version).toBe(expected.version);
-  }
-  if (expected.targetDir) {
-    expect(result.targetDir).toBe(expected.targetDir);
-  }
+  expect(result).toMatchObject({ ok: true, ...expected });
 }
 
-function installTestSkill(
+export function installTestSkill(
   workspaceDir: string,
   slug: string,
   params: Omit<Parameters<typeof installSkillFromClawHub>[0], "workspaceDir" | "slug"> = {},
@@ -198,7 +182,7 @@ function installTestSkill(
   return installSkillFromClawHub({ workspaceDir, slug, ...params });
 }
 
-function updateTestSkill(
+export function updateTestSkill(
   workspaceDir: string,
   slug?: string,
   params: Omit<Parameters<typeof updateSkillsFromClawHub>[0], "workspaceDir" | "slug"> = {},
@@ -206,7 +190,7 @@ function updateTestSkill(
   return updateSkillsFromClawHub({ workspaceDir, ...(slug ? { slug } : {}), ...params });
 }
 
-function mockDefaultPackageInstall(testWorkspaceDir: string) {
+export function mockDefaultPackageInstall(testWorkspaceDir: string) {
   installPackageDirMock.mockImplementation(
     async (params: {
       targetDir: string;
@@ -221,7 +205,7 @@ function mockDefaultPackageInstall(testWorkspaceDir: string) {
   );
 }
 
-function mockArchiveInstallResolution(slug: string, version: string, downloadUrl: string) {
+export function mockArchiveInstallResolution(slug: string, version: string, downloadUrl: string) {
   fetchClawHubSkillInstallResolutionMock.mockResolvedValueOnce({
     ok: true,
     slug,
@@ -230,7 +214,7 @@ function mockArchiveInstallResolution(slug: string, version: string, downloadUrl
   });
 }
 
-function mockGitHubInstallResolution(params: {
+export function mockGitHubInstallResolution(params: {
   slug: string;
   repo: string;
   path: string;
@@ -238,21 +222,16 @@ function mockGitHubInstallResolution(params: {
   contentHash: string;
   sourceUrl: string;
 }) {
+  const { slug, ...github } = params;
   fetchClawHubSkillInstallResolutionMock.mockResolvedValueOnce({
     ok: true,
-    slug: params.slug,
+    slug,
     installKind: "github",
-    github: {
-      repo: params.repo,
-      path: params.path,
-      commit: params.commit,
-      contentHash: params.contentHash,
-      sourceUrl: params.sourceUrl,
-    },
+    github,
   });
 }
 
-function mockSkillSecurityVerdict(item: ClawHubSkillSecurityVerdictItem) {
+export function mockSkillSecurityVerdict(item: ClawHubSkillSecurityVerdictItem) {
   fetchClawHubSkillSecurityVerdictsMock.mockResolvedValueOnce({
     schema: "clawhub.skill.security-verdicts.v1",
     items: [
@@ -267,11 +246,11 @@ function mockSkillSecurityVerdict(item: ClawHubSkillSecurityVerdictItem) {
   });
 }
 
-function mockSkillVerification(response: ClawHubSkillVerificationResponse) {
+export function mockSkillVerification(response: ClawHubSkillVerificationResponse) {
   fetchClawHubSkillVerificationMock.mockResolvedValueOnce(response);
 }
 
-function mockInstalledSkillFile(content: string) {
+export function mockInstalledSkillFile(content: string) {
   installPackageDirMock.mockImplementationOnce(async (params: { targetDir: string }) => {
     await fs.mkdir(params.targetDir, { recursive: true });
     await fs.writeFile(path.join(params.targetDir, "SKILL.md"), content, "utf8");
@@ -279,7 +258,7 @@ function mockInstalledSkillFile(content: string) {
   });
 }
 
-async function readJson<T>(filePath: string): Promise<T> {
+export async function readJson<T>(filePath: string): Promise<T> {
   return JSON.parse(await fs.readFile(filePath, "utf8")) as T;
 }
 
@@ -317,60 +296,37 @@ async function writeClawHubOriginFixture(params: {
     ...(skillFile ? { skillFile } : {}),
     ...(fileTreeSha256 ? { fileTreeSha256 } : {}),
   };
+  const shared = {
+    registry,
+    installedAt,
+    ...(params.ownerHandle ? { ownerHandle: params.ownerHandle } : {}),
+    ...(params.requestedReference ? { requestedReference: params.requestedReference } : {}),
+    ...(params.trustState ? { trustState: params.trustState } : {}),
+    ...digests,
+  };
+  const writeJson = (file: string, value: unknown) =>
+    fs.writeFile(file, `${JSON.stringify(value, null, 2)}\n`, "utf8");
   await fs.mkdir(path.join(skillDir, ".clawhub"), { recursive: true });
   if (params.skillMd !== undefined) {
     await fs.writeFile(path.join(skillDir, "SKILL.md"), params.skillMd, "utf8");
   }
-  await fs.writeFile(
-    path.join(skillDir, ".clawhub", "origin.json"),
-    `${JSON.stringify(
-      {
-        version: 1,
-        registry,
-        slug: params.originSlug ?? params.slug,
-        ...(params.ownerHandle ? { ownerHandle: params.ownerHandle } : {}),
-        ...(params.requestedReference ? { requestedReference: params.requestedReference } : {}),
-        ...(params.trustState ? { trustState: params.trustState } : {}),
-        installedVersion,
-        installedAt,
-        ...digests,
-      },
-      null,
-      2,
-    )}\n`,
-    "utf8",
-  );
+  await writeJson(path.join(skillDir, ".clawhub", "origin.json"), {
+    version: 1,
+    slug: params.originSlug ?? params.slug,
+    installedVersion,
+    ...shared,
+  });
   if (params.writeLock !== false) {
     await fs.mkdir(path.join(params.workspaceDir, ".clawhub"), { recursive: true });
-    await fs.writeFile(
-      path.join(params.workspaceDir, ".clawhub", "lock.json"),
-      `${JSON.stringify(
-        {
-          version: 1,
-          skills: {
-            [params.slug]: {
-              version: installedVersion,
-              installedAt,
-              registry,
-              ...(params.ownerHandle ? { ownerHandle: params.ownerHandle } : {}),
-              ...(params.requestedReference
-                ? { requestedReference: params.requestedReference }
-                : {}),
-              ...(params.trustState ? { trustState: params.trustState } : {}),
-              ...digests,
-            },
-          },
-        },
-        null,
-        2,
-      )}\n`,
-      "utf8",
-    );
+    await writeJson(path.join(params.workspaceDir, ".clawhub", "lock.json"), {
+      version: 1,
+      skills: { [params.slug]: { version: installedVersion, ...shared } },
+    });
   }
   return skillDir;
 }
 
-function writeTrackedSkill(
+export function writeTrackedSkill(
   workspaceDir: string,
   slug: string,
   params: Omit<Parameters<typeof writeClawHubOriginFixture>[0], "workspaceDir" | "slug"> = {},
@@ -382,38 +338,6 @@ export {
   applyExtractedSkillRoot,
   readClawHubSkillsLockfileStatusSync,
   resolveClawHubSkillStatusLinkSync,
-  fetchClawHubSkillDetailMock,
-  fetchClawHubSkillInstallResolutionMock,
-  fetchClawHubSkillVerificationMock,
-  fetchClawHubSkillSecurityVerdictsMock,
-  downloadClawHubSkillArchiveMock,
-  downloadClawHubSkillArchiveUrlMock,
-  downloadClawHubGitHubSkillArchiveMock,
-  reportClawHubSkillInstallTelemetryMock,
-  resolveClawHubBaseUrlMock,
-  isDefaultClawHubBaseUrlMock,
-  searchClawHubSkillsMock,
-  archiveCleanupMock,
-  withExtractedArchiveRootMock,
-  installPackageDirMock,
-  evaluateSkillInstallPolicyMock,
-  pathExistsMock,
-  digestClawHubSkillTreeMock,
-  tempDirs,
-  bindHostWorkspace,
-  expectInstallPackageSourceDir,
-  installPolicyInput,
-  expectInstalledSkill,
-  installTestSkill,
-  updateTestSkill,
-  mockArchiveInstallResolution,
-  mockDefaultPackageInstall,
-  mockGitHubInstallResolution,
-  mockSkillSecurityVerdict,
-  mockSkillVerification,
-  mockInstalledSkillFile,
-  readJson,
-  writeTrackedSkill,
   ClawHubRequestError,
   readClawHubSkillsLockfile,
   untrackClawHubSkill,

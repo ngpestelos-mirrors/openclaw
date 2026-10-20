@@ -29,22 +29,15 @@ function observePublication(filePath: string, isCurrent: () => boolean): boolean
   return currentAtPublication;
 }
 
-async function withTrackingPaths<T>(
-  run: (paths: {
-    workspaceDir: string;
-    skillDir: string;
-    originPath: string;
-    lockPath: string;
-  }) => Promise<T>,
-): Promise<T> {
+function trackingPaths() {
   const workspaceDir = tempDirs.make("clawhub-store-authority-");
   const skillDir = path.join(workspaceDir, "skills", "canary");
-  return await run({
+  return {
     workspaceDir,
     skillDir,
     originPath: path.join(skillDir, ".clawhub", "origin.json"),
     lockPath: path.join(workspaceDir, ".clawhub", "lock.json"),
-  });
+  };
 }
 
 const origin = {
@@ -56,39 +49,13 @@ const origin = {
 };
 
 it("publishes skill origin before a queued authority retirement", async () => {
-  await withTrackingPaths(async ({ workspaceDir, skillDir, originPath }) => {
-    let current = true;
-    let checks = 0;
-    const currentAtPublication = observePublication(originPath, () => current);
+  const { workspaceDir, skillDir, originPath } = trackingPaths();
+  let current = true;
+  let checks = 0;
+  const currentAtPublication = observePublication(originPath, () => current);
 
-    await expect(
-      recordClawHubSkillInstall({
-        workspaceDir,
-        skillDir,
-        origin,
-        beforePersistentApply: () => {
-          if (!current) {
-            throw new Error("Skill write authority retired.");
-          }
-          if (++checks === 1) {
-            queueMicrotask(() => {
-              current = false;
-            });
-          }
-        },
-      }),
-    ).rejects.toThrow("Skill write authority retired.");
-    expect(currentAtPublication).toEqual([true]);
-  });
-});
-
-it("publishes the skill lockfile before a queued authority retirement", async () => {
-  await withTrackingPaths(async ({ workspaceDir, skillDir, originPath, lockPath }) => {
-    let current = true;
-    let retirementQueued = false;
-    const currentAtPublication = observePublication(lockPath, () => current);
-
-    await recordClawHubSkillInstall({
+  await expect(
+    recordClawHubSkillInstall({
       workspaceDir,
       skillDir,
       origin,
@@ -96,15 +63,39 @@ it("publishes the skill lockfile before a queued authority retirement", async ()
         if (!current) {
           throw new Error("Skill write authority retired.");
         }
-        if (fsSync.existsSync(originPath) && !retirementQueued) {
-          retirementQueued = true;
+        if (++checks === 1) {
           queueMicrotask(() => {
             current = false;
           });
         }
       },
-    });
-    expect(retirementQueued).toBe(true);
-    expect(currentAtPublication).toEqual([true]);
+    }),
+  ).rejects.toThrow("Skill write authority retired.");
+  expect(currentAtPublication).toEqual([true]);
+});
+
+it("publishes the skill lockfile before a queued authority retirement", async () => {
+  const { workspaceDir, skillDir, originPath, lockPath } = trackingPaths();
+  let current = true;
+  let retirementQueued = false;
+  const currentAtPublication = observePublication(lockPath, () => current);
+
+  await recordClawHubSkillInstall({
+    workspaceDir,
+    skillDir,
+    origin,
+    beforePersistentApply: () => {
+      if (!current) {
+        throw new Error("Skill write authority retired.");
+      }
+      if (fsSync.existsSync(originPath) && !retirementQueued) {
+        retirementQueued = true;
+        queueMicrotask(() => {
+          current = false;
+        });
+      }
+    },
   });
+  expect(retirementQueued).toBe(true);
+  expect(currentAtPublication).toEqual([true]);
 });

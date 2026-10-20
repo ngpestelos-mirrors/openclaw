@@ -33,21 +33,15 @@ async function makeStore() {
   await store.commit({ uploadId });
   return { databasePath, store, uploadId };
 }
-function installLeaseCount(databasePath: string, uploadId: string) {
-  return (
-    openOpenClawStateDatabase({ path: databasePath })
-      .db.prepare(
-        "SELECT count(*) AS count FROM state_leases WHERE scope = 'skill-upload-install' AND lease_key = ?",
-      )
-      .get(uploadId) as { count: number }
-  ).count;
-}
-function uploadExists(databasePath: string, uploadId: string) {
-  return Boolean(
-    openOpenClawStateDatabase({ path: databasePath })
-      .db.prepare("SELECT 1 FROM skill_uploads WHERE upload_id = ?")
-      .get(uploadId),
-  );
+function uploadState(databasePath: string, uploadId: string) {
+  return openOpenClawStateDatabase({ path: databasePath })
+    .db.prepare(`
+    SELECT
+      (SELECT count(*) FROM state_leases
+       WHERE scope = 'skill-upload-install' AND lease_key = ?) AS leases,
+      EXISTS(SELECT 1 FROM skill_uploads WHERE upload_id = ?) AS present
+  `)
+    .get(uploadId, uploadId);
 }
 
 describe("skill upload installation lifetime", () => {
@@ -86,8 +80,7 @@ describe("skill upload installation lifetime", () => {
       await Promise.allSettled([pinned, closing]);
       sql.restore();
     }
-    expect(installLeaseCount(databasePath, uploadId)).toBe(0);
-    expect(uploadExists(databasePath, uploadId)).toBe(true);
+    expect(uploadState(databasePath, uploadId)).toEqual({ leases: 0, present: 1 });
   });
 
   it.each(["release", "close"] as const)(
@@ -148,12 +141,13 @@ describe("skill upload installation lifetime", () => {
       );
       expect(opened).toBe(1);
       expect(closed).toBe(1);
-      expect(installLeaseCount(databasePath, uploadId)).toBe(failure === "release" ? 1 : 0);
+      expect(uploadState(databasePath, uploadId)).toMatchObject({
+        leases: failure === "release" ? 1 : 0,
+      });
       await closeOpenClawStateDatabaseAsync();
       expect(opened).toBe(failure === "release" ? 2 : 1);
       expect(closed).toBe(2);
-      expect(installLeaseCount(databasePath, uploadId)).toBe(0);
-      expect(uploadExists(databasePath, uploadId)).toBe(true);
+      expect(uploadState(databasePath, uploadId)).toEqual({ leases: 0, present: 1 });
     },
   );
   it("releases the same physical upload store through another locator", async () => {
@@ -164,7 +158,6 @@ describe("skill upload installation lifetime", () => {
     await defaultSkillUploadStore.withCommittedUpload(uploadId, async (record) => {
       expect(await fs.readFile(record.archivePath, "utf8")).toBe("a");
     });
-    expect(installLeaseCount(databasePath, uploadId)).toBe(0);
-    expect(uploadExists(databasePath, uploadId)).toBe(true);
+    expect(uploadState(databasePath, uploadId)).toEqual({ leases: 0, present: 1 });
   });
 });
