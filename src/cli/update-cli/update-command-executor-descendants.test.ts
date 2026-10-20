@@ -41,20 +41,17 @@ it.skipIf(process.platform === "win32").each([false, true])(
     vi.spyOn(leaseOwner, "prepareManagedHandoffLeaseStore").mockImplementation(async (...args) => {
       const store = await prepareStore(...args);
       const observeRelease = (leases: ManagedHandoffLease[], runRelease: () => boolean) => {
-        for (const lease of leases) {
-          if (expectedReleases.has(lease.key)) {
-            assert(descendant !== undefined && candidatePid !== undefined);
-            expect(pidAlive.isPidDefinitelyDead(descendant)).toBe(true);
-            expect(isChildProcessTreeAlive({ pid: candidatePid })).toBe(false);
-            expect(store.current(lease)).toBe(true);
-          }
+        const owned = leases.filter((lease) => expectedReleases.has(lease.key));
+        for (const lease of owned) {
+          assert(descendant !== undefined && candidatePid !== undefined);
+          expect(pidAlive.isPidDefinitelyDead(descendant)).toBe(true);
+          expect(isChildProcessTreeAlive({ pid: candidatePid })).toBe(false);
+          expect(store.current(lease)).toBe(true);
         }
         const confirmed = runRelease();
         if (confirmed) {
-          for (const lease of leases) {
-            if (expectedReleases.has(lease.key)) {
-              released.add(lease.key);
-            }
+          for (const lease of owned) {
+            released.add(lease.key);
           }
         }
         return confirmed;

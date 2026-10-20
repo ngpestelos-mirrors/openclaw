@@ -50,6 +50,18 @@ const restart = vi.fn<typeof import("./update-command-service.js").maybeRestartS
 const verification =
   vi.fn<typeof import("./update-command-verification.js").verifyUpdatedGateway>();
 const convergence = vi.fn<typeof import("./update-command-convergence.js").convergeUpdatePlugins>();
+const serviceVerdict = () => ({
+  kind: "owned" as const,
+  root: packageRoot,
+  fingerprint: "database-rollback-service",
+  refreshDefinition: false,
+});
+function mockActual(module: string, overrides: Record<string, unknown>) {
+  vi.doMock(module, async () => ({
+    ...(await vi.importActual<Record<string, unknown>>(module)),
+    ...overrides,
+  }));
+}
 
 function serviceState() {
   return {
@@ -73,44 +85,26 @@ Object.assign(fixtureRuntime, actualRuntime.defaultRuntime, {
   exit: vi.fn(),
 });
 vi.doMock("../../runtime.js", () => ({ ...actualRuntime, defaultRuntime: fixtureRuntime }));
-vi.doMock("../../daemon/service.js", async () => ({
-  ...(await vi.importActual<typeof import("../../daemon/service.js")>("../../daemon/service.js")),
+mockActual("../../daemon/service.js", {
   readGatewayServiceState: async () => serviceState(),
   resolveGatewayService: () => ({ readRuntime: async () => serviceState().runtime }),
-}));
-vi.doMock("./update-command-service-maintenance.js", async () => ({
-  ...(await vi.importActual<typeof import("./update-command-service-maintenance.js")>(
-    "./update-command-service-maintenance.js",
-  )),
-  revalidateManagedGatewayServiceAfterUpdate: async () => ({
-    kind: "owned",
-    root: packageRoot,
-    fingerprint: "database-rollback-service",
-    refreshDefinition: false,
-  }),
-}));
-vi.doMock("./update-command-service.js", async () => ({
-  ...(await vi.importActual<typeof import("./update-command-service.js")>(
-    "./update-command-service.js",
-  )),
+});
+mockActual("./update-command-service-maintenance.js", {
+  revalidateManagedGatewayServiceAfterUpdate: async () => serviceVerdict(),
+});
+mockActual("./update-command-service.js", {
   maybeRestartService: restart,
   maybeStopManagedServiceBeforeMutableUpdate: mocks.maybeStopService,
   maybeRestartServiceAfterFailedMutableUpdate: mocks.maybeRestartService,
   resolveUpdatedGatewayRestartPort: async () => port,
-}));
-vi.doMock("./update-command-service-plan.js", async () => ({
-  ...(await vi.importActual<typeof import("./update-command-service-plan.js")>(
-    "./update-command-service-plan.js",
-  )),
+});
+mockActual("./update-command-service-plan.js", {
   readManagedGatewayServiceForUpdate: async () => serviceState(),
   resolveUpdatedGatewayRestartPort: async () => port,
-}));
-vi.doMock("./update-command-verification.js", async () => ({
-  ...(await vi.importActual<typeof import("./update-command-verification.js")>(
-    "./update-command-verification.js",
-  )),
+});
+mockActual("./update-command-verification.js", {
   verifyUpdatedGateway: verification,
-}));
+});
 vi.doMock("./update-command-convergence.js", () => ({ convergeUpdatePlugins: convergence }));
 
 const { executeMutableUpdate } = await import("./update-command-execution.js");
@@ -218,23 +212,17 @@ it.each([
   "restores pre-migration databases only before settled activation: %s",
   async (scenario) => {
     const gitInstall = scenario === "git" || scenario === "git-edited";
-    const outsideWrite =
-      scenario === "git-edited" ||
-      scenario === "intervening" ||
-      scenario === "post-migration-write" ||
-      scenario === "schema-neutral-write";
+    const outsideWrite = [
+      "git-edited",
+      "intervening",
+      "post-migration-write",
+      "schema-neutral-write",
+    ].includes(scenario);
     const preservesMigrated = outsideWrite && scenario !== "git-edited";
     const candidateSchemas =
       scenario === "schema-neutral-write" ? { state: 15, agent: 21 } : { state: 18, agent: 23 };
     const migratedVersions = scenario === "schema-neutral-write" ? [15, 21] : [18, 23];
-    const initialFailure =
-      scenario === "package" ||
-      scenario === "exited-writer" ||
-      gitInstall ||
-      scenario === "verification" ||
-      scenario === "serving" ||
-      scenario === "config-refused" ||
-      outsideWrite;
+    const initialFailure = !["convergence", "started", "unsettled"].includes(scenario);
     const restores =
       scenario !== "serving" && !outsideWrite && (initialFailure || scenario === "convergence");
     const base = await fs.realpath(dirs.make("update-database-rollback-"));
@@ -548,12 +536,7 @@ it.each([
         servicePort: port,
         serviceNodeRunner: process.execPath,
         serviceIdentity: { version: "1.0.0" },
-        serviceUpdateVerdict: {
-          kind: "owned",
-          root: packageRoot,
-          fingerprint: "database-rollback-service",
-          refreshDefinition: false,
-        },
+        serviceUpdateVerdict: serviceVerdict(),
       } satisfies PreManagedServiceStop;
     });
     // Synthetic packages omit the source inspection worker; inspect real state with this driver's worker.
@@ -604,10 +587,10 @@ it.each([
           },
         });
         assert(swap.postVerifyStep);
-        expect(swap.postVerifyStep.exitCode, JSON.stringify(swap.postVerifyStep, null, 2)).toBe(
+        expect([swap.postVerifyStep.exitCode, swap.postVerifyStep.advisory]).toEqual([
           initialFailure && scenario !== "verification" ? 1 : 0,
-        );
-        expect(swap.postVerifyStep.advisory).toBeUndefined();
+          undefined,
+        ]);
         return {
           status: initialFailure ? "error" : "ok",
           mode: "npm",
@@ -758,19 +741,14 @@ it.each([
         if (scenario === "git-edited") {
           expect([readDatabase(shared).version, readDatabase(agent).version]).toEqual([18, 23]);
         }
-        expect(execution.result.reason).toBe(
-          outsideWrite
-            ? "state-migrated-no-rollback"
-            : scenario === "package" ||
-                scenario === "exited-writer" ||
-                gitInstall ||
-                scenario === "serving" ||
-                scenario === "config-refused"
+        const expectedReason = outsideWrite
+          ? "state-migrated-no-rollback"
+          : scenario === "verification"
+            ? "runtime-verification-failed"
+            : initialFailure
               ? "doctor-failed"
-              : scenario === "verification"
-                ? "runtime-verification-failed"
-                : undefined,
-        );
+              : undefined;
+        expect(execution.result.reason).toBe(expectedReason);
         const observedStart = vi.fn();
         const finalize = () =>
           finishUpdate(
@@ -953,15 +931,8 @@ it.each([
           return;
         }
         expect(readState()).toEqual(before);
-        expect(
-          finishFailure,
-          finishFailure instanceof Error ? finishFailure.stack : String(finishFailure),
-        ).toBeInstanceOf(UpdateCommandFailure);
-        expect(
-          restart,
-          getUpdateRun(run.runId, { env })?.steps.find((step) => step.step === "package rollback")
-            ?.detail,
-        ).toHaveBeenCalledOnce();
+        expect(finishFailure).toBeInstanceOf(UpdateCommandFailure);
+        expect(restart).toHaveBeenCalledOnce();
         expect(observedStart).toHaveBeenCalledOnce();
         expect(starts).toEqual(["1.0.0", "1.0.0"]);
         if (beforeGitSha) {
