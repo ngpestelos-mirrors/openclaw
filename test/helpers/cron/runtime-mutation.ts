@@ -19,20 +19,7 @@ export function observeCronStoreCommits(storePath: string, observer: () => void)
         observer();
       }
     });
-  const publishSave = cronStore.publishCronStoreSaveRevision;
-  const configPublication = vi
-    .spyOn(cronStore, "publishCronStoreSaveRevision")
-    .mockImplementation((committedStoreKey, observedRevision) => {
-      const revision = publishSave(committedStoreKey, observedRevision);
-      if (committedStoreKey === storeKey) {
-        observer();
-      }
-      return revision;
-    });
-  return () => {
-    configPublication.mockRestore();
-    publication.mockRestore();
-  };
+  return () => publication.mockRestore();
 }
 
 export function loseFirstCronMutationReply(

@@ -1,24 +1,14 @@
-import { beforeEach, describe, expect, it, onTestFinished, vi } from "vitest";
+import { afterAll, beforeAll, beforeEach, describe, expect, it, onTestFinished, vi } from "vitest";
 import {
   clearRuntimeConfigSnapshot,
   setRuntimeConfigSnapshot,
 } from "../../config/runtime-snapshot.js";
-import type { ResolvedExecDefaults } from "../exec-defaults.js";
+import type { OpenClawConfig } from "../../config/types.openclaw.js";
+import { saveExecApprovals } from "../../infra/exec-approvals-store.test-support.js";
+import { createOpenClawTestState } from "../../test-utils/openclaw-test-state.js";
 import { createCronTool } from "./cron-tool.js";
+import type { CronToolOptions } from "./cron-tool.types.js";
 import * as gatewayModule from "./gateway.js";
-
-const FULL_GATEWAY_EXEC: ResolvedExecDefaults = {
-  host: "gateway",
-  effectiveHost: "gateway",
-  mode: "full",
-  security: "full",
-  ask: "off",
-  canRequestNode: true,
-};
-
-function withExecDefaults(overrides: Partial<ResolvedExecDefaults>): ResolvedExecDefaults {
-  return { ...FULL_GATEWAY_EXEC, ...overrides };
-}
 
 function streamJob() {
   return {
@@ -29,35 +19,36 @@ function streamJob() {
 }
 
 function createStreamTool(params: {
-  tools?: Array<
-    | string
-    | {
-        name: string;
-        execOrigin?: "openclaw" | "native";
-        execTarget?: { host: "gateway"; ask?: "always" };
-      }
-  >;
-  execDefaults?: ResolvedExecDefaults;
+  tools?: CronToolOptions["creatorToolAllowlist"];
+  exec?: NonNullable<OpenClawConfig["tools"]>["exec"];
+  sandboxed?: boolean;
 }) {
+  const config = {
+    tools: { exec: { host: "gateway", security: "full", ask: "off", ...params.exec } },
+  } satisfies OpenClawConfig;
+  setRuntimeConfigSnapshot(config);
   const callGatewayTool = vi.fn();
   callGatewayTool.mockResolvedValue({ ok: true });
   const gatewaySpy = vi.spyOn(gatewayModule, "callGatewayTool").mockImplementation(callGatewayTool);
   onTestFinished(() => gatewaySpy.mockRestore());
   return {
     callGatewayTool,
-    tool: createCronTool(
-      { creatorToolAllowlist: params.tools },
-      {
-        prepareExecDefaults: () => ({
-          kind: "resolved",
-          defaults: params.execDefaults ?? FULL_GATEWAY_EXEC,
-        }),
-      },
-    ),
+    tool: createCronTool({
+      creatorToolAllowlist: params.tools,
+      config,
+      sandboxed: params.sandboxed,
+    }),
   };
 }
 
 describe("cron stream creator exec policy", () => {
+  let state: Awaited<ReturnType<typeof createOpenClawTestState>>;
+  beforeAll(async () => {
+    state = await createOpenClawTestState({ label: "cron-stream-exec-policy" });
+    saveExecApprovals({ version: 1, defaults: { security: "full", ask: "off" } });
+  });
+  afterAll(async () => await state.cleanup());
+
   beforeEach(() => {
     setRuntimeConfigSnapshot({});
     onTestFinished(clearRuntimeConfigSnapshot);
@@ -100,7 +91,7 @@ describe("cron stream creator exec policy", () => {
   it("does not forward an ask-always stream as an operator without captured creator authority", async () => {
     const { tool, callGatewayTool } = createStreamTool({
       tools: [{ name: "exec", execOrigin: "openclaw" }],
-      execDefaults: withExecDefaults({ ask: "always" }),
+      exec: { ask: "always" },
     });
 
     await expect(
@@ -110,42 +101,40 @@ describe("cron stream creator exec policy", () => {
   });
 
   it.each([
-    ["exec is absent", ["read"], FULL_GATEWAY_EXEC],
-    [
-      "exec is sandboxed",
-      [{ name: "exec", execOrigin: "openclaw" as const }],
-      withExecDefaults({ host: "auto", effectiveHost: "sandbox", ask: "always" }),
-    ],
-    [
-      "exec is allowlisted",
-      [{ name: "exec", execOrigin: "openclaw" as const }],
-      withExecDefaults({ mode: "allowlist", security: "allowlist" }),
-    ],
-    [
-      "a captured Gateway pin cannot override sandbox placement",
-      [
-        {
-          name: "exec",
-          execOrigin: "openclaw" as const,
-          execTarget: { host: "gateway" as const },
-        },
-      ],
-      withExecDefaults({ host: "auto", effectiveHost: "sandbox" }),
-    ],
-    [
-      "exec is an unpinned native shell even when OpenClaw defaults resolve Gateway",
-      [{ name: "exec", execOrigin: "native" as const }],
-      FULL_GATEWAY_EXEC,
-    ],
-    ["legacy exec has no captured runtime origin", ["exec"], FULL_GATEWAY_EXEC],
-  ])("rejects creation when %s", async (_label, tools, execDefaults) => {
-    const { tool, callGatewayTool } = createStreamTool({ tools, execDefaults });
+    { label: "exec is absent", tools: ["read"] },
+    {
+      label: "exec is sandboxed",
+      tools: [{ name: "exec", execOrigin: "openclaw" }],
+      exec: { host: "auto", ask: "always" },
+      sandboxed: true,
+    },
+    {
+      label: "exec is allowlisted",
+      tools: [{ name: "exec", execOrigin: "openclaw" }],
+      exec: { mode: "allowlist" },
+    },
+    {
+      label: "a captured Gateway pin cannot override sandbox placement",
+      tools: [{ name: "exec", execOrigin: "openclaw", execTarget: { host: "gateway" } }],
+      exec: { host: "auto" },
+      sandboxed: true,
+    },
+    {
+      label: "exec is an unpinned native shell even when OpenClaw defaults resolve Gateway",
+      tools: [{ name: "exec", execOrigin: "native" }],
+    },
+    { label: "legacy exec has no captured runtime origin", tools: ["exec"] },
+  ] satisfies (Parameters<typeof createStreamTool>[0] & { label: string })[])(
+    "rejects creation when $label",
+    async (params) => {
+      const { tool, callGatewayTool } = createStreamTool(params);
 
-    await expect(
-      tool.execute("stream-add-denied", { action: "add", job: streamJob() }),
-    ).rejects.toThrow("Gateway exec authority");
-    expect(callGatewayTool).not.toHaveBeenCalled();
-  });
+      await expect(
+        tool.execute("stream-add-denied", { action: "add", job: streamJob() }),
+      ).rejects.toThrow("Gateway exec authority");
+      expect(callGatewayTool).not.toHaveBeenCalled();
+    },
+  );
 
   it("rechecks stream command edits while leaving disablement alone", async () => {
     const { tool, callGatewayTool } = createStreamTool({ tools: ["read"] });

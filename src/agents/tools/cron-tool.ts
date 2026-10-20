@@ -71,7 +71,6 @@ import {
 import type {
   CronCreatorToolAllowlistEntry,
   CronCreatorToolAuthoritySnapshot,
-  CronToolDeps,
   CronToolOptions,
 } from "./cron-tool.types.js";
 import {
@@ -131,7 +130,7 @@ function isOlderGatewayRejectingParam(error: unknown, method: string, param: str
   );
 }
 
-export function createCronTool(opts?: CronToolOptions, deps?: CronToolDeps): AnyAgentTool {
+export function createCronTool(opts?: CronToolOptions): AnyAgentTool {
   const assertStreamConfigCurrent = captureCronStreamPolicyConfigCurrentness(opts);
   const managementAuthority = bindCronManagementGrant(opts?.runId);
   const requesterAuthority = bindCronRequesterGrant(opts?.runId);
@@ -262,7 +261,6 @@ export function createCronTool(opts?: CronToolOptions, deps?: CronToolDeps): Any
             opts,
             creatorTools,
             operationSignal,
-            prepareExecDefaults: deps?.prepareExecDefaults,
             assertConfigCurrent: assertStreamConfigCurrent,
           });
           streamExecPolicy.onApprovalCommitted = (receipt) => {

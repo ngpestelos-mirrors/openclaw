@@ -124,7 +124,6 @@ export async function prepareCronStreamExecPolicy(input: {
   opts: CronToolOptions | undefined;
   creatorTools: readonly CronCreatorToolAllowlistEntry[] | undefined;
   operationSignal?: AbortSignal;
-  prepareExecDefaults?: typeof prepareExecDefaults;
   assertConfigCurrent: () => void;
 }): Promise<CronStreamExecPolicy> {
   const { opts, creatorTools, operationSignal } = input;
@@ -150,7 +149,7 @@ export async function prepareCronStreamExecPolicy(input: {
       assertCurrent: assertCurrentSource,
     },
     async (sandbox): Promise<CronStreamExecPolicy> => {
-      const preparation = (input.prepareExecDefaults ?? prepareExecDefaults)(params, sandbox);
+      const preparation = prepareExecDefaults(params, sandbox);
       const creatorToolAllowlist = creatorTools ? structuredClone(creatorTools) : undefined;
       const defaults = await resolvePreparedExecDefaultsAsync(
         preparation,

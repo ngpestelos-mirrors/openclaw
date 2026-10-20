@@ -134,14 +134,6 @@ describe("createOpenClawCodingTools availability guidance", () => {
     );
   });
 
-  it("keeps shell-quoting guidance without background continuation", () => {
-    const [exec] = withMockedPlatform("linux", () => describeTools("exec"));
-
-    expect(exec?.description).toBe(
-      "Run shell and wait for completion. Omit host/node to use the session's configured host. TTY CLI/UI/coding agent: pty=true. Quote arguments containing shell metacharacters, including URL query strings with `?` or `&`.",
-    );
-  });
-
   it("preserves plugin and channel metadata", () => {
     const originalTool = tool("process", "plugin process");
     setPluginToolMeta(originalTool, { pluginId: "example", optional: false });

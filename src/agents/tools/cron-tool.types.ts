@@ -3,11 +3,7 @@ import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import type { CronRuntimeAuthority } from "../../cron/runtime-authority.js";
 import type { CronCreatorAuthorityGrant } from "../../gateway/cron-creator-authority-grant.types.js";
 import type { DeliveryContext } from "../../utils/delivery-context.shared.js";
-import type {
-  ExecPolicyOverrides,
-  ExecSessionDefaults,
-  prepareExecDefaults,
-} from "../exec-defaults.js";
+import type { ExecPolicyOverrides, ExecSessionDefaults } from "../exec-defaults.js";
 import type { callGatewayTool } from "./gateway.js";
 
 export type CronCreatorToolAllowlistEntry =
@@ -87,10 +83,6 @@ export type CronToolOptions = {
 };
 
 export type GatewayToolCaller = typeof callGatewayTool;
-
-export type CronToolDeps = {
-  prepareExecDefaults?: typeof prepareExecDefaults;
-};
 
 export type ChatMessage = {
   role?: unknown;
