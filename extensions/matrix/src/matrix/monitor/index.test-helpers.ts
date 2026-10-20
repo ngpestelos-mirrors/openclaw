@@ -302,9 +302,7 @@ vi.mock("../config-update.js", () => ({
 }));
 
 vi.mock("../device-health.js", () => ({
-  summarizeMatrixDeviceHealth: vi.fn(() => ({
-    staleOpenClawDevices: [],
-  })),
+  listStaleOpenClawMatrixDevices: vi.fn(() => []),
 }));
 
 vi.mock("../profile.js", () => ({
