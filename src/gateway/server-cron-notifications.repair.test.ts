@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { createDeferred } from "../../test/helpers/promise.js";
 
 const mocks = vi.hoisted(() => ({
@@ -18,7 +18,6 @@ vi.mock("./agent-turn/agent-job.js", async (importOriginal) => ({
   waitForAgentJob: mocks.waitForAgentJob,
 }));
 
-import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { resetGatewayWorkAdmission } from "../process/gateway-work-admission.js";
 import { createGatewayCronFailureRepair } from "./server-cron-notifications.js";
 
@@ -30,7 +29,7 @@ async function runRepairAndCaptureBudget(opts: { elapsed: number; wall: number }
   const dispatch = createDeferred();
   mocks.dispatchGatewayLifecycleMethod.mockReturnValue(dispatch.promise);
 
-  const repair = createGatewayCronFailureRepair({} as OpenClawConfig, undefined);
+  const repair = createGatewayCronFailureRepair({}, undefined);
   const runPromise = repair.runCronFailureRepair({
     jobId: "job-1",
     repairId: "repair-1",
@@ -53,34 +52,31 @@ async function runRepairAndCaptureBudget(opts: { elapsed: number; wall: number }
   return mocks.waitForAgentJob.mock.calls[0]?.[0]?.timeoutMs;
 }
 
-describe("runGatewayCronFailureRepair deadline", () => {
-  beforeEach(() => {
-    resetGatewayWorkAdmission();
-    vi.clearAllMocks();
-    mocks.dispatchGatewayLifecycleMethod.mockResolvedValue(undefined);
-    mocks.waitForAgentJob.mockResolvedValue({ status: "ok" } as never);
-  });
+beforeEach(() => {
+  resetGatewayWorkAdmission();
+  vi.clearAllMocks();
+  mocks.waitForAgentJob.mockResolvedValue({ status: "ok" } as never);
+});
 
-  afterEach(() => {
-    vi.restoreAllMocks();
-    vi.useRealTimers();
-    resetGatewayWorkAdmission();
-  });
+afterEach(() => {
+  vi.restoreAllMocks();
+  vi.useRealTimers();
+  resetGatewayWorkAdmission();
+});
 
-  it.each([
-    {
-      name: "does not inflate the remaining budget when the wall clock rolls back",
-      elapsed: 10,
-      wall: 1_699_995_000_000,
-    },
-    {
-      name: "does not collapse a healthy repair when the wall clock jumps forward",
-      elapsed: 5,
-      wall: 1_700_060_000_000,
-    },
-  ])("$name", async ({ elapsed, wall }) => {
-    const budget = await runRepairAndCaptureBudget({ elapsed, wall });
-    expect(budget).toBe(30_000 - elapsed);
-    expect(budget).toBeGreaterThan(0);
-  });
+it.each([
+  {
+    name: "does not inflate the remaining budget when the wall clock rolls back",
+    elapsed: 10,
+    wall: 1_699_995_000_000,
+  },
+  {
+    name: "does not collapse a healthy repair when the wall clock jumps forward",
+    elapsed: 5,
+    wall: 1_700_060_000_000,
+  },
+])("$name", async ({ elapsed, wall }) => {
+  const budget = await runRepairAndCaptureBudget({ elapsed, wall });
+  expect(budget).toBe(30_000 - elapsed);
+  expect(budget).toBeGreaterThan(0);
 });
