@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import { parse } from "yaml";
 
 type Manifest = Record<string, unknown>;
+const gatewayPort = { name: "gateway", port: 18789, protocol: "TCP", targetPort: 18789 };
 
 function readManifest(name: string): Manifest {
   return assertRecord(parse(readFileSync(`scripts/k8s/manifests/${name}`, "utf8")), name);
@@ -15,13 +16,9 @@ function assertRecord(value: unknown, label: string): Record<string, unknown> {
   return value as Record<string, unknown>;
 }
 
-function asRecords(value: unknown, label: string): Record<string, unknown>[] {
-  expect(Array.isArray(value), label).toBe(true);
-  return value as Record<string, unknown>[];
-}
-
-function findNamed(records: Record<string, unknown>[], name: string): Record<string, unknown> {
-  const record = records.find((entry) => entry.name === name);
+function findNamed(value: unknown, name: string): Record<string, unknown> {
+  expect(Array.isArray(value), name).toBe(true);
+  const record = (value as Record<string, unknown>[]).find((entry) => entry.name === name);
   expect(record, name).toBeDefined();
   return record as Record<string, unknown>;
 }
@@ -51,17 +48,7 @@ describe("k8s manifests", () => {
     });
     expect(deployment).toHaveProperty("spec.selector.matchLabels", { app: "openclaw" });
     expect(service).toHaveProperty("spec.selector", { app: "openclaw" });
-    expect(service).toHaveProperty(
-      "spec.ports",
-      expect.arrayContaining([
-        {
-          name: "gateway",
-          port: 18789,
-          protocol: "TCP",
-          targetPort: 18789,
-        },
-      ]),
-    );
+    expect(service).toHaveProperty("spec.ports", expect.arrayContaining([gatewayPort]));
   });
 
   it("keeps deployment mounts, secrets, and security posture deployable", () => {
@@ -69,10 +56,7 @@ describe("k8s manifests", () => {
     const spec = assertRecord(deployment.spec, "deployment spec");
     const template = assertRecord(spec.template, "deployment template");
     const podSpec = assertRecord(template.spec, "pod spec");
-    const containers = asRecords(podSpec.containers, "containers");
-    const gateway = findNamed(containers, "gateway");
-    const env = asRecords(gateway.env, "gateway env");
-    const volumes = asRecords(podSpec.volumes, "pod volumes");
+    const gateway = findNamed(podSpec.containers, "gateway");
     expect(gateway).toMatchObject({
       command: ["node", "/app/dist/index.js", "gateway", "run"],
       securityContext: {
@@ -81,22 +65,25 @@ describe("k8s manifests", () => {
         runAsNonRoot: true,
       },
     });
-    expect(findNamed(env, "HOME")).toMatchObject({ value: "/home/node" });
-    expect(findNamed(env, "OPENCLAW_CONFIG_DIR")).toMatchObject({ value: "/home/node/.openclaw" });
-    const mounts = asRecords(gateway.volumeMounts, "gateway volume mounts");
-    const homeMount = findNamed(mounts, "openclaw-home");
+    expect(findNamed(gateway.env, "HOME")).toMatchObject({ value: "/home/node" });
+    expect(findNamed(gateway.env, "OPENCLAW_CONFIG_DIR")).toMatchObject({
+      value: "/home/node/.openclaw",
+    });
+    const homeMount = findNamed(gateway.volumeMounts, "openclaw-home");
     expect(homeMount).toMatchObject({ mountPath: "/home/node/.openclaw" });
     expect(homeMount.readOnly).not.toBe(true);
-    expect(findNamed(env, "XDG_CACHE_HOME")).toMatchObject({
+    expect(findNamed(gateway.env, "XDG_CACHE_HOME")).toMatchObject({
       value: "/home/node/.openclaw/.cache",
     });
-    expect(findNamed(env, "OPENCLAW_GATEWAY_TOKEN")).toMatchObject({
+    expect(findNamed(gateway.env, "OPENCLAW_GATEWAY_TOKEN")).toMatchObject({
       valueFrom: { secretKeyRef: { key: "OPENCLAW_GATEWAY_TOKEN", name: "openclaw-secrets" } },
     });
-    expect(findNamed(volumes, "openclaw-home")).toMatchObject({
+    expect(findNamed(podSpec.volumes, "openclaw-home")).toMatchObject({
       persistentVolumeClaim: { claimName: "openclaw-home-pvc" },
     });
-    expect(findNamed(volumes, "config")).toMatchObject({ configMap: { name: "openclaw-config" } });
+    expect(findNamed(podSpec.volumes, "config")).toMatchObject({
+      configMap: { name: "openclaw-config" },
+    });
   });
 
   it("keeps config and persistence manifests aligned with the gateway", () => {

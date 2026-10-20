@@ -3,7 +3,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { afterEach, expect, it } from "vitest";
-import { hasErrnoCode } from "../../src/infra/errno.js";
+import { killPidIfAlive } from "../../src/test-utils/process-tree.js";
 import { createFixtureLifetime } from "../helpers/fixture-lifetime.js";
 import { isProcessAlive, waitForDead } from "../helpers/process-wait.js";
 import { awaitGateBeforeSettlement, createDeferred, withinTest } from "../helpers/promise.js";
@@ -14,48 +14,40 @@ afterEach(() => fixture.cleanup());
 
 it.skipIf(process.platform === "win32")(
   "joins an implementation-owned shim and synchronous preparation on outer SIGINT",
-  async ({ signal }) => {
-    await fixture.run(async () => {
+  ({ signal }) =>
+    fixture.run(async () => {
       const cwd = fixture.createTempDir("managed-preparation-cancellation-");
-      const supervisorPath = path.join(cwd, "supervisor.mjs");
-      const shimPath = path.join(cwd, "shim.mjs");
-      const implementationPath = path.join(cwd, "implementation.mjs");
-      const preparationPath = path.join(cwd, "preparation.mjs");
+      const file = (role: string, extension = "mjs") => path.join(cwd, `${role}.${extension}`);
+      const supervisorPath = file("supervisor");
       const reportPath = path.join(cwd, "result.json");
-      const pidPaths = ["shim", "implementation", "preparation"].map((role) =>
-        path.join(cwd, `${role}.pid`),
-      );
+      const pidPaths = ["shim", "implementation", "preparation"].map((role) => file(role, "pid"));
       const ready = createDeferred();
-
-      fs.writeFileSync(
-        preparationPath,
-        `import fs from "node:fs";
-for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"]) process.on(signal, () => {});
-fs.writeFileSync(${JSON.stringify(pidPaths[2])}, String(process.pid));
-fs.writeSync(1, "preparation-ready\\n");
+      const programs = {
+        preparation: `fs.writeSync(1, "preparation-ready\\n");
 Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0);
 `,
-      );
-      fs.writeFileSync(
-        implementationPath,
-        `import { spawnSync } from "node:child_process";
-import fs from "node:fs";
-for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"]) process.on(signal, () => {});
-fs.writeFileSync(${JSON.stringify(pidPaths[1])}, String(process.pid));
-spawnSync(process.execPath, [${JSON.stringify(preparationPath)}], { stdio: "inherit" });
+        implementation: `import { spawnSync } from "node:child_process";
+spawnSync(process.execPath, [${JSON.stringify(file("preparation"))}], { stdio: "inherit" });
 `,
-      );
-      fs.writeFileSync(
-        shimPath,
-        `import fs from "node:fs";
-import { runNodeCliShim } from ${JSON.stringify(pathToFileURL(path.resolve("scripts/lib/tsx-cli-shim.mjs")).href)};
-fs.writeFileSync(${JSON.stringify(pidPaths[0])}, String(process.pid));
+        shim: `import { runNodeCliShim } from ${JSON.stringify(pathToFileURL(path.resolve("scripts/lib/tsx-cli-shim.mjs")).href)};
 await runNodeCliShim(import.meta.url, {
   implementation: "./implementation.mjs",
   terminationOwner: "implementation",
 });
 `,
-      );
+      };
+      for (const [role, body] of Object.entries(programs)) {
+        const handlers =
+          role === "shim"
+            ? ""
+            : 'for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"]) process.on(signal, () => {});\n';
+        fs.writeFileSync(
+          file(role),
+          `import fs from "node:fs";
+${handlers}fs.writeFileSync(${JSON.stringify(file(role, "pid"))}, String(process.pid));
+${body}`,
+        );
+      }
       fs.writeFileSync(
         supervisorPath,
         `import fs from "node:fs";
@@ -64,7 +56,7 @@ let report;
 try {
   report = { status: await runManagedCommand({
     bin: process.execPath,
-    args: [${JSON.stringify(shimPath)}],
+    args: [${JSON.stringify(file("shim"))}],
     stdio: "inherit",
     // The enclosing fixture independently joins exact PIDs even on baseline failure.
     env: { ...process.env, TMPDIR: ${JSON.stringify(process.cwd())}, TMP: ${JSON.stringify(process.cwd())}, TEMP: ${JSON.stringify(process.cwd())} },
@@ -127,22 +119,17 @@ process.exitCode = report.status ?? 1;
           // The baseline can lose its shim while its detached implementation survives.
           const cleanupSignal = AbortSignal.timeout(5_000);
           const failures: unknown[] = [];
-          const stop = async (pid: number) => {
+          const collectFailure = async (work: () => void | Promise<void>) => {
             try {
-              if (isProcessAlive(pid)) {
-                process.kill(pid, "SIGKILL");
-              }
-            } catch (error) {
-              if (!hasErrnoCode(error, "ESRCH")) {
-                failures.push(error);
-              }
-            }
-            try {
-              // Test cancellation must not prevent independent fallback cleanup.
-              await waitForDead(pid, cleanupSignal);
+              await work();
             } catch (error) {
               failures.push(error);
             }
+          };
+          const stop = async (pid: number) => {
+            await collectFailure(() => killPidIfAlive(pid));
+            // Test cancellation must not prevent independent fallback cleanup.
+            await collectFailure(() => waitForDead(pid, cleanupSignal));
           };
           if (supervisor?.pid) {
             await stop(supervisor.pid);
@@ -158,6 +145,5 @@ process.exitCode = report.status ?? 1;
           }
         });
       }
-    });
-  },
+    }),
 );

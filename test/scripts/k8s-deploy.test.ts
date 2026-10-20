@@ -1,7 +1,7 @@
 import { spawnSync } from "node:child_process";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, expect, it } from "vitest";
 import { useAutoCleanupTempDirTracker } from "../helpers/temp-dir.js";
 
 const tempDirs = useAutoCleanupTempDirTracker(afterEach);
@@ -51,43 +51,34 @@ esac
   };
 }
 
-describe("scripts/k8s/deploy.sh", () => {
-  it("keeps a custom namespace and unrelated workloads when the legacy delete mode is used", () => {
-    const { calls, output, result } = runWithStubbedKubectl("--delete", "my-namespace");
-
-    expect(result.status, output).toBe(0);
-    expect(output).toContain("Deleting OpenClaw resources from namespace 'my-namespace'");
+it.each([
+  ["--delete", "my-namespace", 0],
+  ["--delete-resources", "restricted-namespace", 17],
+  ["--delete-namespace", "shared-namespace", 0],
+] satisfies [string, string, number][])(
+  "k8s teardown %s in %s (status %s)",
+  (mode, namespace, status) => {
+    const { calls, output, result } = runWithStubbedKubectl(mode, namespace, status);
+    const wholeNamespace = mode === "--delete-namespace";
+    expect(result.status, output).toBe(status);
+    expect(output).toContain(
+      wholeNamespace
+        ? `Deleting namespace '${namespace}' and all resources`
+        : `Deleting OpenClaw resources from namespace '${namespace}'`,
+    );
     expect(calls).toEqual([
       "cluster-info",
-      `delete -k ${path.resolve("scripts/k8s/manifests")} -n my-namespace --ignore-not-found`,
-      "delete secret openclaw-secrets -n my-namespace --ignore-not-found",
+      ...(wholeNamespace
+        ? [`delete namespace ${namespace} --ignore-not-found`]
+        : [
+            `delete -k ${path.resolve("scripts/k8s/manifests")} -n ${namespace} --ignore-not-found`,
+            ...(status
+              ? []
+              : [`delete secret openclaw-secrets -n ${namespace} --ignore-not-found`]),
+          ]),
     ]);
-  });
-
-  it("surfaces resource delete failures instead of reporting teardown success", () => {
-    const { calls, output, result } = runWithStubbedKubectl(
-      "--delete-resources",
-      "restricted-namespace",
-      17,
-    );
-
-    expect(result.status, output).toBe(17);
-    expect(output).toContain("Deleting OpenClaw resources from namespace 'restricted-namespace'");
-    expect(calls).toEqual([
-      "cluster-info",
-      `delete -k ${path.resolve("scripts/k8s/manifests")} -n restricted-namespace --ignore-not-found`,
-    ]);
-    expect(output).not.toContain("Done.");
-  });
-
-  it("deletes the namespace only when the explicit namespace teardown mode is selected", () => {
-    const { calls, output, result } = runWithStubbedKubectl(
-      "--delete-namespace",
-      "shared-namespace",
-    );
-
-    expect(result.status, output).toBe(0);
-    expect(output).toContain("Deleting namespace 'shared-namespace' and all resources");
-    expect(calls).toEqual(["cluster-info", "delete namespace shared-namespace --ignore-not-found"]);
-  });
-});
+    if (status) {
+      expect(output).not.toContain("Done.");
+    }
+  },
+);

@@ -11,24 +11,18 @@ function runCli(...args: string[]) {
   });
 }
 
-function runSummary(report: unknown, extraArgs: string[] = []) {
+function runSummary(report: unknown) {
   const root = mkdtempSync(join(tmpdir(), "openclaw-kova-summary-"));
   const reportPath = join(root, "report.json");
   const outputPath = join(root, "summary.md");
   writeFileSync(reportPath, `${JSON.stringify(report, null, 2)}\n`, "utf8");
-  const result = runCli("--report", reportPath, "--output", outputPath, ...extraArgs);
+  const result = runCli("--report", reportPath, "--output", outputPath);
   let output = "";
   try {
     output = readFileSync(outputPath, "utf8");
   } catch {}
   rmSync(root, { force: true, recursive: true });
   return { output, result };
-}
-
-function rejectsReport(report: unknown, message: string, args: string[] = [], status = 1) {
-  const { result } = runSummary(report, args);
-  expect(result.status).toBe(status);
-  expect(result.stderr).toContain(message);
 }
 
 function metric(
@@ -67,24 +61,31 @@ describe("scripts/kova-ci-summary", () => {
     expect(result.stderr).toContain("error: --report requires a value");
   });
 
-  it("rejects empty Kova reports instead of rendering unknown summaries", () => {
-    rejectsReport({}, "invalid Kova report: missing summary.statuses");
-    rejectsReport(
-      { summary: { statuses: { pass: 1 } } },
-      "invalid Kova report: missing records or performance groups",
-    );
+  it.each([
+    ["summary.statuses", {}],
+    ["records or performance groups", { summary: { statuses: { pass: 1 } } }],
+    ["sampled RSS metric in performance groups", metricReport("PASS", healthMetrics)],
+    [
+      "sampled CPU metric in performance groups",
+      metricReport("PASS", {
+        resourcePeakGatewayRssMb: metric("Gateway RSS", "MB", 256),
+      }),
+    ],
+  ] satisfies [string, unknown][])("rejects reports missing %s", (missing, report) => {
+    const { result } = runSummary(report);
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain(`invalid Kova report: missing ${missing}`);
   });
 
   it("rejects unknown flags instead of silently dropping report metadata", () => {
-    rejectsReport(
-      {
-        records: [{ scenario: "gateway", state: "clean", status: "pass" }],
-        summary: { statuses: { pass: 1 } },
-      },
-      "unknown argument: --report-urlz",
-      ["--report-urlz", "https://example.test/report"],
-      2,
+    const result = runCli(
+      "--report",
+      "unused.json",
+      "--report-urlz",
+      "https://example.test/report",
     );
+    expect(result.status).toBe(2);
+    expect(result.stderr).toContain("unknown argument: --report-urlz");
   });
 
   it("renders blocked reports without resource metrics", () => {
@@ -93,22 +94,6 @@ describe("scripts/kova-ci-summary", () => {
     expect(result.status).toBe(0);
     expect(output).toContain("| gateway | clean | Health ready | 20 ms | 30 ms | 30 ms |");
     expect(output).toContain("| gateway | clean | BLOCKED |");
-  });
-
-  it("rejects successful reports without resource metrics", () => {
-    rejectsReport(
-      metricReport("PASS", healthMetrics),
-      "invalid Kova report: missing sampled RSS metric in performance groups",
-    );
-  });
-
-  it("rejects successful reports without CPU metrics", () => {
-    rejectsReport(
-      metricReport("PASS", {
-        resourcePeakGatewayRssMb: metric("Gateway RSS", "MB", 256),
-      }),
-      "invalid Kova report: missing sampled CPU metric in performance groups",
-    );
   });
 
   it("omits key metric rows with invalid sample counts", () => {
