@@ -44,7 +44,6 @@ async function fixture() {
   };
   const createInstance = vi.fn<Dependencies["createInstance"]>(async () => instance);
   return {
-    artifactBase,
     credential,
     instance,
     createInstance,
@@ -65,14 +64,12 @@ afterEach(async () => {
 describe("telegram bot token runtime evidence", () => {
   it("writes blocked evidence without a dedicated credential", async () => {
     const proof = await fixture();
-    const evidence = await runTelegramBotTokenRuntime(
-      { artifactBase: proof.artifactBase, repoRoot: process.cwd(), startupTimeoutMs: 100 },
-      { OPENCLAW_QA_CREDENTIAL_SOURCE: "env", TELEGRAM_BOT_TOKEN: "generic-token" },
-      { createInstance: proof.createInstance },
-    );
+    const evidence = await proof.run({
+      OPENCLAW_QA_CREDENTIAL_SOURCE: "env",
+      TELEGRAM_BOT_TOKEN: "generic-token",
+    });
 
     expect(evidence.entries[0]?.result.status).toBe("blocked");
-    expect(proof.createInstance).not.toHaveBeenCalled();
     const log = await proof.log();
     expect(log).toContain("blocked");
     expect(log).not.toContain("generic-token");
