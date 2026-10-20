@@ -11,6 +11,20 @@ function read(item: JsonObject, method = "rawResponseItem/completed") {
 const completions = (item: JsonObject) => read(item).completions;
 const deliveredPaths = (item: JsonObject, method = "rawResponseItem/completed") =>
   read(item, method).receipts.map((receipt) => receipt.agentPath);
+function waitItem(fields: JsonObject = {}): JsonObject {
+  return {
+    type: "collabAgentToolCall",
+    tool: "wait",
+    status: "completed",
+    senderThreadId: "parent-thread",
+    receiverThreadIds: ["child-thread"],
+    agentsStates: {
+      "child-thread": { status: "completed", message: "child result" },
+      "unselected-child": { status: "completed", message: "unrelated result" },
+    },
+    ...fields,
+  };
+}
 type ContextualNotificationItem = {
   type: string;
   role: string;
@@ -102,40 +116,21 @@ describe("Codex native subagent notifications", () => {
     { kind: "spawn status", fields: { tool: "spawnAgent" } },
     { kind: "other sender", fields: { senderThreadId: "other-parent" } },
   ])("recognizes only returned native wait results: $kind", ({ fields }) => {
-    expect(
-      deliveredPaths(
-        {
-          type: "collabAgentToolCall",
-          tool: "wait",
-          status: "completed",
-          senderThreadId: "parent-thread",
-          receiverThreadIds: ["child-thread"],
-          agentsStates: {
-            "child-thread": { status: "completed", message: "child result" },
-            "unselected-child": { status: "completed", message: "unrelated result" },
-          },
-          ...fields,
-        },
-        "item/completed",
-      ),
-    ).toEqual([]);
+    expect(deliveredPaths(waitItem(fields), "item/completed")).toEqual([]);
   });
 
   it("records every terminal result in a mixed native wait response", () => {
     expect(
       deliveredPaths(
-        {
-          type: "collabAgentToolCall",
-          tool: "wait",
+        waitItem({
           status: "failed",
-          senderThreadId: "parent-thread",
           receiverThreadIds: ["succeeded-child", "failed-child", "running-child"],
           agentsStates: {
             "succeeded-child": { status: "completed", message: "done" },
             "failed-child": { status: "errored", message: "error" },
             "running-child": { status: "running", message: null },
           },
-        },
+        }),
         "item/completed",
       ),
     ).toEqual(["succeeded-child", "failed-child"]);
@@ -157,39 +152,24 @@ describe("Codex native subagent notifications", () => {
     ).toEqual(["/root/worker"]);
   });
 
-  it.each(["  "])("preserves completed-without-final for %j", (completed) => {
-    expect(completions(contextualNotificationItem({ completed }))).toEqual([
-      {
-        agentPath: "child-thread",
-        status: "succeeded",
-        statusLabel: "completed_without_final_message",
-        result: "Subagent completed without a final assistant message.",
-      },
-    ]);
-  });
-
   it.each([
-    { nativeStatus: "shutdown", status: "cancelled" },
-    { nativeStatus: "not_found", status: "failed" },
-  ])("reads the native terminal unit status $nativeStatus", ({ nativeStatus, status }) => {
+    [
+      { completed: "  " },
+      "succeeded",
+      "completed_without_final_message",
+      "Subagent completed without a final assistant message.",
+    ],
+    ["shutdown", "cancelled", "shutdown", "(no output)"],
+    ["not_found", "failed", "not_found", "(no output)"],
+    [{ errored: "tool failed" }, "failed", "errored", "tool failed"],
+  ] as const)("reads native terminal status %j", (nativeStatus, status, statusLabel, result) => {
     expect(completions(contextualNotificationItem(nativeStatus))).toEqual([
-      { agentPath: "child-thread", status, statusLabel: nativeStatus, result: "(no output)" },
+      { agentPath: "child-thread", status, statusLabel, result },
     ]);
   });
 
   it.each(["running"])("leaves native %s status unresolved", (nativeStatus) => {
     expect(completions(contextualNotificationItem(nativeStatus))).toEqual([]);
-  });
-
-  it("reads native errors from a classified completion", () => {
-    expect(completions(contextualNotificationItem({ errored: "tool failed" }))).toEqual([
-      {
-        agentPath: "child-thread",
-        status: "failed",
-        statusLabel: "errored",
-        result: "tool failed",
-      },
-    ]);
   });
 
   it("ignores malformed classified completion payloads", () => {

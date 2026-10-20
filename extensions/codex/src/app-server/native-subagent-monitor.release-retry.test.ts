@@ -84,36 +84,40 @@ async function createTerminalChild(
     }),
   );
   await vi.advanceTimersByTimeAsync(0);
-  return { client, parent, unsubscribeChild };
+  return {
+    client,
+    parent,
+    unsubscribeChild,
+    advance: async (ms: number, attempts: number) => {
+      await vi.advanceTimersByTimeAsync(ms);
+      expect(unsubscribeChild).toHaveBeenCalledTimes(attempts);
+    },
+  };
 }
 
 it("retries failed terminal release until recovery, then stops", async () => {
-  const { client, unsubscribeChild } = await createTerminalChild({ childFailures: 3 });
+  const { client, unsubscribeChild, advance } = await createTerminalChild({ childFailures: 3 });
   expect(unsubscribeChild).toHaveBeenCalledTimes(1);
   for (let attempts = 1; attempts <= 3; attempts += 1) {
     expect(isCodexAppServerLiveThreadClaimed(client.client, "child-thread")).toBe(true);
-    await vi.advanceTimersByTimeAsync(29_999);
-    expect(unsubscribeChild).toHaveBeenCalledTimes(attempts);
-    await vi.advanceTimersByTimeAsync(1);
-    expect(unsubscribeChild).toHaveBeenCalledTimes(attempts + 1);
+    await advance(29_999, attempts);
+    await advance(1, attempts + 1);
   }
   expect(hasCodexAppServerLiveThread(client.client, "child-thread")).toBe(false);
-  await vi.advanceTimersByTimeAsync(90_000);
-  expect(unsubscribeChild).toHaveBeenCalledTimes(4);
+  await advance(90_000, 4);
 });
 
 it.each([true, false])(
   "does not retry successful terminal cleanup (eviction fails: %s)",
   async (evictionFails) => {
-    const { client, unsubscribeChild } = await createTerminalChild({
+    const { client, advance } = await createTerminalChild({
       childFailures: 0,
       evictionFails,
     });
     expect(isCodexAppServerLiveThreadClaimed(client.client, "child-thread")).toBe(false);
     // Successful retention preserves the warm subscription; fallback release removes it.
     expect(hasCodexAppServerLiveThread(client.client, "child-thread")).toBe(!evictionFails);
-    await vi.advanceTimersByTimeAsync(90_000);
-    expect(unsubscribeChild).toHaveBeenCalledTimes(evictionFails ? 1 : 0);
+    await advance(90_000, evictionFails ? 1 : 0);
   },
 );
 
@@ -136,14 +140,13 @@ it.each(["thread/closed", "connection-close"] as const)(
 it.each([false, true])(
   "does not release an admitted follow-up (protected retry: %s)",
   async (protectedRetry) => {
-    const { client, parent, unsubscribeChild } = await createTerminalChild();
+    const { client, parent, unsubscribeChild, advance } = await createTerminalChild();
     const releaseProtection = protectedRetry
       ? protectCodexAppServerLiveThread(client.client, "child-thread")
       : undefined;
     if (protectedRetry) {
       // Submission custody protects a child before its follow-up is admitted.
-      await vi.advanceTimersByTimeAsync(30_000);
-      expect(unsubscribeChild).toHaveBeenCalledTimes(1);
+      await advance(30_000, 1);
     }
     parent.bindTurn("parent-turn-b");
     client.setThreadRead("child-thread", threadRead({ turnId: "turn-b", status: "inProgress" }));
@@ -169,31 +172,24 @@ it.each([false, true])(
 );
 
 it("keeps one release in flight and waits before retrying its failure", async () => {
-  const { client, unsubscribeChild } = await createTerminalChild();
+  const { client, unsubscribeChild, advance } = await createTerminalChild();
   const pending = createDeferred<{ status: string }>();
   unsubscribeChild.mockImplementationOnce(() => pending.promise);
-  await vi.advanceTimersByTimeAsync(30_000);
-  expect(unsubscribeChild).toHaveBeenCalledTimes(2);
-  await vi.advanceTimersByTimeAsync(90_000);
-  expect(unsubscribeChild).toHaveBeenCalledTimes(2);
+  await advance(30_000, 2);
+  await advance(90_000, 2);
   pending.reject(new Error("thread/unsubscribe timed out"));
-  await vi.advanceTimersByTimeAsync(29_999);
-  expect(unsubscribeChild).toHaveBeenCalledTimes(2);
-  await vi.advanceTimersByTimeAsync(1);
-  expect(unsubscribeChild).toHaveBeenCalledTimes(3);
+  await advance(29_999, 2);
+  await advance(1, 3);
   expect(hasCodexAppServerLiveThread(client.client, "child-thread")).toBe(false);
 });
 
 it("retries after protection ends without a follow-up claim", async () => {
-  const { client, unsubscribeChild } = await createTerminalChild();
+  const { client, advance } = await createTerminalChild();
   const releaseProtection = protectCodexAppServerLiveThread(client.client, "child-thread");
-  await vi.advanceTimersByTimeAsync(60_000);
-  expect(unsubscribeChild).toHaveBeenCalledTimes(1);
+  await advance(60_000, 1);
   expect(isCodexAppServerLiveThreadClaimed(client.client, "child-thread")).toBe(true);
   releaseProtection();
-  await vi.advanceTimersByTimeAsync(29_999);
-  expect(unsubscribeChild).toHaveBeenCalledTimes(1);
-  await vi.advanceTimersByTimeAsync(1);
-  expect(unsubscribeChild).toHaveBeenCalledTimes(2);
+  await advance(29_999, 1);
+  await advance(1, 2);
   expect(hasCodexAppServerLiveThread(client.client, "child-thread")).toBe(false);
 });

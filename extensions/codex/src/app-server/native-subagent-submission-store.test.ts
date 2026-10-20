@@ -44,6 +44,7 @@ import {
   CODEX_APP_SERVER_BINDING_NAMESPACE,
   createCodexAppServerBindingStore,
   type CodexAppServerBindingStore,
+  type CodexAppServerThreadBinding,
 } from "./session-binding.js";
 import { createCodexSqliteTestBindingStateStore } from "./session-binding.sqlite.test-helpers.js";
 
@@ -76,6 +77,27 @@ const receipt: CodexNativeSubagentSubmission = {
   predecessorRunId: "codex-thread:child-thread:turn:child-turn-a",
   predecessorNativeTurnId: "child-turn-a",
 };
+const key = bindingStoreKey(identity);
+const recordedCompletion = {
+  childThreadId: "child-thread",
+  status: "succeeded",
+  statusLabel: "recorded_task_result",
+  result: "Preserve the recorded result",
+} as const;
+
+function makeAssignment(
+  owner: CodexNativeSubagentHistoryOwner,
+  overrides: Partial<CodexNativeSubagentPendingAssignment> = {},
+): CodexNativeSubagentPendingAssignment {
+  return {
+    runId: "codex-thread:child-thread:turn:child-turn-b",
+    childThreadId: receipt.childThreadId,
+    nativeTurnId: receipt.submissionId,
+    nativeParentThreadId: binding.threadId,
+    owner,
+    ...overrides,
+  };
+}
 
 function openState(root: string) {
   return createCodexSqliteTestBindingStateStore({
@@ -90,15 +112,14 @@ async function fixture(initialReceipt?: CodexNativeSubagentSubmission) {
   const root = tempDirs.make("codex-native-submission-");
   const state = openState(root);
   const store = createCodexAppServerBindingStore(state);
+  const mutate = store.mutate.bind(store, identity);
   const owner = createCodexNativeSubagentHistoryOwner({
     parentThreadId: binding.threadId,
     sessionId: identity.sessionId,
     lifecycleRevision: "revision-one",
     binding,
   });
-  if (!owner) {
-    throw new Error("The fixture binding must have a history owner.");
-  }
+  assert(owner, "The fixture binding must have a history owner.");
   await store.mutate(identity, { kind: "set", binding });
   if (initialReceipt) {
     await store.mutate(
@@ -112,7 +133,15 @@ async function fixture(initialReceipt?: CodexNativeSubagentSubmission) {
     state,
     store,
     owner,
-    mutate: store.mutate.bind(store, identity),
+    mutate,
+    rotate: (threadId: string) =>
+      mutate({
+        kind: "replace-thread",
+        expectedThreadId: binding.threadId,
+        binding: { ...binding, threadId },
+      }),
+    patch: (patch: Partial<Omit<CodexAppServerThreadBinding, "threadId">>) =>
+      mutate({ kind: "patch", threadId: binding.threadId, patch }),
     recordAssignment: (assignment: CodexNativeSubagentPendingAssignment) =>
       store.mutate(
         identity,
@@ -133,19 +162,10 @@ async function fixture(initialReceipt?: CodexNativeSubagentSubmission) {
 describe("native subagent submission receipts in the binding store", () => {
   it("retains recorded completion across native resume without mutating incoming facts", async () => {
     const { owner, readAssignments, recordAssignment } = await fixture();
-    const assignment = {
+    const assignment = makeAssignment(owner, {
       runId: "codex-thread:child-thread",
-      childThreadId: "child-thread",
       nativeTurnId: "original-turn",
-      nativeParentThreadId: binding.threadId,
-      owner,
-    };
-    const recordedCompletion = {
-      childThreadId: assignment.childThreadId,
-      status: "succeeded" as const,
-      statusLabel: "recorded_task_result" as const,
-      result: "Preserve the recorded result",
-    };
+    });
     await recordAssignment({ ...assignment, recordedCompletion });
     const resumed = { ...assignment, nativeTurnId: "resumed-turn" };
     await recordAssignment(resumed);
@@ -164,14 +184,10 @@ describe("native subagent submission receipts in the binding store", () => {
     async ({ nativeTurnId, reverse, discoverTurn }) => {
       const { root, state, owner, mutate, readAssignments, recordReceipt, recordAssignment } =
         await fixture(receipt);
-      const first = {
-        runId: "codex-thread:child-thread:turn:child-turn-b",
-        childThreadId: "child-thread",
+      const first = makeAssignment(owner, {
         nativeTurnId,
-        nativeParentThreadId: binding.threadId,
-        owner,
         ...(nativeTurnId === "child-turn-b" ? { submission: receipt } : {}),
-      };
+      });
       const nextReceipt = { ...receipt, callId: "call-two", submissionId: "child-turn-c" };
       const second = {
         ...first,
@@ -180,14 +196,8 @@ describe("native subagent submission receipts in the binding store", () => {
         ...(first.submission ? { submission: nextReceipt } : {}),
       };
       await recordReceipt(nextReceipt);
-      const row = state.lookup(bindingStoreKey(identity));
+      const row = state.lookup(key);
       assert(row?.state === "active");
-      const recordedCompletion = {
-        childThreadId: first.childThreadId,
-        status: "succeeded" as const,
-        statusLabel: "recorded_task_result" as const,
-        result: "Preserve the recorded result",
-      };
       const { submission: _submission, ...unsubmitted } = first;
       const alias = { ...unsubmitted, runId: "codex-thread:child-thread" };
       const { nativeTurnId: _nativeTurnId, ...unobserved } = alias;
@@ -195,7 +205,7 @@ describe("native subagent submission receipts in the binding store", () => {
       if (reverse) {
         aliases.reverse();
       }
-      state.register(bindingStoreKey(identity), {
+      state.register(key, {
         ...row,
         nativeSubagentAssignments: { version: 1, assignments: [...aliases, second] },
       });
@@ -248,14 +258,7 @@ describe("native subagent submission receipts in the binding store", () => {
       let store = f.store;
       const { root, owner } = f;
       const stopReceipt = { ...receipt, predecessorRunId: "codex-thread:child-thread" };
-      const assignment = {
-        runId: "codex-thread:child-thread:turn:child-turn-b",
-        childThreadId: stopReceipt.childThreadId,
-        nativeTurnId: stopReceipt.submissionId,
-        nativeParentThreadId: binding.threadId,
-        owner,
-        submission: stopReceipt,
-      };
+      const assignment = makeAssignment(owner, { submission: stopReceipt });
       const assignmentRecorded = createDeferred<boolean>();
       const receiptRecorded = createDeferred<boolean>();
       let reject = false;
@@ -523,20 +526,14 @@ describe("native subagent submission receipts in the binding store", () => {
   });
 
   it("reopens initial assignment facts across native rotation but not physical adoption", async () => {
-    const { root, owner, mutate, recordAssignment } = await fixture();
-    const assignment = {
+    const { root, owner, recordAssignment, rotate } = await fixture();
+    const assignment = makeAssignment(owner, {
       runId: "codex-thread:initial-child",
       childThreadId: "initial-child",
       nativeTurnId: "initial-turn",
-      nativeParentThreadId: binding.threadId,
-      owner,
-    };
-    await expect(recordAssignment(assignment)).resolves.toBe(true);
-    await mutate({
-      kind: "replace-thread",
-      expectedThreadId: binding.threadId,
-      binding: { ...binding, threadId: "rotated-parent" },
     });
+    await expect(recordAssignment(assignment)).resolves.toBe(true);
+    await rotate("rotated-parent");
     resetPluginStateStoreForTests();
     const reopened = createLazyCodexAppServerBindingStore(openState(root));
     const rotated = { ...owner, parentThreadId: "rotated-parent" };
@@ -605,9 +602,7 @@ describe("native subagent submission receipts in the binding store", () => {
     await expect(reopened.mutate(logicalIdentity, consumeSecond, currentAuthority)).resolves.toBe(
       true,
     );
-    expect(reopenedState.lookup(bindingStoreKey(identity))).not.toHaveProperty(
-      "nativeSubagentSubmissions",
-    );
+    expect(reopenedState.lookup(key)).not.toHaveProperty("nativeSubagentSubmissions");
     await expect(reopened.mutate(logicalIdentity, consumeSecond, currentAuthority)).resolves.toBe(
       false,
     );
@@ -621,7 +616,7 @@ describe("native subagent submission receipts in the binding store", () => {
       let selectedIdentity = identity;
       let selectedOwner: CodexNativeSubagentHistoryOwner = owner;
       if (scenario === "missing") {
-        state.delete(bindingStoreKey(identity));
+        state.delete(key);
       } else if (scenario === "retired") {
         await store.retireSessionGeneration(identity);
       } else if (scenario === "generation") {
@@ -636,7 +631,7 @@ describe("native subagent submission receipts in the binding store", () => {
       } else {
         selectedOwner = { ...owner, lifecycleRevision: "replacement-revision" };
       }
-      const before = state.lookup(bindingStoreKey(identity));
+      const before = state.lookup(key);
       expect(await store.readNativeSubagentSubmissions(selectedIdentity, selectedOwner)).toEqual(
         [],
       );
@@ -648,7 +643,7 @@ describe("native subagent submission receipts in the binding store", () => {
           store.mutate(selectedIdentity, { kind, owner: selectedOwner, receipt }, currentAuthority),
         ).resolves.toBe(false);
       }
-      expect(state.lookup(bindingStoreKey(identity))).toEqual(before);
+      expect(state.lookup(key)).toEqual(before);
     },
   );
 
@@ -656,7 +651,7 @@ describe("native subagent submission receipts in the binding store", () => {
     "rechecks current authority before the atomic %s update",
     async (kind) => {
       const { state, owner } = await fixture(receipt);
-      const before = state.lookup(bindingStoreKey(identity));
+      const before = state.lookup(key);
       let current = true;
       const guarded = createCodexAppServerBindingStore({
         ...state,
@@ -664,9 +659,9 @@ describe("native subagent submission receipts in the binding store", () => {
           const mutationState = state.withCurrent(authority);
           return {
             ...mutationState,
-            compareAndApply(key, comparison, intent) {
+            compareAndApply(stateKey, comparison, intent) {
               current = false;
-              return mutationState.compareAndApply(key, comparison, intent);
+              return mutationState.compareAndApply(stateKey, comparison, intent);
             },
           };
         },
@@ -678,50 +673,36 @@ describe("native subagent submission receipts in the binding store", () => {
           }
         }),
       ).rejects.toThrow("Parent authority changed.");
-      expect(state.lookup(bindingStoreKey(identity))).toEqual(before);
+      expect(state.lookup(key)).toEqual(before);
     },
   );
 
   it("preserves receipts through same-owner writes and binding leases", async () => {
-    const { state, store, mutate, readSubmissions } = await fixture(receipt);
+    const { state, store, mutate, readSubmissions, patch } = await fixture(receipt);
     await store.withLease(identity, async () => {
       await mutate({ kind: "set", binding: { ...binding, model: "gpt-5.5" } });
-      await mutate({
-        kind: "patch",
-        threadId: binding.threadId,
-        patch: { serviceTier: "priority" },
-      });
+      await patch({ serviceTier: "priority" });
       expect(await readSubmissions()).toEqual([receipt]);
     });
     expect(await readSubmissions()).toEqual([receipt]);
-    expect(state.lookup(bindingStoreKey(identity))).not.toHaveProperty("lease");
+    expect(state.lookup(key)).not.toHaveProperty("lease");
     expect(store.read(identity)).toEqual({ ...binding, model: "gpt-5.5", serviceTier: "priority" });
   });
 
   it.each(["thread", "connection", "reset", "retire"])(
     "clears receipt metadata when the binding changes its %s boundary",
     async (scenario) => {
-      const { state, store, mutate, readSubmissions } = await fixture(receipt);
+      const { state, store, readSubmissions, rotate, patch } = await fixture(receipt);
       if (scenario === "thread") {
-        await mutate({
-          kind: "replace-thread",
-          expectedThreadId: binding.threadId,
-          binding: { ...binding, threadId: "replacement-thread" },
-        });
+        await rotate("replacement-thread");
       } else if (scenario === "connection") {
-        await mutate({
-          kind: "patch",
-          threadId: binding.threadId,
-          patch: { appServerRuntimeFingerprint: "replacement-runtime" },
-        });
+        await patch({ appServerRuntimeFingerprint: "replacement-runtime" });
       } else if (scenario === "reset") {
         await store.resetSessionGeneration(identity);
       } else {
         await store.retireSessionGeneration(identity);
       }
-      expect(state.lookup(bindingStoreKey(identity)) ?? {}).not.toHaveProperty(
-        "nativeSubagentSubmissions",
-      );
+      expect(state.lookup(key) ?? {}).not.toHaveProperty("nativeSubagentSubmissions");
       expect(store.read(identity)).toEqual(
         scenario === "thread"
           ? { ...binding, threadId: "replacement-thread" }
@@ -779,9 +760,9 @@ describe("native subagent submission receipts in the binding store", () => {
   ])(
     "preserves unreadable receipt metadata through writes and retirement (version $version)",
     async (metadata) => {
-      const { root, state, store, owner, mutate, readSubmissions, recordAssignment } =
+      const { root, state, store, owner, mutate, readSubmissions, recordAssignment, patch } =
         await fixture();
-      state.register(bindingStoreKey(identity), {
+      state.register(key, {
         version: 1,
         state: "active",
         sessionId: identity.sessionId,
@@ -790,14 +771,10 @@ describe("native subagent submission receipts in the binding store", () => {
       });
       await store.withLease(identity, async () => {
         await mutate({ kind: "set", binding });
-        await mutate({
-          kind: "patch",
-          threadId: binding.threadId,
-          patch: { model: "gpt-5.5" },
-        });
+        await patch({ model: "gpt-5.5" });
       });
       expect(store.read(identity)).toEqual({ ...binding, model: "gpt-5.5" });
-      const before = state.lookup(bindingStoreKey(identity));
+      const before = state.lookup(key);
       expect(before).toHaveProperty("nativeSubagentSubmissions", metadata);
       await expect(readSubmissions()).rejects.toThrow(/native subagent submission/i);
       for (const kind of [
@@ -808,15 +785,9 @@ describe("native subagent submission receipts in the binding store", () => {
           /native subagent submission/i,
         );
       }
-      expect(state.lookup(bindingStoreKey(identity))).toEqual(before);
+      expect(state.lookup(key)).toEqual(before);
 
-      const assignment = {
-        runId: "codex-thread:child-thread:turn:child-turn-b",
-        childThreadId: receipt.childThreadId,
-        nativeTurnId: receipt.submissionId,
-        nativeParentThreadId: owner.parentThreadId,
-        owner,
-      };
+      const assignment = makeAssignment(owner);
       await recordAssignment(assignment);
       const retirement = {
         kind: "consume-native-subagent-assignment" as const,
@@ -831,7 +802,7 @@ describe("native subagent submission receipts in the binding store", () => {
       const reopenedState = openState(root);
       const reopened = createLazyCodexAppServerBindingStore(reopenedState);
       expect(await reopened.readNativeSubagentAssignments?.(identity, owner)).toEqual([]);
-      expect(reopenedState.lookup(bindingStoreKey(identity))).toEqual(before);
+      expect(reopenedState.lookup(key)).toEqual(before);
     },
   );
 });

@@ -18,6 +18,31 @@ beforeEach(() => setRuntimeConfigSnapshot({}));
 afterEach(() => clearRuntimeConfigSnapshot());
 setupRunAttemptTestHooks();
 
+function observeAssignment(
+  store: Awaited<ReturnType<typeof fixture>>["store"],
+  nativeTurnId: string,
+) {
+  const recorded = createDeferred<void>();
+  const consumed = createDeferred<void>();
+  const mutate = store.mutate.bind(store);
+  vi.spyOn(store, "mutate").mockImplementation(async (identity, mutation, assertCurrent) => {
+    const result = mutate(identity, mutation, assertCurrent);
+    if (mutation.kind === "consume-native-subagent-assignment") {
+      consumed.resolve();
+    }
+    const applied = await result;
+    if (
+      applied &&
+      mutation.kind === "record-native-subagent-assignment" &&
+      mutation.assignment.nativeTurnId === nativeTurnId
+    ) {
+      recorded.resolve();
+    }
+    return applied;
+  });
+  return { recorded: recorded.promise, consumed: consumed.promise };
+}
+
 it("settles delayed close writes without consuming a replacement monitor's resumed assignment", async () => {
   const f = await fixture();
   const firstClient = createClient();
@@ -25,26 +50,9 @@ it("settles delayed close writes without consuming a replacement monitor's resum
   await first.ready;
   first.bindTurn("parent-turn");
 
-  const initialRecorded = createDeferred<void>();
-  const consumeEntered = createDeferred<void>();
-  const mutate = f.store.mutate.bind(f.store);
-  vi.spyOn(f.store, "mutate").mockImplementation(async (identity, mutation, assertCurrent) => {
-    const result = mutate(identity, mutation, assertCurrent);
-    if (mutation.kind === "consume-native-subagent-assignment") {
-      consumeEntered.resolve();
-    }
-    const applied = await result;
-    if (
-      applied &&
-      mutation.kind === "record-native-subagent-assignment" &&
-      mutation.assignment.nativeTurnId === "child-turn"
-    ) {
-      initialRecorded.resolve();
-    }
-    return applied;
-  });
+  const initial = observeAssignment(f.store, "child-turn");
   await f.spawn(firstClient);
-  await initialRecorded.promise;
+  await initial.recorded;
   await firstClient.completeTurn({ status: "interrupted" });
 
   const closeEntered = createDeferred<void>();
@@ -66,19 +74,7 @@ it("settles delayed close writes without consuming a replacement monitor's resum
   const leaseEntered = createDeferred<void>();
   const recover = createDeferred<void>();
   const releaseLease = createDeferred<void>();
-  const successorRecorded = createDeferred<void>();
-  const peerMutate = peer.mutate.bind(peer);
-  vi.spyOn(peer, "mutate").mockImplementation(async (identity, mutation, assertCurrent) => {
-    const applied = await peerMutate(identity, mutation, assertCurrent);
-    if (
-      applied &&
-      mutation.kind === "record-native-subagent-assignment" &&
-      mutation.assignment.nativeTurnId === "resumed-turn"
-    ) {
-      successorRecorded.resolve();
-    }
-    return applied;
-  });
+  const successor = observeAssignment(peer, "resumed-turn");
   const nextClient = createClient();
   const history = threadRead({ turnId: "child-turn", status: "interrupted" });
   const continuation = threadRead({
@@ -123,11 +119,11 @@ it("settles delayed close writes without consuming a replacement monitor's resum
   await vi.advanceTimersByTimeAsync(0);
   closeResponse.resolve({ data: [], nextCursor: null });
   await closing;
-  await consumeEntered.promise;
+  await initial.consumed;
   firstClient.close();
   recover.resolve();
   const next = await replacement.promise;
-  await successorRecorded.promise;
+  await successor.recorded;
   const earlyUnregister = unregistered;
   releaseLease.resolve();
   await lease;
@@ -136,19 +132,14 @@ it("settles delayed close writes without consuming a replacement monitor's resum
   first.closeCaller();
 
   expect
-    .soft(earlyUnregister, "Unregister must join writes accepted by close settlement")
-    .toBe(false);
-  expect
-    .soft(
-      await f.store.readNativeSubagentAssignments?.(f.identity, f.historyOwner()),
-      "The previous monitor must not consume the resumed assignment",
-    )
-    .toEqual([
-      expect.objectContaining({
-        runId: "codex-thread:child-thread",
-        nativeTurnId: "resumed-turn",
-      }),
-    ]);
+    .soft({
+      earlyUnregister,
+      assignments: await f.store.readNativeSubagentAssignments?.(f.identity, f.historyOwner()),
+    })
+    .toMatchObject({
+      earlyUnregister: false,
+      assignments: [{ runId: "codex-thread:child-thread", nativeTurnId: "resumed-turn" }],
+    });
   await nextClient.completeTurn({
     turnId: "resumed-turn",
     status: "completed",

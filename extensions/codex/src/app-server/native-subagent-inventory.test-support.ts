@@ -1,6 +1,5 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
-import { createDeferred } from "openclaw/plugin-sdk/extension-shared";
 import { createAdmittedHostCapabilityTestFixture } from "openclaw/plugin-sdk/plugin-test-runtime";
 import { captureSessionEntryCurrentCheckAsync } from "openclaw/plugin-sdk/session-binding-runtime";
 import { getSessionEntry, resolveStorePath } from "openclaw/plugin-sdk/session-store-runtime";
@@ -43,16 +42,15 @@ export async function fixture() {
   await seedRunSessionOwnerForTest(identity.sessionId, identity.sessionKey, {
     lifecycleRevision: "inventory-generation",
   });
-  const entry = getSessionEntry({
+  const sessionScope = {
     agentId: identity.agentId,
     sessionKey: identity.sessionKey,
     storePath: resolveStorePath(undefined, { agentId: identity.agentId }),
-  });
+  };
+  const entry = getSessionEntry(sessionScope);
   assert(entry?.lifecycleRevision);
   vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
-  onTestFinished(() => {
-    vi.useRealTimers();
-  });
+  onTestFinished(() => vi.useRealTimers());
   const lifecycleRevision = entry.lifecycleRevision;
   const historyOwner = (parentThreadId = "parent-thread"): CodexNativeSubagentHistoryOwner => ({
     ...nativeHistoryOwner(parentThreadId),
@@ -90,8 +88,7 @@ export async function fixture() {
   ) => {
     const registrationStore = options.bindingStore ?? store;
     const params = createParams(`${tempDir}/inventory-${++sequence}.jsonl`, tempDir, {
-      sessionId: identity.sessionId,
-      sessionKey: identity.sessionKey,
+      ...identity,
       runId: `inventory-${sequence}`,
     });
     params.agentId = identity.agentId;
@@ -103,11 +100,7 @@ export async function fixture() {
     });
     assert(host.agentHarnessCompletionScope);
     const completionScope = host.agentHarnessCompletionScope;
-    const parent = await captureSessionEntryCurrentCheckAsync({
-      agentId: identity.agentId,
-      sessionKey: identity.sessionKey,
-      storePath: resolveStorePath(undefined, { agentId: identity.agentId }),
-    });
+    const parent = await captureSessionEntryCurrentCheckAsync(sessionScope);
     const authority = createNativeSubagentSessionAuthority(parent);
     const assignmentStore = createNativeSubagentAssignmentStore({
       bindingStore: registrationStore,
@@ -117,28 +110,23 @@ export async function fixture() {
       assertLifecycleCurrentAsync: parent.assertCurrent,
       authority,
     });
+    const writeSubmission =
+      (
+        kind: "record-native-subagent-submission" | "consume-native-subagent-submission",
+      ): CodexNativeSubagentSubmissionStore["record"] =>
+      (receipt, assertCurrent) =>
+        registrationStore.mutate(identity, { kind, owner, receipt }, assertCurrent, authority);
     const submissionStore: CodexNativeSubagentSubmissionStore = {
       assertCurrent: () => assignmentStore.assertCurrent(),
       assertCurrentAsync: () => assignmentStore.assertCurrentAsync(),
       read: () => registrationStore.readNativeSubagentSubmissions(identity, owner),
-      record: (receipt, assertCurrent) =>
-        registrationStore.mutate(
-          identity,
-          { kind: "record-native-subagent-submission", owner, receipt },
-          assertCurrent,
-          authority,
-        ),
-      consume: (receipt, assertCurrent) =>
-        registrationStore.mutate(
-          identity,
-          { kind: "consume-native-subagent-submission", owner, receipt },
-          assertCurrent,
-          authority,
-        ),
+      record: writeSubmission("record-native-subagent-submission"),
+      consume: writeSubmission("consume-native-subagent-submission"),
     };
     ensureCodexAppServerClientRuntime(client.client, { agentDir: tempDir });
-    const registered =
-      createDeferred<Awaited<ReturnType<typeof codexNativeSubagentMonitorRuntime.register>>>();
+    const registration: {
+      value?: Awaited<ReturnType<typeof codexNativeSubagentMonitorRuntime.register>>;
+    } = {};
     const tool = host.hostCapabilities.bindToolSurface([
       {
         name: "register_native_inventory",
@@ -146,30 +134,29 @@ export async function fixture() {
         description: "Test registration",
         parameters: Type.Object({}),
         execute: async () => {
-          registered.resolve(
-            await codexNativeSubagentMonitorRuntime.register({
-              client: client.client,
-              parentThreadId: owner.parentThreadId,
-              requesterSessionKey: identity.sessionKey,
-              completionScope,
-              historyOwner: owner,
-              assignmentStore,
-              submissionStore,
-              assertCurrentAsync: parent.assertCurrent,
-              runtime,
-              configurationQualification,
-              retainParentThread: options.retainParentThread,
-              ...(modelSource ? { modelSource } : {}),
-            }),
-          );
+          registration.value = await codexNativeSubagentMonitorRuntime.register({
+            client: client.client,
+            parentThreadId: owner.parentThreadId,
+            requesterSessionKey: identity.sessionKey,
+            completionScope,
+            historyOwner: owner,
+            assignmentStore,
+            submissionStore,
+            assertCurrentAsync: parent.assertCurrent,
+            runtime,
+            configurationQualification,
+            retainParentThread: options.retainParentThread,
+            ...(modelSource ? { modelSource } : {}),
+          });
           return { content: [{ type: "text", text: "registered" }], details: {} };
         },
       },
     ])[0];
     assert(tool);
     await host.runWithGatewayScope(() => tool.execute("register", {}));
+    assert(registration.value);
     return {
-      ...(await registered.promise),
+      ...registration.value,
       closeGateway: host.closeGateway,
       closeCaller: () => {
         host.closeHost();
