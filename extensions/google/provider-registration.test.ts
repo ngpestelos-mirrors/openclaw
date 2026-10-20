@@ -36,17 +36,16 @@ function createStream(overrides: Partial<Model> = {}) {
     model: model(overrides),
   } as never);
 }
-function normalizeVideo(providerId: string, modelId: string, api: Model["api"], baseUrl?: string) {
+function normalizeVideo(overrides: Partial<Model>) {
+  const entry = model({
+    provider: "google",
+    input: ["text", "image", "video"] as never,
+    ...overrides,
+  });
   return provider.normalizeResolvedModel?.({
-    provider: providerId,
-    modelId,
-    model: model({
-      id: modelId,
-      provider: providerId,
-      api,
-      ...(baseUrl ? { baseUrl } : {}),
-      input: ["text", "image", "video"] as never,
-    }),
+    provider: entry.provider,
+    modelId: entry.id,
+    model: entry,
   } as never);
 }
 
@@ -56,23 +55,21 @@ describe("buildGoogleProvider createStreamFn", () => {
     streamFns.createVertex.mockClear();
   });
 
-  it("routes native Vertex hosts through the Vertex transport", () => {
-    createStream();
-
-    expect(streamFns.createVertex).toHaveBeenCalledTimes(1);
+  it.each([false, true])("routes Vertex with OpenAI compatibility=%s", (compatible) => {
+    const result = createStream(
+      compatible
+        ? {
+            api: "openai-completions",
+            baseUrl:
+              "https://aiplatform.googleapis.com/v1/projects/test/locations/us-central1/endpoints/openapi",
+          }
+        : {},
+    );
+    expect(streamFns.createVertex).toHaveBeenCalledTimes(compatible ? 0 : 1);
     expect(streamFns.createGenerativeAi).not.toHaveBeenCalled();
-  });
-
-  it("preserves explicit OpenAI-compatible Vertex endpoint configs", () => {
-    const result = createStream({
-      api: "openai-completions",
-      baseUrl:
-        "https://aiplatform.googleapis.com/v1/projects/test/locations/us-central1/endpoints/openapi",
-    });
-
-    expect(result).toBeUndefined();
-    expect(streamFns.createVertex).not.toHaveBeenCalled();
-    expect(streamFns.createGenerativeAi).not.toHaveBeenCalled();
+    if (compatible) {
+      expect(result).toBeUndefined();
+    }
   });
 
   it.each([
@@ -87,7 +84,7 @@ describe("buildGoogleProvider createStreamFn", () => {
     ["gemini-2.5-flash", "https://generativelanguage.googleapis.com:8443/v1beta", false],
     ["gemini-2.5-flash", "https://generativelanguage.googleapis.com/v1beta/openai", false],
   ])("normalizes native-video input for exact AI Studio route %s", (modelId, baseUrl, expected) => {
-    const normalized = normalizeVideo("google", modelId, "google-generative-ai", baseUrl);
+    const normalized = normalizeVideo({ id: modelId, baseUrl });
 
     expect(((normalized?.input ?? []) as string[]).includes("video")).toBe(expected);
   });
@@ -97,7 +94,7 @@ describe("buildGoogleProvider createStreamFn", () => {
       ["google-vertex", "google-vertex"],
       ["custom-google", "google-generative-ai"],
     ] as const) {
-      const normalized = normalizeVideo(providerId, "gemini-2.5-flash", api);
+      const normalized = normalizeVideo({ provider: providerId, api });
       expect(normalized?.input).toEqual(["text", "image"]);
     }
   });

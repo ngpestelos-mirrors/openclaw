@@ -5,15 +5,6 @@ import { expect, it, vi } from "vitest";
 import googlePlugin from "./index.js";
 
 const MODEL = "gemini-3-flash-preview";
-function mediaRequest(fileName: string, mime: string) {
-  return {
-    buffer: Buffer.from("synthetic bytes"),
-    fileName,
-    mime,
-    apiKey: "fixture-api-key",
-    timeoutMs: 15_000,
-  };
-}
 
 const runtime = vi.hoisted(() => {
   const state: { moduleLoads: number; provider?: MediaUnderstandingProvider } = { moduleLoads: 0 };
@@ -39,11 +30,11 @@ vi.mock("./media-understanding-provider.js", async (importOriginal) => {
 });
 
 function registerMediaProvider() {
-  const captured = createCapturedPluginRegistration({ id: "google" });
-  googlePlugin.register(captured.api);
+  const reg = createCapturedPluginRegistration({ id: "google" });
+  googlePlugin.register(reg.api);
   return expectDefined(
-    captured.mediaUnderstandingProviders.find((provider) => provider.id === "google"),
-    "registered Google media provider",
+    reg.mediaUnderstandingProviders.find((p) => p.id === "google"),
+    "Google",
   );
 }
 
@@ -59,8 +50,6 @@ it("registers independent media metadata and defers audio/video handlers until u
     describeImage: undefined,
     describeImages: undefined,
   };
-  expect(metadata).toEqual(expectedMetadata);
-
   const second = registerMediaProvider();
   expect(second).toMatchObject(expectedMetadata);
   expectDefined(second.capabilities, "second provider capabilities").push("image");
@@ -70,19 +59,19 @@ it("registers independent media metadata and defers audio/video handlers until u
   expect(metadata).toEqual(expectedMetadata);
   expect(runtime.state.moduleLoads).toBe(0);
 
-  const audioRequest = mediaRequest("recording.wav", "audio/wav");
-  const videoRequest = mediaRequest("clip.mp4", "video/mp4");
+  const request = { buffer: Buffer.from("fixture"), apiKey: "fixture-key", timeoutMs: 15_000 };
+  const audioRequest = { ...request, fileName: "recording.wav", mime: "audio/wav" };
+  const videoRequest = { ...request, fileName: "clip.mp4", mime: "video/mp4" };
   const audioResult = { text: "Spoken fixture sentence.", model: MODEL };
   const videoResult = { text: "A fixture landscape.", model: MODEL };
   runtime.transcribeAudio.mockResolvedValue(audioResult);
   runtime.describeVideo.mockResolvedValue(videoResult);
 
-  expect(
-    await Promise.all([
-      provider.transcribeAudio?.(audioRequest),
-      second.describeVideo?.(videoRequest),
-    ]),
-  ).toEqual([audioResult, videoResult]);
+  const results = await Promise.all([
+    provider.transcribeAudio?.(audioRequest),
+    second.describeVideo?.(videoRequest),
+  ]);
+  expect(results).toEqual([audioResult, videoResult]);
   expect(runtime.state.moduleLoads).toBe(1);
   expect(runtime.transcribeAudio).toHaveBeenCalledExactlyOnceWith(audioRequest);
   expect(runtime.describeVideo).toHaveBeenCalledExactlyOnceWith(videoRequest);
