@@ -114,39 +114,32 @@ describe("skill upload installation lifetime", () => {
         let refused = false;
         const runOperation = sqliteWorker.runSqliteWorkerStoreOperation;
         vi.spyOn(sqliteWorker, "runSqliteWorkerStoreOperation").mockImplementation(
-          new Proxy(runOperation, {
-            apply(target, receiver, [worker, operation, ...rest]: Parameters<typeof runOperation>) {
-              return Reflect.apply(target, receiver, [
-                worker,
-                (scope: Parameters<typeof operation>[0]) =>
-                  operation({
-                    execute: new Proxy(scope.execute, {
-                      apply(execute, executeReceiver, args: Parameters<typeof scope.execute>) {
-                        if (args[0].type === "skillUploads.release" && !refused) {
-                          refused = true;
-                          throw error;
-                        }
-                        return Reflect.apply(execute, executeReceiver, args);
-                      },
-                    }),
-                  }),
-                ...rest,
-              ]);
-            },
-          }),
+          (worker, operation, ...rest) =>
+            runOperation(
+              worker,
+              (scope) =>
+                operation({
+                  execute: (command) => {
+                    if (command.type === "skillUploads.release" && !refused) {
+                      refused = true;
+                      throw error;
+                    }
+                    return scope.execute(command);
+                  },
+                }),
+              ...rest,
+            ),
         );
       }
       await expect(store.withCommittedUpload(uploadId, async () => undefined)).rejects.toThrow(
         error,
       );
-      expect(opened).toBe(1);
-      expect(closed).toBe(1);
+      expect({ opened, closed }).toEqual({ opened: 1, closed: 1 });
       expect(uploadState(databasePath, uploadId)).toMatchObject({
         leases: failure === "release" ? 1 : 0,
       });
       await closeOpenClawStateDatabaseAsync();
-      expect(opened).toBe(failure === "release" ? 2 : 1);
-      expect(closed).toBe(2);
+      expect({ opened, closed }).toEqual({ opened: failure === "release" ? 2 : 1, closed: 2 });
       expect(uploadState(databasePath, uploadId)).toEqual({ leases: 0, present: 1 });
     },
   );

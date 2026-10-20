@@ -5,20 +5,15 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { withEnvAsync } from "../../test-utils/env.js";
 import { withOpenClawTestState } from "../../test-utils/openclaw-test-state.js";
 import { prepareWorkspaceSkills } from "../loading/workspace-skill-loader.js";
-import type { SkillEntry, SkillInstallSpec } from "../types.js";
+import { createFixtureSkillEntry } from "../test-support/test-helpers.js";
 import { installSkill } from "./install.js";
 
 const { runCommandWithTimeoutMock } = vi.hoisted(() => ({
   runCommandWithTimeoutMock: vi.fn<typeof import("../../process/exec.js").runCommandWithTimeout>(),
 }));
 
-vi.mock("../loading/workspace-skill-loader.js", () => ({
-  prepareWorkspaceSkills: vi.fn(),
-}));
-
-vi.mock("../../process/exec.js", () => ({
-  runCommandWithTimeout: runCommandWithTimeoutMock,
-}));
+vi.mock("../loading/workspace-skill-loader.js", () => ({ prepareWorkspaceSkills: vi.fn() }));
+vi.mock("../../process/exec.js", () => ({ runCommandWithTimeout: runCommandWithTimeoutMock }));
 
 vi.mock("../../plugins/install-security-scan.js", () => ({
   evaluateSkillInstallPolicy: vi.fn(async () => undefined),
@@ -33,8 +28,9 @@ afterEach(() => {
 describe.each(["uv", "go"] as const)("%s bootstrap cache freshness", (kind) => {
   it.each([0, 1])("reuses the prerequisite after the first recipe exits %i", async (firstCode) => {
     await withOpenClawTestState({ label: "skill-bootstrap-probe" }, async (state) => {
-      vi.spyOn(os, "homedir").mockReturnValue(state.home);
-      const prefix = path.join(state.home, ".local");
+      const { home, workspaceDir } = state;
+      vi.spyOn(os, "homedir").mockReturnValue(home);
+      const prefix = path.join(home, ".local");
       const binDir = path.join(prefix, "bin");
       await fs.mkdir(binDir, { recursive: true });
       const writeExecutable = async (name: string) => {
@@ -44,25 +40,14 @@ describe.each(["uv", "go"] as const)("%s bootstrap cache freshness", (kind) => {
       };
       await writeExecutable("brew");
 
-      const entries: SkillEntry[] = ["first", "second"].map((name) => {
-        const filePath = path.join(state.workspaceDir, name, "SKILL.md");
-        const spec: SkillInstallSpec =
+      const entries = ["first", "second"].map((name) => {
+        const entry = createFixtureSkillEntry(name);
+        const spec =
           kind === "uv"
             ? { kind, package: `fixture-${name}` }
             : { kind, module: `example.com/fixture-${name}@latest` };
-        return {
-          skill: {
-            name,
-            description: "Binary probe fixture",
-            filePath,
-            baseDir: path.dirname(filePath),
-            source: "openclaw-workspace",
-            sourceInfo: { path: filePath, source: "test", scope: "temporary", origin: "top-level" },
-            disableModelInvocation: false,
-          },
-          frontmatter: {},
-          metadata: { install: [{ id: "deps", ...spec }] },
-        };
+        entry.metadata = { install: [{ id: "deps", ...spec }] };
+        return entry;
       });
       vi.mocked(prepareWorkspaceSkills).mockResolvedValue(entries);
 
@@ -98,11 +83,7 @@ describe.each(["uv", "go"] as const)("%s bootstrap cache freshness", (kind) => {
 
         for (const [index, skillName] of ["first", "second"].entries()) {
           const code = index === 0 ? firstCode : 0;
-          const result = await installSkill({
-            workspaceDir: state.workspaceDir,
-            skillName,
-            installId: "deps",
-          });
+          const result = await installSkill({ workspaceDir, skillName, installId: "deps" });
           expect(result).toMatchObject({
             ok: code === 0,
             code,
@@ -111,8 +92,7 @@ describe.each(["uv", "go"] as const)("%s bootstrap cache freshness", (kind) => {
           });
           expect(process.env.PATH).toBe(binDir);
         }
-        expect(recipes).toBe(2);
-        expect(bootstraps).toBe(1);
+        expect({ recipes, bootstraps }).toEqual({ recipes: 2, bootstraps: 1 });
       });
     });
   });

@@ -1,4 +1,3 @@
-// ClawHub lifecycle tests cover registry metadata lookup and error handling.
 import { createHash } from "node:crypto";
 import fs from "node:fs/promises";
 import path from "node:path";
@@ -109,10 +108,14 @@ const { guardTrackedSkillLocalState, planClawHubSkillUninstall, applyClawHubSkil
   await import("./clawhub-uninstall.js");
 
 export function bindHostWorkspace(gateway: string, host: string) {
+  const onHost =
+    <P extends { workspaceDir: string }, R>(run: (params: P) => R) =>
+    (params: P) =>
+      run({ ...params, workspaceDir: host });
   return registerAgentWorkspaceAccess(gateway, {
     bridge: { readFile: vi.fn(), writeFile: vi.fn(), stat: vi.fn() },
     loadSkills: vi.fn(),
-    applySkillRoot: (params) => applyExtractedSkillRoot({ ...params, workspaceDir: host }),
+    applySkillRoot: onHost(applyExtractedSkillRoot),
     clawHubSkills: {
       planClawHubSkillUninstall: async (params) => {
         const result = await planClawHubSkillUninstall({ ...params, workspaceDir: host });
@@ -120,22 +123,15 @@ export function bindHostWorkspace(gateway: string, host: string) {
       },
       applyClawHubSkillUninstall: (plan, options) =>
         applyClawHubSkillUninstall({ ...plan, workspaceDir: host }, options),
-      resolveClawHubSkillVerificationTarget: (params) =>
-        resolveClawHubSkillVerificationTarget({ ...params, workspaceDir: host }),
+      resolveClawHubSkillVerificationTarget: onHost(resolveClawHubSkillVerificationTarget),
       readClawHubSkillsLockfile: () => readClawHubSkillsLockfile(host),
-      resolveRequestedUpdateSlug: (params) =>
-        resolveRequestedUpdateSlug({ ...params, workspaceDir: host }),
-      resolveTrackedUpdateTarget: (params) =>
-        resolveTrackedUpdateTarget({ ...params, workspaceDir: host }),
-      guardTrackedSkillLocalState: (params) =>
-        guardTrackedSkillLocalState({ ...params, workspaceDir: host }),
-      preflightSkillOwnerState: (params) =>
-        preflightSkillOwnerState({ ...params, workspaceDir: host }),
-      assertClawHubSkillInstallState: (params) =>
-        assertClawHubSkillInstallState({ ...params, workspaceDir: host }),
+      resolveRequestedUpdateSlug: onHost(resolveRequestedUpdateSlug),
+      resolveTrackedUpdateTarget: onHost(resolveTrackedUpdateTarget),
+      guardTrackedSkillLocalState: onHost(guardTrackedSkillLocalState),
+      preflightSkillOwnerState: onHost(preflightSkillOwnerState),
+      assertClawHubSkillInstallState: onHost(assertClawHubSkillInstallState),
       readInstalledClawHubSkillFiles,
-      recordClawHubSkillInstall: (params) =>
-        recordClawHubSkillInstall({ ...params, workspaceDir: host }),
+      recordClawHubSkillInstall: onHost(recordClawHubSkillInstall),
     },
   });
 }
@@ -148,24 +144,6 @@ const {
   resolveClawHubSkillVerificationTarget,
   updateSkillsFromClawHub,
 } = await import("./clawhub.js");
-
-export function expectInstallPackageSourceDir(sourceDir: string) {
-  expect(installPackageDirMock.mock.calls[0]?.[0]?.sourceDir).toBe(sourceDir);
-}
-
-export function installPolicyInput() {
-  const call = evaluateSkillInstallPolicyMock.mock.calls.at(0);
-  if (!call) {
-    throw new Error("expected evaluateSkillInstallPolicy call");
-  }
-  return call[0] as
-    | {
-        origin?: { registry?: string; slug?: string; ownerHandle?: string };
-        requestedSpecifier?: string;
-        source?: { kind?: string; authority?: string; mutable?: boolean; network?: boolean };
-      }
-    | undefined;
-}
 
 export function expectInstalledSkill(
   result: Awaited<ReturnType<typeof installSkillFromClawHub>>,
@@ -262,47 +240,43 @@ export async function readJson<T>(filePath: string): Promise<T> {
   return JSON.parse(await fs.readFile(filePath, "utf8")) as T;
 }
 
-async function writeClawHubOriginFixture(params: {
-  workspaceDir: string;
-  slug: string;
-  originSlug?: string;
-  ownerHandle?: string;
-  requestedReference?: string;
-  trustState?: string;
-  registry?: string;
-  installedVersion?: string;
-  installedAt?: number;
-  writeLock?: boolean;
-  skillMd?: string;
-  skillFile?: { path: string; sha256: string };
-  fileTreeSha256?: string;
-}) {
-  const skillDir = path.join(params.workspaceDir, "skills", params.slug);
+export async function writeTrackedSkill(
+  workspaceDir: string,
+  slug: string,
+  params: {
+    originSlug?: string;
+    ownerHandle?: string;
+    requestedReference?: string;
+    trustState?: string;
+    registry?: string;
+    installedVersion?: string;
+    installedAt?: number;
+    writeLock?: boolean;
+    skillMd?: string;
+    skillFile?: { path: string; sha256: string };
+    fileTreeSha256?: string;
+  } = {},
+) {
+  const skillDir = path.join(workspaceDir, "skills", slug);
   const registry = params.registry ?? "https://private.example.com/clawhub";
   const installedVersion = params.installedVersion ?? "1.2.3";
   const installedAt = params.installedAt ?? 123;
   const skillFile =
     params.skillFile ??
     (params.skillMd !== undefined
-      ? {
-          path: "SKILL.md",
-          sha256: createHash("sha256").update(params.skillMd).digest("hex"),
-        }
+      ? { path: "SKILL.md", sha256: createHash("sha256").update(params.skillMd).digest("hex") }
       : undefined);
   const fileTreeSha256 =
     params.fileTreeSha256 ??
     (params.skillMd !== undefined ? `sha256:${"a".repeat(64)}` : undefined);
-  const digests = {
-    ...(skillFile ? { skillFile } : {}),
-    ...(fileTreeSha256 ? { fileTreeSha256 } : {}),
-  };
   const shared = {
     registry,
     installedAt,
-    ...(params.ownerHandle ? { ownerHandle: params.ownerHandle } : {}),
-    ...(params.requestedReference ? { requestedReference: params.requestedReference } : {}),
-    ...(params.trustState ? { trustState: params.trustState } : {}),
-    ...digests,
+    skillFile,
+    fileTreeSha256,
+    ownerHandle: params.ownerHandle || undefined,
+    requestedReference: params.requestedReference || undefined,
+    trustState: params.trustState || undefined,
   };
   const writeJson = (file: string, value: unknown) =>
     fs.writeFile(file, `${JSON.stringify(value, null, 2)}\n`, "utf8");
@@ -312,26 +286,18 @@ async function writeClawHubOriginFixture(params: {
   }
   await writeJson(path.join(skillDir, ".clawhub", "origin.json"), {
     version: 1,
-    slug: params.originSlug ?? params.slug,
+    slug: params.originSlug ?? slug,
     installedVersion,
     ...shared,
   });
   if (params.writeLock !== false) {
-    await fs.mkdir(path.join(params.workspaceDir, ".clawhub"), { recursive: true });
-    await writeJson(path.join(params.workspaceDir, ".clawhub", "lock.json"), {
+    await fs.mkdir(path.join(workspaceDir, ".clawhub"), { recursive: true });
+    await writeJson(path.join(workspaceDir, ".clawhub", "lock.json"), {
       version: 1,
-      skills: { [params.slug]: { version: installedVersion, ...shared } },
+      skills: { [slug]: { version: installedVersion, ...shared } },
     });
   }
   return skillDir;
-}
-
-export function writeTrackedSkill(
-  workspaceDir: string,
-  slug: string,
-  params: Omit<Parameters<typeof writeClawHubOriginFixture>[0], "workspaceDir" | "slug"> = {},
-) {
-  return writeClawHubOriginFixture({ workspaceDir, slug, ...params });
 }
 
 export {
