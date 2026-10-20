@@ -23,6 +23,7 @@ import {
   cloneChatAttachmentsForIndependentOwner,
   replaceChatAttachmentsFromEditor,
 } from "./attachment-payload-store.ts";
+import { mergeStoredChatSessionSnapshot } from "./chat-board-snapshot.ts";
 import { rewindChatHistory, switchChatHistoryBranch } from "./chat-history-actions.ts";
 import {
   fetchStagedOlderHistoryPage,
@@ -70,7 +71,6 @@ import {
 import {
   applyChatCacheSnapshot,
   cacheChatSessionSnapshot,
-  mergeStoredChatSessionSnapshot,
   readChatSessionSnapshot,
   resolveChatSnapshotKey,
 } from "./session-message-cache.ts";

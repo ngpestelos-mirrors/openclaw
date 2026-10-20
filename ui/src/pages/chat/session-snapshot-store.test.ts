@@ -10,10 +10,10 @@ import {
 } from "../../lib/chat/control-ui-database.runtime.ts";
 import { collectGarbageForTest } from "../../test-helpers/garbage-collection.ts";
 import { createStorageMock } from "../../test-helpers/storage.ts";
+import { cacheChatBoardSnapshot } from "./chat-board-snapshot.ts";
 import { MAX_CACHED_CHAT_SESSIONS } from "./session-cache.ts";
 import {
   appendChatMessageToCache,
-  cacheChatBoardSnapshot,
   cacheChatSessionSnapshot,
   observeChatCache,
   type ChatMessageCache,

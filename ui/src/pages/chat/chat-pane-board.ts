@@ -36,6 +36,7 @@ import {
   resolveUiConversationIdentity,
 } from "../../lib/sessions/session-key.ts";
 import { showToast } from "../../lib/toast.ts";
+import { cacheChatBoardSnapshot } from "./chat-board-snapshot.ts";
 import { chatHistoryRequests } from "./chat-history-state.ts";
 import { ChatPaneHistory } from "./chat-pane-history.ts";
 import type { ResolvedBoardView } from "./chat-pane-shared.ts";
@@ -43,7 +44,7 @@ import { ensureLazySidebarElement } from "./chat-pane-sidebar-layout.ts";
 import type { ChatBoardPanel } from "./chat-pane-surfaces.tsx";
 import type { ChatPageHost } from "./chat-state-host.ts";
 import { selectedChatSessionRow } from "./chat-state-route.ts";
-import { cacheChatBoardSnapshot, readChatSessionSnapshot } from "./session-message-cache.ts";
+import { readChatSessionSnapshot } from "./session-message-cache.ts";
 import {
   SIDEBAR_NARROW_BREAKPOINT_PX,
   fitSidebarLayout,

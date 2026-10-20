@@ -1,8 +1,8 @@
 // @vitest-environment node
 import { describe, expect, it } from "vitest";
+import { cacheChatBoardSnapshot } from "./chat-board-snapshot.ts";
 import {
   appendChatMessageToCache,
-  cacheChatBoardSnapshot,
   cacheChatSessionSnapshot,
   clearChatMessagesFromCache,
   createChatWidgetLayout,
