@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { beforeEach, expect, it, vi } from "vitest";
 import * as execApprovals from "../infra/exec-approvals-store.js";
 import {
   buildEmbeddedSandboxInfo,
@@ -52,58 +52,49 @@ beforeEach(() => {
   });
 });
 
-describe("embedded sandbox reporting", () => {
-  it("omits missing sandbox information", () => {
-    expect(buildEmbeddedSandboxInfo()).toBeUndefined();
-  });
-  it("maps sandbox context into prompt information", () => {
-    expect(buildEmbeddedSandboxInfo(sandbox())).toEqual(promptInfo);
-  });
-  it("never advertises host execution for a required sandbox", () => {
-    expect(
-      buildEmbeddedSandboxInfo(sandbox({ required: true }), {
-        ...elevation,
-        fullAccessAvailable: true,
-      })?.elevated,
-    ).toEqual({
-      allowed: false,
-      defaultLevel: "off",
-      fullAccessAvailable: false,
-      fullAccessBlockedReason: "host-policy",
-    });
-  });
-  it("preserves runtime-level full-access unavailability", () => {
-    expect(
-      buildEmbeddedSandboxInfo(sandbox(), {
-        ...elevation,
-        fullAccessAvailable: false,
-        fullAccessBlockedReason: "runtime",
-      })?.elevated,
-    ).toEqual({
-      ...blocked,
-      fullAccessBlockedReason: "runtime",
-    });
-  });
-  it("uses the effective configured exec policy", async () => {
-    const policy = await resolveEmbeddedSandboxInfoExecPolicy(
-      {
-        config: { tools: { exec: { mode: "auto" } } },
-        agentId: "main",
-        sandboxAvailable: true,
-      },
-      {},
-    );
-    expect(buildEmbeddedSandboxInfo(sandbox(), elevation, policy)?.elevated).toEqual(blocked);
-  });
-  it("advertises full access only when host approval floors allow it", () => {
-    expect(elevatedInfo(fullPolicy, { security: "allowlist", ask: "off" })).toEqual(blocked);
-    expect(elevatedInfo(fullPolicy, { security: "full", ask: "always" })).toEqual(blocked);
-    expect(
-      elevatedInfo({ ...fullPolicy, ask: "on-miss" }, { security: "full", ask: "on-miss" }),
-    ).toEqual({
-      allowed: true,
-      defaultLevel: "full",
-      fullAccessAvailable: true,
-    });
+it("omits missing sandbox information", () => {
+  expect(buildEmbeddedSandboxInfo()).toBeUndefined();
+});
+it("maps sandbox context into prompt information", () => {
+  expect(buildEmbeddedSandboxInfo(sandbox())).toEqual(promptInfo);
+});
+it.each([
+  [
+    "required sandbox",
+    true,
+    { fullAccessAvailable: true },
+    { ...blocked, allowed: false, defaultLevel: "off" },
+  ],
+  [
+    "unavailable runtime",
+    false,
+    { fullAccessAvailable: false, fullAccessBlockedReason: "runtime" },
+    { ...blocked, fullAccessBlockedReason: "runtime" },
+  ],
+] as const)("blocks full access for %s", (_name, required, runtime, expected) => {
+  expect(
+    buildEmbeddedSandboxInfo(sandbox({ required }), { ...elevation, ...runtime })?.elevated,
+  ).toEqual(expected);
+});
+it("uses the effective configured exec policy", async () => {
+  const policy = await resolveEmbeddedSandboxInfoExecPolicy(
+    {
+      config: { tools: { exec: { mode: "auto" } } },
+      agentId: "main",
+      sandboxAvailable: true,
+    },
+    {},
+  );
+  expect(buildEmbeddedSandboxInfo(sandbox(), elevation, policy)?.elevated).toEqual(blocked);
+});
+it("advertises full access only when host approval floors allow it", () => {
+  expect(elevatedInfo(fullPolicy, { security: "allowlist", ask: "off" })).toEqual(blocked);
+  expect(elevatedInfo(fullPolicy, { security: "full", ask: "always" })).toEqual(blocked);
+  expect(
+    elevatedInfo({ ...fullPolicy, ask: "on-miss" }, { security: "full", ask: "on-miss" }),
+  ).toEqual({
+    allowed: true,
+    defaultLevel: "full",
+    fullAccessAvailable: true,
   });
 });

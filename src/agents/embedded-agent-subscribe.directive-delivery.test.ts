@@ -1,6 +1,9 @@
 import { AssistantMessageEventStream, type Message, type Model } from "openclaw/plugin-sdk/llm";
 import { expect, it, onTestFinished } from "vitest";
-import { consumeGoogleGenerateContentStream } from "../../packages/ai/src/providers/google-stream.js";
+import {
+  consumeGoogleGenerateContentStream,
+  type GoogleStreamChunk,
+} from "../../packages/ai/src/providers/google-stream.js";
 import { createResponsesAssistantOutput } from "../../packages/ai/src/providers/openai-responses-shared.js";
 import { createAssistantOutput } from "../../packages/ai/src/transports/assistant-output.js";
 import { processResponsesStream } from "../../packages/ai/src/transports/openai-responses-stream-internal.js";
@@ -50,6 +53,57 @@ const texts = (payloads: ReplyPayload[]) => payloads.map((payload) => payload.te
 const hasNoMedia = (payload: ReplyPayload) => !payload.mediaUrl && !payload.mediaUrls?.length;
 const hasNoReplyTarget = (payload: ReplyPayload) =>
   !payload.replyToId && !payload.replyToCurrent && !payload.replyToTag;
+const googleChunk = (
+  parts: NonNullable<NonNullable<GoogleStreamChunk["candidates"]>[number]["content"]>["parts"],
+  finishReason?: string,
+): GoogleStreamChunk => ({
+  candidates: [{ ...(parts ? { content: { parts } } : {}), finishReason }],
+});
+function googleResponse(chunks: AsyncIterable<GoogleStreamChunk>, profile: "managed" | "sdk") {
+  const response = new AssistantMessageEventStream();
+  const producing = consumeGoogleGenerateContentStream({
+    chunks,
+    model: googleModel,
+    output: createAssistantOutput(googleModel),
+    stream: response,
+    profile,
+    nextToolCallId: () => "unused-tool",
+  });
+  return { response, producing };
+}
+
+function responsesResponse(chunks: string[], terminalText: string, release: Promise<void>) {
+  const response = new AssistantMessageEventStream();
+  const output = createResponsesAssistantOutput(responsesModel);
+  const item = { type: "message", id: "answer", role: "assistant", phase: "final_answer" };
+  async function* events() {
+    yield { type: "response.output_item.added", output_index: 0, item: { ...item, content: [] } };
+    for (const delta of chunks) {
+      yield { type: "response.output_text.delta", output_index: 0, delta };
+    }
+    await release;
+    yield {
+      type: "response.completed",
+      response: {
+        id: "response",
+        status: "completed",
+        output: [
+          {
+            ...item,
+            status: "completed",
+            content: [{ type: "output_text", text: terminalText, annotations: [] }],
+          },
+        ],
+      },
+    };
+  }
+  response.push({ type: "start", partial: output });
+  const producing = processResponsesStream(events(), output, response, responsesModel).then(() => {
+    response.push({ type: "done", reason: "stop", message: output });
+    response.end();
+  });
+  return { response, producing };
+}
 
 function createDeliveryHarness(
   options: { minChars?: number; blockReplyBreak?: "text_end" | "message_end" } = {},
@@ -177,6 +231,7 @@ const replacementChunks = [
   "The final summary also remains unchanged.\n",
 ] as const;
 const leadChunks = ["First lead stays.\n", "Next lead stays.\n"];
+const correctedText = replacementChunks.join("").replace("one", "thirty-three").trimEnd();
 const prefixCorrection = {
   name: "authoritative prefix correction with early chunks",
   chunks: [...leadChunks, ...replacementChunks],
@@ -185,20 +240,13 @@ const prefixCorrection = {
   literal: true,
   prefixCorrection: true,
   prepared: true,
-  terminalText:
-    leadChunks.join("") +
-    replacementChunks[0].replace("one", "thirty-three") +
-    replacementChunks.slice(1).join(""),
-  correctedText:
-    "The current value is thirty-three for this item. Continue. " +
-    "Keep this sentence unchanged. Retain each result. " +
-    "The final summary also remains unchanged.",
+  terminalText: leadChunks.join("") + correctedText + "\n",
+  correctedText,
 };
 
 it.each([...cases, prefixCorrection])(
   "preserves $name through the delivery handler",
   async (scenario) => {
-    const route = "prepared" in scenario ? "responses prepared" : "google raw";
     const { delivered, pipeline, emit, subscription } = createDeliveryHarness();
     const hasAudio = "audioAsVoice" in scenario;
     const chunks = [
@@ -208,84 +256,30 @@ it.each([...cases, prefixCorrection])(
     ];
     const beforeEnd = createDeferred();
     const releaseTerminal = createDeferred();
-    const response = new AssistantMessageEventStream();
-    const model = route === "google raw" ? googleModel : responsesModel;
-    const output =
-      route === "google raw"
-        ? createAssistantOutput(googleModel)
-        : createResponsesAssistantOutput(responsesModel);
     async function* googleEvents() {
       for (const text of chunks) {
-        yield { candidates: [{ content: { parts: [{ text }] } }] };
+        yield googleChunk([{ text }]);
       }
       await releaseTerminal.promise;
-      yield { candidates: [{ finishReason: "STOP" }] };
+      yield googleChunk(undefined, "STOP");
     }
-    async function* responsesEvents() {
-      yield {
-        type: "response.output_item.added",
-        output_index: 0,
-        item: {
-          type: "message",
-          id: "answer",
-          role: "assistant",
-          phase: "final_answer",
-          content: [],
-        },
-      };
-      for (const delta of chunks) {
-        yield { type: "response.output_text.delta", output_index: 0, delta };
-      }
-      await releaseTerminal.promise;
-      yield {
-        type: "response.completed",
-        response: {
-          id: "response",
-          status: "completed",
-          output: [
-            {
-              type: "message",
-              id: "answer",
-              role: "assistant",
-              phase: "final_answer",
-              status: "completed",
-              content: [
-                {
-                  type: "output_text",
-                  text: "terminalText" in scenario ? scenario.terminalText : chunks.join(""),
-                  annotations: [],
-                },
-              ],
-            },
-          ],
-        },
-      };
-    }
-    if (route === "responses prepared") {
-      response.push({ type: "start", partial: output });
-    }
-    const producing =
-      route === "google raw"
-        ? consumeGoogleGenerateContentStream({
-            chunks: googleEvents(),
-            model: googleModel,
-            output,
-            stream: response,
-            profile: "managed",
-            nextToolCallId: () => "unused-tool",
-          })
-        : processResponsesStream(responsesEvents(), output, response, responsesModel).then(() => {
-            response.push({ type: "done", reason: "stop", message: output });
-            response.end();
-          });
+    const prepared = "prepared" in scenario;
+    const { response, producing } = prepared
+      ? responsesResponse(chunks, scenario.terminalText, releaseTerminal.promise)
+      : googleResponse(googleEvents(), "managed");
     let receivedText = "";
-    const running = runDeliveryLoop({ emit, subscription }, model, response, async (delta) => {
-      receivedText += delta;
-      if (receivedText === chunks.join("")) {
-        await pipeline.flush({ force: true });
-        beforeEnd.resolve();
-      }
-    });
+    const running = runDeliveryLoop(
+      { emit, subscription },
+      prepared ? responsesModel : googleModel,
+      response,
+      async (delta) => {
+        receivedText += delta;
+        if (receivedText === chunks.join("")) {
+          await pipeline.flush({ force: true });
+          beforeEnd.resolve();
+        }
+      },
+    );
     const settled = Promise.all([producing, running]);
     try {
       await Promise.race([
@@ -316,20 +310,12 @@ it.each([...cases, prefixCorrection])(
         expect.soft(text).not.toContain(scenario.marker);
       }
       if ("replyToId" in scenario) {
-        expect
-          .soft(
-            delivered.filter((payload) => payload.replyToId).map((payload) => payload.replyToId),
-          )
-          .toContain(scenario.replyToId);
-        expect
-          .soft(
-            delivered.every(
-              (payload) =>
-                !payload.replyToId ||
-                (payload.replyToId === scenario.replyToId && payload.replyToTag),
-            ),
-          )
-          .toBe(true);
+        const targets = delivered.filter((payload) => payload.replyToId);
+        expect.soft(targets.map((payload) => payload.replyToId)).toContain(scenario.replyToId);
+        for (const payload of targets) {
+          expect.soft(payload.replyToId).toBe(scenario.replyToId);
+          expect.soft(Boolean(payload.replyToTag)).toBe(true);
+        }
       } else {
         expect.soft(delivered.every(hasNoReplyTarget)).toBe(true);
       }
@@ -346,8 +332,6 @@ it.each([...cases, prefixCorrection])(
       if ("prefixCorrection" in scenario) {
         const recipientText = texts(delivered);
         const additional = recipientText.slice(beforeTerminalCount);
-        // A rewritten native item is delivered again without reconstructing its
-        // historical chunk breaks. The unchanged earlier prefix stays delivered once.
         expect(additional.join(" ")).toBe(scenario.correctedText);
         for (const sentence of scenario.unchangedLeadSentences) {
           expect.soft(recipientText.join(" ").split(sentence)).toHaveLength(2);
@@ -375,35 +359,13 @@ it("does not replay signed Google text when a later part shares its signature", 
   const signature = "c2lnXzE=";
   const firstDelivered = createDeferred();
   let firstCheckpoint = "";
-  const response = new AssistantMessageEventStream();
-  const output = createAssistantOutput(googleModel);
   async function* googleEvents() {
-    yield {
-      candidates: [{ content: { parts: [{ text: first, thoughtSignature: signature }] } }],
-    };
+    const part = (text: string) => ({ text, thoughtSignature: signature });
+    yield googleChunk([part(first)]);
     await firstDelivered.promise;
-    yield {
-      candidates: [
-        {
-          content: {
-            parts: [
-              { text: "[[reply_to_current]]", thoughtSignature: signature },
-              { text: "Second.\n", thoughtSignature: signature },
-            ],
-          },
-          finishReason: "STOP",
-        },
-      ],
-    };
+    yield googleChunk([part("[[reply_to_current]]"), part("Second.\n")], "STOP");
   }
-  const producing = consumeGoogleGenerateContentStream({
-    chunks: googleEvents(),
-    model: googleModel,
-    output,
-    stream: response,
-    profile: "sdk",
-    nextToolCallId: () => "unused-tool",
-  });
+  const { response, producing } = googleResponse(googleEvents(), "sdk");
   const running = runDeliveryLoop({ emit, subscription }, googleModel, response, async (delta) => {
     if (delta === first) {
       await pipeline.flush({ force: true });
@@ -427,15 +389,12 @@ it("does not replay signed Google text when a later part shares its signature", 
 
 it("holds a partial MEDIA prefix through ordinary word completion", async () => {
   const prefix = "x".repeat(48);
-  const { delivered, blocks, emit, flush } = createDeliveryHarness({
-    minChars: 50,
-  });
+  const { delivered, blocks, emit, flush } = createDeliveryHarness({ minChars: 50 });
   let text = `${prefix}\nM`;
   emit({ type: "message_start", message: createAssistantOutput(googleModel) });
   emitText(emit, "text_delta", text);
   await flush();
-  expect.soft(blocks).toEqual([]);
-  expect.soft(delivered).toEqual([]);
+  expect.soft({ blocks, delivered }).toEqual({ blocks: [], delivered: [] });
 
   for (const delta of ["e", "tal"]) {
     text += delta;
@@ -486,14 +445,12 @@ it.each(["literal", "voice", "token"] as const)(
 );
 
 it("applies a directive-only text_end to already-buffered audio", async () => {
-  const { delivered, pipeline, handler, emit, subscription } = createDeliveryHarness();
+  const { delivered, handler, emit, flush } = createDeliveryHarness();
   await handler({ mediaUrls: [audioUrl] });
   emit({ type: "message_start", message: { role: "assistant" } });
   emitAssistantTextDelta({ emit, delta: "[[audio_as_voice]]" });
   emitAssistantTextEnd({ emit });
-  await subscription.waitForPendingEvents();
-  await pipeline.flush({ force: true });
-
+  await flush();
   expect(delivered.filter(isAudioPayload)).toEqual([
     expect.objectContaining({ mediaUrls: [audioUrl], audioAsVoice: true }),
   ]);
@@ -538,9 +495,7 @@ it.each([
   for (const text of expectedReplies) {
     expect(delivered.filter((payload) => payload.text === text)).toHaveLength(1);
   }
-  const audio = delivered.filter(isAudioPayload);
-  expect(audio).toHaveLength(1);
-  expect(audio[0]?.audioAsVoice).toBe(true);
+  expect(delivered.filter(isAudioPayload).map((payload) => payload.audioAsVoice)).toEqual([true]);
 });
 
 it("keeps generic directive URLs separate from tool-owned managed media", () => {

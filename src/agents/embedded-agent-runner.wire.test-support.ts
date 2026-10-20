@@ -83,6 +83,12 @@ export function providerResponse(params: {
   const tool = calls.length > 0;
   const cached = (key: string) =>
     cacheRead === undefined ? {} : { [key]: { cached_tokens: cacheRead } };
+  const usage = (input: string, outputTokens: string, details: string) => ({
+    [input]: 1000,
+    [outputTokens]: 2,
+    total_tokens: 1002,
+    ...cached(details),
+  });
   const message = (value: string) => ({
     type: "message",
     id: params.messageId,
@@ -152,12 +158,7 @@ export function providerResponse(params: {
       {
         ...chunk,
         choices: [{ index: 0, delta: {}, finish_reason: tool ? "tool_calls" : "stop" }],
-        usage: {
-          prompt_tokens: 1000,
-          completion_tokens: 2,
-          total_tokens: 1002,
-          ...cached("prompt_tokens_details"),
-        },
+        usage: usage("prompt_tokens", "completion_tokens", "prompt_tokens_details"),
       },
     ];
   } else {
@@ -199,12 +200,7 @@ export function providerResponse(params: {
           status: failure ? "failed" : "completed",
           output,
           ...(failure ? { error: { code: failure.code, message: failure.message } } : {}),
-          usage: {
-            input_tokens: 1000,
-            output_tokens: 2,
-            total_tokens: 1002,
-            ...cached("input_tokens_details"),
-          },
+          usage: usage("input_tokens", "output_tokens", "input_tokens_details"),
         },
       },
     ];
