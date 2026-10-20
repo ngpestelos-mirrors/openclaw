@@ -10,7 +10,7 @@ import { flush, waitForSolid } from "../../../test-helpers/solid-settle.ts";
 import { loadAssistantAttachmentAvailability } from "./chat-message-attachment-availability.ts";
 import { AssistantAttachments, MessageAttachment } from "./chat-message-attachments-solid.tsx";
 import { MessageImages } from "./chat-message-images-solid.tsx";
-import { stubObjectUrls } from "./chat-message-media.test-helpers.ts";
+import { managedSource, stubObjectUrls } from "./chat-message-media.test-helpers.ts";
 import type { AttachmentItem, ImageBlock } from "./chat-message-media.ts";
 import { MessageVideoPreview } from "./chat-message-video-preview-solid.tsx";
 import { SentCommentAttachments } from "./chat-sent-comments.tsx";
@@ -117,9 +117,7 @@ it("retries a standalone native image after a failed preview", async () => {
   await loadAssistantAttachmentAvailability(source);
   const view = mountSolid(() => <MessageImages images={[{ url: source }]} />);
   await waitForSolid(() => expect(view.container.querySelector("img")).not.toBeNull());
-  const image = view.container.querySelector("img")!;
-  expect(image).not.toBeNull();
-  image.dispatchEvent(new Event("error"));
+  view.container.querySelector("img")!.dispatchEvent(new Event("error"));
   flush();
   view.getByRole("button", { name: /^Retry$/ }).click();
   await waitForSolid(() => expect(fetchMock).toHaveBeenCalledTimes(2));
@@ -220,14 +218,13 @@ it.each(["document", "audio", "video"] as const)(
         disconnect() {}
       },
     );
-    const url = `/api/chat/media/outgoing/agent%3Amain%3Amain/${crypto.randomUUID()}/full`;
+    const url = managedSource();
     const pending = createDeferred<{ url: string }>();
     const resolveArtifactDownload = vi.fn(() => pending.promise);
-    const options = { resolveArtifactDownload };
     const view = mountSolid(() => (
       <MessageAttachment
         item={attachment(kind, `${kind} recording`, url, `fixture-${kind}`)}
-        options={options}
+        options={{ resolveArtifactDownload }}
         presentation="card"
       />
     ));

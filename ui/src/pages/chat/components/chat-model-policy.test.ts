@@ -4,9 +4,9 @@ import { expect, it, vi } from "vitest";
 import type { ModelCatalogResult } from "../../../api/types.ts";
 import { createSessionsListResult } from "../../../test-helpers/chat-model.ts";
 import { mountSolid } from "../../../test-helpers/mount-solid.ts";
-import { flush, waitForSolid } from "../../../test-helpers/solid-settle.ts";
+import { flush } from "../../../test-helpers/solid-settle.ts";
 import { ChatModelControls } from "./chat-model-controls.tsx";
-import { modelControl } from "./chat-model-picker.test-support.tsx";
+import { modelControl, waitForModelMenu } from "./chat-model-picker.test-support.tsx";
 
 const models = ["primary", "fallback", "custom"].map((id) => ({
   id,
@@ -50,9 +50,7 @@ async function mountControls(catalog: ModelCatalogResult, retired = false) {
     }),
   );
   flush();
-  await waitForSolid(() =>
-    expect(container.querySelector(".chat-controls__model-menu")).not.toBeNull(),
-  );
+  await waitForModelMenu(container);
   expect(JSON.stringify(selectedSession)).toBe(before);
   return { container, onModelSelect };
 }

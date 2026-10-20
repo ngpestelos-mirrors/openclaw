@@ -2,6 +2,7 @@ import { afterEach, expect, it, vi } from "vitest";
 import { createDeferred } from "../../../../../test/helpers/promise.js";
 import { en } from "../../../i18n/locales/en.ts";
 import { prepareChatMessageRender } from "./chat-message-markdown-view.tsx";
+import { managedSource } from "./chat-message-media.test-helpers.ts";
 import { createGroupedMessageHarness } from "./chat-message-native.test-support.tsx";
 import baseCss from "../../../styles/base.css?inline";
 import layoutCss from "../../../styles/chat/layout.css?inline";
@@ -34,6 +35,11 @@ const video = {
   width: 320,
   height: 180,
 };
+const viewports = ["light", "dark"].flatMap((theme) =>
+  [1440, 390].map((width) => ({ theme, width })),
+);
+const all = <T extends Element = HTMLElement>(root: ParentNode, selector: string) =>
+  Array.from(root.querySelectorAll<T>(selector));
 
 afterEach(() => {
   for (const [container, view] of views) {
@@ -78,11 +84,7 @@ function mount(width: number, theme: string) {
 }
 
 function blocks(container: HTMLElement) {
-  return Array.from(
-    container.querySelectorAll<HTMLElement>(
-      ".chat-text > p, .chat-image-frame, .chat-assistant-attachment-card",
-    ),
-  );
+  return all(container, ".chat-text > p, .chat-image-frame, .chat-assistant-attachment-card");
 }
 const rect = (element: Element) => element.getBoundingClientRect();
 const geometry = (container: HTMLElement) =>
@@ -95,7 +97,6 @@ function expectRhythm(container: HTMLElement, count: number) {
   const rendered = blocks(container);
   expect(rendered).toHaveLength(count);
   const paragraph = container.querySelector(".chat-text > p");
-  // --chat-block-gap tracks the transcript font size.
   const expected = Number.parseFloat(getComputedStyle(paragraph ?? rendered[0]!).fontSize);
   const rects = rendered.map(rect);
   for (let index = 1; index < rects.length; index += 1) {
@@ -112,8 +113,8 @@ function expectRhythm(container: HTMLElement, count: number) {
 }
 
 it.each(
-  ["light", "dark"].flatMap((theme) =>
-    [1440, 390].flatMap((width) => [false, true].map((streaming) => ({ theme, width, streaming }))),
+  viewports.flatMap(({ theme, width }) =>
+    [false, true].map((streaming) => ({ theme, width, streaming })),
   ),
 )(
   "matches paragraph rhythm in $theme at $width px (streaming: $streaming)",
@@ -133,11 +134,8 @@ it.each(
     ];
     draw(content, streaming);
     await vi.waitFor(() => expectRhythm(container, 11));
-    const images = Array.from(
-      container.querySelectorAll<HTMLImageElement>("img.chat-message-image"),
-    );
-    // Admit each lazy image through the viewport before awaiting its decode.
-    // The last media block can be below Chromium's loading margin.
+    const images = all<HTMLImageElement>(container, "img.chat-message-image");
+    // The last lazy image can be below Chromium's loading margin.
     for (const element of images) {
       element.scrollIntoView({ block: "center", inline: "nearest", behavior: "instant" });
       await element.decode();
@@ -147,7 +145,7 @@ it.each(
       for (const isStreaming of [true, false]) {
         draw([...content, text("\n\nStreaming continues.")], isStreaming);
         expectRhythm(container, 12);
-        const updatedImages = Array.from(container.querySelectorAll("img.chat-message-image"));
+        const updatedImages = all(container, "img.chat-message-image");
         expect(updatedImages).toHaveLength(images.length);
         for (const [index, retainedImage] of images.entries()) {
           expect(updatedImages[index]).toBe(retainedImage);
@@ -176,14 +174,7 @@ it("reserves the image and both gaps while a streamed image loads", async () => 
   );
   const { container, draw } = mount(390, "dark");
   draw(
-    [
-      text("Before the image."),
-      {
-        ...image,
-        url: `/api/chat/media/outgoing/agent%3Amain%3Amain/${crypto.randomUUID()}/full`,
-      },
-      text("After the image."),
-    ],
+    [text("Before the image."), { ...image, url: managedSource() }, text("After the image.")],
     true,
   );
   expectRhythm(container, 3);
@@ -196,8 +187,8 @@ it("reserves the image and both gaps while a streamed image loads", async () => 
 });
 
 it.each(
-  ["light", "dark"].flatMap((theme) =>
-    [1440, 390].flatMap((width) => ["assistant", "user"].map((role) => ({ theme, width, role }))),
+  viewports.flatMap(({ theme, width }) =>
+    ["assistant", "user"].map((role) => ({ theme, width, role })),
   ),
 )(
   "separates all heading levels in $role messages ($theme, $width px)",
@@ -263,7 +254,7 @@ it.each([
     container.dir = direction;
     container.style.setProperty("--control-ui-text-scale", String(scale));
     draw(Array.from({ length: 2 }, () => ({ type: "openclaw_pairing_qr", expiresAtMs: 1 })));
-    const cards = [...container.querySelectorAll<HTMLElement>(".chat-pairing-qr-expired")];
+    const cards = all(container, ".chat-pairing-qr-expired");
     expect(cards).toHaveLength(2);
     for (const card of cards) {
       const box = rect(card);

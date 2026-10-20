@@ -1,5 +1,4 @@
 /* @vitest-environment jsdom */
-import { createComponent } from "solid-js";
 import { expect, it, onTestFinished, vi } from "vitest";
 import type { ChatModelCatalogState as ModelCatalogState } from "../../../lib/model-catalog-store.ts";
 import { mountSolid } from "../../../test-helpers/mount-solid.ts";
@@ -31,22 +30,25 @@ it.each([
     };
     const container = document.createElement("div");
     const setup = vi.fn();
-    const mounted = mountSolid(
-      () =>
-        createComponent(ChatModelCatalogState, {
-          state,
-          hasOptions,
-          hasSelectableOptions: hasOptions,
-          onModelSetup: presentation === "setup" ? setup : undefined,
-        }),
-      { container },
-    );
-    flush();
+    const render = (Component = ChatModelCatalogState) => {
+      const view = mountSolid(
+        () => (
+          <Component
+            {...{ state, hasOptions }}
+            hasSelectableOptions={hasOptions}
+            onModelSetup={presentation === "setup" ? setup : undefined}
+          />
+        ),
+        { container },
+      );
+      flush();
+      return view;
+    };
+    const mounted = render();
     if (presentation === "refresh") {
       expect(container.querySelector("[role=status]")).toBeNull();
       mounted.unmount();
-      mountSolid(() => <ChatModelCatalogRefresh {...{ state }} />, { container });
-      flush();
+      render(ChatModelCatalogRefresh);
       expect(container.querySelector(".btn__spinner")?.getAttribute("aria-hidden")).toBe("true");
       expect(
         container.querySelector(".chat-controls__model-refresh-details")?.textContent,
@@ -63,8 +65,7 @@ it.each([
       expect(setup).toHaveBeenCalledOnce();
     } else if (presentation === "settled") {
       mounted.unmount();
-      mountSolid(() => <ChatModelCatalogRefresh {...{ state }} />, { container });
-      flush();
+      render(ChatModelCatalogRefresh);
       expect(modelControl(container, "refresh")).toBeNull();
     }
   },
@@ -84,34 +85,28 @@ it.each([
     container.remove();
     elsewhere.remove();
   });
-  const options = (modelCatalogState: ModelCatalogState, hasOptions = true) =>
-    modelPickerProps({
-      modelCatalogState,
-      modelOptions: hasOptions ? [modelOption("example", "model", { label: "Example Model" })] : [],
-      open: true,
-      selectedModelValue: "example/model",
-      triggerModelLabel: "Example Model",
-      onModelSelect: async () => {},
-    });
+  const params = modelPickerProps({
+    modelOptions: [modelOption("example", "model", { label: "Example Model" })],
+    selectedModelValue: "example/model",
+    triggerModelLabel: "Example Model",
+    open: true,
+  });
   const pending: ModelCatalogState = {
     hasSnapshot: true,
     status: "ready",
     pendingProviders: ["example"],
   };
-  const view = mountModelPicker(options(pending), { container });
+  const view = mountModelPicker({ ...params, modelCatalogState: pending }, { container });
   const update = (state: ModelCatalogState, hasOptions = true) =>
-    view.update(options(state, hasOptions));
-  update(pending);
+    view.update({
+      ...params,
+      modelCatalogState: state,
+      modelOptions: hasOptions ? params.modelOptions : [],
+    });
   await waitForModelMenu(container);
   const pickerDetails = container.querySelector("details")!;
-  pickerDetails.open = true;
-  pickerDetails.dispatchEvent(new Event("toggle"));
-  await Promise.resolve();
-  const input = modelControl<HTMLInputElement>(container, "search");
-  const refresh = container.querySelector<HTMLButtonElement>("[data-chat-model-refresh] button");
-  if (!input || !refresh) {
-    throw new Error("Expected the model search and refresh control");
-  }
+  const input = modelControl<HTMLInputElement>(container, "search")!;
+  const refresh = container.querySelector<HTMLButtonElement>("[data-chat-model-refresh] button")!;
   input.value = "model";
   input.dispatchEvent(new InputEvent("input", { bubbles: true }));
   refresh.focus();
@@ -130,22 +125,20 @@ it.each([
   await Promise.resolve();
 
   expect(modelControl(container, "refresh")).toBeNull();
-  expect(document.activeElement).toBe(
-    afterCommit === "restore search"
-      ? input
-      : afterCommit === "restore trigger"
-        ? container.querySelector("summary")
-        : afterCommit === "preserve moved focus"
-          ? elsewhere
-          : document.body,
-  );
+  const expectedFocus = {
+    "restore search": input,
+    "restore trigger": container.querySelector("summary"),
+    "preserve moved focus": elsewhere,
+    "keep closed": document.body,
+    "keep removed": document.body,
+  };
+  expect(document.activeElement).toBe(expectedFocus[afterCommit]);
   if (afterCommit === "restore search") {
     expect(input.value).toBe("model");
   }
 });
 
-// missing-auth on a Claude CLI row also means a disabled anthropic plugin or a missing
-// account pin, so the hint must stay true for a user who is already signed in.
+// Missing-auth may mean disabled plugin or missing pin, not just signed out.
 it.each([
   ["anthropic", "claude-cli", "Claude Code isn't ready. If signed out, run claude auth login."],
   ["openai", undefined, "No models available"],
@@ -167,7 +160,6 @@ it.each([
       selectedModelValue: `${provider}/model`,
       sessionModelPinned: false,
       triggerModelLabel: "Model",
-      onModelSelect: async () => {},
       onModelSetup: () => {},
     });
     await waitForModelMenu(container);

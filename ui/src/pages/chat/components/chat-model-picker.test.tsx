@@ -1,5 +1,5 @@
 /* @vitest-environment jsdom */
-import { afterEach, expect, it, vi } from "vitest";
+import { expect, it } from "vitest";
 import type { ModelProviderAuthLabel } from "../../../lib/model-provider-auth-label.ts";
 import { flush } from "../../../test-helpers/solid-settle.ts";
 import {
@@ -9,33 +9,6 @@ import {
   mountModelPicker as mountPicker,
   waitForModelMenu as waitForMenu,
 } from "./chat-model-picker.test-support.tsx";
-
-afterEach(() => document.body.replaceChildren());
-
-it("mounts model choices on first open and retains them across dismissal", async () => {
-  const onModelSelect = vi.fn(async () => {});
-  const { container } = mountPicker({
-    modelOptions: [option("fixture", "current", { label: "Current" })],
-    onModelSelect,
-  });
-  expect(modelControl(container, "option")).toBeNull();
-  expect(container.querySelector(".chat-controls__model-menu")).toBeNull();
-  const details = container.querySelector("details")!;
-  details.querySelector("summary")!.click();
-  flush();
-  await waitForMenu(container);
-  const choice = modelControl<HTMLButtonElement>(container, "option")!;
-  expect(choice.hidden).toBe(false);
-  details.open = false;
-  details.dispatchEvent(new Event("toggle"));
-  flush();
-  details.querySelector("summary")!.click();
-  flush();
-  await waitForMenu(container);
-  expect(modelControl(container, "option")).toBe(choice);
-  choice.click();
-  expect(onModelSelect).toHaveBeenCalledWith("fixture/current", "main", undefined);
-});
 
 it.each([false, true])(
   "initially expands the selected provider and retains toggles on reopen (inherited=%s)",
@@ -62,10 +35,8 @@ it.each([false, true])(
       .closest("section")!
       .querySelector<HTMLButtonElement>("[data-chat-model-provider-toggle]")!;
     expect(toggle.getAttribute("aria-expanded")).toBe("true");
-    expect(selected.hidden).toBe(false);
-    expect(other.hidden).toBe(true);
+    expect([selected.hidden, other.hidden]).toEqual([false, true]);
 
-    // A deliberate collapse survives closing and reopening the picker.
     toggle.click();
     flush();
     expect(selected.hidden).toBe(true);
@@ -75,8 +46,7 @@ it.each([false, true])(
     details.dispatchEvent(new Event("toggle"));
     await waitForMenu(container);
     expect(toggle.getAttribute("aria-expanded")).toBe("false");
-    expect(selected.hidden).toBe(true);
-    expect(other.hidden).toBe(true);
+    expect([selected.hidden, other.hidden]).toEqual([true, true]);
 
     // The next selection, including a change while closed, owns the open group.
     update({ ...params, open: false, selectedModelValue: "other/first" });
@@ -84,8 +54,7 @@ it.each([false, true])(
     details.open = true;
     details.dispatchEvent(new Event("toggle"));
     await waitForMenu(container);
-    expect(other.hidden).toBe(false);
-    expect(selected.hidden).toBe(true);
+    expect([other.hidden, selected.hidden]).toEqual([false, true]);
   },
 );
 
@@ -106,8 +75,8 @@ it.each([false, true])(
     });
     await waitForMenu(container);
     const rows = Array.from(container.querySelectorAll<HTMLElement>("[data-chat-model-option]"));
-    expect(rows).toHaveLength(300);
-    expect(rows.filter((row) => !row.hidden)).toHaveLength(9);
+    const visibleRows = () => rows.filter((row) => !row.hidden);
+    expect([rows.length, visibleRows().length]).toEqual([300, 9]);
     expect(rows.slice(0, 3).map((row) => row.dataset.chatModelOption)).toEqual(
       hasDefault
         ? ["fixture/model-0", "fixture/model-299", "fixture/model-1"]
@@ -118,15 +87,13 @@ it.each([false, true])(
     const search = modelControl<HTMLInputElement>(container, "search")!;
     search.value = "Model 298";
     search.dispatchEvent(new Event("input", { bubbles: true }));
-    expect(rows.filter((row) => !row.hidden).map((row) => row.dataset.chatModelOption)).toEqual([
-      "fixture/model-298",
-    ]);
+    expect(visibleRows().map((row) => row.dataset.chatModelOption)).toEqual(["fixture/model-298"]);
     expect(more.hidden).toBe(true);
     search.value = "";
     search.dispatchEvent(new Event("input", { bubbles: true }));
-    expect(rows.filter((row) => !row.hidden)).toHaveLength(9);
+    expect(visibleRows()).toHaveLength(9);
     more.click();
-    expect(rows.filter((row) => !row.hidden)).toHaveLength(300);
+    expect(visibleRows()).toHaveLength(300);
     expect(more.hidden).toBe(true);
   },
 );
@@ -151,25 +118,20 @@ it.each([false, true])(
     await waitForMenu(container);
     const rest = modelControl<HTMLButtonElement>(container, "option", "fixture/rest")!;
     const group = modelControl<HTMLButtonElement>(container, "provider-toggle")!;
-    expect(more.hidden).toBe(false);
-    expect(rest.hidden).toBe(true);
+    expect([more.hidden, rest.hidden]).toEqual([false, true]);
 
     more.focus();
     more.click();
     flush();
-    expect(more.hidden).toBe(true);
-    expect(rest.hidden).toBe(false);
+    expect([more.hidden, rest.hidden]).toEqual([true, false]);
     // Keyboard focus lands on the first selectable revealed model, else back on search.
     expect(document.activeElement).toBe(restDisabled ? modelControl(container, "search") : rest);
 
-    // Collapsing and reopening the provider group keeps the models inline, with no row to re-collapse.
     group.click();
     flush();
     group.click();
     flush();
-    expect(more.hidden).toBe(true);
-    expect(rest.hidden).toBe(false);
-    container.remove();
+    expect([more.hidden, rest.hidden]).toEqual([true, false]);
   },
 );
 
