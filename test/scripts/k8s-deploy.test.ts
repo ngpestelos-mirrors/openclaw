@@ -1,5 +1,5 @@
 import { spawnSync } from "node:child_process";
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { afterEach, expect, it } from "vitest";
 import { useAutoCleanupTempDirTracker } from "../helpers/temp-dir.js";
@@ -8,20 +8,15 @@ const tempDirs = useAutoCleanupTempDirTracker(afterEach);
 
 function runWithStubbedKubectl(mode: string, namespace: string, deleteKustomizeStatus = 0) {
   const root = tempDirs.make("openclaw-k8s-delete-");
-  const binDir = path.join(root, "bin");
   const logPath = path.join(root, "kubectl.log");
-  mkdirSync(binDir);
 
   writeFileSync(
-    path.join(binDir, "kubectl"),
+    path.join(root, "kubectl"),
     `#!/usr/bin/env bash
 set -euo pipefail
 printf '%s\\n' "$*" >> "$OPENCLAW_KUBECTL_LOG"
 if [[ "$1" == "delete" && "$2" == "-k" ]]; then
   exit "\${OPENCLAW_KUBECTL_DELETE_KUSTOMIZE_STATUS:-0}"
-fi
-if [[ "$1" == "get" && "$2" == "namespace" ]]; then
-  exit 99
 fi
 case "$1" in
   cluster-info|delete) exit 0 ;;
@@ -30,17 +25,16 @@ esac
 `,
     { mode: 0o755 },
   );
-  writeFileSync(path.join(binDir, "openssl"), "#!/usr/bin/env bash\nexit 0\n", { mode: 0o755 });
+  writeFileSync(path.join(root, "openssl"), "#!/usr/bin/env bash\nexit 0\n", { mode: 0o755 });
 
   const result = spawnSync("bash", ["scripts/k8s/deploy.sh", mode], {
-    cwd: process.cwd(),
     encoding: "utf8",
     env: {
       ...process.env,
       OPENCLAW_KUBECTL_DELETE_KUSTOMIZE_STATUS: String(deleteKustomizeStatus),
       OPENCLAW_KUBECTL_LOG: logPath,
       OPENCLAW_NAMESPACE: namespace,
-      PATH: `${binDir}:${process.env.PATH ?? ""}`,
+      PATH: `${root}:${process.env.PATH ?? ""}`,
     },
   });
 

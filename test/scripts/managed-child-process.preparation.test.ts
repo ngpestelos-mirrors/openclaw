@@ -5,8 +5,8 @@ import { pathToFileURL } from "node:url";
 import { afterEach, expect, it } from "vitest";
 import { killPidIfAlive } from "../../src/test-utils/process-tree.js";
 import { createFixtureLifetime } from "../helpers/fixture-lifetime.js";
-import { isProcessAlive, waitForDead } from "../helpers/process-wait.js";
-import { awaitGateBeforeSettlement, createDeferred, withinTest } from "../helpers/promise.js";
+import { isProcessAlive, waitForDead, waitForFixtureFile } from "../helpers/process-wait.js";
+import { withinTest } from "../helpers/promise.js";
 import { runNodeScript } from "../helpers/run-node-script.js";
 
 const fixture = createFixtureLifetime();
@@ -18,14 +18,10 @@ it.skipIf(process.platform === "win32")(
     fixture.run(async () => {
       const cwd = fixture.createTempDir("managed-preparation-cancellation-");
       const file = (role: string, extension = "mjs") => path.join(cwd, `${role}.${extension}`);
-      const supervisorPath = file("supervisor");
-      const reportPath = path.join(cwd, "result.json");
+      const reportPath = file("result", "json");
       const pidPaths = ["shim", "implementation", "preparation"].map((role) => file(role, "pid"));
-      const ready = createDeferred();
       const programs = {
-        preparation: `fs.writeSync(1, "preparation-ready\\n");
-Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0);
-`,
+        preparation: "Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0);\n",
         implementation: `import { spawnSync } from "node:child_process";
 spawnSync(process.execPath, [${JSON.stringify(file("preparation"))}], { stdio: "inherit" });
 `,
@@ -35,23 +31,7 @@ await runNodeCliShim(import.meta.url, {
   terminationOwner: "implementation",
 });
 `,
-      };
-      for (const [role, body] of Object.entries(programs)) {
-        const handlers =
-          role === "shim"
-            ? ""
-            : 'for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"]) process.on(signal, () => {});\n';
-        fs.writeFileSync(
-          file(role),
-          `import fs from "node:fs";
-${handlers}fs.writeFileSync(${JSON.stringify(file(role, "pid"))}, String(process.pid));
-${body}`,
-        );
-      }
-      fs.writeFileSync(
-        supervisorPath,
-        `import fs from "node:fs";
-import { runManagedCommand } from ${JSON.stringify(pathToFileURL(path.resolve("scripts/lib/managed-child-process.mts")).href)};
+        supervisor: `import { runManagedCommand } from ${JSON.stringify(pathToFileURL(path.resolve("scripts/lib/managed-child-process.mts")).href)};
 let report;
 try {
   report = { status: await runManagedCommand({
@@ -67,20 +47,25 @@ try {
 fs.writeFileSync(${JSON.stringify(reportPath)}, JSON.stringify(report));
 process.exitCode = report.status ?? 1;
 `,
-      );
+      };
+      for (const [role, body] of Object.entries(programs)) {
+        const handlers = ["implementation", "preparation"].includes(role)
+          ? 'for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"]) process.on(signal, () => {});\n'
+          : "";
+        const pidRecord =
+          role === "supervisor"
+            ? ""
+            : `fs.writeFileSync(${JSON.stringify(file(role, "pid"))}, String(process.pid));\n`;
+        fs.writeFileSync(file(role), `import fs from "node:fs";\n${handlers}${pidRecord}${body}`);
+      }
 
       let supervisor: ChildProcess | undefined;
       const completion = fixture.track(
-        runNodeScript(supervisorPath, process.env, undefined, {
+        runNodeScript(file("supervisor"), process.env, undefined, {
           cwd,
           maxBuffer: 64 * 1024,
-          onReady(child, readOutput) {
+          onReady(child) {
             supervisor = child;
-            child.stdout!.on("data", () => {
-              if (readOutput().stdout.includes("preparation-ready\n")) {
-                ready.resolve();
-              }
-            });
           },
         }),
       );
@@ -96,14 +81,7 @@ process.exitCode = report.status ?? 1;
       };
       const readOwnedPids = () => pidPaths.flatMap(readOwnedPid);
       try {
-        await withinTest(
-          awaitGateBeforeSettlement(
-            ready.promise,
-            completion,
-            "synchronous preparation did not become ready",
-          ),
-          signal,
-        );
+        await withinTest(waitForFixtureFile(file("preparation", "pid"), completion), signal);
         expect(readOwnedPids()).toHaveLength(3);
         expect(supervisor?.kill("SIGINT")).toBe(true);
         const result = await withinTest(completion, signal);
@@ -119,17 +97,15 @@ process.exitCode = report.status ?? 1;
           // The baseline can lose its shim while its detached implementation survives.
           const cleanupSignal = AbortSignal.timeout(5_000);
           const failures: unknown[] = [];
-          const collectFailure = async (work: () => void | Promise<void>) => {
-            try {
-              await work();
-            } catch (error) {
-              failures.push(error);
-            }
-          };
           const stop = async (pid: number) => {
-            await collectFailure(() => killPidIfAlive(pid));
             // Test cancellation must not prevent independent fallback cleanup.
-            await collectFailure(() => waitForDead(pid, cleanupSignal));
+            for (const work of [() => killPidIfAlive(pid), () => waitForDead(pid, cleanupSignal)]) {
+              await Promise.resolve()
+                .then(work)
+                .catch((error: unknown) => {
+                  failures.push(error);
+                });
+            }
           };
           if (supervisor?.pid) {
             await stop(supervisor.pid);

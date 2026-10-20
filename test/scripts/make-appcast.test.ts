@@ -30,20 +30,15 @@ it.skipIf(process.platform === "win32").each([
 ])("generates the correct Sparkle channel for %s with system Bash", (version, channel) => {
   const root = tempDirs.make("openclaw-appcast-");
   const at = (name: string) => path.join(root, name);
-  const scripts = at("scripts");
-  mkdirSync(scripts);
-  copyFileSync(scriptPath, path.join(scripts, "make_appcast.sh"));
-  writeFileSync(
-    path.join(scripts, "changelog-to-html.sh"),
-    "#!/bin/sh\necho '<p>Release notes</p>'\n",
-    { mode: 0o755 },
-  );
+  mkdirSync(at("scripts"));
+  const executable = (name: string, body: string) => writeFileSync(at(name), body, { mode: 0o755 });
+  copyFileSync(scriptPath, at("scripts/make_appcast.sh"));
+  executable("scripts/changelog-to-html.sh", "#!/bin/sh\necho '<p>Release notes</p>'\n");
   const zip = at(`OpenClaw-${version}.zip`);
   writeFileSync(zip, "fixture archive");
   writeFileSync(at("appcast.xml"), "previous feed");
-  const generator = at("generate-appcast");
-  writeFileSync(
-    generator,
+  executable(
+    "generate-appcast",
     `#!/usr/bin/env node
 const fs = require("node:fs");
 const path = require("node:path");
@@ -53,28 +48,26 @@ fs.writeFileSync(path.join(__dirname, "arguments.json"), JSON.stringify(args));
 const output = args.includes("-o") ? args[args.indexOf("-o") + 1] : path.join(args.at(-1), "appcast-arm64.xml");
 fs.writeFileSync(output, '<rss><channel><item><sparkle:shortVersionString>${version}</sparkle:shortVersionString><enclosure sparkle:edSignature="fixture-signature" /></item></channel></rss>');
 `,
-    { mode: 0o755 },
   );
-  const result = spawnSync("/bin/bash", [path.join(scripts, "make_appcast.sh"), zip], {
+  const result = spawnSync("/bin/bash", [at("scripts/make_appcast.sh"), zip], {
     encoding: "utf8",
     env: {
       ...process.env,
       SPARKLE_PRIVATE_KEY_FILE: at("unused-fixture-key"),
-      SPARKLE_GENERATE_APPCAST: generator,
+      SPARKLE_GENERATE_APPCAST: at("generate-appcast"),
       SPARKLE_RELEASE_VERSION: version,
       KEEP_SPARKLE_NOTES: "0",
     },
   });
-  const argsFile = at("arguments.json");
   if (channel === "refused") {
     expect(result.status).not.toBe(0);
     expect(result.stderr).toContain("Alpha releases do not ship via Sparkle");
-    expect(existsSync(argsFile)).toBe(false);
+    expect(existsSync(at("arguments.json"))).toBe(false);
     expect(readFileSync(at("appcast.xml"), "utf8")).toBe("previous feed");
     return;
   }
   expect(result.status, result.stderr).toBe(0);
-  const args = JSON.parse(readFileSync(argsFile, "utf8")) as string[];
+  const args = JSON.parse(readFileSync(at("arguments.json"), "utf8")) as string[];
   expect(args).toContain("--embed-release-notes");
   expect(args.includes("--channel")).toBe(Boolean(channel));
   if (channel) {

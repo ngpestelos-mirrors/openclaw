@@ -80,15 +80,12 @@ it("warns and succeeds without adding a label when all 100 slots are occupied", 
   expect(fixture.core.warning).toHaveBeenCalledWith(expect.stringMatching(/size: S.*100/));
 });
 
-it.each(["size: XS", "size: S"])(
-  "uses available capacity after removing a stale size label (%s)",
-  async (sizeLabel) => {
-    const fixture = labelFixture([...areaLabels(99), sizeLabel]);
-    await fixture.run();
-    expect(fixture.labels).toEqual(new Set([...areaLabels(99), "size: S"]));
-    expect(fixture.core.warning).not.toHaveBeenCalled();
-  },
-);
+it.each(["size: XS", "size: S"])("replaces %s within the label cap", async (sizeLabel) => {
+  const fixture = labelFixture([...areaLabels(99), sizeLabel]);
+  await fixture.run();
+  expect(fixture.labels).toEqual(new Set([...areaLabels(99), "size: S"]));
+  expect(fixture.core.warning).not.toHaveBeenCalled();
+});
 it("does not label a non-member", async () => {
   const fixture = labelFixture([], undefined, executeMaintainerLabel);
   fixture.teams.getMembershipForUserInOrg.mockRejectedValue(githubError("Not Found", 404));
@@ -96,24 +93,21 @@ it("does not label a non-member", async () => {
   expect(fixture.issues.addLabels).not.toHaveBeenCalled();
   expect(fixture.core.warning).not.toHaveBeenCalled();
 });
-it.each([
-  [executeSizeLabel, 422, "Validation Failed: label does not exist"],
-  [executeMaintainerLabel, 403, "Resource not accessible by integration"],
-] satisfies [typeof executeSizeLabel, number, string][])(
-  "propagates unrelated GitHub errors: %s %s %s",
-  async (execute, status, message) => {
-    const error = githubError(message, status);
-    const fixture = labelFixture([], error, execute);
-    await expect(fixture.run()).rejects.toBe(error);
-    expect(fixture.core.warning).not.toHaveBeenCalled();
-  },
-);
+it.each<[number, typeof executeSizeLabel, string]>([
+  [422, executeSizeLabel, "Validation Failed: label does not exist"],
+  [403, executeMaintainerLabel, "Resource not accessible by integration"],
+])("propagates API %i errors", async (status, execute, message) => {
+  const error = githubError(message, status);
+  const fixture = labelFixture([], error, execute);
+  await expect(fixture.run()).rejects.toBe(error);
+  expect(fixture.core.warning).not.toHaveBeenCalled();
+});
 
 it("every label-adding site routes through addLabelsWithinCap", () => {
   // The helper owns the 100-label cap; a new raw call would restore the red check from PR #137506.
-  const scriptLines = Object.values(workflow.jobs)
+  const rawCalls = Object.values(workflow.jobs)
     .flatMap((job) => job.steps)
     .flatMap((step) => (step.with?.script ?? "").split("\n"))
-    .filter((line) => !line.trim().startsWith("//"));
-  expect(scriptLines.filter((line) => line.includes("issues.addLabels("))).toEqual([]);
+    .filter((line) => !line.trim().startsWith("//") && line.includes("issues.addLabels("));
+  expect(rawCalls).toEqual([]);
 });
