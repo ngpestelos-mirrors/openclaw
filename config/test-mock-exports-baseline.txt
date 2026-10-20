@@ -3103,7 +3103,6 @@
 ["src/auto-reply/reply/get-reply-native-slash-fast-path.test.ts","./commands-status.js","3ce182cde74ff675b638437602a3362703f57a83279a274c2c96cc643436ed67",1]
 ["src/auto-reply/reply/get-reply-run-admission.session-file.test.ts","../../agents/auth-profiles/session-override.js","9176ecfce3d3c3f786d52512c192bd96433d6560e3db55e7419fa275d0a38606",1]
 ["src/auto-reply/reply/get-reply-run-admission.session-file.test.ts","./session-system-events.js","18e1d50998f3675ed5531270ff5f1bd6c16e54f19d4874f2640644b573da4906",1]
-["src/auto-reply/reply/get-reply-run.media-only.test.ts","../../agents/agent-tools.policy.js","c8e6031486ddbc57ab022b9f972f5ab65b09fee68841c26820dc36d66a2b1594",1]
 ["src/auto-reply/reply/get-reply-run.media-only.test.ts","../../agents/auth-profiles/session-override.js","920361684b9a9919796eccc7034f3292637486d25af2dc49d3ff069b97f6c0fc",1]
 ["src/auto-reply/reply/get-reply-run.media-only.test.ts","../../agents/harness/hook-helpers.js","88d4d48d6e4d14cb359a1a1905e3c44cf9acf8aacf96f9b70060cd145ddcfe5d",1]
 ["src/auto-reply/reply/get-reply-run.media-only.test.ts","../../agents/harness/selection-decision.js","a5912b62208d819bb517e441759f135e44b6c7a70d84d5b773b0d1f39fececc1",1]

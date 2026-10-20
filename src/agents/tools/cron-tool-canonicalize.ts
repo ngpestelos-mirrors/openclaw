@@ -456,11 +456,11 @@ export function readCronToolJob(params: Record<string, unknown>, action: "add" |
       recovered = true;
     }
   }
-  if (!params.job || typeof params.job !== "object") {
+  if (!isRecord(params.job)) {
     throw new Error("job required");
   }
   return {
-    job: canonicalizeCronToolObject(params.job as Record<string, unknown>),
+    job: canonicalizeCronToolObject(params.job),
     recovered,
   };
 }

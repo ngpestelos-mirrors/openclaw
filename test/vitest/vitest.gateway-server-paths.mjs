@@ -2,8 +2,6 @@ import { databaseWorkerCoreTestFiles } from "./vitest.database-worker-core-paths
 
 // Plugin integration tests retain Gateway runtime setup outside core source.
 export const gatewayPluginTestFiles = [
-  "src/gateway/cron-stream-sandbox-authority.test.ts",
-  "src/gateway/server.cron-session-cleanup.test.ts",
   "test/plugins/browser-session-authority.gateway.test.ts",
   "test/plugins/chat-abort-codex.gateway.test.ts",
   "test/plugins/codex-model-catalog.gateway.test.ts",

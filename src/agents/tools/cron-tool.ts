@@ -547,8 +547,7 @@ export function createCronTool(opts?: CronToolOptions): AnyAgentTool {
               if (recoveredFlatPatch && isEmptyRecoveredCronPatch(patch)) {
                 throw new Error("job required");
               }
-              let creatorOptions = opts;
-              let refreshCreatorAuthority = !managementAuthority;
+              let creatorOptions = managementAuthority ? undefined : opts;
               if (
                 managementAuthority &&
                 opts?.resolveCreatorToolAuthority &&
@@ -563,7 +562,6 @@ export function createCronTool(opts?: CronToolOptions): AnyAgentTool {
                 ) {
                   // Resolve a fresh owner ceiling even for already-visible tools.
                   creatorOptions = { ...opts, creatorToolAllowlist: undefined };
-                  refreshCreatorAuthority = true;
                 }
               }
               const update = async (expectedConfigRevision?: string) =>
@@ -575,17 +573,23 @@ export function createCronTool(opts?: CronToolOptions): AnyAgentTool {
                     adminManagement: Boolean(managementAuthority),
                     creatorToolAllowlist: creatorOptions?.creatorToolAllowlist,
                     creatorToolAllowlistCaptureRef: creatorOptions?.creatorToolAllowlistCaptureRef,
-                    resolveCreatorToolAuthority: refreshCreatorAuthority
-                      ? creatorOptions?.resolveCreatorToolAuthority
-                      : undefined,
+                    resolveCreatorToolAuthority: creatorOptions?.resolveCreatorToolAuthority,
                     withCreatorAuthorityProvenance,
                     gatewayOpts,
                     callGateway,
                     operationSignal,
-                    creatorAuthorityUnavailableReason: refreshCreatorAuthority
-                      ? creatorOptions?.creatorAuthorityUnavailableReason
-                      : undefined,
-                    prepareStreamExecAuthority,
+                    creatorAuthorityUnavailableReason:
+                      creatorOptions?.creatorAuthorityUnavailableReason,
+                    prepareStreamExecAuthority: async (creatorTools) => {
+                      // Management edits preserve the target's cap, but a stream still
+                      // executes under the caller's own complete executable surface.
+                      assertCronCreatorAuthorityResolutionAvailable({
+                        required: creatorOptions === undefined,
+                        creatorToolAllowlistCaptureRef: opts?.creatorToolAllowlistCaptureRef,
+                        unavailableReason: opts?.creatorAuthorityUnavailableReason,
+                      });
+                      await prepareStreamExecAuthority(creatorTools ?? opts?.creatorToolAllowlist);
+                    },
                   }),
                 );
               return patch.enabled === false

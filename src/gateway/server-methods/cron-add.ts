@@ -64,6 +64,7 @@ export const cronAddHandler: GatewayRequestHandler = async ({
     return;
   }
   const callerScope = readCronCallerScope(client);
+  // SAFETY: cron.add validates this shape; createJob normalizes its nullable selectors.
   const jobCreate = applyCronCreateCallerScopeDefault(candidate as CronJobCreate, callerScope);
   const creator = await prepareCronCreatorSession({
     context,

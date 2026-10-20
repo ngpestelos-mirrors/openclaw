@@ -9,7 +9,8 @@ const { callGatewayMock, extractDeliveryInfoMock } = vi.hoisted(() => ({
   extractDeliveryInfoMock: vi.fn(),
 }));
 
-vi.mock("../../config/sessions/delivery-info.js", () => ({
+vi.mock("../../config/sessions/delivery-info.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../../config/sessions/delivery-info.js")>()),
   extractDeliveryInfo: extractDeliveryInfoMock,
 }));
 

@@ -2,7 +2,6 @@ import type {
   PendingApprovalSnapshot,
   SessionApprovalEvent,
 } from "../../../../packages/gateway-protocol/src/index.js";
-import type { GatewayBrowserClient } from "../../api/gateway.ts";
 import type { ExecApprovalRequest } from "../../app/exec-approval.ts";
 import type { ApplicationOverlays } from "../../app/overlays-types.ts";
 import {
@@ -15,6 +14,7 @@ import {
   parseAgentSessionKey,
 } from "../../lib/sessions/session-key.ts";
 import { chatHistoryRequests } from "./chat-history-state.ts";
+import type { SessionApprovalReplayState } from "./chat-state-contract.ts";
 
 function approvalStreamMatchesSession(
   streamSessionKey: string,
@@ -121,14 +121,6 @@ export function reconcileSessionApprovalEvent(
   next.push(projectPendingApproval(event.approval, presentationSessionKey, event.sourceSessionKey));
   return next.toSorted((left, right) => left.createdAtMs - right.createdAtMs);
 }
-
-export type SessionApprovalReplayState = {
-  client: GatewayBrowserClient | null;
-  connectionEpoch: number;
-  sessionKey: string;
-  agentId?: string;
-  complete: boolean;
-};
 
 type ApprovalReplayHost = Pick<
   SessionApprovalReplayState,

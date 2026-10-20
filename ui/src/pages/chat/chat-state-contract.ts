@@ -16,7 +16,6 @@ import type { ChatHistoryCursor, ChatHistoryPagination } from "./chat-history-pa
 import type { ChatPendingInputView } from "./chat-pending-inputs.types.ts";
 import type { ChatRunStartupState } from "./chat-run-startup.ts";
 import type { ChatRunError, LocalTerminalReconcile } from "./run-lifecycle.ts";
-import type { SessionApprovalReplayState } from "./session-approval-projection.ts";
 import type { ChatMessageCache } from "./session-message-cache.ts";
 import type { StreamCausalBoundaryState } from "./stream-causal-boundary.ts";
 import type {
@@ -33,6 +32,14 @@ type ChatAgentsListSnapshot = Partial<Omit<AgentsListResult, "agents">> & {
 export type ChatHistorySessions = Pick<SessionCapability, "captureReconcile">;
 
 export type ChatHistoryHost = ChatState & { sessions: ChatHistorySessions };
+
+export type SessionApprovalReplayState = {
+  client: GatewayBrowserClient | null;
+  connectionEpoch: number;
+  sessionKey: string;
+  agentId?: string;
+  complete: boolean;
+};
 
 export type ChatState = StreamCausalBoundaryState & {
   uploadConfig?: ApplicationConfigCapability;

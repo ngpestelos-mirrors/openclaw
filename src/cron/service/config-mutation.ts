@@ -40,7 +40,7 @@ export function prepareCronStreamMutationAdmission(params: {
         if (!isRecord(request.facts) || !isRecord(request.facts.mutation)) {
           throw new Error("Stream mutation has no transaction-held job definition");
         }
-        // This private native request is produced only by the cron job mutation owner.
+        // SAFETY: the private native request is produced only by the cron job mutation owner.
         const facts = request.facts as CronStreamMutationAdmissionFacts;
         mutation = facts.mutation;
         // A transaction-proven unchanged declaration needs no new execution consent.
@@ -81,7 +81,7 @@ export function prepareCronStreamMutationAdmission(params: {
     observeSqliteWorkerCommittedFacts(admission, ({ facts }) => {
       publication.committed(isRecord(facts) ? facts.approvalFacts : undefined);
       if (approval && isRecord(facts) && isRecord(facts.consumedStreamApproval)) {
-        // The native transition decoded this record; the waiter verifies its exact owner.
+        // SAFETY: the native transition decoded this record; the waiter verifies its exact owner.
         approval.consumption.markCommitted(facts.consumedStreamApproval as OperatorApprovalRecord);
       }
     });

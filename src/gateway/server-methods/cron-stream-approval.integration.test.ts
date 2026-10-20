@@ -22,7 +22,7 @@ import {
   installRequesterCronAuthorityTestHooks,
 } from "./requester-cron-authority.test-support.js";
 
-// The approval boundary needs Gateway exec without querying attached-node inventory.
+// mock-isolation: The approval boundary uses Gateway exec without attached-node inventory.
 vi.mock("../../agents/node-exec-availability.js", () => ({
   loadNodeExecAvailability: async () => ({ cacheKey: "no-nodes", isAvailable: () => false }),
 }));

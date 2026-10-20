@@ -106,13 +106,7 @@ export function registerWorkerPromptTests({ setup, modelRef: MODEL_REF }: Worker
           : { role: "user", runtimeContext: {} },
       );
       expect(firstCarrier).not.toHaveProperty("runtimeContextCarrier");
-      expect(firstCarrier?.content).toContain("Active exec sessions at turn start (snapshot):");
-      expect(firstCarrier?.content).toContain(
-        "Scope: exec-tool process sessions only; persistent automations and other background work are not included.",
-      );
-      expect(firstCarrier?.content).toContain(
-        "No active exec-tool sessions in this scope at turn start.",
-      );
+      expect(firstCarrier?.content).toContain("Active exec sessions:\\nnone");
       if (!inHistorySystemUpdates) {
         expect(firstCarrier).not.toHaveProperty("operatorMessage");
         const inferenceRequest = gateway.inferenceRequests[0]!;

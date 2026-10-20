@@ -1,6 +1,6 @@
 import { isDeepStrictEqual } from "node:util";
 import { normalizeLowercaseStringOrEmpty } from "@openclaw/normalization-core/string-coerce";
-import type { ExecApprovalPreparedConsumption } from "../gateway/exec-approval-manager.js";
+import type { ExecApprovalPreparedConsumption } from "../gateway/operator-approval-store.types.js";
 import type { ExecApprovalsFile, ExecAsk, ExecSecurity } from "../infra/exec-approvals-core.js";
 import { isRecord } from "../utils.js";
 import { resolveCronJobConfigRevision } from "./config-revision.js";

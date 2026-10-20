@@ -12,6 +12,7 @@ import {
   runWithCronCreatorAuthorityCapability,
 } from "../cron-creator-authority-context.js";
 import { createCronTool } from "./cron-tool.js";
+import type { CronToolOptions } from "./cron-tool.types.js";
 import {
   getGatewayToolCallerIdentity,
   withGatewayToolCallerIdentity,
@@ -29,6 +30,10 @@ async function withAdminTool(
   payload: Record<string, unknown> | undefined,
   run: (tool: ReturnType<typeof createCronTool>, calls: Array<[string, unknown]>) => Promise<void>,
   storedJob?: Record<string, unknown>,
+  creatorOptions: Pick<
+    CronToolOptions,
+    "config" | "creatorToolAllowlist" | "creatorToolAllowlistCaptureRef"
+  > = {},
 ) {
   const runId = "admin-management-tool-run";
   const sessionKey = "agent:main:control-ui";
@@ -68,6 +73,7 @@ async function withAdminTool(
     await runWithCronCreatorAuthorityCapability(capability, () =>
       withGatewayToolCallerIdentity({ ...identity, approvalAuthority: authority }, async () => {
         const options = {
+          ...creatorOptions,
           runId,
           agentSessionKey: sessionKey,
           resolveCreatorToolAuthority,
@@ -129,27 +135,67 @@ it("does not expose stream creation through a management grant", async () => {
   });
 });
 
-it("requires stream exec authority for management-grant activation", async () => {
-  await withAdminTool(
-    "unknown",
-    undefined,
-    async (tool, calls) => {
-      await expect(
-        tool.execute("stream-enable", {
+it.each([
+  {
+    label: "complete exec authority",
+    tools: [{ name: "exec", execOrigin: "openclaw" }],
+    capture: { value: { version: 1, source: "final-executable-surface" } },
+    error: undefined,
+  },
+  {
+    label: "no exec authority",
+    tools: ["read"],
+    capture: { value: { version: 1, source: "final-executable-surface" } },
+    error: "Gateway exec authority",
+  },
+  {
+    label: "incomplete executable surface",
+    tools: [{ name: "exec", execOrigin: "openclaw" }],
+    capture: {},
+    error: "did not capture the complete model-callable tool surface",
+  },
+] satisfies {
+  label: string;
+  tools: CronToolOptions["creatorToolAllowlist"];
+  capture: CronToolOptions["creatorToolAllowlistCaptureRef"];
+  error: string | undefined;
+}[])(
+  "checks the manager's own stream exec authority: $label",
+  async ({ tools, capture, error }) => {
+    const config = { tools: { exec: { host: "gateway", mode: "full" } } } as const;
+    setRuntimeConfigSnapshot(config);
+    await withAdminTool(
+      "unknown",
+      undefined,
+      async (tool, calls) => {
+        const activation = tool.execute("stream-enable", {
           action: "update",
           jobId,
           job: { enabled: true },
-        }),
-      ).rejects.toThrow("Gateway exec authority");
-      expect(calls).toEqual([["cron.get", { id: jobId }]]);
-    },
-    {
-      enabled: false,
-      schedule: { kind: "stream", command: ["node", "events.mjs"] },
-      state: {},
-    },
-  );
-});
+        });
+        if (error) {
+          await expect(activation).rejects.toThrow(error);
+          expect(calls).toEqual([["cron.get", { id: jobId }]]);
+        } else {
+          await expect(activation).resolves.toMatchObject({ details: { id: jobId } });
+          expect(calls).toEqual([
+            ["cron.get", { id: jobId }],
+            [
+              "cron.update",
+              { id: jobId, patch: { enabled: true }, expectedConfigRevision: configRevision },
+            ],
+          ]);
+        }
+      },
+      {
+        enabled: false,
+        schedule: { kind: "stream", command: ["node", "events.mjs"] },
+        state: {},
+      },
+      { config, creatorToolAllowlist: tools, creatorToolAllowlistCaptureRef: capture },
+    );
+  },
+);
 
 it("visibly refuses unsupported next_check", async () => {
   await withAdminTool("unknown", undefined, async (tool, calls) => {
