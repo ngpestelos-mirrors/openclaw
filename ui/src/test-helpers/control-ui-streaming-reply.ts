@@ -84,14 +84,10 @@ function installStreamingReplyProbe() {
       return socket;
     },
   });
-  const parserPrototype: {
-    parseFromString: (this: DOMParser, source: string, type: DOMParserSupportedType) => Document;
-  } = DOMParser.prototype;
-  const parse = parserPrototype.parseFromString;
-  DOMParser.prototype.parseFromString = function (this: DOMParser, source: unknown, type) {
+  const measureParse = <T>(source: unknown, parse: () => T): T => {
     const start = performance.now();
     try {
-      return Reflect.apply(parse, this, [source, type]);
+      return parse();
     } finally {
       if (active && current) {
         current.parseCalls++;
@@ -100,19 +96,22 @@ function installStreamingReplyProbe() {
       }
     }
   };
+  const parserPrototype: {
+    parseFromString: (this: DOMParser, source: string, type: DOMParserSupportedType) => Document;
+  } = DOMParser.prototype;
+  const parse = parserPrototype.parseFromString;
+  DOMParser.prototype.parseFromString = function (this: DOMParser, source: unknown, type) {
+    return measureParse(source, () => Reflect.apply(parse, this, [source, type]));
+  };
   const innerHTML = Object.getOwnPropertyDescriptor(Element.prototype, "innerHTML")!;
   Object.defineProperty(Element.prototype, "innerHTML", {
     ...innerHTML,
     set(value: unknown) {
-      const start = performance.now();
-      try {
-        innerHTML.set!.call(this, value);
-      } finally {
-        if (active && current && this instanceof HTMLTemplateElement) {
-          current.parseCalls++;
-          current.parseChars += String(value).length;
-          current.parseMs += performance.now() - start;
-        }
+      const set = () => innerHTML.set!.call(this, value);
+      if (this instanceof HTMLTemplateElement) {
+        measureParse(value, set);
+      } else {
+        set();
       }
     },
   });
@@ -198,9 +197,8 @@ function installStreamingReplyProbe() {
       if (deltas.some((delta) => !Number.isFinite(delta.parseChars))) {
         throw new Error("Streaming HTML probe produced a non-finite character count");
       }
-      const sorted = (values: number[]) => values.toSorted((a, b) => a - b);
       const distribution = (values: number[]) => {
-        const xs = sorted(values);
+        const xs = values.toSorted((a, b) => a - b);
         const quantile = (q: number) => {
           const at = (xs.length - 1) * q;
           const lo = Math.floor(at);

@@ -398,78 +398,68 @@ async function createControlUiFramePreparation(page: Page, disableAnimations: bo
 }
 
 async function inspectControlUiProofScroll(target: Locator, shouldCenter: boolean) {
-  return target.evaluate((element, center) => {
-    if (!element.isConnected) {
-      return null;
-    }
-    if (center) {
-      // Record achieved centering in the same task: a later reset must not become readiness.
-      element.scrollIntoView({ behavior: "instant", block: "center", inline: "center" });
-    }
-    const geometry: number[][] = [];
-    for (let owner: Element | null = element; owner;) {
-      const rect = owner.getBoundingClientRect();
-      geometry.push([rect.x, rect.y, rect.width, rect.height, owner.scrollLeft, owner.scrollTop]);
-      const root = owner.getRootNode();
-      owner = owner.parentElement ?? (root instanceof ShadowRoot ? root.host : null);
-    }
-    return JSON.stringify(geometry);
-  }, shouldCenter);
+  return (await target.evaluate(inspectProofGeometry, shouldCenter ? "center" : "read")).scroll;
 }
 
 async function waitForControlUiFrameLayout(targets: readonly Locator[]): Promise<void> {
   await expect
-    .poll(async () => {
-      const ready = await Promise.all(
-        targets.map((target) =>
-          target.evaluate(async (element) => {
-            let previous: Array<[Element, ...number[]]> = [];
-            let stableFrames = 0;
-            for (let frame = 0; frame < 60; frame += 1) {
-              await new Promise<void>((resolve) => {
-                // Layout delivery continues when a fixture pauses its application clock.
-                const observer = new IntersectionObserver(() => {
-                  observer.disconnect();
-                  resolve();
-                });
-                observer.observe(element);
-              });
-              if (!element.isConnected) {
-                return false;
-              }
-              const geometry: typeof previous = [];
-              for (let owner: Element | null = element; owner;) {
-                const rect = owner.getBoundingClientRect();
-                geometry.push([
-                  owner,
-                  rect.x,
-                  rect.y,
-                  rect.width,
-                  rect.height,
-                  owner.scrollLeft,
-                  owner.scrollTop,
-                ]);
-                const root = owner.getRootNode();
-                owner = owner.parentElement ?? (root instanceof ShadowRoot ? root.host : null);
-              }
-              const unchanged =
-                geometry.length === previous.length &&
-                geometry.every((row, index) =>
-                  row.every((value, column) => value === previous[index]![column]),
-                );
-              stableFrames = unchanged ? stableFrames + 1 : 0;
-              if (stableFrames >= 3) {
-                return true;
-              }
-              previous = geometry;
-            }
-            throw new Error("Proof layout did not settle within 60 layout updates");
-          }),
-        ),
-      );
-      return ready.every(Boolean);
-    })
+    .poll(async () =>
+      (
+        await Promise.all(targets.map((target) => target.evaluate(inspectProofGeometry, "settle")))
+      ).every((result) => result.settled),
+    )
     .toBe(true);
+}
+
+// Serialized by Playwright: keep the shared geometry reader inside this function.
+async function inspectProofGeometry(element: Element, mode: "read" | "center" | "settle") {
+  const geometry = () => {
+    const rows: Array<[Element, ...number[]]> = [];
+    for (let owner: Element | null = element; owner;) {
+      const { x, y, width, height } = owner.getBoundingClientRect();
+      rows.push([owner, x, y, width, height, owner.scrollLeft, owner.scrollTop]);
+      const root = owner.getRootNode();
+      owner = owner.parentElement ?? (root instanceof ShadowRoot ? root.host : null);
+    }
+    return rows;
+  };
+  if (mode !== "settle") {
+    if (!element.isConnected) {
+      return { scroll: null, settled: false };
+    }
+    // Record achieved centering in this task, not a later reset.
+    if (mode === "center") {
+      element.scrollIntoView({ behavior: "instant", block: "center", inline: "center" });
+    }
+    return { scroll: JSON.stringify(geometry().map(([, ...values]) => values)), settled: false };
+  }
+  let previous: ReturnType<typeof geometry> = [];
+  let stableFrames = 0;
+  for (let frame = 0; frame < 60; frame += 1) {
+    await new Promise<void>((resolve) => {
+      // Intersection delivery continues when fixtures pause the application clock.
+      const observer = new IntersectionObserver(() => {
+        observer.disconnect();
+        resolve();
+      });
+      observer.observe(element);
+    });
+    if (!element.isConnected) {
+      return { scroll: null, settled: false };
+    }
+    const current = geometry();
+    const unchanged =
+      current.length === previous.length &&
+      current.every((row, index) =>
+        row.every((value, column) => value === previous[index]![column]),
+      );
+    stableFrames = unchanged ? stableFrames + 1 : 0;
+    if (stableFrames >= 3) {
+      return { scroll: null, settled: true };
+    }
+    previous = current;
+  }
+  throw new Error("Proof layout did not settle within 60 layout updates");
 }
 
 async function captureControlUiFrame(

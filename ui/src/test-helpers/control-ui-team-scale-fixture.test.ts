@@ -13,6 +13,18 @@ const session = (
   updatedAt: number | null,
   fields: Partial<GatewaySessionRow> = {},
 ): GatewaySessionRow => ({ key: `agent:main:${id}`, kind: "direct", updatedAt, ...fields });
+const pinned = (
+  id: string,
+  updatedAt: number,
+  pinnedAt: number,
+  fields: Partial<GatewaySessionRow> = {},
+) => session(id, updatedAt, { pinned: true, pinnedAt, ...fields });
+const rootOnly = { excludeSubagents: true, excludeCron: true, excludeSystem: true };
+function expectAbsent(value: unknown, fields: string) {
+  for (const field of fields.split(" ")) {
+    expect(value).not.toHaveProperty(field);
+  }
+}
 
 describe("Team-scale Gateway fixture", () => {
   it("sustains certified ancestor churn past the minute fallback and preserves the raw delta baseline", () => {
@@ -68,30 +80,12 @@ describe("Team-scale Gateway fixture", () => {
     const fixture = createControlUiTeamScaleFixture({ now });
     const rows: GatewaySessionRow[] = [
       session("newest", 900, { lastInteractionAt: 100, lastActivityAt: 200 }),
-      session("pin-old", 100, {
-        pinned: true,
-        pinnedAt: 10,
-        parentSessionKey: "agent:main:main",
-        lastInteractionAt: 800,
-      }),
-      session("pin-new", 50, {
-        pinned: true,
-        pinnedAt: 20,
-        lastInteractionAt: 200,
-      }),
+      pinned("pin-old", 100, 10, { parentSessionKey: "agent:main:main", lastInteractionAt: 800 }),
+      pinned("pin-new", 50, 20, { lastInteractionAt: 200 }),
       session("tie-a", 700, { lastInteractionAt: 300, lastActivityAt: 500 }),
       session("tie-B", 700, { lastInteractionAt: 300, lastActivityAt: 500 }),
-      session("subagent:nested", 800, {
-        pinned: true,
-        pinnedAt: 1_000,
-        spawnedBy: "agent:main:main",
-      }),
-      session("promoted", 600, {
-        pinned: true,
-        pinnedAt: 30,
-        spawnedBy: "agent:main:main",
-        sidebarRoot: true,
-      }),
+      pinned("subagent:nested", 800, 1_000, { spawnedBy: "agent:main:main" }),
+      pinned("promoted", 600, 30, { spawnedBy: "agent:main:main", sidebarRoot: true }),
       session("false-pin", 650, {
         pinned: false,
         pinnedAt: 10_000,
@@ -143,9 +137,7 @@ describe("Team-scale Gateway fixture", () => {
     const counts = owner.list({
       rowMode: "compact",
       limit: 1,
-      excludeSubagents: true,
-      excludeCron: true,
-      excludeSystem: true,
+      ...rootOnly,
       includeOwnerSessionCounts: true,
     }).result;
 
@@ -186,9 +178,7 @@ describe("Team-scale Gateway fixture", () => {
     const secondPage = owner.list({
       limit: 100,
       offset: 200,
-      excludeSubagents: true,
-      excludeCron: true,
-      excludeSystem: true,
+      ...rootOnly,
     }).result;
     expect(secondPage.sessions).toHaveLength(100);
     expect(secondPage.sessions[0]?.sessionId).toBe("team-session-171");
@@ -210,22 +200,17 @@ describe("Team-scale Gateway fixture", () => {
       derivedTitle: expect.any(String),
       lastMessagePreview: expect.any(String),
     });
-    expect(first.sessions[0]).not.toHaveProperty("thinkingLevels");
-    expect(first.sessions[0]).not.toHaveProperty("model");
+    expectAbsent(first.sessions[0], "thinkingLevels model");
     expect(first.sessions[99]).toHaveProperty("derivedTitle");
-    expect(first.sessions[100]).not.toHaveProperty("derivedTitle");
-    expect(first.sessions[100]).not.toHaveProperty("lastMessagePreview");
+    expectAbsent(first.sessions[100], "derivedTitle lastMessagePreview");
     expect(owner.list(params).result.sessions).toBe(first.sessions);
 
     const compact = owner.list({ rowMode: "compact", limit: 1 }).result.sessions[0];
     expect(compact).toMatchObject({ rowMode: "compact", model: "gpt-5-mini" });
-    expect(compact).not.toHaveProperty("thinkingLevels");
-    expect(compact).not.toHaveProperty("derivedTitle");
-    expect(compact).not.toHaveProperty("lastMessagePreview");
+    expectAbsent(compact, "thinkingLevels derivedTitle lastMessagePreview");
     const dashboard = owner.list({ rowMode: "dashboard", limit: 1 }).result.sessions[0];
     expect(dashboard).toMatchObject({ rowMode: "dashboard", owner: expect.any(Object) });
-    expect(dashboard).not.toHaveProperty("participants");
-    expect(dashboard).not.toHaveProperty("hasActiveRun");
+    expectAbsent(dashboard, "participants hasActiveRun");
   });
 
   it("provides a valid three-page cron inventory and seven plugin activations", () => {
@@ -268,12 +253,9 @@ describe("Team-scale Gateway fixture", () => {
       sortDir: "asc",
     });
     expect(catalog.jobs).toHaveLength(120);
-    expect(catalog.jobs.slice(0, 4).map((job) => job.id)).toEqual([
-      "team-cron-1",
-      "team-cron-10",
-      "team-cron-100",
-      "team-cron-101",
-    ]);
+    expect(catalog.jobs.slice(0, 4).map((job) => job.id)).toEqual(
+      [1, 10, 100, 101].map((id) => `team-cron-${id}`),
+    );
     const page = fixture.listCronJobs({
       limit: 1,
       offset: 1,

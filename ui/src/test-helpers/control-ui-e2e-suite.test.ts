@@ -95,6 +95,16 @@ vi.mock("playwright", () => ({ chromium: { launch: async () => {
         isClosed: () => true,
         url: () => "about:blank",
       });
+      const makeContext = (page, overrides) => {
+        const context = Object.assign(new EventEmitter(), {
+          setDefaultTimeout() {},
+          addInitScript: async () => {},
+          pages: () => [page],
+          newPage: async () => { context.emit("page", page); return page; },
+          ...overrides,
+        });
+        return context;
+      };
       if (${JSON.stringify(mode)}.startsWith("diagnostic-") || ${JSON.stringify(mode)}.startsWith("page-concurrent")) {
         let pageClosed = false;
         let context;
@@ -110,11 +120,8 @@ vi.mock("playwright", () => ({ chromium: { launch: async () => {
             return { failureSummary: { available: true } };
           },
         });
-        context = Object.assign(new EventEmitter(), {
-          setDefaultTimeout() {},
-          addInitScript: async () => {},
+        context = makeContext(page, {
           pages: () => pageClosed ? [] : [page],
-          newPage: async () => { context.emit("page", page); return page; },
           browser: () => ({ isConnected: () => true }),
           unrouteAll: async () => { state.events.push("drain"); record(); },
           close: async () => {
@@ -186,11 +193,7 @@ vi.mock("playwright", () => ({ chromium: { launch: async () => {
             return settled;
           },
         });
-        context = Object.assign(new EventEmitter(), {
-          setDefaultTimeout() {},
-          addInitScript: async () => {},
-          pages: () => [page],
-          newPage: async () => { context.emit("page", page); return page; },
+        context = makeContext(page, {
           route: async (pattern, handler) => { contextHandlers.push({ pattern, handler }); },
           unrouteAll: async (options) => {
             expect(options).toEqual({ behavior: "wait" });
@@ -210,11 +213,8 @@ vi.mock("playwright", () => ({ chromium: { launch: async () => {
         });
         return context;
       }
-      const context = Object.assign(new EventEmitter(), {
-        setDefaultTimeout() {},
-        addInitScript: async () => {},
+      return makeContext(closedPage, {
         pages: () => [],
-        newPage: async () => { context.emit("page", closedPage); return closedPage; },
         unrouteAll: async () => {},
         close: () => {
           state.closeCalls++;
@@ -224,7 +224,6 @@ vi.mock("playwright", () => ({ chromium: { launch: async () => {
             ? state.gate : Promise.resolve();
         }
       });
-      return context;
     },
     close: async () => { state.browserClosed = true; record(); },
   };
@@ -243,6 +242,12 @@ const record = () => fs.writeFileSync(${JSON.stringify(path.join(root, "journal.
 }));
 fs.writeFileSync(${JSON.stringify(path.join(root, "worker.pid"))}, String(process.pid));
 record();
+async function waitForAbort(signal) {
+  await new Promise(resolve => {
+    if (signal.aborted) resolve();
+    else signal.addEventListener("abort", resolve, { once: true });
+  });
+}
 // These synthetic gateways open no databases. Keep their state fixture limited to
 // the directory and selector whose lifetime belongs to the suite release callback.
 function createFixtureState() {
@@ -276,10 +281,7 @@ const suite = createControlUiE2eSuite({ name: "owned context fixture",
         fs.writeFileSync(${JSON.stringify(path.join(root, "retained-root.txt"))}, sharedFixture.root);
         state.events.push("resource acquired"); record();
         if (${JSON.stringify(mode)} === "resources-late-setup") {
-          await new Promise(resolve => {
-            if (signal.aborted) resolve();
-            else signal.addEventListener("abort", resolve, { once: true });
-          });
+          await waitForAbort(signal);
           signal.throwIfAborted();
         }
       },
@@ -547,10 +549,7 @@ suite.define(() => {
           state.events.push("acquired"); record();
           if (${JSON.stringify(mode)} === "scenario-noncooperative") await new Promise(() => {});
           if (["scenario-close-failure", "scenario-late-close"].includes(${JSON.stringify(mode)})) return;
-          await new Promise(resolve => {
-            if (signal.aborted) resolve();
-            else signal.addEventListener("abort", resolve, { once: true });
-          });
+          await waitForAbort(signal);
           state.nativeAbortObserved = signal.aborted; record();
           signal.throwIfAborted();
         },
@@ -793,8 +792,7 @@ it.for([
 ] as const)("captures a native timeout before its context closes: %s", (mode, context) =>
   runJoinedFixture(mode, context, (result) => {
     expect(result.code, result.output).toBe(1);
-    expect(result.report.numFailedTests, result.output).toBe(1);
-    expect(result.report.numPassedTests, result.output).toBe(1);
+    expect(result.report, result.output).toMatchObject({ numFailedTests: 1, numPassedTests: 1 });
     expect(result.output).toContain("Test timed out in 50ms");
     expect(result.successorStarted).toBe(true);
     expect(result.journal.events).toEqual(["capture live page", "drain", "close", "successor"]);
@@ -833,25 +831,14 @@ it.for([
 it("drains held modules and cancels unrequested observations during cleanup", (context) =>
   runJoinedFixture("held-route-drain", context, (result) => {
     expect(result.code, result.output).toBe(0);
-    expect(result.report.numPassedTests, result.output).toBe(2);
-    expect(result.report.numFailedTests, result.output).toBe(0);
-    expect(
-      result.journal.firstCleanupEvent,
-      "held-module callbacks must drain before context close",
-    ).toBe("drain");
-    expect(result.journal.contextCleanupEvent).toBe("drain");
-    expect(result.journal.callbackOutcomes).toEqual([
-      { label: "first", status: "fulfilled", disposed: false },
-      { label: "other", status: "fulfilled", disposed: false },
-      { label: "later", status: "fulfilled", disposed: false },
-      { label: "context", status: "fulfilled", disposed: false },
-      { label: "late", status: "fulfilled", disposed: false },
-    ]);
-    expect(result.journal.pendingCloseCalls).toBe(0);
-    expect(result.journal.fulfilledBeforeFetchRelease).toEqual([
-      "fulfilled first",
-      "fulfilled other",
-    ]);
+    expect(result.report, result.output).toMatchObject({ numPassedTests: 2, numFailedTests: 0 });
+    expect(result.journal.callbackOutcomes).toEqual(
+      ["first", "other", "later", "context", "late"].map((label) => ({
+        label,
+        status: "fulfilled",
+        disposed: false,
+      })),
+    );
     expect(result.journal.events).toContain("fulfilled later");
     expect(result.journal.events).toContain("fell through late");
     expect(result.journal.events).not.toContain("fetched late");
@@ -864,6 +851,10 @@ it("drains held modules and cancels unrequested observations during cleanup", (c
     expect(result.journal.events).toContain("held request settled");
     expect(result.journal.events.at(-1)).toBe("held callback joined");
     expect(result.journal).toMatchObject({
+      firstCleanupEvent: "drain",
+      contextCleanupEvent: "drain",
+      pendingCloseCalls: 0,
+      fulfilledBeforeFetchRelease: ["fulfilled first", "fulfilled other"],
       closeCalls: 2,
       heldBodyErrorRetained: true,
       browserClosed: true,

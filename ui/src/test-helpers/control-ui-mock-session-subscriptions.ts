@@ -3,13 +3,9 @@ export function createControlUiMockSessionSubscriptions(
   scenario: { mainSessionKey: string; defaultAgentId: string; sessionScope: string },
   isRecord: (value: unknown) => value is Record<string, unknown>,
 ) {
-  const scopedEvents = new Set([
-    "agent",
-    "chat",
-    "chat.side_result",
-    "session.observer",
-    "session.tool",
-  ]);
+  const scopedEvents = new Set(
+    "agent chat chat.side_result session.observer session.tool".split(" "),
+  );
   const canonicalKey = (key: string): string => {
     const normalized = key.trim();
     if (scenario.sessionScope === "global" && /^agent:[^:]+:main$/u.test(normalized)) {
@@ -81,18 +77,13 @@ export function createControlUiMockSessionSubscriptions(
           }
         },
         allows(event: string, payload: unknown): boolean {
-          // The real observer audience includes broad session-list subscribers,
-          // while tool arguments and transcript events still require a child subscription.
-          if (event === "session.observer" && observesSessions) {
-            return true;
-          }
-          if (
-            event !== "session.typing" &&
-            !(hasCapability("session-scoped-events") && scopedEvents.has(event))
-          ) {
-            return true;
-          }
-          return hasSubscription(payload);
+          // Broad observers receive summaries, never unscoped tool/transcript events.
+          return (
+            (event === "session.observer" && observesSessions) ||
+            (event !== "session.typing" &&
+              !(hasCapability("session-scoped-events") && scopedEvents.has(event))) ||
+            hasSubscription(payload)
+          );
         },
       };
     },
