@@ -38,7 +38,8 @@ const merged: ControlUiLinkReaderDocument = {
   badge: { label: "Merged", tone: "accent" },
   metadata: [{ label: "Additions", value: "42" }],
 };
-function makeProvider() {
+function makeProvider(request: Parameters<typeof createTestGatewayClient>[0]) {
+  const client = createTestGatewayClient(request);
   const host = document.createElement(tag);
   if (!(host instanceof LinkReaderHovercardProvider)) {
     throw new Error("Missing reader bridge");
@@ -50,12 +51,35 @@ function makeProvider() {
   anchor.textContent = "PR #99816";
   host.append(anchor);
   document.body.append(host);
-  return { host, anchor };
+  host.client = client;
+  return { host, anchor, client };
 }
 async function hover(anchor: HTMLAnchorElement) {
   await Promise.resolve();
   anchor.dispatchEvent(new MouseEvent("pointerover", { bubbles: true }));
   await vi.advanceTimersByTimeAsync(250);
+}
+async function leave(anchor: HTMLAnchorElement, delay = 120) {
+  anchor.dispatchEvent(
+    new MouseEvent("pointerout", { bubbles: true, relatedTarget: document.body }),
+  );
+  await vi.advanceTimersByTimeAsync(delay);
+}
+async function openPanel(
+  client: GatewayBrowserClient,
+  scope: { agentId?: string; sessionKey?: string } = {},
+) {
+  const panel = document.createElement("openclaw-link-reader-panel");
+  Object.assign(panel, { client, available: true, readers: [reader], ...scope });
+  mountSolid(() => panel);
+  await panel.updateComplete;
+  panel.handleToggleRequest(
+    new CustomEvent(LINK_READER_PANEL_TOGGLE_EVENT, {
+      detail: { url, open: true },
+      cancelable: true,
+    }),
+  );
+  return panel;
 }
 const badge = () => document.querySelector(".link-reader-hovercard__state")?.textContent?.trim();
 beforeEach(() => {
@@ -76,35 +100,23 @@ it.each(["same", "other-client", "other-agent", "other-session"])(
     const request = vi.fn((method: string) =>
       Promise.resolve(method === "github.detail" ? merged : open),
     );
-    const client = createTestGatewayClient(request);
-    const { host, anchor } = makeProvider();
-    host.client = client;
+    const { host, anchor, client } = makeProvider(request);
     host.agentId = "main";
     host.sessionKey = "agent:main:pane-one";
     await hover(anchor);
     expect(badge()).toBe("Open");
-    const panel = document.createElement("openclaw-link-reader-panel");
-    panel.client = scope === "other-client" ? createTestGatewayClient(request) : client;
-    panel.agentId = scope === "other-agent" ? "other" : "main";
-    panel.sessionKey = scope === "other-session" ? "agent:main:pane-two" : "agent:main:pane-one";
-    panel.available = true;
-    panel.readers = [reader];
-    mountSolid(() => panel);
-    await panel.updateComplete;
-    panel.handleToggleRequest(
-      new CustomEvent(LINK_READER_PANEL_TOGGLE_EVENT, {
-        detail: { url, open: true },
-        cancelable: true,
-      }),
+    const panel = await openPanel(
+      scope === "other-client" ? createTestGatewayClient(request) : client,
+      {
+        agentId: scope === "other-agent" ? "other" : "main",
+        sessionKey: scope === "other-session" ? "agent:main:pane-two" : "agent:main:pane-one",
+      },
     );
     await waitForSolid(() =>
       expect(panel.querySelector(".lr-state")?.textContent).toContain("Merged"),
     );
     expect(badge()).toBe(scope === "same" ? "Merged" : "Open");
-    anchor.dispatchEvent(
-      new MouseEvent("pointerout", { bubbles: true, relatedTarget: document.body }),
-    );
-    await vi.advanceTimersByTimeAsync(120);
+    await leave(anchor);
     await hover(anchor);
     expect(badge()).toBe(scope === "same" ? "Merged" : "Open");
     expect(document.querySelector(".link-reader-hovercard__metadata")?.textContent).toBe("+42");
@@ -119,8 +131,7 @@ it.each([false, true])(
       .fn()
       .mockResolvedValueOnce({ ...open, stale: true })
       .mockResolvedValue(merged);
-    const { host, anchor } = makeProvider();
-    host.client = createTestGatewayClient(request);
+    const { host, anchor } = makeProvider(request);
     host.sessionKey = "agent:main:pane-one";
     host.readers = [{ ...reader, linkReader: { ...reader.linkReader, sessionScoped } }];
     await hover(anchor);
@@ -136,24 +147,17 @@ it.each([false, true])(
 
 it("labels still-stale metadata and retries only after short backoff", async () => {
   const request = vi.fn().mockResolvedValue({ ...open, stale: true });
-  const { host, anchor } = makeProvider();
-  host.client = createTestGatewayClient(request);
+  const { anchor } = makeProvider(request);
   await hover(anchor);
   expect(badge()).toBe("Open");
   expect(document.querySelector<HTMLElement>(".link-reader-hovercard")?.dataset.cached).toBe(
     "true",
   );
   expect(request).toHaveBeenCalledTimes(2);
-  anchor.dispatchEvent(
-    new MouseEvent("pointerout", { bubbles: true, relatedTarget: document.body }),
-  );
-  await vi.advanceTimersByTimeAsync(120);
+  await leave(anchor);
   await hover(anchor);
   expect(request).toHaveBeenCalledTimes(2);
-  anchor.dispatchEvent(
-    new MouseEvent("pointerout", { bubbles: true, relatedTarget: document.body }),
-  );
-  await vi.advanceTimersByTimeAsync(30_000);
+  await leave(anchor, 30_000);
   await hover(anchor);
   expect(request).toHaveBeenCalledTimes(4);
 });
@@ -163,22 +167,9 @@ it("does not let an older pending preview overwrite committed reader details", a
   const request = vi.fn((method: string) =>
     method === "github.detail" ? Promise.resolve(merged) : pending.promise,
   );
-  const client = createTestGatewayClient(request);
-  const { host, anchor } = makeProvider();
-  host.client = client;
+  const { anchor, client } = makeProvider(request);
   await hover(anchor);
-  const panel = document.createElement("openclaw-link-reader-panel");
-  panel.client = client;
-  panel.available = true;
-  panel.readers = [reader];
-  mountSolid(() => panel);
-  await panel.updateComplete;
-  panel.handleToggleRequest(
-    new CustomEvent(LINK_READER_PANEL_TOGGLE_EVENT, {
-      detail: { url, open: true },
-      cancelable: true,
-    }),
-  );
+  await openPanel(client);
   await waitForSolid(() => expect(badge()).toBe("Merged"));
   pending.resolve(open);
   await vi.advanceTimersByTimeAsync(0);
@@ -198,32 +189,16 @@ it.each([false, true])(
       previewReads += 1;
       return pendingPreview && previewReads === 1 ? pending.promise : Promise.resolve(open);
     });
-    const client = createTestGatewayClient(request);
-    const { host, anchor } = makeProvider();
-    host.client = client;
+    const { anchor, client } = makeProvider(request);
     if (pendingPreview) {
       await hover(anchor);
     }
-    const panel = document.createElement("openclaw-link-reader-panel");
-    panel.client = client;
-    panel.available = true;
-    panel.readers = [reader];
-    mountSolid(() => panel);
-    await panel.updateComplete;
-    panel.handleToggleRequest(
-      new CustomEvent(LINK_READER_PANEL_TOGGLE_EVENT, {
-        detail: { url, open: true },
-        cancelable: true,
-      }),
-    );
+    const panel = await openPanel(client);
     await waitForSolid(() =>
       expect(panel.querySelector(".lr-state")?.textContent).toContain("Merged"),
     );
     pending.resolve(open);
-    anchor.dispatchEvent(
-      new MouseEvent("pointerout", { bubbles: true, relatedTarget: document.body }),
-    );
-    await vi.advanceTimersByTimeAsync(120);
+    await leave(anchor);
     await hover(anchor);
     expect(badge()).toBe("Merged");
     expect(document.querySelector(".link-reader-hovercard__metadata")?.textContent).toBe("+42");
@@ -237,21 +212,8 @@ it("keeps reader facts visible when compact preview enrichment fails", async () 
   const request = vi.fn((method: string) =>
     method === "github.detail" ? Promise.resolve(merged) : previewResponse,
   );
-  const client = createTestGatewayClient(request);
-  const { host, anchor } = makeProvider();
-  host.client = client;
-  const panel = document.createElement("openclaw-link-reader-panel");
-  panel.client = client;
-  panel.available = true;
-  panel.readers = [reader];
-  mountSolid(() => panel);
-  await panel.updateComplete;
-  panel.handleToggleRequest(
-    new CustomEvent(LINK_READER_PANEL_TOGGLE_EVENT, {
-      detail: { url, open: true },
-      cancelable: true,
-    }),
-  );
+  const { anchor, client } = makeProvider(request);
+  await openPanel(client);
   await waitForSolid(() => expect(anchor.getAttribute("aria-description")).toBe("Merged"));
   await hover(anchor);
   expect(anchor.getAttribute("aria-description")).toBe("Merged");
@@ -261,26 +223,17 @@ it("keeps reader facts visible when compact preview enrichment fails", async () 
   expect(document.querySelector<HTMLElement>(".link-reader-hovercard")?.dataset.cached).toBe(
     "true",
   );
-  anchor.dispatchEvent(
-    new MouseEvent("pointerout", { bubbles: true, relatedTarget: document.body }),
-  );
-  await vi.advanceTimersByTimeAsync(120);
+  await leave(anchor);
   await hover(anchor);
   expect(badge()).toBe("Merged");
   expect(request.mock.calls.filter(([method]) => method === "github.preview")).toHaveLength(1);
-  anchor.dispatchEvent(
-    new MouseEvent("pointerout", { bubbles: true, relatedTarget: document.body }),
-  );
-  await vi.advanceTimersByTimeAsync(30_000);
+  await leave(anchor, 30_000);
   await hover(anchor);
   expect(badge()).toBe("Merged");
   expect(anchor.getAttribute("aria-description")).toBe("Merged");
   expect(request.mock.calls.filter(([method]) => method === "github.preview")).toHaveLength(2);
   previewResponse = Promise.resolve(open);
-  anchor.dispatchEvent(
-    new MouseEvent("pointerout", { bubbles: true, relatedTarget: document.body }),
-  );
-  await vi.advanceTimersByTimeAsync(30_000);
+  await leave(anchor, 30_000);
   await hover(anchor);
   expect(badge()).toBe("Merged");
   expect(document.querySelector(".link-reader-hovercard__metadata")?.textContent).toBe("+42");

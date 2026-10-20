@@ -5,13 +5,18 @@ import { HubTabs } from "./solid/hub-tabs.tsx";
 import "../styles/base.css";
 import "../styles/agents.css";
 
+function makeRoot(cssText = "", className = "") {
+  const root = document.body.appendChild(document.createElement("div"));
+  Object.assign(root, { className });
+  root.style.cssText = cssText;
+  onTestFinished(() => root.remove());
+  return root;
+}
+
 it.each(["primary", "sub"] as const)(
   "keeps %s hub tabs at their natural height above a flexing panel",
   async (variant) => {
-    const root = document.createElement("div");
-    root.style.cssText = "display:flex;flex-direction:column;width:240px";
-    document.body.append(root);
-    onTestFinished(() => root.remove());
+    const root = makeRoot("display:flex;flex-direction:column;width:240px");
     mountSolid(
       () => (
         <>
@@ -48,11 +53,7 @@ it.each(["primary", "sub"] as const)(
 );
 
 it("shrinks row-hosted tabs to keep the trailing Add File control inside the panel", async () => {
-  const root = document.createElement("div");
-  root.className = "agent-file-tabs";
-  root.style.width = "280px";
-  document.body.append(root);
-  onTestFinished(() => root.remove());
+  const root = makeRoot("width:280px", "agent-file-tabs");
   mountSolid(
     () => (
       <>
@@ -90,28 +91,24 @@ it("shrinks row-hosted tabs to keep the trailing Add File control inside the pan
 });
 
 it("restores keyboard focus when navigation replaces a Solid tab strip", async () => {
-  const root = document.createElement("div");
+  const root = makeRoot();
   const destination = document.createElement("div");
-  document.body.append(root);
-  onTestFinished(() => root.remove());
   const onSelect = vi.fn();
   const tabs: Array<{ value: "plugins" | "skills"; label: string }> = [
     { value: "plugins", label: "Plugins" },
     { value: "skills", label: "Skills" },
   ];
-  const source = mountSolid(
-    () => (
-      <HubTabs
-        id="mixed"
-        active="plugins"
-        tabs={tabs}
-        ariaLabel="Sections"
-        panelId="mixed-panel"
-        onSelect={onSelect}
-      />
-    ),
-    { baseElement: root },
+  const renderTabs = (active: "plugins" | "skills") => (
+    <HubTabs
+      id="mixed"
+      active={active}
+      tabs={tabs}
+      ariaLabel="Sections"
+      panelId="mixed-panel"
+      onSelect={onSelect}
+    />
   );
+  const source = mountSolid(() => renderTabs("plugins"), { baseElement: root });
   await waitForSolid(() => expect(root.querySelector("#mixed-tab-skills")).not.toBeNull());
   const target = root.querySelector<HTMLElement>("#mixed-tab-skills")!;
   target.focus();
@@ -120,18 +117,6 @@ it("restores keyboard focus when navigation replaces a Solid tab strip", async (
 
   source.unmount();
   root.append(destination);
-  mountSolid(
-    () => (
-      <HubTabs
-        id="mixed"
-        active="skills"
-        tabs={tabs}
-        ariaLabel="Sections"
-        panelId="mixed-panel"
-        onSelect={onSelect}
-      />
-    ),
-    { container: destination },
-  );
+  mountSolid(() => renderTabs("skills"), { container: destination });
   await expect.poll(() => document.activeElement?.id).toBe("mixed-tab-skills");
 });

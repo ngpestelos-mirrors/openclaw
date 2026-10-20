@@ -1,4 +1,5 @@
 /* @vitest-environment jsdom */
+import type { JSX } from "@solidjs/web";
 import { createSignal, flush, Show } from "solid-js";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { resolveThemeBranding } from "../../../packages/gateway-protocol/src/theme.ts";
@@ -19,26 +20,38 @@ import { AgentIdentityAvatar } from "./solid/identity-avatar.tsx";
 const imageResponse = () =>
   new Response(new Uint8Array([1, 2, 3]), { headers: { "content-type": "image/png" } });
 
-function mountImage(identity: IdentityAvatarInput) {
-  const [input, setInput] = createSignal(identity);
+function mountAvatar<T>(initial: T, render: (value: () => T) => JSX.Element, frameClass: string) {
+  const [input, setInput] = createSignal(initial);
   const [presented, setPresented] = createSignal(true);
-  const mounted = mountSolid(() => (
-    <Show when={presented()}>
-      <ProfileImage identity={input()} />
-    </Show>
-  ));
+  const mounted = mountSolid(() => <Show when={presented()}>{render(input)}</Show>);
   return {
     ...mounted,
     image: () => mounted.container.querySelector<HTMLImageElement>("img"),
-    frame: () => mounted.container.querySelector(".test-avatar"),
-    update: (next: IdentityAvatarInput) => {
-      setInput(next);
+    frame: () => mounted.container.querySelector(frameClass),
+    update: (next: T) => {
+      setInput(() => next);
       flush();
     },
     present: (next: boolean) => {
       setPresented(next);
       flush();
     },
+    loaded: (src: string) =>
+      vi.waitFor(() =>
+        expect(mounted.container.querySelector("img")?.getAttribute("src")).toBe(src),
+      ),
+  };
+}
+const mountImage = (identity: IdentityAvatarInput) =>
+  mountAvatar(identity, (value) => <ProfileImage identity={value()} />, ".test-avatar");
+const mountAgent = (agent: AgentIdentity) =>
+  mountAvatar(agent, (value) => <AgentIdentityAvatar agent={value()} />, ".identity-avatar--agent");
+
+function profile(revision = 1, name = "Ada Lovelace") {
+  return {
+    id: "profile-ada",
+    name,
+    profileAvatarUrl: `/api/users/profile-ada/avatar?v=${revision}`,
   };
 }
 
@@ -56,29 +69,6 @@ function ProfileImage(props: { identity: IdentityAvatarInput }) {
       />
     </span>
   );
-}
-
-function mountAgent(initial: AgentIdentity) {
-  const [agent, setAgent] = createSignal(initial);
-  const [presented, setPresented] = createSignal(true);
-  const view = mountSolid(() => (
-    <Show when={presented()}>
-      <AgentIdentityAvatar agent={agent()} />
-    </Show>
-  ));
-  return {
-    ...view,
-    image: () => view.container.querySelector<HTMLImageElement>("img"),
-    frame: () => view.container.querySelector(".identity-avatar--agent"),
-    update: (next: AgentIdentity) => {
-      setAgent(next);
-      flush();
-    },
-    present: (next: boolean) => {
-      setPresented(next);
-      flush();
-    },
-  };
 }
 
 afterEach(() => {
@@ -104,10 +94,10 @@ describe("shared identity avatar view", () => {
         kind === "profile"
           ? mountImage({ id: "ada", name: "Ada", profileAvatarUrl: url })
           : mountAgent({ id: "ada", name: "Ada", avatar: url, textAvatar: "A" });
-      await vi.waitFor(() => expect(view.image()?.getAttribute("src")).toBe("blob:old-identity"));
+      await view.loaded("blob:old-identity");
       const image = view.image();
       setAvatarGatewayOrigin("https://gateway.example.test", ["new-token"]);
-      await vi.waitFor(() => expect(view.image()?.getAttribute("src")).toBe("blob:new-identity"));
+      await view.loaded("blob:new-identity");
       expect(view.image()).toBe(image);
       expect(revoke).toHaveBeenCalledWith("blob:old-identity");
       expect(fetchAvatar).toHaveBeenLastCalledWith(
@@ -125,9 +115,7 @@ describe("shared identity avatar view", () => {
       name: "Mallory",
       profileAvatarUrl: "https://evil.example/api/users/profile-mallory/avatar",
     });
-    expect(view.fallback.initials).toBe("M");
-    expect(view.imageUrl).toBeNull();
-    expect(view.pending).toBe(false);
+    expect(view).toMatchObject({ fallback: { initials: "M" }, imageUrl: null, pending: false });
     expect(fetchAvatar).not.toHaveBeenCalled();
   });
 
@@ -135,17 +123,11 @@ describe("shared identity avatar view", () => {
     setAvatarGatewayOrigin("https://gateway.example.test", ["avatar-token"]);
     const fetchAvatar = vi.spyOn(globalThis, "fetch").mockResolvedValue(imageResponse());
     vi.spyOn(URL, "createObjectURL").mockReturnValue("blob:shared-identity-avatar");
-    const identity = {
-      id: "profile-ada",
-      name: "Ada Lovelace",
-      profileAvatarUrl: "/api/users/profile-ada/avatar?v=7",
-    };
+    const identity = profile(7);
     const view = mountImage(identity);
     expect(view.frame()?.classList.contains("is-pending")).toBe(true);
     expect(view.frame()?.classList.contains("is-fallback")).toBe(false);
-    await vi.waitFor(() =>
-      expect(view.image()?.getAttribute("src")).toBe("blob:shared-identity-avatar"),
-    );
+    await view.loaded("blob:shared-identity-avatar");
     const image = view.image()!;
     expect(image.getAttribute("alt")).toBe("Ada Lovelace");
     expect(image.getAttribute("aria-hidden")).toBe("true");
@@ -173,22 +155,14 @@ describe("shared identity avatar view", () => {
     vi.spyOn(URL, "createObjectURL")
       .mockReturnValueOnce("blob:identity-avatar-v1")
       .mockReturnValueOnce("blob:identity-avatar-v2");
-    const identity = {
-      id: "profile-ada",
-      name: "Ada Lovelace",
-      profileAvatarUrl: "/api/users/profile-ada/avatar?v=1",
-    };
+    const identity = profile();
     const view = mountImage(identity);
-    await vi.waitFor(() =>
-      expect(view.image()?.getAttribute("src")).toBe("blob:identity-avatar-v1"),
-    );
+    await view.loaded("blob:identity-avatar-v1");
     const first = view.image();
     first?.dispatchEvent(new Event("load"));
     view.update({ ...identity, profileAvatarUrl: "/api/users/profile-ada/avatar?v=2" });
     expect(view.frame()?.classList.contains("is-pending")).toBe(true);
-    await vi.waitFor(() =>
-      expect(view.image()?.getAttribute("src")).toBe("blob:identity-avatar-v2"),
-    );
+    await view.loaded("blob:identity-avatar-v2");
     expect(view.image()).toBe(first);
     view.image()?.dispatchEvent(new Event("load"));
     expect(view.frame()?.classList.contains("is-fallback")).toBe(false);
@@ -204,7 +178,7 @@ describe("shared identity avatar view", () => {
       name: "Ada",
       profileAvatarUrl: "https://gateway.example.test/api/users/profile-ada/avatar?v=1",
     });
-    await vi.waitFor(() => expect(view.image()?.getAttribute("src")).toBe("blob:old-gateway"));
+    await view.loaded("blob:old-gateway");
     view.present(false);
     setAvatarGatewayOrigin("https://replacement.example.test", ["new-token"]);
     view.present(true);
@@ -228,11 +202,7 @@ describe("shared identity avatar view", () => {
     let sequence = 0;
     vi.spyOn(URL, "createObjectURL").mockImplementation(() => `blob:view-${sequence++}`);
     const revoke = vi.spyOn(URL, "revokeObjectURL");
-    const identity = {
-      id: "profile-ada",
-      name: "Ada",
-      profileAvatarUrl: "/api/users/profile-ada/avatar?v=1",
-    };
+    const identity = profile(1, "Ada");
     const first = mountImage(identity);
     const second = mountImage(identity);
     const pressureLoads = Array.from({ length: 128 }, (_, index) =>
@@ -241,18 +211,18 @@ describe("shared identity avatar view", () => {
     first.unmount();
     avatar.resolve(imageResponse());
     try {
-      await vi.waitFor(() => expect(second.image()?.getAttribute("src")).toBe("blob:view-0"));
+      await second.loaded("blob:view-0");
       second.image()?.dispatchEvent(new Event("load"));
       expect(revoke).not.toHaveBeenCalledWith("blob:view-0");
       second.present(false);
       expect(revoke).toHaveBeenCalledWith("blob:view-0");
       second.present(true);
-      await vi.waitFor(() => expect(second.image()?.getAttribute("src")).toBe("blob:view-1"));
+      await second.loaded("blob:view-1");
       second.update({ ...identity });
       expect(revoke).not.toHaveBeenCalledWith("blob:view-1");
       expect(requests).toBe(2);
       second.update({ ...identity, profileAvatarUrl: "/api/users/profile-ada/avatar?v=2" });
-      await vi.waitFor(() => expect(second.image()?.getAttribute("src")).toBe("blob:view-2"));
+      await second.loaded("blob:view-2");
       expect(revoke).toHaveBeenCalledWith("blob:view-1");
       expect(revoke).not.toHaveBeenCalledWith("blob:view-2");
       expect(fetchAvatar).toHaveBeenCalledTimes(131);

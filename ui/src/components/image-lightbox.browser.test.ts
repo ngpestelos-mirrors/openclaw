@@ -56,7 +56,7 @@ async function mountImage(item: ImageLightboxItem, deferredClose = false) {
   const image = viewer.querySelector<HTMLImageElement>("img")!;
   await image.decode();
   await nextFrame();
-  return { viewer, image };
+  return { viewer, image, modal, dialog };
 }
 
 function imageSource(width: number, height: number, color: string) {
@@ -69,22 +69,21 @@ function imageSource(width: number, height: number, color: string) {
   return canvas.toDataURL("image/png");
 }
 
+async function focusFixture(title: string, deferredClose = false) {
+  const trigger = document.body.appendChild(document.createElement("button"));
+  trigger.textContent = "Open image tile";
+  onTestFinished(() => trigger.remove());
+  trigger.focus();
+  const mounted = await mountImage({ src: imageSource(320, 200, "#264060"), title }, deferredClose);
+  const animation = mounted.dialog.animate({ opacity: [1, 0.5] }, { duration: 60_000 });
+  animation.pause();
+  onTestFinished(() => animation.cancel());
+  return { ...mounted, trigger, animation };
+}
+
 describe("progressive image viewer geometry", () => {
   it("restores its original tile after Escape removes a still-closing native modal", async () => {
-    const trigger = document.createElement("button");
-    trigger.textContent = "Open image tile";
-    document.body.append(trigger);
-    onTestFinished(() => trigger.remove());
-    trigger.focus();
-    const { viewer } = await mountImage(
-      { src: imageSource(320, 200, "#264060"), title: "Focus return" },
-      true,
-    );
-    const modal = viewer.querySelector("openclaw-modal-dialog")!;
-    const dialog = modal.querySelector("dialog")!;
-    const animation = dialog.animate({ opacity: [1, 0.5] }, { duration: 60_000 });
-    animation.pause();
-    onTestFinished(() => animation.cancel());
+    const { viewer, trigger, dialog } = await focusFixture("Focus return", true);
     expect(dialog.matches(":modal")).toBe(true);
 
     await userEvent.keyboard("{Escape}");
@@ -96,20 +95,7 @@ describe("progressive image viewer geometry", () => {
   it.each([false, true])(
     "returns focus after retained native close without stealing newer focus (newer=%s)",
     async (newer) => {
-      const trigger = document.createElement("button");
-      trigger.textContent = "Open image tile";
-      document.body.append(trigger);
-      onTestFinished(() => trigger.remove());
-      trigger.focus();
-      const { viewer } = await mountImage({
-        src: imageSource(320, 200, "#264060"),
-        title: "Retained close",
-      });
-      const modal = viewer.querySelector("openclaw-modal-dialog")!;
-      const dialog = modal.querySelector("dialog")!;
-      const animation = dialog.animate({ opacity: [1, 0.5] }, { duration: 60_000 });
-      animation.pause();
-      onTestFinished(() => animation.cancel());
+      const { trigger, modal, dialog, animation } = await focusFixture("Retained close");
       const hidden = new Promise<void>((resolve) => {
         modal.addEventListener("overlay-after-hide", () => resolve(), { once: true });
       });
