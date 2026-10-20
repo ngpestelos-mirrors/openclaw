@@ -331,7 +331,7 @@ describe("skills-clawhub", () => {
   });
 
   it("bypasses ClawHub trust checks for official skill install resolutions", async () => {
-    fetchClawHubSkillInstallResolutionMock.mockResolvedValueOnce({
+    mocks.resolve.mockResolvedValueOnce({
       ok: true,
       slug: "agentreceipt",
       channel: "official",
@@ -342,17 +342,17 @@ describe("skills-clawhub", () => {
         downloadUrl: "https://clawhub.ai/api/v1/download?slug=agentreceipt&version=1.0.0",
       },
     });
-    fetchClawHubSkillSecurityVerdictsMock.mockRejectedValueOnce(new Error("should not be called"));
+    mocks.verdict.mockRejectedValueOnce(new Error("should not be called"));
 
-    const result = await installTestSkill(testWorkspaceDir, "agentreceipt");
+    const result = await install();
 
-    expectInstalledSkill(result, {
+    hub.expectInstalledSkill(result, {
       slug: "agentreceipt",
       version: "1.0.0",
-      targetDir: path.join(testWorkspaceDir, "skills", "agentreceipt"),
+      targetDir: path.join(workspaceDir, "skills", "agentreceipt"),
     });
-    expect(fetchClawHubSkillSecurityVerdictsMock).not.toHaveBeenCalled();
-    expect(installPolicyInput()).toMatchObject({
+    expect(mocks.verdict).not.toHaveBeenCalled();
+    expect(hub.installPolicyInput()).toMatchObject({
       origin: { registry: "https://clawhub.ai" },
       source: { kind: "clawhub", authority: "official", mutable: false, network: true },
     });
@@ -649,11 +649,10 @@ describe("skills-clawhub", () => {
   });
 
   it("persists the source URL from server-resolved verification provenance", async () => {
-    const workspaceDir = await tempDirs.make("openclaw-skills-source-");
     const sourceUrl = "https://github.com/openclaw/skills/tree/main/agentreceipt";
     const verifiedSourceUrl =
       "https://github.com/openclaw/skills/tree/0123456789abcdef0123456789abcdef01234567/agentreceipt";
-    fetchClawHubSkillVerificationMock.mockResolvedValueOnce({
+    mocks.verify.mockResolvedValueOnce({
       schema: "clawhub.skill.verify.v1",
       ok: true,
       decision: "pass",
@@ -679,18 +678,18 @@ describe("skills-clawhub", () => {
       path: "SKILL.md",
       sha256: createHash("sha256").update(skillContent).digest("hex"),
     };
-    mockInstalledSkillFile(skillContent);
+    hub.mockInstalledSkillFile(skillContent);
 
-    const result = await installTestSkill(workspaceDir, "agentreceipt", {
+    const result = await install("agentreceipt", {
       version: "1.0.0",
     });
 
-    expectInstalledSkill(result, {
+    hub.expectInstalledSkill(result, {
       slug: "agentreceipt",
       version: "1.0.0",
       targetDir: path.join(workspaceDir, "skills", "agentreceipt"),
     });
-    const lock = await readJson<{ skills: Record<string, Record<string, unknown>> }>(
+    const lock = await hub.readJson<{ skills: Record<string, Record<string, unknown>> }>(
       path.join(workspaceDir, ".clawhub", "lock.json"),
     );
     expect(lock.skills.agentreceipt).toMatchObject({
@@ -712,7 +711,7 @@ describe("skills-clawhub", () => {
         },
       },
     });
-    const origin = await readJson<Record<string, unknown>>(
+    const origin = await hub.readJson<Record<string, unknown>>(
       path.join(workspaceDir, "skills", "agentreceipt", ".clawhub", "origin.json"),
     );
     expect(origin).toMatchObject({

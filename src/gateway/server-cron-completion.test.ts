@@ -142,7 +142,10 @@ async function createCompletionFixture(
       pluginId: "telegram",
       source: "test",
       plugin: {
-        ...createChannelTestPluginBase({ id: "telegram" }),
+        ...createChannelTestPluginBase({
+          id: "telegram",
+          config: { listAccountIds: () => ["default", "work"] },
+        }),
         outbound: { deliveryMode: "direct", sendText },
       },
     },
