@@ -2,9 +2,11 @@ import { spawn, type SpawnOptionsWithoutStdio } from "node:child_process";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { afterEach, it } from "vitest";
+import { resolveNpmJsonEntries } from "../../../scripts/lib/npm-json-output.mts";
 import { resolveNpmRunner } from "../../../scripts/npm-runner.mts";
 import { createNodeEvalArgs } from "../../../src/test-utils/node-process.js";
 import { useAutoCleanupTempDirTracker } from "../../../test/helpers/temp-dir.js";
+import { isRecord } from "../../normalization-core/src/record-coerce.js";
 
 type CommandResult = { stdout: string; stderr: string };
 type PackageManifest = {
@@ -202,9 +204,15 @@ it("@openclaw/ai packed package installs externally and preserves every publishe
     ["pack", "--ignore-scripts", "--json", "--pack-destination", tempDir],
     packageRoot,
   );
-  const packResult = JSON.parse(pack.stdout) as Array<{ filename: string }>;
-  const tarball = path.join(tempDir, packResult[0]?.filename ?? "");
-  await fs.stat(tarball);
+  const [packResult] = resolveNpmJsonEntries(JSON.parse(pack.stdout));
+  const filename = isRecord(packResult) ? packResult.filename : undefined;
+  if (typeof filename !== "string" || !filename.endsWith(".tgz")) {
+    throw new Error("npm pack did not return a tarball filename");
+  }
+  const tarball = path.join(tempDir, filename);
+  if (!(await fs.stat(tarball)).isFile()) {
+    throw new Error("npm pack did not create a tarball file");
+  }
 
   await writeJson("package.json", { private: true, type: "module" });
   await runNpmCommand(
