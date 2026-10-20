@@ -8,6 +8,11 @@ import { createTeamScaleSidebarListOwner } from "./control-ui-sidebar-list-fixtu
 import { createControlUiTeamScaleFixture } from "./control-ui-team-scale-fixture.ts";
 
 const now = 1_800_000_000_000;
+const session = (
+  id: string,
+  updatedAt: number | null,
+  fields: Partial<GatewaySessionRow> = {},
+): GatewaySessionRow => ({ key: `agent:main:${id}`, kind: "direct", updatedAt, ...fields });
 
 describe("Team-scale Gateway fixture", () => {
   it("sustains certified ancestor churn past the minute fallback and preserves the raw delta baseline", () => {
@@ -62,122 +67,53 @@ describe("Team-scale Gateway fixture", () => {
   it("pages session lists using pin placement, stable key ties, and the requested activity clock", () => {
     const fixture = createControlUiTeamScaleFixture({ now });
     const rows: GatewaySessionRow[] = [
-      {
-        key: "agent:main:newest",
-        kind: "direct",
-        updatedAt: 900,
-        lastInteractionAt: 100,
-        lastActivityAt: 200,
-      },
-      {
-        key: "agent:main:pin-old",
-        kind: "direct",
-        updatedAt: 100,
+      session("newest", 900, { lastInteractionAt: 100, lastActivityAt: 200 }),
+      session("pin-old", 100, {
         pinned: true,
         pinnedAt: 10,
         parentSessionKey: "agent:main:main",
         lastInteractionAt: 800,
-      },
-      {
-        key: "agent:main:pin-new",
-        kind: "direct",
-        updatedAt: 50,
+      }),
+      session("pin-new", 50, {
         pinned: true,
         pinnedAt: 20,
         lastInteractionAt: 200,
-      },
-      {
-        key: "agent:main:tie-a",
-        kind: "direct",
-        updatedAt: 700,
-        lastInteractionAt: 300,
-        lastActivityAt: 500,
-      },
-      {
-        key: "agent:main:tie-B",
-        kind: "direct",
-        updatedAt: 700,
-        lastInteractionAt: 300,
-        lastActivityAt: 500,
-      },
-      {
-        key: "agent:main:subagent:nested",
-        kind: "direct",
-        updatedAt: 800,
+      }),
+      session("tie-a", 700, { lastInteractionAt: 300, lastActivityAt: 500 }),
+      session("tie-B", 700, { lastInteractionAt: 300, lastActivityAt: 500 }),
+      session("subagent:nested", 800, {
         pinned: true,
         pinnedAt: 1_000,
         spawnedBy: "agent:main:main",
-      },
-      {
-        key: "agent:main:promoted",
-        kind: "direct",
-        updatedAt: 600,
+      }),
+      session("promoted", 600, {
         pinned: true,
         pinnedAt: 30,
         spawnedBy: "agent:main:main",
         sidebarRoot: true,
-      },
-      {
-        key: "agent:main:false-pin",
-        kind: "direct",
-        updatedAt: 650,
+      }),
+      session("false-pin", 650, {
         pinned: false,
         pinnedAt: 10_000,
         lastInteractionAt: 900,
         lastActivityAt: 800,
-      },
-      { key: "agent:main:created", kind: "direct", updatedAt: null, createdAt: 1_000 },
+      }),
+      session("created", null, { createdAt: 1_000 }),
     ];
     const owner = createTeamScaleSidebarListOwner({ ...fixture.sidebarListInput, rows });
     for (const [sortBy, expected] of [
-      [
-        undefined,
-        [
-          "promoted",
-          "pin-new",
-          "pin-old",
-          "newest",
-          "subagent:nested",
-          "tie-B",
-          "tie-a",
-          "false-pin",
-          "created",
-        ],
-      ],
+      [undefined, "promoted pin-new pin-old newest subagent:nested tie-B tie-a false-pin created"],
       [
         "lastInteractionAt",
-        [
-          "false-pin",
-          "pin-old",
-          "tie-B",
-          "tie-a",
-          "pin-new",
-          "newest",
-          "created",
-          "promoted",
-          "subagent:nested",
-        ],
+        "false-pin pin-old tie-B tie-a pin-new newest created promoted subagent:nested",
       ],
-      [
-        "activity",
-        [
-          "created",
-          "false-pin",
-          "pin-old",
-          "subagent:nested",
-          "promoted",
-          "tie-B",
-          "tie-a",
-          "newest",
-          "pin-new",
-        ],
-      ],
+      ["activity", "created false-pin pin-old subagent:nested promoted tie-B tie-a newest pin-new"],
     ] as const) {
       const pages = [0, 3, 6].map((offset) => owner.list({ sortBy, offset, limit: 3 }).result);
       expect(
         pages.flatMap((page) => page.sessions.map((row) => row.key)),
         sortBy ?? "updatedAt",
-      ).toEqual(expected.map((id) => `agent:main:${id}`));
+      ).toEqual(expected.split(" ").map((id) => `agent:main:${id}`));
       expect(pages.map((page) => page.nextOffset)).toEqual([3, 6, null]);
     }
   });
