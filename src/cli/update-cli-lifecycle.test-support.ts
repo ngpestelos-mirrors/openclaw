@@ -30,27 +30,7 @@ import { getFreePort } from "../test-utils/ports.js";
 import type { TempHomeEnv } from "../test-utils/temp-home.js";
 import { setupConfigMutationWithRetryMock } from "./update-cli-assertions.test-support.js";
 import * as mocks from "./update-cli-mocks.test-support.js";
-import {
-  checkUpdateStatus,
-  closeOpenClawStateDatabaseAsync,
-  closeOpenClawStateDatabaseForTest,
-  defaultRuntime,
-  doctorCommand,
-  fetchNpmPackageTargetStatus,
-  fetchNpmTagVersion,
-  makeOkUpdateResult,
-  readConfigFileSnapshot,
-  readSourceConfigBestEffort,
-  resolveExtendedStablePackage,
-  resolveOpenClawPackageRoot,
-  resolveUpdateInstallIdentity,
-  resolveUpdateInstallKind,
-  runCommandWithTimeout,
-  runDaemonInstall,
-  runDaemonRestart,
-  updateCliShared,
-  updateGitCheckout,
-} from "./update-cli-modules.test-support.js";
+import * as update from "./update-cli-modules.test-support.js";
 import {
   npmPluginUpdateResult,
   pluginSyncResult,
@@ -59,6 +39,15 @@ import { reportUpdateCliHomeCleanupFailure } from "./update-cli/update-cli-failu
 import { getNodeRuntimeFixture } from "./update-cli/update-command-runtime-recovery.test-support.js";
 
 await vi.hoisted(() => import("./update-cli-mocks.test-support.js"));
+
+export const candidateStartupStep = (cwd: string, valid = true) => ({
+  name: "candidate-gateway-startup",
+  command: "openclaw gateway",
+  cwd,
+  durationMs: 1,
+  exitCode: valid ? 0 : 1,
+  ...(!valid ? { stderrTail: "candidate readiness failed" } : {}),
+});
 
 function selectHostPlatform(): () => void {
   const descriptor = expectDefined(
@@ -101,37 +90,27 @@ type UpdateCliLifecycleFixture = {
 };
 
 export function registerUpdateCliLifecycle(fixture: UpdateCliLifecycleFixture): void {
-  const {
-    baseConfig,
-    baseSnapshot,
-    fixtureRoot,
-    globalNpmConfig,
-    initializeExistingUpdateProfile,
-    mockGatewayHealth,
-    primeNpmChannelTag,
-    reportCandidateSteps,
-    setStdoutTty,
-    setTty,
-    tempDirs,
-    tempDirsToCleanup,
-  } = fixture;
   let tempHome: TempHomeEnv | undefined;
 
   const invocationCwd = process.cwd();
   beforeEach(async () => {
     vi.spyOn(taskProbe, "probeScheduledTaskUpdateAccess").mockReturnValue({ status: "allowed" });
     // Default install roots use cwd; artifact admission must own the fixture, not the checkout.
-    process.chdir(path.join(fixtureRoot, "checkout"));
+    process.chdir(path.join(fixture.fixtureRoot, "checkout"));
     process.exitCode = undefined;
     const { createTempHomeEnv } = await import("../test-utils/temp-home.js");
     tempHome = await createTempHomeEnv("openclaw-update-cli-home-");
     // Original-state capture must discover this simulated install's plugins.
-    process.env.OPENCLAW_BUNDLED_PLUGINS_DIR = path.join(fixtureRoot, "checkout", "extensions");
+    process.env.OPENCLAW_BUNDLED_PLUGINS_DIR = path.join(
+      fixture.fixtureRoot,
+      "checkout",
+      "extensions",
+    );
     process.env.OPENCLAW_TEST_TRUST_BUNDLED_PLUGINS_DIR = "1";
-    mocks.commandTransport.npmPrefix = tempDirs.make("openclaw-cli-npm-prefix-");
-    process.env.NPM_CONFIG_GLOBALCONFIG = globalNpmConfig;
-    process.env.npm_config_globalconfig = globalNpmConfig;
-    const executorTmp = tempDirs.make("update-cli-owner-");
+    mocks.commandTransport.npmPrefix = fixture.tempDirs.make("openclaw-cli-npm-prefix-");
+    process.env.NPM_CONFIG_GLOBALCONFIG = fixture.globalNpmConfig;
+    process.env.npm_config_globalconfig = fixture.globalNpmConfig;
+    const executorTmp = fixture.tempDirs.make("update-cli-owner-");
     mocks.serviceFixtureState.absentServicePort = await getFreePort();
     delete process.env.OPENCLAW_COMPATIBILITY_HOST_VERSION;
     delete process.env.OPENCLAW_SERVICE_MARKER;
@@ -229,21 +208,13 @@ export function registerUpdateCliLifecycle(fixture: UpdateCliLifecycleFixture): 
       finalValidation: { ok: false, score: 0, summary: "No fixture repair route." },
     });
     mocks.candidateValidation.mockImplementation(async (options) =>
-      reportCandidateSteps(options, {
+      fixture.reportCandidateSteps(options, {
         status: "ok",
         candidateSchemaVersions: {
           state: OPENCLAW_STATE_SCHEMA_VERSION,
           agent: OPENCLAW_AGENT_SCHEMA_VERSION,
         },
-        steps: [
-          {
-            name: "candidate-gateway-startup",
-            command: "openclaw gateway",
-            cwd: "/candidate",
-            durationMs: 1,
-            exitCode: 0,
-          },
-        ],
+        steps: [candidateStartupStep("/candidate")],
       }),
     );
     mocks.httpReadiness.mockResolvedValue({ healthz: 200, readyz: 200 });
@@ -269,39 +240,37 @@ export function registerUpdateCliLifecycle(fixture: UpdateCliLifecycleFixture): 
     });
     mocks.resetRuntimeCapture();
     mocks.spawn.mockImplementation(() => {
-      const child = new EventEmitter() as EventEmitter & {
-        once: EventEmitter["once"];
-      };
+      const child = new EventEmitter();
       queueMicrotask(() => {
         child.emit("exit", 0, null);
         child.emit("close", 0, null);
       });
       return child;
     });
-    vi.mocked(defaultRuntime.exit).mockImplementation(() => {});
+    vi.mocked(update.defaultRuntime.exit).mockImplementation(() => {});
     mocks.databasePreflightMocks.preflightOpenClawDatabaseSchemas.mockReturnValue({
       incompatible: [],
       indeterminate: [],
     });
-    vi.mocked(resolveOpenClawPackageRoot).mockResolvedValue(process.cwd());
-    vi.mocked(readConfigFileSnapshot).mockResolvedValue(baseSnapshot);
-    vi.mocked(readSourceConfigBestEffort).mockResolvedValue(baseSnapshot.config);
+    vi.mocked(update.resolveOpenClawPackageRoot).mockResolvedValue(process.cwd());
+    vi.mocked(update.readConfigFileSnapshot).mockResolvedValue(fixture.baseSnapshot);
+    vi.mocked(update.readSourceConfigBestEffort).mockResolvedValue(fixture.baseSnapshot.config);
     setupConfigMutationWithRetryMock();
-    vi.mocked(fetchNpmTagVersion).mockResolvedValue({
+    vi.mocked(update.fetchNpmTagVersion).mockResolvedValue({
       tag: "latest",
       version: "9999.0.0",
     });
-    vi.mocked(fetchNpmPackageTargetStatus).mockImplementation(async ({ target }) => ({
+    vi.mocked(update.fetchNpmPackageTargetStatus).mockImplementation(async ({ target }) => ({
       version: /^\d/u.test(target) ? target : "9999.0.0",
       nodeEngine: ">=22.19.0",
     }));
-    vi.mocked(resolveExtendedStablePackage).mockResolvedValue({
+    vi.mocked(update.resolveExtendedStablePackage).mockResolvedValue({
       status: "resolved",
       selector: "extended-stable",
       version: "2026.6.33",
       packageSpec: "openclaw@2026.6.33",
     });
-    primeNpmChannelTag("latest", "9999.0.0");
+    fixture.primeNpmChannelTag("latest", "9999.0.0");
     mocks.nodeVersionSatisfiesEngine.mockReturnValue(true);
     const nodeRuntime = getNodeRuntimeFixture();
     mocks.resolveNodeRuntimeInfo.mockResolvedValue({
@@ -317,12 +286,12 @@ export function registerUpdateCliLifecycle(fixture: UpdateCliLifecycleFixture): 
         json: true,
       },
     });
-    vi.mocked(resolveUpdateInstallKind).mockResolvedValue("git");
-    vi.mocked(resolveUpdateInstallIdentity).mockResolvedValue({
+    vi.mocked(update.resolveUpdateInstallKind).mockResolvedValue("git");
+    vi.mocked(update.resolveUpdateInstallIdentity).mockResolvedValue({
       installKind: "git",
       git: { tag: "v1.2.3", branch: "main" },
     });
-    vi.mocked(checkUpdateStatus).mockResolvedValue({
+    vi.mocked(update.checkUpdateStatus).mockResolvedValue({
       root: "/test/path",
       installKind: "git",
       packageManager: "pnpm",
@@ -347,7 +316,7 @@ export function registerUpdateCliLifecycle(fixture: UpdateCliLifecycleFixture): 
         latestVersion: "1.2.3",
       },
     });
-    vi.mocked(runCommandWithTimeout).mockImplementation(async (argv) => {
+    vi.mocked(update.runCommandWithTimeout).mockImplementation(async (argv) => {
       if (argv[1] === "--version") {
         return commandResult({ stdout: "12.0.0\n" });
       }
@@ -364,9 +333,11 @@ export function registerUpdateCliLifecycle(fixture: UpdateCliLifecycleFixture): 
       }
       return commandResult();
     });
-    vi.spyOn(updateCliShared, "readPackageName").mockImplementation(mocks.readPackageName);
-    vi.spyOn(updateCliShared, "readPackageVersion").mockImplementation(mocks.readPackageVersion);
-    vi.spyOn(updateCliShared, "resolveGlobalManager").mockImplementation(
+    vi.spyOn(update.updateCliShared, "readPackageName").mockImplementation(mocks.readPackageName);
+    vi.spyOn(update.updateCliShared, "readPackageVersion").mockImplementation(
+      mocks.readPackageVersion,
+    );
+    vi.spyOn(update.updateCliShared, "resolveGlobalManager").mockImplementation(
       mocks.resolveGlobalManager,
     );
     mocks.readPackageName.mockResolvedValue("openclaw");
@@ -397,13 +368,13 @@ export function registerUpdateCliLifecycle(fixture: UpdateCliLifecycleFixture): 
     });
     mocks.classifyPortListener.mockReturnValue("gateway");
     mocks.formatPortDiagnostics.mockReturnValue(["Port 18789 is already in use."]);
-    mockGatewayHealth("1.0.0", "conn-test");
+    fixture.mockGatewayHealth("1.0.0", "conn-test");
     const installedEntrypoint = path.join(process.cwd(), "dist", "index.js");
     mocks.pathExists.mockImplementation(
       async (candidate: string) => candidate === installedEntrypoint,
     );
-    mocks.syncPluginsForUpdateChannel.mockResolvedValue(pluginSyncResult(baseConfig));
-    mocks.updateNpmInstalledPlugins.mockResolvedValue(npmPluginUpdateResult(baseConfig));
+    mocks.syncPluginsForUpdateChannel.mockResolvedValue(pluginSyncResult(fixture.baseConfig));
+    mocks.updateNpmInstalledPlugins.mockResolvedValue(npmPluginUpdateResult(fixture.baseConfig));
     mocks.checkShellCompletionStatus.mockResolvedValue({
       shell: "zsh",
       profileInstalled: false,
@@ -413,9 +384,9 @@ export function registerUpdateCliLifecycle(fixture: UpdateCliLifecycleFixture): 
     });
     mocks.ensureCompletionCacheExists.mockResolvedValue(true);
     mocks.installCompletion.mockResolvedValue(undefined);
-    vi.mocked(runDaemonInstall).mockResolvedValue(undefined);
-    vi.mocked(runDaemonRestart).mockResolvedValue(true);
-    vi.mocked(doctorCommand).mockResolvedValue(undefined);
+    vi.mocked(update.runDaemonInstall).mockResolvedValue(undefined);
+    vi.mocked(update.runDaemonRestart).mockResolvedValue(true);
+    vi.mocked(update.doctorCommand).mockResolvedValue(undefined);
     mocks.legacyConfigRepairMocks.repairLegacyConfigForUpdateChannel.mockImplementation(
       async (params: { configSnapshot: ConfigFileSnapshot }) => ({
         snapshot: params.configSnapshot,
@@ -426,10 +397,10 @@ export function registerUpdateCliLifecycle(fixture: UpdateCliLifecycleFixture): 
     mocks.launchdUpdateCleanupMocks.disableCurrentOpenClawUpdateLaunchdJob.mockResolvedValue(false);
     mocks.confirm.mockResolvedValue(false);
     mocks.select.mockResolvedValue("stable");
-    vi.mocked(updateGitCheckout).mockResolvedValue(makeOkUpdateResult());
-    setTty(false);
-    setStdoutTty(false);
-    initializeExistingUpdateProfile();
+    vi.mocked(update.updateGitCheckout).mockResolvedValue(update.makeOkUpdateResult());
+    fixture.setTty(false);
+    fixture.setStdoutTty(false);
+    fixture.initializeExistingUpdateProfile();
     // Keep guard reads on the fixture connection instead of booting snapshots per read.
     openOpenClawStateDatabase();
   });
@@ -438,7 +409,7 @@ export function registerUpdateCliLifecycle(fixture: UpdateCliLifecycleFixture): 
     mocks.fixtureEnvSnapshot.restore();
     // Direct command fixtures also own the native broker started from their checkout.
     await closeDefaultRetainedNativeWorkerSource();
-    await fs.rm(fixtureRoot, { recursive: true, force: true });
+    await fs.rm(fixture.fixtureRoot, { recursive: true, force: true });
   });
 
   afterEach(async () => {
@@ -446,8 +417,8 @@ export function registerUpdateCliLifecycle(fixture: UpdateCliLifecycleFixture): 
     process.chdir(invocationCwd);
     process.exitCode = undefined;
     // Relocated stores can retain workers whose coordinator lives in this temporary home.
-    await closeOpenClawStateDatabaseAsync();
-    closeOpenClawStateDatabaseForTest();
+    await update.closeOpenClawStateDatabaseAsync();
+    update.closeOpenClawStateDatabaseForTest();
     try {
       await tempHome?.restore();
     } catch (error) {
@@ -456,8 +427,8 @@ export function registerUpdateCliLifecycle(fixture: UpdateCliLifecycleFixture): 
     }
     tempHome = undefined;
     await Promise.allSettled(
-      [...tempDirsToCleanup].map((dir) => fs.rm(dir, { recursive: true, force: true })),
+      [...fixture.tempDirsToCleanup].map((dir) => fs.rm(dir, { recursive: true, force: true })),
     );
-    tempDirsToCleanup.clear();
+    fixture.tempDirsToCleanup.clear();
   });
 }

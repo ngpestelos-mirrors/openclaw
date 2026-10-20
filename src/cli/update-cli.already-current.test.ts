@@ -31,21 +31,35 @@ await vi.hoisted(() => import("./update-cli-mocks.test-support.js"));
 
 describe("update-cli", () => {
   const setup = createUpdateCliFixture();
-  async function prepareCurrentPackage(prefix?: string, tag = "latest") {
-    const root = await setup.mockPackageInstallAtCaseDir(prefix, VERSION);
+  async function prepareCurrentPackage(prefix?: string, tag = "latest", rewrite = false) {
+    const root = await setup.mockPackageInstallAtCaseDir(prefix, rewrite ? "1.0.0" : VERSION);
+    if (rewrite) {
+      await writeOpenClawPackageFixture(root, VERSION);
+    }
     mocks.readPackageVersion.mockResolvedValue(VERSION);
     setup.primeNpmChannelTag(tag, VERSION);
     return root;
   }
-  async function prepareRunningCurrentPackage(prefix?: string, tag = "latest") {
-    const root = await prepareCurrentPackage(prefix, tag);
-    setup.mockRunningManagedGateway([
-      "node",
-      path.join(root, "dist", "index.js"),
-      "gateway",
-      "run",
-    ]);
+  const serviceArgs = (root: string) => [
+    "node",
+    path.join(root, "dist", "index.js"),
+    "gateway",
+    "run",
+  ];
+  async function prepareRunningCurrentPackage(...args: Parameters<typeof prepareCurrentPackage>) {
+    const root = await prepareCurrentPackage(...args);
+    setup.mockRunningManagedGateway(serviceArgs(root));
     return root;
+  }
+  const output = () => proof.lastWriteJsonCall() as UpdateRunResult;
+  function expectNoActivation() {
+    proof.expectNoSideEffects(
+      mocks.serviceStop,
+      mocks.serviceRestart,
+      modules.runDaemonRestart,
+      mocks.candidateValidation,
+    );
+    expect(proof.packageInstallCommandCall()?.[0]).toBeUndefined();
   }
   async function installRecord(
     prefix: string,
@@ -57,6 +71,29 @@ describe("update-cli", () => {
     await fs.mkdir(installPath, { recursive: true });
     await writeJsonFixture(path.join(installPath, "package.json"), { name, version });
     return { source: "npm", spec, installPath, version };
+  }
+  function pluginOutcome(
+    pluginId: string,
+    record: PluginInstallRecord,
+    changed: boolean,
+    message: string,
+  ) {
+    setup.mockNpmPluginOutcomes(
+      [
+        {
+          pluginId,
+          status: changed ? "updated" : "unchanged",
+          currentVersion: "2026.9.2",
+          nextVersion: "2026.9.3",
+          message,
+        },
+      ],
+      changed,
+      {
+        ...setup.baseConfig,
+        plugins: { ...setup.baseConfig.plugins, installs: { [pluginId]: record } },
+      },
+    );
   }
 
   it.each(
@@ -73,47 +110,16 @@ describe("update-cli", () => {
           "absent",
         );
       }
-      const root = await setup.mockPackageInstallAtCaseDir();
-      await writeOpenClawPackageFixture(root, VERSION);
+      const root = await prepareRunningCurrentPackage(undefined, "latest", true);
       setup.mockFileBackedPathExists();
       vi.mocked(modules.resolveGatewayInstallEntrypoint).mockReset();
-      mocks.readPackageVersion.mockResolvedValue(VERSION);
-      setup.primeNpmChannelTag("latest", VERSION);
-      setup.mockRunningManagedGateway([
-        "node",
-        path.join(root, "dist", "index.js"),
-        "gateway",
-        "run",
-      ]);
       const record = await installRecord("current-core-plugin", "@openclaw/brave-plugin");
       mocks.loadInstalledPluginIndexInstallRecords.mockResolvedValue({ brave: record });
       const updatedRecord = { ...record, version: "2026.9.3" };
-      setup.mockNpmPluginOutcomes(
-        [
-          {
-            pluginId: "brave",
-            status: "updated",
-            currentVersion: "2026.9.2",
-            nextVersion: "2026.9.3",
-            message: "Updated brave: 2026.9.2 -> 2026.9.3.",
-          },
-        ],
-        true,
-        {
-          ...setup.baseConfig,
-          plugins: { ...setup.baseConfig.plugins, installs: { brave: updatedRecord } },
-        },
-      );
+      pluginOutcome("brave", updatedRecord, true, "Updated brave: 2026.9.2 -> 2026.9.3.");
       modules.runPostCorePluginConvergenceSpy.mockImplementationOnce(async ({ cfg }) => {
         if (failure === "changed owner") {
-          setup.primeServiceCommand([
-            "node",
-            path.join(root, "dist", "index.js"),
-            "gateway",
-            "run",
-            "--port",
-            "19102",
-          ]);
+          setup.primeServiceCommand([...serviceArgs(root), "--port", "19102"]);
         }
         return {
           ...postCoreConvergenceResult(),
@@ -160,8 +166,7 @@ describe("update-cli", () => {
       }
       await modules.updateCommand({ yes: true, restart: true, json: true });
 
-      expect(mocks.updateNpmInstalledPlugins).toHaveBeenCalledOnce();
-      expect(mocks.updateNpmInstalledPlugins).toHaveBeenCalledWith(
+      expect(mocks.updateNpmInstalledPlugins).toHaveBeenCalledExactlyOnceWith(
         expect.objectContaining({ coreVersion: VERSION, syncOfficialPluginInstalls: true }),
       );
       expect(proof.lastWriteJsonCall()).toMatchObject({
@@ -231,39 +236,17 @@ describe("update-cli", () => {
   });
 
   it("reports retained pins on an already-current core", async () => {
-    const root = await setup.mockPackageInstallAtCaseDir();
-    await writeOpenClawPackageFixture(root, VERSION);
-    mocks.readPackageVersion.mockResolvedValue(VERSION);
-    setup.primeNpmChannelTag("latest", VERSION);
-    setup.mockRunningManagedGateway([
-      "node",
-      path.join(root, "dist", "index.js"),
-      "gateway",
-      "run",
-    ]);
-    const records: Record<string, PluginInstallRecord> = {
-      discord: await installRecord(
-        "current-core-pin",
-        "@openclaw/discord",
-        "@openclaw/discord@2026.9.2",
-      ),
-    };
+    await prepareRunningCurrentPackage(undefined, "latest", true);
+    const record = await installRecord(
+      "current-core-pin",
+      "@openclaw/discord",
+      "@openclaw/discord@2026.9.2",
+    );
+    const records = { discord: record };
     mocks.loadInstalledPluginIndexInstallRecords.mockResolvedValue(records);
     const message =
       "discord is pinned to @openclaw/discord@2026.9.2 (installed 2026.9.2); registry latest resolves to 2026.9.3. Pass `openclaw plugins update @openclaw/discord@latest` to replace this version pin.";
-    setup.mockNpmPluginOutcomes(
-      [
-        {
-          pluginId: "discord",
-          status: "unchanged",
-          currentVersion: "2026.9.2",
-          nextVersion: "2026.9.3",
-          message,
-        },
-      ],
-      false,
-      { ...setup.baseConfig, plugins: { ...setup.baseConfig.plugins, installs: records } },
-    );
+    pluginOutcome("discord", record, false, message);
     mockPostCoreConvergenceOnce(modules.runPostCorePluginConvergenceSpy, {
       installRecords: records,
     });
@@ -291,19 +274,17 @@ describe("update-cli", () => {
 
       await modules.updateCommand({ admission: "auto", yes: true, restart: true, json: true });
 
-      proof.expectNoSideEffects(
-        mocks.serviceStop,
-        mocks.serviceRestart,
-        modules.runDaemonRestart,
-        mocks.candidateValidation,
-      );
+      expectNoActivation();
       expect(mocks.managedUpdateHandoff.start).not.toHaveBeenCalled();
       proof.expectNoSideEffects(
         mocks.updateNpmInstalledPlugins,
         mocks.syncPluginsForUpdateChannel,
         mocks.systemdPolicy,
       );
-      expect(proof.lastWriteJsonCall()).toMatchObject({
+      const result = output();
+      expect(result).toMatchObject({
+        status: "skipped",
+        reason: "already-current",
         steps: [
           expect.objectContaining({
             exitCode: 0,
@@ -316,13 +297,7 @@ describe("update-cli", () => {
           }),
         ],
       });
-      expect(proof.packageInstallCommandCall()?.[0]).toBeUndefined();
       expect(modules.replaceConfigFile).not.toHaveBeenCalled();
-      expect(proof.lastWriteJsonCall()).toMatchObject({
-        status: "skipped",
-        reason: "already-current",
-      });
-      const result = proof.lastWriteJsonCall() as UpdateRunResult;
       expect(modules.getUpdateRun(proof.requireValue(result.runId, "no-op run id"))).toMatchObject({
         status: "skipped",
         reason: "already-current",
@@ -343,12 +318,7 @@ describe("update-cli", () => {
       await writeJsonFixture(path.join(stateDir, "openclaw.json"), {
         update: { channel: "stable" },
       });
-      setup.mockRunningManagedGateway([
-        "node",
-        path.join(root, "dist", "index.js"),
-        "gateway",
-        "run",
-      ]);
+      setup.mockRunningManagedGateway(serviceArgs(root));
       vi.spyOn(serviceMembership, "inspectServiceProcessMembershipSync").mockReturnValue(
         membership,
       );
@@ -371,13 +341,7 @@ describe("update-cli", () => {
         },
       );
 
-      proof.expectNoSideEffects(
-        mocks.serviceStop,
-        mocks.serviceRestart,
-        modules.runDaemonRestart,
-        mocks.candidateValidation,
-      );
-      expect(proof.packageInstallCommandCall()?.[0]).toBeUndefined();
+      expectNoActivation();
       expect(proof.doctorCommandCall()).toBeUndefined();
       const captureNotices = vi
         .mocked(modules.defaultRuntime.error)
@@ -403,9 +367,9 @@ describe("update-cli", () => {
       }
       expect(proof.lastReplaceConfigCall()?.nextConfig?.update?.channel).toBe("beta");
       expect(mocks.updateNpmInstalledPlugins).toHaveBeenCalledOnce();
-      expect(proof.lastWriteJsonCall()).toMatchObject({ status: "ok" });
-      expect(proof.lastWriteJsonCall()).not.toHaveProperty("reason");
-      const result = proof.lastWriteJsonCall() as UpdateRunResult;
+      const result = output();
+      expect(result).toMatchObject({ status: "ok" });
+      expect(result).not.toHaveProperty("reason");
       expect(
         modules.getUpdateRun(proof.requireValue(result.runId, "channel switch run id"), {
           env: { ...process.env, OPENCLAW_STATE_DIR: stateDir },
@@ -456,12 +420,12 @@ describe("update-cli", () => {
       "package runtime\n",
     );
     expect(proof.lastReplaceConfigCall()?.nextConfig?.update?.channel).toBe("stable");
-    expect(proof.lastWriteJsonCall()).toMatchObject({
+    expect(output()).toMatchObject({
       status: "ok",
       mode: "npm",
       root: pkgRoot,
     });
-    expect((proof.lastWriteJsonCall() as UpdateRunResult).reason).toBeUndefined();
+    expect(output().reason).toBeUndefined();
   });
 
   it.each(["latest", "next"] as const)("handles an unresolved %s dist-tag lookup", async (tag) => {

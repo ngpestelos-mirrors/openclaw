@@ -1,4 +1,5 @@
 import { fork, type ChildProcess } from "node:child_process";
+import { once } from "node:events";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -40,14 +41,14 @@ describe("state-dir guard with a real token Gateway", () => {
     root = await fs.mkdtemp(path.join(os.tmpdir(), "openclaw-state-dir-server-"));
     gatewayStateDir = path.join(root, "gateway");
     cliStateDir = path.join(root, "cli");
-    await fs.mkdir(gatewayStateDir, { recursive: true });
-    await fs.mkdir(cliStateDir, { recursive: true });
+    await Promise.all(
+      [gatewayStateDir, cliStateDir].map((dir) => fs.mkdir(dir, { recursive: true })),
+    );
     port = await getFreePort();
     const gatewayConfigPath = path.join(gatewayStateDir, "openclaw.json");
     await fs.writeFile(gatewayConfigPath, `${JSON.stringify(gatewayConfig())}\n`);
     const fixture = resolveRuntimeWorkerUrl(stateDirGatewayFixtureEntrypoint);
-    // Standalone source runs retain the ESM-only preload; prepared JavaScript
-    // must execute natively without installing a source transform hook.
+    // Only source fixtures need the ESM transform preload.
     const execArgv = fixture.pathname.endsWith(".ts")
       ? ["--import", path.resolve("scripts/tsx.mjs")]
       : [];
@@ -75,14 +76,12 @@ describe("state-dir guard with a real token Gateway", () => {
     child.stderr?.on("data", (chunk) => {
       childStderr += String(chunk);
     });
-    await new Promise<void>((resolve, reject) => {
-      child.once("message", () => {
-        resolve();
-      });
-      child.once("exit", (code) => {
-        reject(new Error(`Gateway fixture exited early: ${code}\n${childStderr}`));
-      });
-    });
+    await Promise.race([
+      once(child, "message"),
+      once(child, "exit").then(([code]) => {
+        throw new Error(`Gateway fixture exited early: ${code}\n${childStderr}`);
+      }),
+    ]);
   }, 120_000);
 
   beforeEach(() => {
@@ -103,17 +102,11 @@ describe("state-dir guard with a real token Gateway", () => {
     );
   });
 
-  afterEach(() => {
-    vi.restoreAllMocks();
-  });
+  afterEach(() => vi.restoreAllMocks());
 
   afterAll(async () => {
     vi.unstubAllEnvs();
-    const exited = new Promise<void>((resolve) => {
-      child.once("exit", () => {
-        resolve();
-      });
-    });
+    const exited = once(child, "exit");
     child.kill("SIGTERM");
     await exited;
     await fs.rm(root, { recursive: true, force: true });
@@ -134,12 +127,11 @@ describe("state-dir guard with a real token Gateway", () => {
   it("refuses mismatched authenticated hello paths", async () => {
     const outcome = await check();
 
-    expect(outcome).toMatchObject({ kind: "refuse" });
-    if (outcome.kind !== "refuse") {
-      throw new Error("expected authenticated path mismatch refusal");
-    }
-    expect(outcome.message).toContain(gatewayStateDir);
-    expect(outcome.message).toContain("live Gateway");
+    expect(outcome).toMatchObject({
+      kind: "refuse",
+      message: expect.stringContaining(gatewayStateDir),
+    });
+    expect(outcome).toHaveProperty("message", expect.stringContaining("live Gateway"));
   });
 
   it("warns when a tokenless CLI can prove only the Gateway protocol", async () => {

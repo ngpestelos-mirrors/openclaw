@@ -76,8 +76,7 @@ describe("system-cli", () => {
     error.name = "AgentSelectionRequiredError";
     callGatewayFromCli.mockRejectedValueOnce(error);
 
-    // The root failure owner renders expected conditions without crash framing;
-    // the command must rethrow instead of printing its own copy.
+    // The root failure owner renders this; the command must not print a second copy.
     await expect(runCli(["system", "event", "--text", "hello"])).rejects.toBe(error);
 
     expect(runtimeLogs).toEqual([]);
@@ -87,19 +86,13 @@ describe("system-cli", () => {
   });
 
   it("forwards --session-key on system event", async () => {
-    await runCli([
-      "system",
-      "event",
-      "--text",
-      "ping",
-      "--session-key",
-      "agent:main:telegram:dm:42",
-    ]);
+    const sessionKey = "agent:main:telegram:dm:42";
+    await runCli(["system", "event", "--text", "ping", "--session-key", sessionKey]);
 
     expectGatewayCall("wake", {
       mode: "next-heartbeat",
       text: "ping",
-      sessionKey: "agent:main:telegram:dm:42",
+      sessionKey,
     });
   });
 

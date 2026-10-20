@@ -7,7 +7,6 @@ const mocks = vi.hoisted(() => ({
   callGateway: vi.fn(),
   probeGateway: vi.fn(),
   readServiceCommand: vi.fn(),
-  resolveGatewayService: vi.fn(),
 }));
 
 vi.mock("../gateway/call.js", async (importOriginal) => ({
@@ -19,7 +18,7 @@ vi.mock("../gateway/probe.js", async (importOriginal) => ({
   probeGateway: mocks.probeGateway,
 }));
 vi.mock("../daemon/service.js", () => ({
-  resolveGatewayService: mocks.resolveGatewayService,
+  resolveGatewayService: () => ({ readCommand: mocks.readServiceCommand }),
 }));
 
 import { checkCliGatewayStateDir, compareCliGatewayStateDirs } from "./state-dir-gateway-check.js";
@@ -27,32 +26,22 @@ import { checkCliGatewayStateDir, compareCliGatewayStateDirs } from "./state-dir
 describe("state-dir-gateway-check", () => {
   const tempDirs = useAutoCleanupTempDirTracker(afterEach);
   let root: string;
-  let cliStateDir: string;
-  let cliConfigPath: string;
-  const check = () => checkCliGatewayStateDir({ command: "openclaw configure", config: {} });
+  const check = (config: Parameters<typeof checkCliGatewayStateDir>[0]["config"] = {}) =>
+    checkCliGatewayStateDir({ command: "openclaw configure", config });
 
   beforeEach(async () => {
     root = tempDirs.make("openclaw-state-dir-check-");
-    cliStateDir = path.join(root, "cli");
-    cliConfigPath = path.join(cliStateDir, "openclaw.json");
-    await fs.mkdir(cliStateDir, { recursive: true });
-    vi.stubEnv("OPENCLAW_STATE_DIR", cliStateDir);
-    vi.stubEnv("OPENCLAW_CONFIG_PATH", cliConfigPath);
+    vi.stubEnv("OPENCLAW_STATE_DIR", root);
+    vi.stubEnv("OPENCLAW_CONFIG_PATH", path.join(root, "openclaw.json"));
     mocks.callGateway.mockReset().mockRejectedValue(new Error("ECONNREFUSED"));
     mocks.probeGateway.mockReset().mockResolvedValue({ ok: false });
-    mocks.resolveGatewayService
-      .mockReset()
-      .mockReturnValue({ readCommand: mocks.readServiceCommand });
     mocks.readServiceCommand.mockReset().mockResolvedValue(null);
   });
 
-  afterEach(() => {
-    vi.unstubAllEnvs();
-  });
+  afterEach(() => vi.unstubAllEnvs());
 
   it("uses canonical path identity for a missing config below a symlink", async () => {
     const gatewayStateDir = path.join(root, "gateway");
-    const gatewayConfigPath = path.join(gatewayStateDir, "openclaw.json");
     await fs.mkdir(gatewayStateDir);
     const stateLink = path.join(root, "gateway-link");
     await fs.symlink(gatewayStateDir, stateLink);
@@ -62,10 +51,8 @@ describe("state-dir-gateway-check", () => {
         cliStateDir: stateLink,
         cliConfigPath: path.join(stateLink, "openclaw.json"),
         gatewayStateDir,
-        gatewayConfigPath,
         source: "live Gateway",
         mode: "refuse",
-        command: "openclaw configure",
       }),
     ).toEqual({ kind: "allow" });
   });
@@ -83,10 +70,7 @@ describe("state-dir-gateway-check", () => {
     vi.stubEnv("OPENCLAW_CONFIG_PATH", undefined);
     mocks.readServiceCommand.mockResolvedValue({
       programArguments: ["node", "gateway.js"],
-      environment: {
-        HOME: serviceHome,
-        OPENCLAW_HOME: serviceRuntimeHome,
-      },
+      environment: { HOME: serviceHome, OPENCLAW_HOME: serviceRuntimeHome },
     });
 
     await expect(check()).resolves.toMatchObject({
@@ -103,38 +87,30 @@ describe("state-dir-gateway-check", () => {
     expect(mocks.probeGateway).not.toHaveBeenCalled();
   });
 
-  it("warns when service inspection is unavailable without exposing its error", async () => {
-    mocks.readServiceCommand.mockRejectedValue(new Error("private-service-inspection-canary"));
-
-    const result = await check();
-    expect(result).toMatchObject({
-      kind: "warn",
-      message: expect.stringContaining("could not be verified"),
-    });
-    expect(JSON.stringify(result)).not.toContain("private-service-inspection-canary");
-  });
-
-  it("does not infer service paths from the CLI environment", async () => {
-    mocks.readServiceCommand.mockResolvedValue({
-      programArguments: ["node", "gateway.js"],
-      environment: { PATH: "/synthetic/bin" },
-    });
-
-    await expect(check()).resolves.toMatchObject({ kind: "warn" });
-  });
+  it.each(["error", "missing home"])(
+    "warns without inferring paths or exposing %s",
+    async (failure) => {
+      if (failure === "error") {
+        mocks.readServiceCommand.mockRejectedValue(new Error("private-service-inspection-canary"));
+      } else {
+        mocks.readServiceCommand.mockResolvedValue({
+          programArguments: ["node", "gateway.js"],
+          environment: { PATH: "/synthetic/bin" },
+        });
+      }
+      const result = await check();
+      expect(result).toMatchObject({
+        kind: "warn",
+        message: expect.stringContaining("could not be verified"),
+      });
+      expect(JSON.stringify(result)).not.toContain("private-service-inspection-canary");
+    },
+  );
 
   it("redacts credentials in remote target warnings", async () => {
-    const result = await checkCliGatewayStateDir({
-      command: "openclaw configure",
-      config: {
-        gateway: {
-          mode: "remote",
-          remote: {
-            url: "wss://private-url-user:private-url-password@gateway.example?token=private-url-token",
-          },
-        },
-      },
-    });
+    const url =
+      "wss://private-url-user:private-url-password@gateway.example?token=private-url-token";
+    const result = await check({ gateway: { mode: "remote", remote: { url } } });
     expect(result.kind).toBe("warn");
     expect(JSON.stringify(result)).not.toContain("private-url-");
     expect(mocks.callGateway).not.toHaveBeenCalled();
