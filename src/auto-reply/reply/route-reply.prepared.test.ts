@@ -1,5 +1,5 @@
 import path from "node:path";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, assert, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ChannelOutboundAdapter } from "../../channels/plugins/types.public.js";
 import { installDeliveryQueueTmpDirHooks } from "../../infra/outbound/delivery-queue.test-helpers.js";
 import { createStructuredOutboundPayloadPlan } from "../../infra/outbound/payloads.js";
@@ -10,6 +10,19 @@ import { createOutboundTestPlugin, createTestRegistry } from "../../test-utils/c
 import { setReplyPayloadMetadata } from "../reply-payload.js";
 import type { ReplyPayload } from "../types.js";
 import { routePreparedReply, routeReply } from "./route-reply.js";
+
+const destination = {
+  cfg: {},
+  channel: "matrix",
+  to: "!room:example.invalid",
+  replyKind: "final",
+  mirror: false,
+} as const;
+function prepare(payload: ReplyPayload) {
+  const plan = createStructuredOutboundPayloadPlan([payload])[0];
+  assert(plan, "Expected a renderable prepared reply");
+  return plan;
+}
 
 describe("prepared reply routing", () => {
   const fixtures = installDeliveryQueueTmpDirHooks();
@@ -64,19 +77,13 @@ describe("prepared reply routing", () => {
         mediaUrl: "https://example.invalid/clip.ogg",
       };
       const params = {
+        ...destination,
         cfg: { messages: { responsePrefix: "[prefix]" } },
-        channel: "matrix" as const,
-        to: "!room:example.invalid",
         replyKind: "block" as const,
-        mirror: false,
       };
-      const plan = createStructuredOutboundPayloadPlan([payload])[0];
-      if (!plan) {
-        throw new Error("Expected a renderable prepared reply");
-      }
       const result =
         operation === "prepared"
-          ? await routePreparedReply({ ...params, plan })
+          ? await routePreparedReply({ ...params, plan: prepare(payload) })
           : await routeReply({ ...params, payload });
 
       expect(result).toMatchObject({ ok: true, delivered: true, messageId: "media-sent" });
@@ -100,12 +107,8 @@ describe("prepared reply routing", () => {
       current = false;
     });
     const result = await routeReply({
-      cfg: {},
+      ...destination,
       payload: { text: "event update", mediaUrl: "https://example.invalid/clip.ogg" },
-      channel: "matrix",
-      to: "!room:example.invalid",
-      replyKind: "final",
-      mirror: false,
       beforeDeliver,
       assertCurrent: () => {
         if (!current) {
@@ -140,10 +143,7 @@ describe("prepared reply routing", () => {
         },
       },
     );
-    const plan = createStructuredOutboundPayloadPlan([payload])[0];
-    if (!plan) {
-      throw new Error("Expected a renderable prepared reply");
-    }
+    const plan = prepare(payload);
     const replaceWriter = vi.fn(async () => {
       await replaceSessionEntry(session, {
         sessionId: "current-session",
@@ -154,13 +154,10 @@ describe("prepared reply routing", () => {
     beforeDelivery = replaceWriter;
 
     const result = await routePreparedReply({
+      ...destination,
       cfg: { session: { store: session.storePath } },
       plan,
-      channel: "matrix",
-      to: "!room:example.invalid",
-      replyKind: "final",
       sessionKey: session.sessionKey,
-      mirror: false,
     });
 
     expect(result).toMatchObject({ ok: false, delivered: false });
