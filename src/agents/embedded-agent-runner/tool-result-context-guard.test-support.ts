@@ -21,12 +21,7 @@ export function makeToolResult(id: string, text: string, toolName = "grep"): Age
 }
 
 export function makeAssistant(text: string, extras: Record<string, unknown> = {}): AgentMessage {
-  return castAgentMessage({
-    role: "assistant",
-    content: text,
-    timestamp: Date.now(),
-    ...extras,
-  });
+  return castAgentMessage({ ...makeUser(text), role: "assistant", ...extras });
 }
 
 export function makeReadToolResult(id: string, text: string): AgentMessage {
@@ -34,12 +29,8 @@ export function makeReadToolResult(id: string, text: string): AgentMessage {
 }
 
 export function makeLegacyToolResult(id: string, text: string): AgentMessage {
-  return castAgentMessage({
-    role: "tool",
-    tool_call_id: id,
-    tool_name: "read",
-    content: text,
-  });
+  const legacy = { role: "tool", tool_call_id: id, tool_name: "read", content: text };
+  return castAgentMessage(legacy);
 }
 
 export function makeToolResultWithDetails(
@@ -47,16 +38,10 @@ export function makeToolResultWithDetails(
   text: string,
   detailText: string,
 ): AgentMessage {
-  // Drop oversized details only when rewriting visible content.
+  const truncation = { truncated: true, outputLines: 100, content: detailText };
   return castAgentMessage({
     ...makeReadToolResult(id, text),
-    details: {
-      truncation: {
-        truncated: true,
-        outputLines: 100,
-        content: detailText,
-      },
-    },
+    details: { truncation },
   });
 }
 
@@ -65,10 +50,7 @@ export function getToolResultText(msg: AgentMessage): string {
   if (typeof content === "string") {
     return content;
   }
-  if (!Array.isArray(content)) {
-    return "";
-  }
-  const block = content.find(
+  const block = (Array.isArray(content) ? content : []).find(
     (entry) => entry && typeof entry === "object" && (entry as { type?: string }).type === "text",
   ) as { text?: string } | undefined;
   return typeof block?.text === "string" ? block.text : "";
@@ -83,10 +65,7 @@ export async function applyGuardToContext(
   contextForNextCall: AgentMessage[],
   contextWindowTokens = 1_000,
 ) {
-  installToolResultContextGuard({
-    agent,
-    contextWindowTokens,
-  });
+  installToolResultContextGuard({ agent, contextWindowTokens });
   return await agent.transformContext?.(contextForNextCall, new AbortController().signal);
 }
 
@@ -101,24 +80,22 @@ export function expectOpenClawTruncation(text: string): void {
 }
 
 export function sumToolResultTextChars(messages: AgentMessage[]): number {
-  return messages.reduce((sum, message) => {
+  let sum = 0;
+  for (const message of messages) {
     const content = (message as { content?: unknown }).content;
     if (message.role !== "toolResult" || !Array.isArray(content)) {
-      return sum;
+      continue;
     }
-    return (
-      sum +
-      content.reduce((blockSum, block) => {
-        if (
-          block &&
-          typeof block === "object" &&
-          block.type === "text" &&
-          typeof block.text === "string"
-        ) {
-          return blockSum + block.text.length;
-        }
-        return blockSum;
-      }, 0)
-    );
-  }, 0);
+    for (const block of content) {
+      if (
+        block &&
+        typeof block === "object" &&
+        block.type === "text" &&
+        typeof block.text === "string"
+      ) {
+        sum += block.text.length;
+      }
+    }
+  }
+  return sum;
 }
