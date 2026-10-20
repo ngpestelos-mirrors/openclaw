@@ -8,34 +8,21 @@ import { reserveTestPortListener } from "../../src/test-utils/port-claims.js";
 import { awaitGateBeforeSettlement, createDeferred, withinTest } from "../helpers/promise.js";
 import { useAutoCleanupTempDirTracker } from "../helpers/temp-dir.js";
 
-const pendingChildren = new Set<Promise<unknown>>();
-const tempDirs = useAutoCleanupTempDirTracker((cleanup) =>
-  afterEach(async () => {
-    await Promise.allSettled(pendingChildren);
-    cleanup();
-  }),
-);
+const tempDirs = useAutoCleanupTempDirTracker(afterEach);
+const toolResponse =
+  '{"choices":[{"finish_reason":"tool_calls","message":{"content":null,"tool_calls":[{"type":"function","function":{"name":"get_weather","arguments":"{\\"city\\":\\"Paris, France\\"}"}}]}}]}';
 
-it("waits for agent readiness before the single chat tools request despite healthy RPC", async ({
-  signal,
-}) => {
+it("waits for agent admission before chat tools despite healthy RPC", async ({ signal }) => {
   const workDir = tempDirs.make("openai-chat-tools-ready-");
   const entry = join(workDir, "healthy-rpc.mjs");
   const clientLog = join(workDir, "client.log");
-  // Fixed external RPC result: health succeeds while agent admission is pending.
   writeFileSync(entry, "process.exit(0);\n");
   const readinessPending = createDeferred();
   const admit = createDeferred();
-  const requests: Array<{ method: string | undefined; url: string | undefined }> = [];
-  const chatRequests: Array<{
-    authorization: string | undefined;
-    model: string | undefined;
-    body: unknown;
-  }> = [];
-  let readyProbes = 0;
+  const requests: string[] = [];
+  const chatRequests: Array<[string | undefined, string | string[] | undefined, unknown]> = [];
   let ready = false;
-  // Execute the scenario's actual startup-to-client boundary with a fixed healthy
-  // RPC and an owned HTTP listener. Config/cold recall and a live model are outside this proof.
+  // Exercise startup-to-client ordering, not config, cold recall, or a live model.
   const scenario = readFileSync("scripts/e2e/lib/openai-chat-tools/scenario.sh", "utf8");
   const start = scenario.indexOf('gateway_pid="$(openclaw_e2e_start_gateway');
   const end = scenario.indexOf(
@@ -48,21 +35,17 @@ it("waits for agent readiness before the single chat tools request despite healt
     offsets: [0],
     signal,
     createListener: () =>
-      createServer((request, response) => {
-        requests.push({ method: request.method, url: request.url });
+      createServer(async (request, response) => {
+        requests.push(`${request.method} ${request.url}`);
         if (request.url === "/readyz") {
-          readyProbes += 1;
-          if (readyProbes === 1) {
-            response
-              .writeHead(503)
-              .end(JSON.stringify({ ready: false, failing: ["agent-database:main"] }));
+          if (requests.length === 1) {
+            response.writeHead(503).end('{"ready":false,"failing":["agent-database:main"]}');
             return;
           }
           readinessPending.resolve();
-          void admit.promise.then(() => {
-            ready = true;
-            response.end(JSON.stringify({ ready: true }));
-          });
+          await admit.promise;
+          ready = true;
+          response.end('{"ready":true}');
           return;
         }
         if (request.url !== "/v1/chat/completions" || request.method !== "POST") {
@@ -75,44 +58,18 @@ it("waits for agent readiness before the single chat tools request despite healt
             .end("Agent database is starting. Please retry.");
           return;
         }
-        void json(request).then((body: unknown) => {
-          chatRequests.push({
-            authorization: request.headers.authorization,
-            model:
-              typeof request.headers["x-openclaw-model"] === "string"
-                ? request.headers["x-openclaw-model"]
-                : undefined,
-            body,
-          });
-          response.end(
-            JSON.stringify({
-              choices: [
-                {
-                  finish_reason: "tool_calls",
-                  message: {
-                    content: null,
-                    tool_calls: [
-                      {
-                        type: "function",
-                        function: { name: "get_weather", arguments: '{"city":"Paris, France"}' },
-                      },
-                    ],
-                  },
-                },
-              ],
-            }),
-          );
-        });
+        const body: unknown = await json(request);
+        chatRequests.push([
+          request.headers.authorization,
+          request.headers["x-openclaw-model"],
+          body,
+        ]);
+        response.end(toolResponse);
       }),
   });
-  const child = spawn(
-    "/bin/bash",
-    [
-      "-c",
-      `
+  const script = `
 set -euo pipefail
 source scripts/lib/openclaw-e2e-instance.sh
-# The listener belongs to this test, not a product Gateway process.
 openclaw_e2e_start_gateway() { printf '%s' "$$"; }
 sleep() { :; }
 entry="$FIXTURE_ENTRY"
@@ -121,34 +78,30 @@ CLIENT_LOG="$FIXTURE_CLIENT_LOG"
 TOKEN="$OPENCLAW_GATEWAY_TOKEN"
 MODEL_REF="$FIXTURE_MODEL"
 ${scenario.slice(start, end)}
-`,
-    ],
-    {
-      env: {
-        ...process.env,
-        PORT: String(fixture.claim.port),
-        OPENCLAW_GATEWAY_TOKEN: "chat-tools-fixture-token",
-        FIXTURE_ENTRY: entry,
-        FIXTURE_GATEWAY_LOG: join(workDir, "gateway.log"),
-        FIXTURE_CLIENT_LOG: clientLog,
-        FIXTURE_MODEL: "openai/fixture-model",
-      },
-      detached: process.platform !== "win32",
-      stdio: ["ignore", "pipe", "pipe"],
+`;
+  const child = spawn("/bin/bash", ["-c", script], {
+    env: {
+      ...process.env,
+      PORT: String(fixture.claim.port),
+      OPENCLAW_GATEWAY_TOKEN: "chat-tools-fixture-token",
+      FIXTURE_ENTRY: entry,
+      FIXTURE_GATEWAY_LOG: join(workDir, "gateway.log"),
+      FIXTURE_CLIENT_LOG: clientLog,
+      FIXTURE_MODEL: "openai/fixture-model",
     },
-  );
+    detached: process.platform !== "win32",
+    stdio: ["ignore", "pipe", "pipe"],
+  });
   let output = "";
-  child.stdout.on("data", (chunk: Buffer) => {
-    output += chunk.toString();
-  });
-  child.stderr.on("data", (chunk: Buffer) => {
-    output += chunk.toString();
-  });
+  for (const stream of [child.stdout, child.stderr]) {
+    stream.on("data", (chunk: Buffer) => {
+      output += chunk.toString();
+    });
+  }
   const closed = new Promise<number | null>((resolve, reject) => {
     child.once("error", reject);
     child.once("close", resolve);
   });
-  pendingChildren.add(closed);
   try {
     await withinTest(
       awaitGateBeforeSettlement(
@@ -161,22 +114,18 @@ ${readFileSync(clientLog, "utf8")}`);
       ),
       signal,
     );
-    expect(requests).toEqual([
-      { method: "GET", url: "/readyz" },
-      { method: "GET", url: "/readyz" },
-    ]);
+    expect(requests).toEqual(["GET /readyz", "GET /readyz"]);
     expect(chatRequests).toEqual([]);
     admit.resolve();
     expect(await withinTest(closed, signal), output).toBe(0);
-    expect(requests.filter((request) => request.method === "POST")).toEqual([
-      { method: "POST", url: "/v1/chat/completions" },
-    ]);
+    const posts = requests.filter((request) => request.startsWith("POST "));
+    expect(posts).toEqual(["POST /v1/chat/completions"]);
     expect(chatRequests).toEqual([
-      {
-        authorization: "Bearer chat-tools-fixture-token",
-        model: "openai/fixture-model",
-        body: expect.objectContaining({ model: "openclaw", stream: false, tool_choice: "auto" }),
-      },
+      [
+        "Bearer chat-tools-fixture-token",
+        "openai/fixture-model",
+        expect.objectContaining({ model: "openclaw", stream: false, tool_choice: "auto" }),
+      ],
     ]);
     expect(JSON.parse(readFileSync(clientLog, "utf8"))).toMatchObject({
       ok: true,
@@ -193,7 +142,6 @@ ${readFileSync(clientLog, "utf8")}`);
       }
     }
     await closed;
-    pendingChildren.delete(closed);
     fixture.listener.closeAllConnections();
     await fixture.releaseListener();
     await fixture.claim.release();
