@@ -1,4 +1,5 @@
 import { cleanup, render } from "@solidjs/testing-library";
+import type { JSX } from "@solidjs/web";
 import { flush } from "solid-js";
 import { afterEach, describe, expect, it } from "vitest";
 import { page, userEvent } from "vitest/browser";
@@ -17,39 +18,62 @@ function modalDialog(host: OpenClawModalDialog): HTMLDialogElement {
 
 afterEach(cleanup);
 
-function mountModal(variant = "", container?: HTMLElement) {
+function renderModal(
+  label: string,
+  content: () => JSX.Element,
+  variant = "",
+  options?: { container?: HTMLElement; initialFocus?: () => HTMLElement },
+) {
   let handle!: OpenClawModalDialog;
-  let nameInput!: HTMLInputElement;
   const view = render(
     () => (
       <ModalDialog
+        label={label}
         class={variant}
-        label="Edit details"
-        initialFocus={() => nameInput}
-        ref={(value) => {
-          handle = value;
-        }}
+        initialFocus={options?.initialFocus}
+        ref={(value) => (handle = value)}
       >
+        {content()}
+      </ModalDialog>
+    ),
+    options?.container ? { container: options.container } : undefined,
+  );
+  flush();
+  return { view, handle, dialog: modalDialog(handle) };
+}
+async function keyFocus(keys: string, target: Element, active = () => document.activeElement) {
+  await userEvent.keyboard(keys);
+  expect(active()).toBe(target);
+}
+async function escapeModal(handle: OpenClawModalDialog) {
+  const hidden = afterModalHidden(handle);
+  await userEvent.keyboard("{Escape}");
+  expect(handle.open).toBe(false);
+  expect(modalDialog(handle).inert).toBe(true);
+  await hidden;
+  expect(modalDialog(handle).open).toBe(false);
+}
+
+function mountModal(variant = "", container?: HTMLElement) {
+  let name!: HTMLInputElement;
+  let notes!: HTMLTextAreaElement;
+  const { handle } = renderModal(
+    "Edit details",
+    () => (
+      <>
         <input
           aria-label="Name"
           autofocus
           value="Original name"
-          ref={(element) => (nameInput = element)}
+          ref={(element) => (name = element)}
         />
-        <textarea aria-label="Notes" />
-      </ModalDialog>
+        <textarea aria-label="Notes" ref={(element) => (notes = element)} />
+      </>
     ),
-    container ? { container } : undefined,
+    variant,
+    { container, initialFocus: () => name },
   );
-  flush();
-  return {
-    view,
-    get handle() {
-      return handle;
-    },
-    name: view.getByRole("textbox", { name: "Name" }) as HTMLInputElement,
-    notes: view.getByRole("textbox", { name: "Notes" }) as HTMLTextAreaElement,
-  };
+  return { handle, name, notes };
 }
 
 describe("native Solid modal focus and top layer", () => {
@@ -70,12 +94,7 @@ describe("native Solid modal focus and top layer", () => {
       expect(notes.value).toBe("First draft");
       expect(name.value).toBe("Original name");
 
-      const hidden = afterModalHidden(handle);
-      await userEvent.keyboard("{Escape}");
-      expect(handle.open).toBe(false);
-      expect(dialog.inert).toBe(true);
-      await hidden;
-      expect(dialog.open).toBe(false);
+      await escapeModal(handle);
       expect(document.activeElement).toBe(trigger);
       handle.show();
       expect(modalDialog(handle)).toBe(dialog);
@@ -102,13 +121,10 @@ describe("native Solid modal focus and top layer", () => {
     const active = () => (inShadow ? container.shadowRoot!.activeElement : document.activeElement);
     try {
       notes.focus();
-      await userEvent.keyboard("{Tab}");
-      expect(active()).toBe(name);
-      await userEvent.keyboard("{Shift>}{Tab}{/Shift}");
-      expect(active()).toBe(notes);
+      await keyFocus("{Tab}", name, active);
+      await keyFocus("{Shift>}{Tab}{/Shift}", notes, active);
       name.focus();
-      await userEvent.keyboard("{Tab}");
-      expect(active()).toBe(notes);
+      await keyFocus("{Tab}", notes, active);
 
       const preventTab = (event: KeyboardEvent) => {
         if (event.key === "Tab") {
@@ -116,8 +132,7 @@ describe("native Solid modal focus and top layer", () => {
         }
       };
       notes.addEventListener("keydown", preventTab);
-      await userEvent.keyboard("{Tab}");
-      expect(active()).toBe(notes);
+      await keyFocus("{Tab}", notes, active);
       notes.removeEventListener("keydown", preventTab);
 
       const hidden = afterModalHidden(handle);
@@ -138,16 +153,9 @@ describe("native Solid modal focus and top layer", () => {
       let first!: HTMLInputElement;
       let slotted!: HTMLInputElement;
       let last!: HTMLInputElement;
-      render(() => (
-        <ModalDialog label="Shadow fields">
-          {!shadowOnly && (
-            <input
-              aria-label="Before shadow"
-              ref={(value) => {
-                before = value;
-              }}
-            />
-          )}
+      renderModal("Shadow fields", () => (
+        <>
+          {!shadowOnly && <input aria-label="Before shadow" ref={(value) => (before = value)} />}
           <div
             ref={(host) => {
               shadow = host.attachShadow({ mode: "open" });
@@ -158,20 +166,17 @@ describe("native Solid modal focus and top layer", () => {
               shadow.append(first, document.createElement("slot"), last);
             }}
           />
-        </ModalDialog>
+        </>
       ));
-      flush();
       const order = shadowOnly ? [first, slotted, last] : [before, first, slotted, last];
       const active = () => shadow.activeElement ?? document.activeElement;
       const start = shadowOnly ? first : before;
       start.focus();
       for (const next of [...order.slice(1), start]) {
-        await userEvent.keyboard("{Tab}");
-        expect(active()).toBe(next);
+        await keyFocus("{Tab}", next, active);
       }
       for (const next of [...order.slice(1).toReversed(), start]) {
-        await userEvent.keyboard("{Shift>}{Tab}{/Shift}");
-        expect(active()).toBe(next);
+        await keyFocus("{Shift>}{Tab}{/Shift}", next, active);
       }
     },
   );
@@ -197,48 +202,25 @@ describe("native Solid modal focus and top layer", () => {
   it.each(["summary", "editable"])(
     "wraps native %s content without an explicit tabindex",
     async (kind) => {
-      let handle!: OpenClawModalDialog;
       let target!: HTMLElement;
-      render(() => (
-        <ModalDialog
-          label="Native content"
-          ref={(value) => {
-            handle = value;
-          }}
-        >
-          {kind === "summary" ? (
-            <details>
-              <summary
-                ref={(value) => {
-                  target = value;
-                }}
-              >
-                Details
-              </summary>
-              Content
-            </details>
-          ) : (
-            <div
-              contenteditable="true"
-              ref={(value) => {
-                target = value;
-              }}
-            >
-              Draft
-            </div>
-          )}
-        </ModalDialog>
-      ));
-      flush();
+      const { handle } = renderModal("Native content", () =>
+        kind === "summary" ? (
+          <details>
+            <summary ref={(value) => (target = value)}>Details</summary>
+            Content
+          </details>
+        ) : (
+          <div contenteditable="true" ref={(value) => (target = value)}>
+            Draft
+          </div>
+        ),
+      );
       target.focus();
-      await userEvent.keyboard("{Tab}");
-      expect(document.activeElement).toBe(target);
-      await userEvent.keyboard("{Shift>}{Tab}{/Shift}");
-      expect(document.activeElement).toBe(target);
+      await keyFocus("{Tab}", target);
+      await keyFocus("{Shift>}{Tab}{/Shift}", target);
       target.tabIndex = -1;
       modalDialog(handle).focus();
-      await userEvent.keyboard("{Tab}");
-      expect(document.activeElement).toBe(modalDialog(handle));
+      await keyFocus("{Tab}", modalDialog(handle));
     },
   );
 
@@ -246,58 +228,24 @@ describe("native Solid modal focus and top layer", () => {
     let text!: HTMLInputElement;
     let first!: HTMLInputElement;
     let second!: HTMLInputElement;
-    render(() => (
-      <ModalDialog label="Radio group">
-        <input
-          aria-label="Text"
-          ref={(value) => {
-            text = value;
-          }}
-        />
-        <input
-          type="radio"
-          name="mode"
-          checked={checked === 0}
-          ref={(value) => {
-            first = value;
-          }}
-        />
-        <input
-          type="radio"
-          name="mode"
-          checked={checked === 1}
-          ref={(value) => {
-            second = value;
-          }}
-        />
-      </ModalDialog>
+    renderModal("Radio group", () => (
+      <>
+        <input aria-label="Text" ref={(value) => (text = value)} />
+        <input type="radio" name="mode" checked={checked === 0} ref={(value) => (first = value)} />
+        <input type="radio" name="mode" checked={checked === 1} ref={(value) => (second = value)} />
+      </>
     ));
-    flush();
     const selected = checked === 1 ? second : first;
     text.focus();
-    await userEvent.keyboard("{Shift>}{Tab}{/Shift}");
-    expect(document.activeElement).toBe(selected);
-    await userEvent.keyboard("{Tab}");
-    expect(document.activeElement).toBe(text);
+    await keyFocus("{Shift>}{Tab}{/Shift}", selected);
+    await keyFocus("{Tab}", text);
   });
 
   it("keeps an empty modal focused without cycling through its guards", async () => {
-    let handle!: OpenClawModalDialog;
-    render(() => (
-      <ModalDialog
-        label="Empty modal"
-        ref={(value) => {
-          handle = value;
-        }}
-      />
-    ));
-    flush();
-    const dialog = modalDialog(handle);
+    const { dialog } = renderModal("Empty modal", () => null);
     expect(document.activeElement).toBe(dialog);
-    await userEvent.keyboard("{Tab}");
-    expect(document.activeElement).toBe(dialog);
-    await userEvent.keyboard("{Shift>}{Tab}{/Shift}");
-    expect(document.activeElement).toBe(dialog);
+    await keyFocus("{Tab}", dialog);
+    await keyFocus("{Shift>}{Tab}{/Shift}", dialog);
   });
 
   it("a vetoed Escape keeps native top-layer, focus, and draft ownership", async () => {
@@ -315,12 +263,7 @@ describe("native Solid modal focus and top layer", () => {
     } finally {
       document.removeEventListener("modal-cancel", veto);
     }
-    const hidden = afterModalHidden(handle);
-    await userEvent.keyboard("{Escape}");
-    expect(handle.open).toBe(false);
-    expect(modalDialog(handle).inert).toBe(true);
-    await hidden;
-    expect(modalDialog(handle).open).toBe(false);
+    await escapeModal(handle);
   });
 
   it("nested Escape closes only the newest modal and returns to its parent's field", async () => {
@@ -331,20 +274,13 @@ describe("native Solid modal focus and top layer", () => {
     const inner = mountModal("", innerContainer);
     expect(document.activeElement).toBe(inner.name);
     inner.notes.focus();
-    await userEvent.keyboard("{Tab}");
-    expect(document.activeElement).toBe(inner.name);
-    await userEvent.keyboard("{Shift>}{Tab}{/Shift}");
-    expect(document.activeElement).toBe(inner.notes);
+    await keyFocus("{Tab}", inner.name);
+    await keyFocus("{Shift>}{Tab}{/Shift}", inner.notes);
     modalDialog(inner.handle).focus();
     await userEvent.keyboard("Nested draft");
     expect(inner.notes.value).toBe("Nested draft");
     expect(outer.notes.value).toBe("");
-    const hidden = afterModalHidden(inner.handle);
-    await userEvent.keyboard("{Escape}");
-    expect(inner.handle.open).toBe(false);
-    expect(modalDialog(inner.handle).inert).toBe(true);
-    await hidden;
-    expect(modalDialog(inner.handle).open).toBe(false);
+    await escapeModal(inner.handle);
     expect(modalDialog(outer.handle).matches(":modal")).toBe(true);
     expect(document.activeElement).toBe(outer.notes);
   });
@@ -368,36 +304,24 @@ describe("native Solid modal focus and top layer", () => {
   it.each(["drawer", "viewport-edge-to-edge"])(
     "keeps bottom actions reachable in constrained scroll content (%s)",
     async (variant) => {
-      let handle!: OpenClawModalDialog;
       let clicked = false;
-      const view = render(() => (
-        <ModalDialog
-          class={variant}
-          label="Scrollable details"
-          ref={(value) => {
-            handle = value;
-          }}
-        >
+      const { view, dialog } = renderModal(
+        "Scrollable details",
+        () => (
           <section style={{ display: "flex", height: "100%", width: "100%" }}>
             <div style={{ width: "100%", "min-height": "0", overflow: "auto" }}>
               <div style={{ height: "200dvh" }} />
-              <button
-                onClick={() => {
-                  clicked = true;
-                }}
-              >
-                Bottom action
-              </button>
+              <button onClick={() => (clicked = true)}>Bottom action</button>
             </div>
           </section>
-        </ModalDialog>
-      ));
-      flush();
+        ),
+        variant,
+      );
       const action = view.getByRole("button", { name: "Bottom action" });
       await userEvent.click(action);
       expect(clicked).toBe(true);
       expect(action.getBoundingClientRect().bottom).toBeLessThanOrEqual(window.innerHeight);
-      expect(modalDialog(handle).clientHeight).toBeLessThanOrEqual(window.innerHeight);
+      expect(dialog.clientHeight).toBeLessThanOrEqual(window.innerHeight);
     },
   );
 });
@@ -405,26 +329,14 @@ describe("native Solid modal focus and top layer", () => {
 it("stretches centered error-panel completion actions inside native modals", async () => {
   const original = { width: window.innerWidth, height: window.innerHeight };
   let retried = 0;
-  let handle!: OpenClawModalDialog;
-  const view = render(() => (
-    <ModalDialog
-      label="Load settings"
-      ref={(value) => {
-        handle = value;
-      }}
-    >
-      <LazyViewError
-        error={new Error("Fixture module load failed")}
-        subtitle="Settings"
-        onRetry={() => {
-          retried++;
-        }}
-        onClose={() => {}}
-      />
-    </ModalDialog>
+  const { view, dialog } = renderModal("Load settings", () => (
+    <LazyViewError
+      error={new Error("Fixture module load failed")}
+      subtitle="Settings"
+      onRetry={() => retried++}
+      onClose={() => {}}
+    />
   ));
-  flush();
-  const dialog = modalDialog(handle);
   await Promise.all(dialog.getAnimations().map((animation) => animation.finished));
   try {
     for (const width of [1440, 320]) {

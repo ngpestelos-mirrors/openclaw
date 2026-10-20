@@ -15,6 +15,26 @@ import { createMenuControls, type MenuItem } from "./menu.tsx";
 
 afterEach(cleanup);
 
+const branch = (disabled = false): MenuItem[] => [
+  {
+    id: "more",
+    label: "More",
+    children: [
+      {
+        id: "inner",
+        label: "Inner",
+        disabled,
+        children: [{ id: "deep", label: "Deep action" }],
+      },
+    ],
+  },
+];
+async function openBranch() {
+  await openMenu();
+  await openMenu("people-more");
+  await openMenu("people-more-inner");
+}
+
 // These cases preserve owner-boundary contracts from the original dropdown suites.
 describe("Solid menu frozen dropdown contracts", () => {
   it("keeps native autofocus on an input inside grouped content", async () => {
@@ -64,24 +84,8 @@ describe("Solid menu frozen dropdown contracts", () => {
   });
 
   it("keeps descendants when the same ancestor receives another open request", async () => {
-    const view = mountMenu({
-      items: [
-        {
-          id: "more",
-          label: "More",
-          children: [
-            {
-              id: "inner",
-              label: "Inner",
-              children: [{ id: "deep", label: "Deep action" }],
-            },
-          ],
-        },
-      ],
-    });
-    await openMenu();
-    await openMenu("people-more");
-    await openMenu("people-more-inner");
+    const view = mountMenu({ items: branch() });
+    await openBranch();
     const more = [...view.handle.overlay.children].find((child) => child.id === "people-more")!;
     expect(more.request(true)).toBe(true);
     expect(more.request(true)).toBe(true);
@@ -95,28 +99,12 @@ describe("Solid menu frozen dropdown contracts", () => {
 
   it("retires disabled descendants on root close and permits a fresh branch opening", async () => {
     const [disabled, setDisabled] = createSignal(false);
-    const entries = (): readonly MenuItem[] => [
-      {
-        id: "more",
-        label: "More",
-        children: [
-          {
-            id: "inner",
-            label: "Inner",
-            disabled: disabled(),
-            children: [{ id: "deep", label: "Deep action" }],
-          },
-        ],
-      },
-    ];
     const view = mountMenu({
       get items() {
-        return entries();
+        return branch(disabled());
       },
     });
-    await openMenu();
-    await openMenu("people-more");
-    await openMenu("people-more-inner");
+    await openBranch();
     setDisabled(true);
     flush();
     expect(view.handle.close()).toBe(true);
@@ -126,9 +114,7 @@ describe("Solid menu frozen dropdown contracts", () => {
     expect(surface("people-more-inner").inert).toBe(true);
     setDisabled(false);
     flush();
-    await openMenu();
-    await openMenu("people-more");
-    await openMenu("people-more-inner");
+    await openBranch();
     expect(document.activeElement).toBe(item("Deep action", "people-more-inner"));
   });
 });

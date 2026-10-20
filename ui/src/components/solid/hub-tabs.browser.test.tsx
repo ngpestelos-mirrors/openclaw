@@ -1,5 +1,5 @@
 import { createComponent, createSignal, flush } from "solid-js";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, expect, it, vi } from "vitest";
 import { page, userEvent } from "vitest/browser";
 import { cleanupSolid, mountSolid } from "../../test-helpers/mount-solid.ts";
 import { HubTabs } from "./hub-tabs.tsx";
@@ -87,14 +87,9 @@ it("keeps hub typography, selected ink, and compact height when native defaults 
   }
 });
 
-const disposers: (() => void)[] = [];
 const hosts: HTMLElement[] = [];
 
 afterEach(() => {
-  disposers
-    .splice(0)
-    .toReversed()
-    .forEach((dispose) => dispose());
   cleanupSolid();
   hosts.splice(0).forEach((host) => host.remove());
   vi.restoreAllMocks();
@@ -126,17 +121,7 @@ function mountShadowHub(root: ShadowRoot, id: string) {
   };
   const view = mountSolid(() => createComponent(HubTabs, props), { container });
   flush();
-  let disposed = false;
-  const dispose = () => {
-    if (disposed) {
-      return;
-    }
-    disposed = true;
-    view.unmount();
-    container.remove();
-  };
-  disposers.push(dispose);
-  return { container, dispose, onSelect };
+  return { container, dispose: view.unmount, onSelect };
 }
 
 function sheets(root: ShadowRoot) {
@@ -151,27 +136,24 @@ function expectSkin(container: HTMLElement) {
   expect(style.display).toBe("flex");
   expect(style.fontSize).toBe("19px");
   expect(style.paddingTop).toBe("4px");
-  return tab;
 }
 
-describe("native hub shadow styles", () => {
-  it("shares tab skins and keeps one keyboard owner inside a closed shadow root", async () => {
-    const first = shadow();
-    const moved = mountShadowHub(first, "moved");
-    const retained = mountShadowHub(first, "retained");
-    await Promise.resolve();
-    expectSkin(moved.container);
-    expectSkin(retained.container);
-    expect(sheets(first)).toHaveLength(2);
+it("shares tab skins and keeps one keyboard owner inside a closed shadow root", async () => {
+  const first = shadow();
+  const moved = mountShadowHub(first, "moved");
+  const retained = mountShadowHub(first, "retained");
+  await Promise.resolve();
+  expectSkin(moved.container);
+  expectSkin(retained.container);
+  expect(sheets(first)).toHaveLength(2);
 
-    moved.container
-      .querySelector("#moved-tab-second")!
-      .dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
-    expect(moved.onSelect).toHaveBeenCalledExactlyOnceWith("second");
+  moved.container
+    .querySelector("#moved-tab-second")!
+    .dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+  expect(moved.onSelect).toHaveBeenCalledExactlyOnceWith("second");
 
-    retained.dispose();
-    expect(sheets(first)).toHaveLength(2);
-    moved.dispose();
-    expect(sheets(first)).toHaveLength(0);
-  });
+  retained.dispose();
+  expect(sheets(first)).toHaveLength(2);
+  moved.dispose();
+  expect(sheets(first)).toHaveLength(0);
 });

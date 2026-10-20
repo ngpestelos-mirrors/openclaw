@@ -1,7 +1,10 @@
 import { cleanup, render } from "@solidjs/testing-library";
 import { afterEach, expect, it } from "vitest";
 import { page, userEvent } from "vitest/browser";
-import { ChatPaneLayoutMenu } from "../../pages/chat/components/chat-header-panel-actions.tsx";
+import {
+  ChatPaneLayoutMenu,
+  type HeaderPanelAction,
+} from "../../pages/chat/components/chat-header-panel-actions.tsx";
 import { waitForSolid } from "../../test-helpers/solid-settle.ts";
 import { KeyboardShortcut } from "./kbd.tsx";
 import { Menu, type MenuItem } from "./menu.tsx";
@@ -13,6 +16,15 @@ import "../../styles/chat/layout.css";
 import "../../styles/chat/split-view.css";
 
 afterEach(cleanup);
+
+function panelAction(
+  id: string,
+  icon: HeaderPanelAction["icon"],
+  shortcut: HeaderPanelAction["shortcut"],
+  active?: boolean,
+): HeaderPanelAction {
+  return { id, label: id[0]!.toUpperCase() + id.slice(1), icon, shortcut, active, onActivate() {} };
+}
 
 it.each(["ltr", "rtl"] as const)(
   "aligns shortcut ends across plain, checked, unchecked, radio and submenu rows in %s",
@@ -62,36 +74,10 @@ it("keeps Layout hints aligned before and after panel styles load, and hidden on
       paneId="layout-alignment"
       narrow={false}
       panelMenuActions={[
-        {
-          id: "terminal",
-          label: "Terminal",
-          icon: "terminal",
-          shortcut: { key: "Backquote", modifiers: ["ctrl"] },
-          onActivate() {},
-        },
-        {
-          id: "browser",
-          label: "Browser",
-          icon: "globe",
-          shortcut: { key: "u", modifiers: ["mod", "alt", "shift"] },
-          onActivate() {},
-        },
-        {
-          id: "files",
-          label: "Files",
-          icon: "fileText",
-          active: false,
-          shortcut: { key: "b", modifiers: ["mod", "shift"] },
-          onActivate() {},
-        },
-        {
-          id: "review",
-          label: "Review",
-          icon: "diff",
-          active: true,
-          shortcut: { key: "e", modifiers: ["mod", "alt", "shift"] },
-          onActivate() {},
-        },
+        panelAction("terminal", "terminal", { key: "Backquote", modifiers: ["ctrl"] }),
+        panelAction("browser", "globe", { key: "u", modifiers: ["mod", "alt", "shift"] }),
+        panelAction("files", "fileText", { key: "b", modifiers: ["mod", "shift"] }, false),
+        panelAction("review", "diff", { key: "e", modifiers: ["mod", "alt", "shift"] }, true),
       ]}
     />
   ));

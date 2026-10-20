@@ -17,6 +17,13 @@ import "../../styles/base.css";
 import "../../styles/layout.css";
 
 const cleanups: (() => void)[] = [];
+const nextFrame = () =>
+  new Promise<void>((resolve) => {
+    requestAnimationFrame(() => resolve());
+  });
+function clickLink(link: HTMLAnchorElement, options: MouseEventInit = {}) {
+  link.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true, ...options }));
+}
 const originalViewport = { width: window.innerWidth, height: window.innerHeight };
 afterEach(async () => {
   cleanup();
@@ -31,22 +38,17 @@ afterEach(async () => {
 it("keeps submenu icons and details in the visible trigger", async () => {
   let icon!: HTMLSpanElement;
   let details!: HTMLSpanElement;
-  render(() => (
-    <Menu
-      id="people"
-      label="People"
-      items={[
-        {
-          id: "view",
-          label: "View",
-          icon: <span ref={(node) => (icon = node)}>Eye</span>,
-          details: <span ref={(node) => (details = node)}>V</span>,
-          children: [{ id: "reasoning", label: "Reasoning" }],
-        },
-      ]}
-    />
-  ));
-  flush();
+  mountMenu(() => ({
+    items: [
+      {
+        id: "view",
+        label: "View",
+        icon: <span ref={(node) => (icon = node)}>Eye</span>,
+        details: <span ref={(node) => (details = node)}>V</span>,
+        children: [{ id: "reasoning", label: "Reasoning" }],
+      },
+    ],
+  }));
   await openMenu();
   const view = item("View");
   expect(view.contains(icon)).toBe(true);
@@ -179,15 +181,15 @@ it.each([false, true])("preserves native link intent (routing=%s)", async (routi
     { altKey: true },
     { button: 1 },
   ]) {
-    link.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true, ...options }));
+    clickLink(link, options);
   }
   for (const target of ["_blank", "named-window"]) {
     link.target = target;
-    link.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
+    clickLink(link);
   }
   link.target = "";
   link.download = "settings.txt";
-  link.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
+  clickLink(link);
   link.removeAttribute("download");
   expect(prevented).toEqual(Array.from({ length: 8 }, () => false));
   const canceledClick = new MouseEvent("click", { bubbles: true, cancelable: true });
@@ -353,9 +355,7 @@ it("preserves live root placement and RTL submenu geometry across open frames", 
   expect(surface().getBoundingClientRect().top).toBeGreaterThanOrEqual(button.bottom);
   setPlacement("top-end");
   flush();
-  await new Promise<void>((resolve) => {
-    requestAnimationFrame(() => resolve());
-  });
+  await nextFrame();
   expect(surface().dataset.placement).toBe("top-end");
   expect(surface().getBoundingClientRect().bottom).toBeLessThanOrEqual(button.top);
   await openMenu("people-assign");
@@ -364,9 +364,7 @@ it("preserves live root placement and RTL submenu geometry across open frames", 
   );
   setDirection("rtl");
   flush();
-  await new Promise<void>((resolve) => {
-    requestAnimationFrame(() => resolve());
-  });
+  await nextFrame();
   expect(surface("people-assign").dataset.placement).toBe("left-start");
   expect(surface("people-assign").getBoundingClientRect().right).toBeLessThanOrEqual(
     trigger("people-assign").getBoundingClientRect().left,
@@ -455,77 +453,9 @@ it("keeps descendant-only native overlap leased through closing and releases aft
       child.getAnimations().forEach((animation) => animation.finish());
     }
   });
-  const closeTrace: {
-    id: string;
-    operation: "animations" | "hide-before" | "hide-after";
-    phase: string | undefined;
-    nativeOpen: boolean;
-    animations?: number;
-  }[] = [];
-  const recordClose = (entry: (typeof closeTrace)[number]) => {
-    if (closeTrace.length < 32) {
-      closeTrace.push(entry);
-    }
-  };
-  for (const menu of branch) {
-    const getAnimations = menu.getAnimations.bind(menu);
-    const hidePopover = menu.hidePopover.bind(menu);
-    const animationSpy = vi.spyOn(menu, "getAnimations").mockImplementation(function (
-      this: HTMLElement,
-      ...args: Parameters<HTMLElement["getAnimations"]>
-    ) {
-      const animations = getAnimations(...args);
-      recordClose({
-        id: this.id,
-        operation: "animations",
-        phase: this.dataset.phase,
-        nativeOpen: this.matches(":popover-open"),
-        animations: animations.length,
-      });
-      return animations;
-    });
-    const hideSpy = vi.spyOn(menu, "hidePopover").mockImplementation(function (
-      this: HTMLElement,
-      ...args: Parameters<HTMLElement["hidePopover"]>
-    ) {
-      recordClose({
-        id: this.id,
-        operation: "hide-before",
-        phase: this.dataset.phase,
-        nativeOpen: this.matches(":popover-open"),
-      });
-      const result = hidePopover(...args);
-      recordClose({
-        id: this.id,
-        operation: "hide-after",
-        phase: this.dataset.phase,
-        nativeOpen: this.matches(":popover-open"),
-      });
-      return result;
-    });
-    cleanups.push(
-      () => animationSpy.mockRestore(),
-      () => hideSpy.mockRestore(),
-    );
-  }
   expect(view.handle.close()).toBe(true);
   const closing = branch.flatMap((menu) => {
     const animations = menu.getAnimations();
-    if (animations.length === 0) {
-      const style = getComputedStyle(menu);
-      console.error("Menu exit animation missing", {
-        closeTrace,
-        id: menu.id,
-        phase: menu.dataset.phase,
-        nativeOpen: menu.matches(":popover-open"),
-        opacity: style.opacity,
-        scale: style.scale,
-        display: style.display,
-        transitionDuration: style.transitionDuration,
-        transitionProperty: style.transitionProperty,
-        reducedMotion: matchMedia("(prefers-reduced-motion: reduce)").matches,
-      });
-    }
     expect(animations.length).toBeGreaterThan(0);
     return animations;
   });
@@ -533,9 +463,7 @@ it("keeps descendant-only native overlap leased through closing and releases aft
     animation.pause();
     cleanups.push(() => animation.cancel());
   }
-  await new Promise<void>((resolve) => {
-    requestAnimationFrame(() => resolve());
-  });
+  await nextFrame();
   expect(child.dataset.phase).toBe("closing");
   expect(child.matches(":popover-open")).toBe(true);
   expect(states).toEqual([false, true]);
