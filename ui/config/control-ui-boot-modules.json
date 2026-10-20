@@ -764,6 +764,7 @@
   "ui/src/components/viewer-facepile.ts",
   "ui/src/dev-gateway.ts",
   "ui/src/i18n/lib/config-hint-translation.ts",
+  "ui/src/i18n/lib/locale-catalog.ts",
   "ui/src/i18n/lib/registry.ts",
   "ui/src/i18n/lib/translate.ts",
   "ui/src/i18n/locales/en-agents-home.ts",
