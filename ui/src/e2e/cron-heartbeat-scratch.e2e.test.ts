@@ -1,11 +1,15 @@
 import { writeFile } from "node:fs/promises";
 import path from "node:path";
+import type { Page } from "playwright";
 import { expect, it } from "vitest";
 import type { CronJob } from "../api/types.ts";
 import { takeControlUiViewportScreenshot } from "../test-helpers/control-ui-e2e-screenshot.ts";
 import { installMockGateway } from "../test-helpers/control-ui-e2e.ts";
 import { cronListResponseFixture } from "../test-helpers/cron.ts";
-import { createControlUiE2eSuite } from "./control-ui-e2e-suite.test-support.ts";
+import {
+  createControlUiE2eContextOptions,
+  createControlUiE2eSuite,
+} from "./control-ui-e2e-suite.test-support.ts";
 
 const suite = createControlUiE2eSuite({ name: "Control UI heartbeat scratch" });
 
@@ -46,22 +50,27 @@ function methodResponses(scratch: unknown = scratchResponse) {
   };
 }
 
+async function openMonitor(page: Page, options: Parameters<typeof installMockGateway>[1] = {}) {
+  const gateway = await installMockGateway(page, {
+    methodResponses: methodResponses(),
+    ...options,
+  });
+  await page.goto(`${suite.server.baseUrl}cron`);
+  const row = page.locator(`[data-test-id="cron-row-${job.id}"]`);
+  await row.waitFor();
+  await row.locator(".cron-table__name-text").click();
+  return gateway;
+}
+
 suite.define(() => {
   it("shows authorized scratch in the read-only monitor without sending a write", async () => {
     await suite.withPage(
       {
-        locale: "en-US",
-        serviceWorkers: "block",
-        viewport: { height: 900, width: 1_280 },
+        ...createControlUiE2eContextOptions(),
         recordVideo: { dir: suite.artifactDir, size: { height: 900, width: 1_280 } },
       },
       async ({ page }) => {
-        const gateway = await installMockGateway(page, {
-          methodResponses: methodResponses(),
-        });
-
-        await page.goto(`${suite.server.baseUrl}cron`);
-        await page.locator(`[data-test-id="cron-row-${job.id}"] .cron-table__name-text`).click();
+        const gateway = await openMonitor(page);
         const monitor = page.locator("#cron-payload-text");
         await expect.poll(() => monitor.inputValue()).toBe(scratchContent);
         expect(await monitor.getAttribute("readonly")).toBe("");
@@ -83,44 +92,28 @@ suite.define(() => {
   });
 
   it("does not request admin-only scratch for a read-only operator", async () => {
-    await suite.withPage(
-      { locale: "en-US", serviceWorkers: "block", viewport: { height: 900, width: 1_280 } },
-      async ({ page }) => {
-        const gateway = await installMockGateway(page, {
-          methodResponses: methodResponses(),
-          operatorScopes: ["operator.read"],
-        });
-        await page.goto(`${suite.server.baseUrl}cron`);
-        const row = page.locator(`[data-test-id="cron-row-${job.id}"]`);
-        await row.waitFor();
-        await row.locator(".cron-table__name-text").click();
-        const monitor = page.locator("#cron-payload-text");
-        await expect.poll(() => monitor.inputValue()).toBe("");
-        expect(await gateway.getRequests("cron.scratch.get")).toEqual([]);
-        for (const method of ["cron.add", "cron.update", "cron.scratch.set"]) {
-          expect(await gateway.getRequests(method)).toEqual([]);
-        }
-      },
-    );
+    await suite.withPage(createControlUiE2eContextOptions(), async ({ page }) => {
+      const gateway = await openMonitor(page, { operatorScopes: ["operator.read"] });
+      const monitor = page.locator("#cron-payload-text");
+      await expect.poll(() => monitor.inputValue()).toBe("");
+      expect(await gateway.getRequests("cron.scratch.get")).toEqual([]);
+      for (const method of ["cron.add", "cron.update", "cron.scratch.set"]) {
+        expect(await gateway.getRequests(method)).toEqual([]);
+      }
+    });
   });
 
   it("shows a scratch read failure instead of an empty success state", async () => {
     const errorMessage = "Heartbeat scratch is temporarily unavailable.";
-    await suite.withPage(
-      { locale: "en-US", serviceWorkers: "block", viewport: { height: 900, width: 1_280 } },
-      async ({ page }) => {
-        await installMockGateway(page, {
-          methodResponses: methodResponses({
-            __mockError: { code: "UNAVAILABLE", message: errorMessage },
-          }),
-        });
-
-        await page.goto(`${suite.server.baseUrl}cron`);
-        await page.locator(`[data-test-id="cron-row-${job.id}"] .cron-table__name-text`).click();
-        await expect
-          .poll(() => page.locator(".cron-error-banner").textContent())
-          .toContain(errorMessage);
-      },
-    );
+    await suite.withPage(createControlUiE2eContextOptions(), async ({ page }) => {
+      await openMonitor(page, {
+        methodResponses: methodResponses({
+          __mockError: { code: "UNAVAILABLE", message: errorMessage },
+        }),
+      });
+      await expect
+        .poll(() => page.locator(".cron-error-banner").textContent())
+        .toContain(errorMessage);
+    });
   });
 });

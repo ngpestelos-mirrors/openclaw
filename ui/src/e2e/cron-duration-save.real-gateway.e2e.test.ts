@@ -14,7 +14,10 @@ import type { CronJob } from "../api/types.ts";
 import { waitForControlUiGatewayReady } from "../test-helpers/control-ui-e2e-readiness.ts";
 import { takeControlUiViewportScreenshot } from "../test-helpers/control-ui-e2e-screenshot.ts";
 import { openPicker, pickerValue, selectPickerValue } from "../test-helpers/select-picker-e2e.ts";
-import { createControlUiE2eSuite } from "./control-ui-e2e-suite.test-support.ts";
+import {
+  createControlUiE2eContextOptions,
+  createControlUiE2eSuite,
+} from "./control-ui-e2e-suite.test-support.ts";
 
 let instance: OpenClawTestInstance | undefined;
 const suite = createControlUiE2eSuite({
@@ -133,7 +136,6 @@ catalogSuite.define(() => {
     let awaitCatalogPublication = false;
     const pendingNotifications: Array<() => void> = [];
     type PublicationPhase = "published" | "held" | "recovered";
-    let publication: { phase: PublicationPhase; frameStart: number; logStart: number } | undefined;
     const publish = async (id: PublicationPhase) => {
       if (catalogRequests.size) {
         await new Promise<void>((resolve) => {
@@ -149,7 +151,6 @@ catalogSuite.define(() => {
         "--strict-json",
         "--replace",
       ];
-      publication = { phase: id, frameStart: frames.length, logStart: owner.logs().length };
       const result = await owner.cli(args);
       commands.push({ args, ...result });
       expect(result.code, result.stderr).toBe(0);
@@ -157,9 +158,7 @@ catalogSuite.define(() => {
     try {
       await catalogSuite.withPage(
         {
-          locale: "en-US",
-          serviceWorkers: "block",
-          viewport: { height: 900, width: 1280 },
+          ...createControlUiE2eContextOptions(),
           ...(captureEnabled ? { recordVideo: { dir: catalogSuite.artifactDir } } : {}),
         },
         async ({ page }) => {
@@ -246,62 +245,12 @@ catalogSuite.define(() => {
             await page.screenshot({ path: path.join(catalogSuite.artifactDir, "initial.png") });
           }
           await publish("published");
-          try {
-            await expect
-              .poll(async () => {
-                await openPicker(picker);
-                return picker.locator('[role="option"][data-value="fixture/published"]').count();
-              })
-              .toBe(1);
-          } catch (error) {
-            try {
-              const sequence = frames.flatMap<{
-                kind: string;
-                ok?: boolean;
-                fixtureModels?: string[];
-              }>((entry) => {
-                const frame = requireRecord(requireRecord(entry).frame);
-                if (frame.event === "config.changed" || frame.event === "chat.metadata.changed") {
-                  return [{ kind: frame.event }];
-                }
-                if (frame.method === "models.list") {
-                  return [{ kind: "models.request" }];
-                }
-                if (frame.type !== "res") {
-                  return [];
-                }
-                const models = frame.ok === true ? requireRecord(frame.payload).models : [];
-                return [
-                  {
-                    kind: "models.reply",
-                    ok: frame.ok === true,
-                    fixtureModels: ["anchor", "retiring", "published"].filter(
-                      (id) =>
-                        Array.isArray(models) &&
-                        models.some((model) => {
-                          const row = requireRecord(model);
-                          return row.provider === "fixture" && row.id === id;
-                        }),
-                    ),
-                  },
-                ];
-              });
-              console.error(
-                "[automation-catalog-publication]",
-                JSON.stringify({
-                  sequence: sequence.slice(-20),
-                  publicationCount: commands.length,
-                  pickerCount: await picker.count(),
-                  retiringOptionCount: await picker
-                    .locator('[role="option"][data-value="fixture/retiring"]')
-                    .count(),
-                }),
-              );
-            } catch {
-              console.error("[automation-catalog-publication] diagnostic unavailable");
-            }
-            throw error;
-          }
+          await expect
+            .poll(async () => {
+              await openPicker(picker);
+              return picker.locator('[role="option"][data-value="fixture/published"]').count();
+            })
+            .toBe(1);
           expect(
             await picker.locator('[role="option"][data-value="fixture/retiring"]').count(),
           ).toBe(0);
@@ -343,57 +292,6 @@ catalogSuite.define(() => {
           }
         },
       );
-    } catch (error) {
-      const observed = publication ? frames.slice(publication.frameStart) : [];
-      const requests = new Set(
-        observed.flatMap(({ direction, frame }) =>
-          direction === "sent" && frame.method === "models.list" && typeof frame.id === "string"
-            ? [frame.id]
-            : [],
-        ),
-      );
-      const replies = observed.filter(
-        ({ direction, frame }) =>
-          direction === "received" && typeof frame.id === "string" && requests.has(frame.id),
-      );
-      const successfulReply = replies.findLast(({ frame }) => frame.ok === true);
-      const payload = successfulReply?.frame.payload;
-      const models =
-        payload &&
-        typeof payload === "object" &&
-        "models" in payload &&
-        Array.isArray(payload.models)
-          ? payload.models
-          : [];
-      console.error("Automation catalog publication diagnostics", {
-        phase: publication?.phase ?? null,
-        configEvents: observed.filter(({ frame }) => frame.event === "config.changed").length,
-        metadataEvents: observed.filter(({ frame }) => frame.event === "chat.metadata.changed")
-          .length,
-        catalogRequests: requests.size,
-        catalogSuccesses: replies.filter(({ frame }) => frame.ok === true).length,
-        catalogFailures: replies.filter(({ frame }) => frame.ok === false).length,
-        latestSuccessfulReplyHasExpectedModel: successfulReply
-          ? models.some(
-              (model: unknown) =>
-                model !== null &&
-                typeof model === "object" &&
-                "provider" in model &&
-                "id" in model &&
-                model.provider === "fixture" &&
-                model.id === publication?.phase,
-            )
-          : null,
-        latestReplyWasTransportFailure: replies.at(-1)?.transportFailure ?? null,
-        publicationCommands: commands.length,
-        leaseVerificationFailed: publication
-          ? owner
-              .logs()
-              .slice(publication.logStart)
-              .includes("failed to verify plugin lifecycle lease")
-          : false,
-      });
-      throw error;
     } finally {
       const redact = (text: string) =>
         text
@@ -419,10 +317,11 @@ type CronPageEvidence = {
   servedAssets: Promise<ServedAsset>[];
 };
 
-async function capture(page: Page, name: string, observed: unknown) {
+async function capture(evidence: CronPageEvidence, name: string, observed: object) {
   if (!captureEnabled) {
     return;
   }
+  const { page, servedDocumentSha256, servedAssets } = evidence;
   // The form is taller than the viewport. Preserve the flow's scroll to the
   // relevant field without resizing Chromium's recording surface.
   await fs.writeFile(
@@ -433,7 +332,7 @@ async function capture(page: Page, name: string, observed: unknown) {
   );
   await fs.writeFile(
     path.join(suite.artifactDir, `${name}.json`),
-    `${JSON.stringify(observed, null, 2)}\n`,
+    `${JSON.stringify({ ...observed, servedDocumentSha256, servedAssets: await Promise.all(servedAssets) }, null, 2)}\n`,
   );
 }
 
@@ -501,9 +400,7 @@ async function withCronJobPage(
   url.searchParams.set("job", jobId);
   await suite.withPage(
     {
-      locale: "en-US",
-      serviceWorkers: "block",
-      viewport: { height: 900, width: 1_280 },
+      ...createControlUiE2eContextOptions(),
       ...(captureEnabled
         ? { recordVideo: { dir: suite.artifactDir, size: { width: 1_280, height: 900 } } }
         : {}),
@@ -591,7 +488,48 @@ async function submitCronForm(
 }
 
 async function seedAlertJob(cliJson: CliJson, name: string, failureAlert: CronJob["failureAlert"]) {
-  const result = await cliJson([
+  const result = await seedPausedAgentJob(
+    cliJson,
+    name,
+    {
+      kind: "agentTurn",
+      message: "Synthetic paused failure-alert fixture",
+    },
+    { failureAlert },
+  );
+  const id = cronJobId(result);
+  const stored = await cliJson(["automations", "get", id, "--json"]);
+  expect(stored).toMatchObject({
+    id,
+    name,
+    enabled: false,
+    schedule: { kind: "every", everyMs: 60_000 },
+  });
+  expect(stored.failureAlert).toEqual(failureAlert);
+  return { id, stored };
+}
+
+function seedCliAutomation(cliJson: CliJson, name: string, args: string[]) {
+  return cliJson([
+    "automations",
+    "add",
+    "--name",
+    name,
+    "--agent",
+    "main",
+    "--disabled",
+    ...args,
+    "--json",
+  ]);
+}
+
+function seedPausedAgentJob(
+  cliJson: CliJson,
+  name: string,
+  payload: CronJob["payload"],
+  overrides: Pick<CronJob, "failureAlert"> = {},
+) {
+  return cliJson([
     "gateway",
     "call",
     "cron.add",
@@ -603,22 +541,12 @@ async function seedAlertJob(cliJson: CliJson, name: string, failureAlert: CronJo
       schedule: { kind: "every", everyMs: 60_000 },
       sessionTarget: "isolated",
       wakeMode: "now",
-      payload: { kind: "agentTurn", message: "Synthetic paused failure-alert fixture" },
+      payload,
       delivery: { mode: "none" },
-      failureAlert,
+      ...overrides,
     }),
     "--json",
   ]);
-  const id = cronJobId(result);
-  const stored = await cliJson(["automations", "get", id, "--json"]);
-  expect(stored).toMatchObject({
-    id,
-    name,
-    enabled: false,
-    schedule: { kind: "every", everyMs: 60_000 },
-  });
-  expect(stored.failureAlert).toEqual(failureAlert);
-  return { id, stored };
 }
 
 async function choosePicker(picker: Locator, value: string) {
@@ -639,28 +567,20 @@ async function readAlertFields(page: Page) {
 suite.define(() => {
   it("timeout override: clearing restores the default after save and reload", async () => {
     await withGatewayCommands("real-timeout-clear-commands.json", async (cliJson) => {
-      const job = await cliJson([
-        "automations",
-        "add",
-        "--name",
-        "Clear timeout override",
-        "--agent",
-        "main",
+      const job = await seedCliAutomation(cliJson, "Clear timeout override", [
         "--session",
         "isolated",
         "--message",
         "Synthetic paused timeout fixture",
-        "--disabled",
         "--every",
         "2h",
         "--timeout-seconds",
         "90",
         "--no-deliver",
-        "--json",
       ]);
       const jobId = cronJobId(job);
       await withCronJobPage(cliJson, jobId, async (evidence) => {
-        const { page, servedDocumentSha256, servedAssets } = evidence;
+        const { page } = evidence;
         await page.locator("details.cron-advanced > summary").click();
         const timeout = page.locator("#cron-timeout-seconds");
         expect(await timeout.inputValue()).toBe("90");
@@ -670,11 +590,9 @@ suite.define(() => {
         await waitForControlUiGatewayReady(page);
         await page.locator("details.cron-advanced > summary").click();
         await timeout.scrollIntoViewIfNeeded();
-        await capture(page, "real-timeout-clear-reloaded", {
+        await capture(evidence, "real-timeout-clear-reloaded", {
           ...cleared,
           reloadedTimeout: await timeout.inputValue(),
-          servedDocumentSha256,
-          servedAssets: await Promise.all(servedAssets),
         });
         if (captureEnabled) {
           const formBounds = await page.locator(".cron-page").boundingBox();
@@ -700,51 +618,40 @@ suite.define(() => {
 
   it("configured duration precision: saves stagger through the real Gateway and CLI readback", async () => {
     await withGatewayCommands("real-gateway-commands.json", async (cliJson) => {
-      const job = await cliJson([
-        "automations",
-        "add",
-        "--name",
-        "Browser stagger fixture",
-        "--agent",
-        "main",
+      const job = await seedCliAutomation(cliJson, "Browser stagger fixture", [
         "--session",
         "main",
         "--system-event",
         "Synthetic paused browser fixture",
-        "--disabled",
         "--cron",
         "0 * * * *",
         "--tz",
         "UTC",
         "--stagger",
         "1001ms",
-        "--json",
       ]);
       expect(job).toMatchObject({ enabled: false, schedule: { staggerMs: 1_001 } });
       const jobId = cronJobId(job);
       await withCronJobPage(cliJson, jobId, async (evidence) => {
-        const { page, servedDocumentSha256, servedAssets } = evidence;
+        const { page } = evidence;
         await expect.poll(() => page.locator(".cron-detail-title").textContent()).toBe(job.name);
         await page.locator("details.cron-advanced > summary").click();
         const amount = page.locator("#cron-stagger-amount");
         const loadedStagger = await amount.inputValue();
         await amount.scrollIntoViewIfNeeded();
-        await capture(page, "real-stagger-loaded", {
+        await capture(evidence, "real-stagger-loaded", {
           loadedStagger,
           originalSchedule: job.schedule,
-          servedDocumentSha256,
         });
         await page.locator("#cron-cron-expr").fill("*/5 * * * *");
         const { request, stored } = await submitCronForm(evidence, cliJson, "cron.update");
         const reloadedStagger = await amount.inputValue();
         await amount.scrollIntoViewIfNeeded();
-        await capture(page, "real-stagger-readback", {
+        await capture(evidence, "real-stagger-readback", {
           loadedStagger,
           submitted: request.params,
           stored,
           reloadedStagger,
-          servedDocumentSha256,
-          servedAssets: await Promise.all(servedAssets),
         });
         expect({ loadedStagger, submitted: request.params, stored, reloadedStagger }).toMatchObject(
           {
@@ -770,22 +677,21 @@ suite.define(() => {
       const policy = { cooldownMs: 1_001, includeSkipped: true };
       const job = await seedAlertJob(cliJson, "Partial failure policy", policy);
       await withCronJobPage(cliJson, job.id, async (evidence) => {
-        const { page, servedDocumentSha256, servedAssets } = evidence;
+        const { page } = evidence;
         await expect
           .poll(() => page.locator(".cron-detail-title").textContent())
           .toBe(job.stored.name);
         await page.locator("details.cron-advanced > summary").click();
         const loaded = await readAlertFields(page);
         await page.locator("#cron-failure-alert-cooldown-seconds").scrollIntoViewIfNeeded();
-        await capture(page, "real-alert-loaded", {
+        await capture(evidence, "real-alert-loaded", {
           loaded,
           original: job.stored,
-          servedDocumentSha256,
         });
         await page.locator("#cron-description").fill("Only metadata changed");
         const saved = await submitCronForm(evidence, cliJson, "cron.update");
         const savedFields = await readAlertFields(page);
-        await capture(page, "real-alert-saved", { ...saved, savedFields });
+        await capture(evidence, "real-alert-saved", { ...saved, savedFields });
         const menu = page.locator(".cron-detail-actions .cron-job-menu");
         await menu.locator(".cron-job-menu__trigger").click();
         await menu.locator('[data-value="clone"]').click();
@@ -799,11 +705,9 @@ suite.define(() => {
         await page.locator("details.cron-advanced > summary").click();
         const clonedFields = await readAlertFields(page);
         await page.locator("#cron-failure-alert-cooldown-seconds").scrollIntoViewIfNeeded();
-        await capture(page, "real-alert-cloned", {
+        await capture(evidence, "real-alert-cloned", {
           ...cloned,
           clonedFields,
-          servedDocumentSha256,
-          servedAssets: await Promise.all(servedAssets),
         });
         const expectedFields = {
           after: "",
@@ -835,16 +739,15 @@ suite.define(() => {
         includeSkipped: true,
       });
       await withCronJobPage(cliJson, job.id, async (evidence) => {
-        const { page, servedDocumentSha256, servedAssets } = evidence;
+        const { page } = evidence;
         await expect
           .poll(() => page.locator(".cron-detail-title").textContent())
           .toBe(job.stored.name);
         await page.locator("details.cron-advanced > summary").click();
         const loaded = await readAlertFields(page);
-        await capture(page, "real-alert-clear-loaded", {
+        await capture(evidence, "real-alert-clear-loaded", {
           loaded,
           original: job.stored,
-          servedDocumentSha256,
         });
         await page.locator("#cron-failure-alert-after").fill("");
         await page.locator("#cron-failure-alert-cooldown-seconds").fill("");
@@ -852,7 +755,7 @@ suite.define(() => {
           "openclaw-select-picker:has(#cron-failure-alert-delivery-mode)",
         );
         await deliveryMode.locator(".picker-select__trigger").click();
-        await capture(page, "real-alert-clear-choice", {
+        await capture(evidence, "real-alert-clear-choice", {
           options: await deliveryMode.locator('[role="option"]').evaluateAll((options) =>
             options.map((option) => ({
               value: option.getAttribute("data-value"),
@@ -879,26 +782,22 @@ suite.define(() => {
           accountId: "fixture-account",
           includeSkipped: true,
         });
-        await capture(page, "real-alert-cleared", cleared);
+        await capture(evidence, "real-alert-cleared", cleared);
         const policyMode = page.locator("openclaw-select-picker:has(#cron-failure-alert-mode)");
         await choosePicker(policyMode, "inherit");
         const inherited = await submitCronForm(evidence, cliJson, "cron.update");
         expect(inherited.request.params).toMatchObject({ patch: { failureAlert: null } });
         expect(inherited.stored).not.toHaveProperty("failureAlert");
-        await capture(page, "real-alert-inherited", inherited);
+        await capture(evidence, "real-alert-inherited", inherited);
         await choosePicker(policyMode, "disabled");
         const disabled = await submitCronForm(evidence, cliJson, "cron.update");
         expect(disabled.stored.failureAlert).toBe(false);
-        await capture(page, "real-alert-disabled", disabled);
+        await capture(evidence, "real-alert-disabled", disabled);
         await choosePicker(policyMode, "custom");
         await page.locator("#cron-failure-alert-cooldown-seconds").fill("0");
         const zero = await submitCronForm(evidence, cliJson, "cron.update");
         expect(zero.stored.failureAlert).toEqual({ cooldownMs: 0 });
-        await capture(page, "real-alert-zero", {
-          ...zero,
-          servedDocumentSha256,
-          servedAssets: await Promise.all(servedAssets),
-        });
+        await capture(evidence, "real-alert-zero", zero);
       });
     });
   });
@@ -919,36 +818,19 @@ suite.define(() => {
           allowUnsafeExternalContent: variant.allowUnsafeExternalContent,
           timeoutSeconds: 0,
         };
-        const created = await cliJson([
-          "gateway",
-          "call",
-          "cron.add",
-          "--params",
-          JSON.stringify({
-            name: sourceName,
-            agentId: "main",
-            enabled: false,
-            schedule: { kind: "every", everyMs: 60_000 },
-            sessionTarget: "isolated",
-            wakeMode: "now",
-            payload,
-            delivery: { mode: "none" },
-          }),
-          "--json",
-        ]);
+        const created = await seedPausedAgentJob(cliJson, sourceName, payload);
         const sourceId = cronJobId(created);
         const original = await cliJson(["automations", "get", sourceId, "--json"]);
         expect(original).toMatchObject({ id: sourceId, enabled: false });
         expect(original.payload).toEqual(payload);
 
         await withCronJobPage(cliJson, sourceId, async (evidence) => {
-          const { page, servedDocumentSha256, servedAssets } = evidence;
+          const { page } = evidence;
           await expect
             .poll(() => page.locator(".cron-detail-title").textContent())
             .toBe(original.name);
-          await capture(page, `real-clone-policy-${variant.name}-loaded`, {
+          await capture(evidence, `real-clone-policy-${variant.name}-loaded`, {
             original,
-            servedDocumentSha256,
           });
           const menu = page.locator(".cron-detail-actions .cron-job-menu");
           await menu.locator(".cron-job-menu__trigger").click();
@@ -964,12 +846,10 @@ suite.define(() => {
           await page.locator(`[data-test-id="cron-row-${cloneId}"]`).click();
           await expect.poll(() => page.locator(".cron-detail-title").textContent()).toBe(cloneName);
           const originalAfter = await cliJson(["automations", "get", sourceId, "--json"]);
-          await capture(page, `real-clone-policy-${variant.name}-readback`, {
+          await capture(evidence, `real-clone-policy-${variant.name}-readback`, {
             original,
             originalAfter,
             ...cloned,
-            servedDocumentSha256,
-            servedAssets: await Promise.all(servedAssets),
           });
 
           expect.soft(originalAfter, `${variant.name}: source unchanged`).toEqual(original);
