@@ -46,47 +46,49 @@ const migrate = (sourcePath: string, integrityCheck?: "full") =>
     integrityCheck,
   });
 
+const credential = { type: "api_key" as const, provider: "openai", key: "relocated-key" };
+const store = { version: 1, profiles: { "openai:default": credential } };
+const rotation = { version: 1, order: { openai: ["openai:default"] } };
+function registerSourceClose(sourcePath: string, close: () => Promise<void>) {
+  unregisterAfterClose = registerOpenClawAgentDatabaseAsyncResource({
+    agentId: "main",
+    path: sourcePath,
+    revoke: () => {},
+    close,
+  });
+}
+
 it.each([undefined, "full"] as const)(
   "uses requested integrity coverage for shared credential relocation (%s)",
   async (integrityCheck) => {
-    const store = {
-      version: 1,
-      profiles: {
-        "openai:default": { type: "api_key", provider: "openai", key: "relocated-key" },
-      },
-    };
-    const rotation = { version: 1, order: { openai: ["openai:default"] } };
     const sourcePath = resolveAuthProfileDatabasePath(state.agentDir());
     fs.mkdirSync(path.dirname(sourcePath), { recursive: true });
     {
       using database = new DatabaseSync(sourcePath);
-      database.exec(OPENCLAW_AGENT_SCHEMA_SQL);
-      database.exec(`PRAGMA user_version = ${OPENCLAW_AGENT_SCHEMA_VERSION}`);
-      database
-        .prepare(
-          `INSERT INTO schema_meta (meta_key, role, schema_version, agent_id, created_at, updated_at)
-             VALUES ('primary', 'agent', ?, 'main', 1, 1)`,
-        )
-        .run(OPENCLAW_AGENT_SCHEMA_VERSION);
+      database.exec(`${OPENCLAW_AGENT_SCHEMA_SQL};
+        PRAGMA user_version = ${OPENCLAW_AGENT_SCHEMA_VERSION};
+        INSERT INTO schema_meta (meta_key, role, schema_version, agent_id, created_at, updated_at)
+        VALUES ('primary', 'agent', ${OPENCLAW_AGENT_SCHEMA_VERSION}, 'main', 1, 1);
+      `);
       database
         .prepare("INSERT INTO auth_profile_store VALUES ('primary', ?, 1)")
         .run(JSON.stringify(store));
       database
         .prepare("INSERT INTO auth_profile_state VALUES ('primary', ?, 1)")
         .run(JSON.stringify(rotation));
+      // An unrelated index defect distinguishes QUICK from whole-database FULL.
+      database.enableDefensive?.(false);
       database.exec(`
           DROP INDEX idx_agent_cache_updated;
           CREATE INDEX idx_agent_cache_updated ON cache_entries(scope, key, updated_at);
           INSERT INTO cache_entries (scope, key, value_json, updated_at)
           VALUES ('retained', 'history', '"untouched"', 1);
+          PRAGMA writable_schema = ON;
+          UPDATE sqlite_schema SET sql =
+            'CREATE INDEX idx_agent_cache_updated ON cache_entries(scope, updated_at DESC, key)'
+            WHERE name = 'idx_agent_cache_updated';
+          PRAGMA writable_schema = OFF;
         `);
-      // An unrelated index defect distinguishes QUICK from whole-database FULL.
-      database.enableDefensive?.(false);
-      database.exec("PRAGMA writable_schema = ON");
-      database
-        .prepare("UPDATE sqlite_schema SET sql = ? WHERE name = 'idx_agent_cache_updated'")
-        .run("CREATE INDEX idx_agent_cache_updated ON cache_entries(scope, updated_at DESC, key)");
-      database.exec("PRAGMA writable_schema = OFF");
     }
 
     const sourceChecks = new Map<DatabaseSync, string[]>();
@@ -113,10 +115,10 @@ it.each([undefined, "full"] as const)(
     const result = await migrate(sourcePath, integrityCheck);
     if (integrityCheck === "full") {
       expect([...sourceChecks.values()]).toEqual([["PRAGMA integrity_check;"]]);
-      expect(result.changes).toEqual([]);
-      expect(result.warnings).toEqual([
-        expect.stringMatching(/integrity_check.*idx_agent_cache_updated/su),
-      ]);
+      expect(result).toMatchObject({
+        changes: [],
+        warnings: [expect.stringMatching(/integrity_check.*idx_agent_cache_updated/su)],
+      });
     } else {
       expect([...sourceChecks.values()]).toEqual([
         ["PRAGMA quick_check;"],
@@ -127,8 +129,9 @@ it.each([undefined, "full"] as const)(
         ],
       ]);
       expect(result.warnings).toEqual([]);
-      const context = captureOpenClawStateWorkerContext({ env: state.env });
-      expect(await readSharedAuthProfileRows(context)).toMatchObject({
+      expect(
+        await readSharedAuthProfileRows(captureOpenClawStateWorkerContext({ env: state.env })),
+      ).toMatchObject({
         store: { status: "readable", raw: store },
         state: { status: "readable", raw: rotation },
       });
@@ -158,14 +161,9 @@ it("joins pre-existing source resources before returning a migration read failur
   writePersistedAuthProfileStoreRaw({ version: 1, profiles: {} }, state.agentDir());
   const sourcePath = resolveAuthProfileDatabasePath(state.agentDir());
   let drained = false;
-  unregisterAfterClose = registerOpenClawAgentDatabaseAsyncResource({
-    agentId: "main",
-    path: sourcePath,
-    revoke: () => {},
-    close: async () => {
-      await setImmediate();
-      drained = true;
-    },
+  registerSourceClose(sourcePath, async () => {
+    await setImmediate();
+    drained = true;
   });
   vi.spyOn(bootstrap, "readSharedAuthLegacyRowsFromDatabase").mockImplementationOnce(() => {
     throw new Error("source read failed");
@@ -178,11 +176,7 @@ it("joins pre-existing source resources before returning a migration read failur
 });
 
 it("revokes the source credential authority before relocation and cold-loads the shared credential", async () => {
-  const credential = { type: "api_key" as const, provider: "openai", key: "relocated-key" };
-  writePersistedAuthProfileStoreRaw(
-    { version: 1, profiles: { "openai:default": credential } },
-    state.agentDir(),
-  );
+  writePersistedAuthProfileStoreRaw(store, state.agentDir());
   const sourcePath = resolveAuthProfileDatabasePath(state.agentDir());
   const reader = prepareAgentAuthProfileRowsRead({
     databasePath: sourcePath,
@@ -193,38 +187,26 @@ it("revokes the source credential authority before relocation and cold-loads the
   authority.observe(credential);
   await reader.dispose();
   let deniedBeforeSourceRelease = false;
-  const unregister = registerOpenClawAgentDatabaseAsyncResource({
-    agentId: "main",
-    path: sourcePath,
-    revoke: () => {},
-    close: async () => {
-      try {
-        authority.readCurrentCredential();
-      } catch {
-        deniedBeforeSourceRelease = true;
-      }
-    },
-  });
-  try {
-    const result = await migrate(sourcePath);
-    expect(result.warnings).toEqual([]);
-    expect(deniedBeforeSourceRelease).toBe(true);
+  registerSourceClose(sourcePath, async () => {
     expect(() => authority.readCurrentCredential()).toThrow();
-    const context = captureOpenClawStateWorkerContext({ env: state.env });
-    const identity = `${context.admission.identity.key}:${context.admission.identity.birthtime ?? ""}`;
-    const current = captureAuthProfileCredentialAuthority(
-      context,
-      { identity, databasePath: context.admission.databasePath },
-      "openai:default",
-    );
-    const rows = await readSharedAuthProfileRows(context);
-    current.observe(
-      loadPersistedAuthProfileStoreFromRows(rows, context.admission.databasePath)?.profiles[
-        "openai:default"
-      ],
-    );
-    expect(current.readCurrentCredential()).toEqual(credential);
-  } finally {
-    unregister();
-  }
+    deniedBeforeSourceRelease = true;
+  });
+  const result = await migrate(sourcePath);
+  expect(result.warnings).toEqual([]);
+  expect(deniedBeforeSourceRelease).toBe(true);
+  expect(() => authority.readCurrentCredential()).toThrow();
+  const context = captureOpenClawStateWorkerContext({ env: state.env });
+  const identity = `${context.admission.identity.key}:${context.admission.identity.birthtime ?? ""}`;
+  const current = captureAuthProfileCredentialAuthority(
+    context,
+    { identity, databasePath: context.admission.databasePath },
+    "openai:default",
+  );
+  const rows = await readSharedAuthProfileRows(context);
+  current.observe(
+    loadPersistedAuthProfileStoreFromRows(rows, context.admission.databasePath)?.profiles[
+      "openai:default"
+    ],
+  );
+  expect(current.readCurrentCredential()).toEqual(credential);
 });

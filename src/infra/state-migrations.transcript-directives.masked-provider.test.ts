@@ -22,7 +22,7 @@ import { requireNativeSqliteDatabase } from "../test-utils/native-sqlite.js";
 import { prepareTrajectoryPayload } from "../trajectory/runtime-payload.js";
 import { openNodeSqliteDatabase } from "./node-sqlite.js";
 import { encodeArchiveContent } from "./state-migrations.transcript-directives-archives.js";
-import { migrateHistoricalTranscriptDirectives } from "./state-migrations.transcript-directives.js";
+import { migrateHistoricalTranscriptDirectives as migrate } from "./state-migrations.transcript-directives.js";
 import {
   type FixtureEvent,
   insertSession,
@@ -43,11 +43,19 @@ afterEach(() => {
 describe("historical transcript masked provider repair", () => {
   const MASKED = '"provider":"***"';
   const copilotFact = { modelId: "claude-opus-5.5", provider: "github-copilot" };
+  const restored = (event: FixtureEvent, provider = "github-copilot") =>
+    JSON.stringify(event).replace(MASKED, `"provider":"${provider}"`);
 
   function fixture() {
     const env = { OPENCLAW_STATE_DIR: makeTempDir(tempDirs, "transcript-masked-provider-") };
     const opened = openOpenClawAgentDatabase({ agentId: "main", env });
-    return { env, databasePath: opened.path, database: requireNativeSqliteDatabase(opened.db) };
+    const read = (session: string, seq: number) => readEventJson(opened.path, session, seq);
+    return {
+      env,
+      read,
+      databasePath: opened.path,
+      database: requireNativeSqliteDatabase(opened.db),
+    };
   }
 
   function singleSession(content?: string, sessionId = "session") {
@@ -55,18 +63,20 @@ describe("historical transcript masked provider repair", () => {
     const masked = maskedAssistant("masked", copilotFact.modelId, 1);
     const tagged =
       content === undefined
-        ? []
-        : [
-            messageEvent({
-              content: [{ type: "text", text: content }],
-              id: "tagged",
-              role: "assistant",
-              timestamp: 2,
-            }),
-          ];
-    insertSession(context.database, { events: [masked, ...tagged], generation: "g", sessionId });
+        ? undefined
+        : messageEvent({
+            content: [{ type: "text", text: content }],
+            id: "tagged",
+            role: "assistant",
+            timestamp: 2,
+          });
+    insertSession(context.database, {
+      events: tagged ? [masked, tagged] : [masked],
+      generation: "g",
+      sessionId,
+    });
     insertTrajectory(context.database, sessionId, [copilotFact]);
-    return { ...context, masked, tagged: tagged[0] };
+    return { ...context, masked, tagged };
   }
 
   function maskedAssistant(id: string, model: string, timestamp: number): FixtureEvent {
@@ -92,39 +102,29 @@ describe("historical transcript masked provider repair", () => {
        ) VALUES(?,?,?,?,?,?,?,?)`,
     );
     for (const [seq, fact] of facts.entries()) {
+      const data = {
+        messagesSnapshot: [{ role: "user", content: "retained payload ".repeat(256) }],
+      };
       const eventJson = JSON.stringify({
         type: "model.completed",
         sessionId,
         ...fact,
-        ...(mixedStorage
-          ? {
-              data: {
-                messagesSnapshot: [{ role: "user", content: "retained payload ".repeat(256) }],
-              },
-            }
-          : {}),
+        ...(mixedStorage ? { data } : {}),
       });
       const payload =
-        mixedStorage && seq % 2 === 0
-          ? prepareTrajectoryPayload(database, eventJson)
-          : {
-              event_json: eventJson,
-              event_payload: null,
-              event_codec: null,
-              event_utf8_bytes: null,
-            };
-      if (mixedStorage && seq % 2 === 0) {
+        mixedStorage && seq % 2 === 0 ? prepareTrajectoryPayload(database, eventJson) : null;
+      if (payload) {
         expect(payload.event_codec).not.toBeNull();
       }
       insert.run(
         sessionId,
         seq,
         "run",
-        payload.event_json,
+        payload ? payload.event_json : eventJson,
         seq,
-        payload.event_payload,
-        payload.event_codec,
-        payload.event_utf8_bytes,
+        payload?.event_payload ?? null,
+        payload?.event_codec ?? null,
+        payload?.event_utf8_bytes ?? null,
       );
     }
   }
@@ -160,7 +160,7 @@ describe("historical transcript masked provider repair", () => {
   it.each(["identity", "zstd"])(
     "restores %s masked providers from recorded session facts and leaves ambiguity masked",
     async (storage) => {
-      const { env, databasePath, database } = fixture();
+      const { env, databasePath, database, read } = fixture();
       const copilot = maskedAssistant("copilot", "claude-opus-5.5", 1);
       const user = messageEvent({ content: "next", id: "user", role: "user", timestamp: 2 });
       const openai = maskedAssistant("openai", "gpt-6.1-sol", 3);
@@ -178,26 +178,19 @@ describe("historical transcript masked provider repair", () => {
           event.fixturePadding = "compression fixture ".repeat(256);
         }
       }
-      insertSession(database, {
-        events: [copilot, user, openai, toolCall],
-        generation: "multi-before",
-        sessionId: "multi-session",
-      });
-      insertSession(database, {
-        events: [ambiguous],
-        generation: "ambiguous-before",
-        sessionId: "ambiguous-session",
-      });
-      insertSession(database, {
-        events: [unrecorded],
-        generation: "unrecorded-before",
-        sessionId: "unrecorded-session",
-      });
-      insertSession(database, {
-        events: [],
-        generation: "archived-before",
-        sessionId: "archived-session",
-      });
+      const sessions = {
+        multi: [copilot, user, openai, toolCall],
+        ambiguous: [ambiguous],
+        unrecorded: [unrecorded],
+        archived: [],
+      };
+      for (const [name, events] of Object.entries(sessions)) {
+        insertSession(database, {
+          events,
+          generation: `${name}-before`,
+          sessionId: `${name}-session`,
+        });
+      }
       if (storage === "zstd") {
         compressTranscriptRows(database);
       }
@@ -259,44 +252,39 @@ describe("historical transcript masked provider repair", () => {
       fs.writeFileSync(archivePath, archiveBytes);
       closeOpenClawAgentDatabasesForTest();
 
-      const result = await migrateHistoricalTranscriptDirectives({ env });
+      const result = await migrate({ env });
 
-      expect(result.changes).toEqual([
-        `Restored masked provider on 3 historical transcript row(s) in ${databasePath} from recorded session runtime facts.`,
-        `Repaired historical transcripts in ${databasePath}: 1 active session(s), 1 archived transcript(s).`,
-      ]);
-      expect(result.warnings).toEqual([
-        `Left 2 historical transcript row(s) with masked provider "***" in ${databasePath}: no single provider was recorded for their session and model.`,
-      ]);
-      expect(result.warningDisposition).toBe("recoverable");
+      expect(result).toMatchObject({
+        changes: [
+          `Restored masked provider on 3 historical transcript row(s) in ${databasePath} from recorded session runtime facts.`,
+          `Repaired historical transcripts in ${databasePath}: 1 active session(s), 1 archived transcript(s).`,
+        ],
+        warnings: [
+          `Left 2 historical transcript row(s) with masked provider "***" in ${databasePath}: no single provider was recorded for their session and model.`,
+        ],
+        warningDisposition: "recoverable",
+      });
       // Only the provider value changes; every other byte of the event is preserved.
-      expect(readEventJson(databasePath, "multi-session", 0)).toBe(
-        JSON.stringify(copilot).replace(MASKED, '"provider":"github-copilot"'),
-      );
-      expect(readEventJson(databasePath, "multi-session", 1)).toBe(JSON.stringify(user));
-      expect(readEventJson(databasePath, "multi-session", 2)).toBe(
-        JSON.stringify(openai).replace(MASKED, '"provider":"openai"'),
-      );
-      expect(readEventJson(databasePath, "multi-session", 3)).toBe(JSON.stringify(toolCall));
-      expect(readEventJson(databasePath, "ambiguous-session", 0)).toBe(JSON.stringify(ambiguous));
-      expect(readEventJson(databasePath, "unrecorded-session", 0)).toBe(JSON.stringify(unrecorded));
+      expect([0, 1, 2, 3].map((seq) => read("multi-session", seq))).toEqual([
+        restored(copilot),
+        JSON.stringify(user),
+        restored(openai, "openai"),
+        JSON.stringify(toolCall),
+      ]);
+      expect(read("ambiguous-session", 0)).toBe(JSON.stringify(ambiguous));
+      expect(read("unrecorded-session", 0)).toBe(JSON.stringify(unrecorded));
       expect(readGeneration(databasePath, "multi-session")).not.toBe("multi-before");
       expect(readGeneration(databasePath, "ambiguous-session")).toBe("ambiguous-before");
-      const restoredArchive = `${JSON.stringify(archived).replace(MASKED, '"provider":"github-copilot"')}\n${JSON.stringify(archivedUser)}\n`;
+      const restoredArchive = `${restored(archived)}\n${JSON.stringify(archivedUser)}\n`;
       expect(readSessionArchiveContentSync(archivePath)).toBe(restoredArchive);
       expect(readMigrationCursor(databasePath)).toEqual({ phase: "complete", version: 2 });
-      const migrated = openNodeSqliteDatabase(databasePath, { readOnly: true });
-      try {
+      {
+        using migrated = openNodeSqliteDatabase(databasePath, { readOnly: true });
         // Provider restores record their rows instead of a full database backup.
-        expect(
-          JSON.parse(
-            (
-              migrated
-                .prepare("SELECT app_version FROM schema_meta WHERE meta_key = ?")
-                .get("historical-transcript-masked-provider-restored-v1") as { app_version: string }
-            ).app_version,
-          ),
-        ).toEqual({
+        const row = migrated
+          .prepare("SELECT app_version FROM schema_meta WHERE meta_key = ?")
+          .get("historical-transcript-masked-provider-restored-v1") as { app_version: string };
+        expect(JSON.parse(row.app_version)).toEqual({
           archiveLines: ["archived-session:archive-gen:1"],
           transcriptRows: { "multi-session": [0, 2] },
         });
@@ -308,8 +296,6 @@ describe("historical transcript masked provider repair", () => {
             )
             .get("multi-session"),
         ).toEqual({ needs_rebuild: 0, indexed_seq: 3 });
-      } finally {
-        migrated.close();
       }
       expect(
         fs
@@ -319,10 +305,7 @@ describe("historical transcript masked provider repair", () => {
 
       const archiveAfterFirstRun = fs.readFileSync(archivePath);
       const generationAfterFirstRun = readGeneration(databasePath, "multi-session");
-      await expect(migrateHistoricalTranscriptDirectives({ env })).resolves.toEqual({
-        changes: [],
-        warnings: [],
-      });
+      await expect(migrate({ env })).resolves.toEqual({ changes: [], warnings: [] });
       expect(readGeneration(databasePath, "multi-session")).toBe(generationAfterFirstRun);
       expect(fs.readFileSync(archivePath)).toEqual(archiveAfterFirstRun);
     },
@@ -330,34 +313,29 @@ describe("historical transcript masked provider repair", () => {
 
   it("reopens a completed version 1 pass once for masked providers only", async () => {
     // Version 1 completion means directives were already handled; this pass must not reparse them.
-    const { env, databasePath, database, masked, tagged } = singleSession(
+    const { env, databasePath, database, masked, tagged, read } = singleSession(
       "[[reply_to_current]] kept",
     );
     writeCursor(database, { phase: "complete" });
     closeOpenClawAgentDatabasesForTest();
 
-    const result = await migrateHistoricalTranscriptDirectives({ env });
+    const result = await migrate({ env });
 
     expect(result.warnings).toEqual([]);
     expect(result.changes).toContain(
       `Restored masked provider on 1 historical transcript row(s) in ${databasePath} from recorded session runtime facts.`,
     );
-    expect(readEventJson(databasePath, "session", 0)).toBe(
-      JSON.stringify(masked).replace(MASKED, '"provider":"github-copilot"'),
-    );
-    expect(readEventJson(databasePath, "session", 1)).toBe(JSON.stringify(tagged));
+    expect(read("session", 0)).toBe(restored(masked));
+    expect(read("session", 1)).toBe(JSON.stringify(tagged));
     expect(readMigrationCursor(databasePath)).toEqual({ phase: "complete", version: 2 });
-    await expect(migrateHistoricalTranscriptDirectives({ env })).resolves.toEqual({
-      changes: [],
-      warnings: [],
-    });
+    await expect(migrate({ env })).resolves.toEqual({ changes: [], warnings: [] });
   });
 
   it("backs up and reindexes a session whose rows also need directive normalization", async () => {
-    const { env, databasePath, masked } = singleSession("[[reply_to_current]] Final answer");
+    const { env, databasePath, masked, read } = singleSession("[[reply_to_current]] Final answer");
     closeOpenClawAgentDatabasesForTest();
 
-    const result = await migrateHistoricalTranscriptDirectives({ env });
+    const result = await migrate({ env });
 
     expect(result.warnings).toEqual([]);
     expect(result.changes).toEqual([
@@ -365,37 +343,29 @@ describe("historical transcript masked provider repair", () => {
       `Restored masked provider on 1 historical transcript row(s) in ${databasePath} from recorded session runtime facts.`,
       `Repaired historical transcripts in ${databasePath}: 1 active session(s), 0 archived transcript(s).`,
     ]);
-    expect(readEventJson(databasePath, "session", 0)).toBe(
-      JSON.stringify(masked).replace(MASKED, '"provider":"github-copilot"'),
-    );
-    expect(JSON.parse(readEventJson(databasePath, "session", 1))).toMatchObject({
+    expect(read("session", 0)).toBe(restored(masked));
+    expect(JSON.parse(read("session", 1))).toMatchObject({
       message: { content: [{ type: "text", text: "Final answer" }] },
     });
-    const migrated = openNodeSqliteDatabase(databasePath, { readOnly: true });
-    try {
-      // Stripped directive text leaves the search index only through a rebuild.
-      expect(
-        migrated
-          .prepare("SELECT 1 FROM session_transcript_fts WHERE session_transcript_fts MATCH ?")
-          .all('"reply_to_current"'),
-      ).toEqual([]);
-    } finally {
-      migrated.close();
-    }
+    using migrated = openNodeSqliteDatabase(databasePath, { readOnly: true });
+    // Stripped directive text leaves the search index only through a rebuild.
+    expect(
+      migrated
+        .prepare("SELECT 1 FROM session_transcript_fts WHERE session_transcript_fts MATCH ?")
+        .all('"reply_to_current"'),
+    ).toEqual([]);
   });
 
   it("restarts an interrupted version 1 pass from the first session", async () => {
-    const { env, databasePath, database, masked } = singleSession(undefined, "a-session");
+    const { env, databasePath, database, masked, read } = singleSession(undefined, "a-session");
     // Version 1 stopped after this session id; earlier sessions never saw the provider repair.
     writeCursor(database, { phase: "transcripts", sessionId: "z-session" });
     closeOpenClawAgentDatabasesForTest();
 
-    const result = await migrateHistoricalTranscriptDirectives({ env });
+    const result = await migrate({ env });
 
     expect(result.warnings).toEqual([]);
-    expect(readEventJson(databasePath, "a-session", 0)).toBe(
-      JSON.stringify(masked).replace(MASKED, '"provider":"github-copilot"'),
-    );
+    expect(read("a-session", 0)).toBe(restored(masked));
     expect(readMigrationCursor(databasePath)).toEqual({ phase: "complete", version: 2 });
   });
 
@@ -405,7 +375,7 @@ describe("historical transcript masked provider repair", () => {
     closeOpenClawAgentDatabasesForTest();
     const leaseId = claimOpenClawAgentDatabaseLease({ agentId: "main", path: databasePath, env });
 
-    const result = await migrateHistoricalTranscriptDirectives({ env }).finally(() => {
+    const result = await migrate({ env }).finally(() => {
       releaseOpenClawAgentDatabaseLease(leaseId, { env });
     });
 
