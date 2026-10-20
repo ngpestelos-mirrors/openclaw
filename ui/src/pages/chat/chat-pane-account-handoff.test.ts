@@ -20,17 +20,12 @@ afterEach(() => {
 });
 it("keeps A offline input with A when a same-client B hello replaces the pane before recovery settles", async () => {
   vi.stubGlobal("sessionStorage", createStorageMock());
-  vi.spyOn(drafts, "prepareDurableComposerRecovery").mockResolvedValue({
-    status: "ready",
-    entries: [],
-  });
-  vi.spyOn(drafts, "readDurableComposerDraft").mockResolvedValue({
-    status: "not-found",
-    revision: 0,
-  });
-  const write = vi
-    .spyOn(drafts, "writeDurableComposerDraft")
-    .mockResolvedValue({ status: "persisted" });
+  const prepare = vi.spyOn(drafts, "prepareDurableComposerRecovery");
+  prepare.mockResolvedValue({ status: "ready", entries: [] });
+  const read = vi.spyOn(drafts, "readDurableComposerDraft");
+  read.mockResolvedValue({ status: "not-found", revision: 0 });
+  const write = vi.spyOn(drafts, "writeDurableComposerDraft");
+  write.mockResolvedValue({ status: "persisted" });
   const writesFor = (owner: string) =>
     write.mock.calls.filter(([scope]) => scope.recoveryScope === owner).map(([, draft]) => draft);
   const privateDraft = "A newer private draft";
@@ -46,7 +41,6 @@ it("keeps A offline input with A when a same-client B hello replaces the pane be
   Object.assign(state, {
     settings: context.gateway.connection,
     chatMessage: "A offline draft",
-    selectedChatSessionIncognito: false,
     connected: false,
   });
   pane.chatState.attach(state);
@@ -65,14 +59,10 @@ it("keeps A offline input with A when a same-client B hello replaces the pane be
       createdAt: 1,
     }),
   ).toBe(true);
-  const attachment: ChatAttachment = {
-    id: "a-attachment",
-    mimeType: "text/plain",
-    dataUrl: "data:text/plain;base64,QQ==",
-    fileName: "a-only.txt",
-  };
   state.chatMessage = privateDraft;
-  state.chatAttachments = [attachment];
+  state.chatAttachments = [
+    { id: "a", mimeType: "text/plain", dataUrl: "data:text/plain;base64,QQ==" },
+  ];
   persistence.schedule();
   persistence.persistNow();
   await settle();
@@ -102,20 +92,14 @@ it("keeps A offline input with A when a same-client B hello replaces the pane be
   await settle();
   expect(destination).toMatchObject({ chatMessage: "", chatAttachments: [] });
   expect(loadChatComposerState(destination, destination.sessionKey).snapshot?.draft ?? "").toBe("");
-  expect(
-    writesFor("account-b").some(
-      (draft) => draft.text.includes("A newer") || draft.attachments.length,
-    ),
-  ).toBe(false);
+  const bWrites = writesFor("account-b");
+  expect(bWrites.some((d) => d.text.includes("A newer") || d.attachments.length)).toBe(false);
   account = "account-a";
   expect(loadChatComposerState(destination, destination.sessionKey).snapshot).toMatchObject({
     draft: privateDraft,
     queue: [{ id: "a-queue" }],
   });
-  expect(
-    writesFor("account-a").some(
-      (draft) => draft.text === privateDraft && draft.attachments.length === 1,
-    ),
-  ).toBe(true);
+  const aWrites = writesFor("account-a");
+  expect(aWrites.some((d) => d.text === privateDraft && d.attachments.length === 1)).toBe(true);
   b.stop();
 });

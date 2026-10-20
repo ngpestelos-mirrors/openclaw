@@ -16,23 +16,30 @@ import {
   createGatewayBrowserClientFixture,
   createInitializationContext,
 } from "./chat-pane.test-support.ts";
-import { ChatPaneView, type ChatPaneElement } from "./chat-pane.tsx";
+import { ChatPaneView, type ChatPaneElement, type ChatPaneProps } from "./chat-pane.tsx";
 import {
   installTranscriptDomMocks,
   resetTranscriptTestDom,
 } from "./components/chat-transcript.test-support.ts";
 
-function mountedFixture(sessionKey: string) {
+function mountedFixture(
+  id: string,
+  row: Partial<Parameters<typeof createMountedPanes>[0][number]> = {},
+) {
   installTranscriptDomMocks();
   onTestFinished(resetTranscriptTestDom);
-  return createMountedPanes([
-    {
-      key: sessionKey,
-      kind: "direct",
-      sessionId: sessionKey.slice("agent:main:".length),
-      updatedAt: 1,
-    },
+  const sessionKey = `agent:main:${id}`;
+  const fixture = createMountedPanes([
+    { key: sessionKey, kind: "direct", sessionId: id, updatedAt: 1, ...row },
   ]);
+  return {
+    ...fixture,
+    sessionKey,
+    render: (props: () => Partial<ChatPaneProps> = () => ({})) =>
+      mountPane(fixture.context, () => (
+        <ChatPaneView paneId={id} sessionKey={sessionKey} {...props()} />
+      )),
+  };
 }
 
 function mountPane(
@@ -48,7 +55,6 @@ function mountPane(
     () => <ApplicationProvider value={context}>{content()}</ApplicationProvider>,
     { container },
   );
-  onTestFinished(view.unmount);
   return view;
 }
 
@@ -59,12 +65,9 @@ function element<T extends Element>(root: ParentNode, selector: string): T {
 const composerSelector = ".agent-chat__composer-combobox textarea";
 
 function stubLifecycle() {
-  const start = vi.spyOn(ChatPaneRuntime.prototype, "start").mockImplementation(() => {});
-  const dispose = vi.spyOn(ChatPaneRuntime.prototype, "dispose").mockImplementation(() => {});
-  onTestFinished(() => {
-    start.mockRestore();
-    dispose.mockRestore();
-  });
+  vi.spyOn(ChatPaneRuntime.prototype, "start").mockImplementation(() => {});
+  vi.spyOn(ChatPaneRuntime.prototype, "dispose").mockImplementation(() => {});
+  onTestFinished(() => vi.restoreAllMocks());
 }
 
 it("exposes the current navigation face through the real pane host without a gateway read", async () => {
@@ -95,17 +98,10 @@ it("exposes the current navigation face through the real pane host without a gat
 it("applies a route draft and its focus cue to an already mounted native pane", async () => {
   const intervals = vi.spyOn(globalThis, "setInterval");
   const clearInterval = vi.spyOn(globalThis, "clearInterval");
-  onTestFinished(() => {
-    intervals.mockRestore();
-    clearInterval.mockRestore();
-  });
   const renderProbe = vi.fn<(host: object, phase: "invalidate" | "commit") => void>();
   vi.stubGlobal("openclawRenderLifecycleTestHook", renderProbe);
-  onTestFinished(() => {
-    vi.unstubAllGlobals();
-  });
-  const sessionKey = "agent:main:bridge-draft";
-  const fixture = mountedFixture(sessionKey);
+  const fixture = mountedFixture("bridge-draft");
+  const { sessionKey } = fixture;
   const [draft, setDraft] = createSignal<string | undefined>(undefined);
   const [focusComposer, setFocusComposer] = createSignal(false);
   const [presented, setPresented] = createSignal(true);
@@ -161,8 +157,8 @@ it("applies a route draft and its focus cue to an already mounted native pane", 
 });
 
 it("updates held Send as a mounted composer's draft changes between commands and ordinary input", async () => {
-  const sessionKey = "agent:main:held-send";
-  const fixture = mountedFixture(sessionKey);
+  const fixture = mountedFixture("held-send");
+  const { sessionKey } = fixture;
   const client = expectDefined(fixture.context.gateway.snapshot.client, "recovering client");
   Object.defineProperty(client, "recoveryScopeReady", { value: false });
   const container = document.body.appendChild(createApplicationContextProvider(fixture.context));
@@ -199,9 +195,6 @@ it("updates held Send as a mounted composer's draft changes between commands and
 it("settles clean hidden reads and fences actual property changes until reveal", async () => {
   stubLifecycle();
   const render = vi.spyOn(ChatPaneRuntime.prototype, "render");
-  onTestFinished(() => {
-    render.mockRestore();
-  });
   const context = createInitializationContext();
   context.gateway.snapshot.phase = "stopped";
   const view = mountPane(
@@ -229,18 +222,13 @@ it("settles clean hidden reads and fences actual property changes until reveal",
 
 it("replaces the command provider while document-hidden rendering is parked", async () => {
   let visibility: DocumentVisibilityState = "visible";
-  const visibilityRead = vi
-    .spyOn(document, "visibilityState", "get")
-    .mockImplementation(() => visibility);
-  onTestFinished(() => visibilityRead.mockRestore());
-  const sessionKey = "agent:main:bridge-board-provider";
-  const fixture = mountedFixture(sessionKey);
+  vi.spyOn(document, "visibilityState", "get").mockImplementation(() => visibility);
+  const fixture = mountedFixture("bridge-board-provider");
+  const { sessionKey } = fixture;
   const first = createMockBoardProvider(sessionKey);
   const second = createMockBoardProvider(sessionKey);
   const subscribe = vi.spyOn(second.events, "subscribe");
-  const view = mountPane(fixture.context, () => (
-    <ChatPaneView paneId="bridge-board-provider" sessionKey={sessionKey} boardProvider={first} />
-  ));
+  const view = fixture.render(() => ({ boardProvider: first }));
   const pane = element<ChatPaneElement>(view.container, "openclaw-chat-pane");
   await pane.updateComplete;
   visibility = "hidden";
@@ -257,9 +245,6 @@ it("replaces the command provider while document-hidden rendering is parked", as
 });
 
 it("opens provider findings through the mounted pane's first rendered frame", async () => {
-  installTranscriptDomMocks();
-  onTestFinished(resetTranscriptTestDom);
-  const sessionKey = "agent:main:bridge-provider-review";
   const review = {
     id: "bridge-review",
     runId: "bridge-paused-run",
@@ -267,19 +252,11 @@ it("opens provider findings through the mounted pane's first rendered frame", as
     explanation: "The agent tried to modify a synthetic file outside the selected project.",
     continuationMessage: "Continue only inside the selected project.",
   };
-  const fixture = createMountedPanes([
-    {
-      key: sessionKey,
-      agentId: "main",
-      kind: "direct",
-      sessionId: "bridge-provider-review",
-      updatedAt: 1,
-      providerReview: review,
-    },
-  ]);
-  const view = mountPane(fixture.context, () => (
-    <ChatPaneView paneId="bridge-provider-review" sessionKey={sessionKey} active />
-  ));
+  const fixture = mountedFixture("bridge-provider-review", {
+    agentId: "main",
+    providerReview: review,
+  });
+  const view = fixture.render(() => ({ active: true }));
   const reviewButton = await waitForSolid(() =>
     element<HTMLButtonElement>(view.container, ".chat-provider-review button"),
   );

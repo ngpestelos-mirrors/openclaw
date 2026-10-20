@@ -1,4 +1,3 @@
-// Keep the registered pane class on this file's module graph.
 import { afterEach, describe, expect, it, onTestFinished, vi } from "vitest";
 import type { SessionSuggestionsListResult } from "../../../../packages/gateway-protocol/src/schema/sessions-suggestions.js";
 /* @vitest-environment jsdom */
@@ -6,7 +5,6 @@ import type { SessionSuggestionsListResult } from "../../../../packages/gateway-
 import { GATEWAY_OWNER_PROFILE_ID } from "../../../../packages/gateway-protocol/src/schema/user-profile-constants.js";
 import { createDeferred } from "../../../../test/helpers/promise.js";
 import type { GatewayBrowserClient } from "../../api/gateway.ts";
-import type { ApplicationContext } from "../../app/context.ts";
 import * as draftStore from "../../lib/chat/composer-draft-store.runtime.ts";
 import type { SessionCapability } from "../../lib/sessions/index.ts";
 import { sessionsResult } from "../../lib/sessions/session-capability.test-support.ts";
@@ -118,8 +116,7 @@ describe("chat pane connection lifecycle", () => {
     try {
       pane.applyGatewaySnapshot(snapshot);
       await startup.mock.calls[0]![1];
-      expect(state.chatMessages).toEqual([]);
-      expect(state.chatMessage).toBe("");
+      expect(state).toMatchObject({ chatMessages: [], chatMessage: "" });
       expect(read).not.toHaveBeenCalled();
 
       recoveryReady = true;
@@ -475,30 +472,30 @@ describe("chat pane connection lifecycle", () => {
       realtimeTalkSession: {
         stop,
       } as unknown as ChatPageHost["realtimeTalk"]["snapshot"]["realtimeTalkSession"],
+      realtimeTalkActive: true,
+      realtimeTalkStatus: "listening",
+      realtimeTalkDetail: "live",
+      realtimeTalkVideoStream: {} as MediaStream,
+      realtimeTalkCameraDevices: [{ deviceId: "camera", label: "Camera" }],
+      realtimeTalkVideoCapable: true,
+      realtimeTalkVideoPending: true,
+      realtimeTalkCameraError: true,
     });
-    state.realtimeTalk.update({ realtimeTalkActive: true });
-    state.realtimeTalk.update({ realtimeTalkStatus: "listening" });
-    state.realtimeTalk.update({ realtimeTalkDetail: "live" });
     state.realtimeTalk.snapshot.realtimeTalkInputLevel.set(0.7);
     state.realtimeTalk.snapshot.realtimeTalkConversationState.entries = [
       { id: "utterance", role: "user", text: "stale", isStreaming: true },
     ];
-    state.realtimeTalk.update({ realtimeTalkVideoStream: {} as MediaStream });
-    state.realtimeTalk.update({
-      realtimeTalkCameraDevices: [{ deviceId: "camera", label: "Camera" }],
-    });
-    state.realtimeTalk.update({ realtimeTalkVideoCapable: true });
-    state.realtimeTalk.update({ realtimeTalkVideoPending: true });
-    state.realtimeTalk.update({ realtimeTalkCameraError: true });
 
     disconnect(pane);
 
     expect(cancelCommit).toHaveBeenCalledOnce();
-    expect(state.chatModelSwitchPromises).toEqual({});
     expect(retireModelOverride).toHaveBeenCalledWith("global");
-    expect(state.guardianNotices).toEqual([]);
-    expect(state.chatSending).toBe(false);
-    expect(state.chatSendingScopeKey).toBeNull();
+    expect(state).toMatchObject({
+      guardianNotices: [],
+      chatSending: false,
+      chatSendingScopeKey: null,
+    });
+    expect(state.chatModelSwitchPromises).toEqual({});
     expect(stop).toHaveBeenCalledOnce();
     expect(state.realtimeTalk.snapshot).toMatchObject({
       realtimeTalkActive: false,
@@ -523,9 +520,7 @@ describe("chat pane connection lifecycle", () => {
     state.agentsList = { defaultId: "main", mainKey: "home", scope: "global", agents: [] };
     state.assistantAgentId = "work";
     state.loadAssistantIdentity = vi.fn(async () => undefined);
-    state.chatModelSwitchPromises = {
-      global: new Promise<boolean>(() => {}),
-    };
+    state.chatModelSwitchPromises = { global: new Promise<boolean>(() => {}) };
     const pending = state.chatModelSwitchPromises;
     applySelectedChatAgent(state, "main");
     expect(state.chatModelSwitchPromises).toBe(pending);
@@ -696,8 +691,7 @@ describe("chat pane connection lifecycle", () => {
           },
           client,
         );
-        expect(state.sessionKey).toBe("main");
-        expect(state.chatRunId).toBe("original-run");
+        expect(state).toMatchObject({ sessionKey: "main", chatRunId: "original-run" });
         state.chatError = "Replacement scope warning";
         state.lastError = state.chatError;
         if (mode === "queued") {
@@ -714,9 +708,11 @@ describe("chat pane connection lifecycle", () => {
         }
         await stopping;
         expect(refreshCurrentChat).not.toHaveBeenCalled();
-        expect(state.chatError).toBe("Replacement scope warning");
-        expect(state.lastError).toBe(state.chatError);
-        expect(state.chatRunId).toBe("original-run");
+        expect(state).toMatchObject({
+          chatError: "Replacement scope warning",
+          lastError: "Replacement scope warning",
+          chatRunId: "original-run",
+        });
         expect(request).toHaveBeenCalledOnce();
         if (mode === "queued") {
           expect(state.pendingAbort).toBeNull();
@@ -737,22 +733,7 @@ describe("chat pane connection lifecycle", () => {
     const client = createTestGatewayClient(request);
     const { pane, state } = createTestChatPane({ client });
     const sessionKey = "agent:main";
-    pane.context = {
-      ...pane.context,
-      config: {
-        current: {
-          assistantIdentity: { name: "Assistant" },
-          terminalEnabled: false,
-        },
-      },
-    } as unknown as ApplicationContext;
     state.loadAssistantIdentity = vi.fn(async () => {});
-    state.realtimeTalk.update({
-      realtimeTalkInputLevel: {
-        set: vi.fn(),
-      } as unknown as ChatPageHost["realtimeTalk"]["snapshot"]["realtimeTalkInputLevel"],
-    });
-    state.resetToolStream = vi.fn();
     const snapshot = {
       ...pane.context.gateway.snapshot,
       client,
