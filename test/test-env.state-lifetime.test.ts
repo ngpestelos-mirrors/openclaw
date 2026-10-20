@@ -1,4 +1,5 @@
 import { execFileSync } from "node:child_process";
+import { once } from "node:events";
 import fs from "node:fs";
 import { createRequire } from "node:module";
 import os from "node:os";
@@ -54,10 +55,7 @@ describe("test environment SQLite lifetime", () => {
     // Reproduce the old namespace only beneath a directory this test created.
     const legacyPath = path.join(
       sandbox,
-      "openclaw-test-state",
-      `${process.pid}-7`,
-      "state",
-      "openclaw.sqlite",
+      `openclaw-test-state/${process.pid}-7/state/openclaw.sqlite`,
     );
     fs.mkdirSync(path.dirname(legacyPath), { recursive: true });
     const legacy = new DatabaseSync(legacyPath);
@@ -160,11 +158,7 @@ describe("test environment SQLite lifetime", () => {
       { eval: true, execArgv: [], env: { ...process.env, VITEST_WORKER_ID: "8" } },
     );
     try {
-      const workerPath = await new Promise<string>((resolve, reject) => {
-        worker.once("message", resolve);
-        worker.once("error", reject);
-      });
-      expect(workerPath).toBe(testEnv.databasePath);
+      expect(await once(worker, "message")).toEqual([testEnv.databasePath]);
     } finally {
       await worker.terminate();
     }

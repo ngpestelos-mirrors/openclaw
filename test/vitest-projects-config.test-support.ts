@@ -5,16 +5,14 @@ import { pathToFileURL } from "node:url";
 import { globSync as nativeGlobSync } from "tinyglobby";
 import { fullSuiteVitestShards } from "./vitest/vitest.test-shards.mjs";
 
-type VitestTestConfig = {
-  dir?: string;
-  exclude?: string[];
-  include?: string[];
-  projects?: Array<string | VitestConfig>;
-};
-
 type VitestConfig = {
   root?: string;
-  test?: VitestTestConfig;
+  test?: {
+    dir?: string;
+    exclude?: string[];
+    include?: string[];
+    projects?: Array<string | VitestConfig>;
+  };
 };
 
 type VitestConfigFactory = (env?: Record<string, string | undefined>) => VitestConfig;
@@ -25,13 +23,12 @@ function toRepoPath(filePath: string): string {
   return filePath.replaceAll("\\", "/");
 }
 
-function findVitestConfigFactory(mod: Record<string, unknown>): VitestConfigFactory | null {
-  for (const [name, value] of Object.entries(mod)) {
-    if (name !== "default" && /^create.*VitestConfig$/u.test(name) && typeof value === "function") {
-      return value as VitestConfigFactory;
-    }
+function setIncludeFile(value?: string) {
+  if (value === undefined) {
+    delete process.env.OPENCLAW_VITEST_INCLUDE_FILE;
+  } else {
+    process.env.OPENCLAW_VITEST_INCLUDE_FILE = value;
   }
-  return null;
 }
 
 async function loadRawVitestConfig(
@@ -41,27 +38,21 @@ async function loadRawVitestConfig(
   const previousArgv = process.argv;
   const previousIncludeFile = process.env.OPENCLAW_VITEST_INCLUDE_FILE;
   process.argv = [previousArgv[0] ?? "node", previousArgv[1] ?? "vitest"];
-  if (includeFile === undefined) {
-    delete process.env.OPENCLAW_VITEST_INCLUDE_FILE;
-  } else {
-    process.env.OPENCLAW_VITEST_INCLUDE_FILE = includeFile;
-  }
+  setIncludeFile(includeFile);
   try {
     const configUrl = pathToFileURL(path.resolve(process.cwd(), configPath));
     // Focused runs may have cached a CLI-narrowed default config before the audit clears argv.
     configUrl.searchParams.set("openclaw-vitest-ownership-audit", String(configImportId++));
     const mod = (await import(configUrl.href)) as Record<string, unknown>;
     const defaultConfig = (mod.default ?? {}) as VitestConfig;
-    return defaultConfig.test?.projects
-      ? defaultConfig
-      : (findVitestConfigFactory(mod)?.(process.env) ?? defaultConfig);
+    const factory = Object.entries(mod).find(
+      ([name, value]) =>
+        name !== "default" && /^create.*VitestConfig$/u.test(name) && typeof value === "function",
+    )?.[1] as VitestConfigFactory | undefined;
+    return defaultConfig.test?.projects ? defaultConfig : (factory?.(process.env) ?? defaultConfig);
   } finally {
     process.argv = previousArgv;
-    if (previousIncludeFile === undefined) {
-      delete process.env.OPENCLAW_VITEST_INCLUDE_FILE;
-    } else {
-      process.env.OPENCLAW_VITEST_INCLUDE_FILE = previousIncludeFile;
-    }
+    setIncludeFile(previousIncludeFile);
   }
 }
 
@@ -97,20 +88,11 @@ export async function listVitestConfigTestFiles(
   return listConfigTestFiles(await loadRawVitestConfig(configPath, includeFile), includeFile);
 }
 
-async function listFullSuiteTestFileMatches(): Promise<Map<string, string[]>> {
-  const matches = new Map<string, string[]>();
-  const configPaths = [...new Set(fullSuiteVitestShards.flatMap((shard) => shard.projects))];
-  for (const configPath of configPaths) {
-    for (const repoPath of await listVitestConfigTestFiles(configPath)) {
-      matches.set(repoPath, [...(matches.get(repoPath) ?? []), configPath]);
-    }
-  }
-  return matches;
-}
-
-function listNormalFullSuiteTestFiles(): string[] {
-  const e2eNamedIntegrationTests = new Set(["src/gateway/gateway.test.ts"]);
-  return globSync(["**/*.{test,spec}.{ts,tsx,mts,cts,js,jsx,mjs,cjs}"], {
+export async function auditFullSuiteTestFileOwnership(): Promise<{
+  duplicated: string[];
+  missing: string[];
+}> {
+  const files = globSync(["**/*.{test,spec}.{ts,tsx,mts,cts,js,jsx,mjs,cjs}"], {
     cwd: process.cwd(),
     exclude: ["**/.*/**", "**/dist/**", "**/node_modules/**", "**/vendor/**"],
   })
@@ -120,19 +102,15 @@ function listNormalFullSuiteTestFiles(): string[] {
         !file.includes(".live.test.") &&
         !file.includes(".e2e.test.") &&
         !file.startsWith("test/fixtures/") &&
-        !e2eNamedIntegrationTests.has(file),
+        file !== "src/gateway/gateway.test.ts",
     )
     .toSorted((left, right) => left.localeCompare(right));
-}
-
-export async function auditFullSuiteTestFileOwnership(): Promise<{
-  duplicated: string[];
-  missing: string[];
-}> {
-  const [matches, files] = await Promise.all([
-    listFullSuiteTestFileMatches(),
-    Promise.resolve(listNormalFullSuiteTestFiles()),
-  ]);
+  const matches = new Map<string, string[]>();
+  for (const configPath of new Set(fullSuiteVitestShards.flatMap((shard) => shard.projects))) {
+    for (const repoPath of await listVitestConfigTestFiles(configPath)) {
+      matches.set(repoPath, [...(matches.get(repoPath) ?? []), configPath]);
+    }
+  }
   return {
     missing: files.filter((file) => !matches.has(file)),
     duplicated: [...matches.entries()]
