@@ -16,7 +16,12 @@ import {
   configureNativeKeyTarget,
   nativeControlNavigationCases,
 } from "../test-helpers/chat-scroll-input.tsx";
-import { mountTestTranscript, render } from "../test-helpers/chat-transcript-native.tsx";
+import {
+  contact,
+  mountTestTranscript,
+  numberedContentRows,
+  render,
+} from "../test-helpers/chat-transcript-native.tsx";
 import { createChatTranscript } from "./chat-transcript-controller.ts";
 import { TranscriptEndAnchor } from "./chat-transcript-end-anchor.ts";
 import {
@@ -40,6 +45,77 @@ function createPolicyTranscript(paneId: string) {
     onReaderScroll: (towardEnd) => handleChatScrollTakeover(policy, towardEnd),
   });
   return { policy, transcript };
+}
+
+function resize(element: Element, height: number) {
+  for (const observer of resizeObservers) {
+    observer.emitTarget(element, 800, height);
+  }
+}
+function viewport(element: HTMLElement, height: number, scrollHeight: number | (() => number)) {
+  Object.defineProperties(element, {
+    clientHeight: { configurable: true, value: height },
+    scrollHeight: {
+      configurable: true,
+      ...(typeof scrollHeight === "number" ? { value: scrollHeight } : { get: scrollHeight }),
+    },
+  });
+}
+function expectReader(policy: ReturnType<typeof makeChatHost>, locked: boolean) {
+  expect([policy.chatFollowLocked, policy.chatReadingHistory]).toEqual([locked, locked]);
+}
+function recordWrites(container: HTMLElement) {
+  const writes: ScrollToOptions[] = [];
+  container.scrollTo = (options?: ScrollToOptions | number) => {
+    if (typeof options === "object") {
+      writes.push(options);
+      container.scrollTop = options.top ?? container.scrollTop;
+    }
+  };
+  return writes;
+}
+
+function nativeScroll(container: HTMLElement, offset: number) {
+  container.scrollTop = offset;
+  container.dispatchEvent(new Event("scroll"));
+}
+function connectPolicy(
+  policy: ReturnType<typeof makeChatHost>,
+  transcript: ReturnType<typeof createChatTranscript>,
+  container: HTMLElement,
+) {
+  policy.chatScrollElement = () => container;
+  policy.chatIsProgrammaticScroll = () => transcript.isProgrammaticScroll;
+  policy.chatIsMaintenanceScroll = () => transcript.isMaintenanceScroll;
+  const onScroll = (event: Event) => handleChatScroll(policy, event);
+  container.addEventListener("scroll", onScroll);
+  return () => container.removeEventListener("scroll", onScroll);
+}
+async function mountEndRetarget(paneId: string, deferSmooth: boolean) {
+  const flushFrames = stubAnimationFrames();
+  const { policy, transcript } = createPolicyTranscript(paneId);
+  const { container } = await mountTestTranscript(paneId, numberedContentRows(20), transcript);
+  const geometry = { height: 2000 };
+  viewport(container, 600, () => geometry.height);
+  container.scrollTo = (options?: ScrollToOptions | number) => {
+    // Smooth requests deliver native offsets later; they do not jump to the target.
+    if (typeof options === "object" && !(deferSmooth && options.behavior === "smooth")) {
+      container.scrollTop = Math.min(options.top ?? container.scrollTop, geometry.height - 600);
+    }
+  };
+  policy.chatScrollToEnd = (options) => transcript.scrollToEnd(options);
+  const disconnect = connectPolicy(policy, transcript, container);
+  return {
+    policy,
+    transcript,
+    container,
+    geometry,
+    flushFrames,
+    dispose: () => {
+      disconnect();
+      transcript.dispose();
+    },
+  };
 }
 
 describe("chat transcript scroll ownership", () => {
@@ -66,22 +142,15 @@ describe("chat transcript scroll ownership", () => {
       if (!(session instanceof ChatSessionVirtualizerHost)) {
         throw new Error("Expected the session-owned transcript virtualizer");
       }
-      Object.defineProperties(container, {
-        clientHeight: { configurable: true, value: 400 },
-        scrollHeight: { configurable: true, value: 1000 },
-      });
-      for (const observer of resizeObservers) {
-        observer.emitTarget(container, 800, 400);
-      }
-      container.scrollTop = 300;
-      container.dispatchEvent(new Event("scroll"));
+      viewport(container, 400, 1000);
+      resize(container, 400);
+      nativeScroll(container, 300);
       renderRows(rows);
       expect(session["endAnchor"].atEnd).toBe(false);
       const geometry = vi.spyOn(session["virtualizer"].options, "onChange");
       invalidate.mockClear();
 
-      container.scrollTop = 600;
-      container.dispatchEvent(new Event("scroll"));
+      nativeScroll(container, 600);
       expect(session["endAnchor"].atEnd).toBe(true);
       expect(invalidate).toHaveBeenCalledTimes(geometry.mock.calls.length);
     } finally {
@@ -195,12 +264,10 @@ describe("chat transcript scroll ownership", () => {
         await commitRequestedUpdate();
         await commitRequestedUpdate();
 
-        container.scrollTop = 200;
-        container.dispatchEvent(new Event("scroll"));
+        nativeScroll(container, 200);
         await commitRequestedUpdate();
         // Both offsets stay in one long row and away from the physical end.
-        container.scrollTop = 550;
-        container.dispatchEvent(new Event("scroll"));
+        nativeScroll(container, 550);
         await commitRequestedUpdate();
         onReaderScroll.mockClear();
 
@@ -242,23 +309,13 @@ describe("chat transcript scroll ownership", () => {
     async ({ intent, nativeResize }) => {
       const flushFrames = stubAnimationFrames();
       const { policy, transcript } = createPolicyTranscript(`footer-${intent}`);
-      const rows: TestContentRow[] = Array.from({ length: 12 }, (_, index) => ({
-        kind: "content",
-        key: `row:${index}`,
-        content: <div>row {index}</div>,
-      }));
+      const rows: TestContentRow[] = numberedContentRows(12);
       const { container } = await mountTestTranscript(`footer-${intent}`, rows, transcript);
       try {
-        Object.defineProperties(container, {
-          clientHeight: { configurable: true, value: 400 },
-          scrollHeight: { configurable: true, value: 2000 },
-        });
+        viewport(container, 400, 2000);
         container.scrollTop = 1600;
         policy.chatLastScrollTop = 1600;
-        policy.chatScrollElement = () => container;
-        policy.chatIsProgrammaticScroll = () => transcript.isProgrammaticScroll;
-        policy.chatIsMaintenanceScroll = () => transcript.isMaintenanceScroll;
-        container.addEventListener("scroll", (event) => handleChatScroll(policy, event));
+        connectPolicy(policy, transcript, container);
         transcript.scrollToEnd({ behavior: "auto" });
         if (intent === "reading") {
           policy.chatFollowLocked = true;
@@ -300,20 +357,7 @@ describe("chat transcript scroll ownership", () => {
         } else if (intent === "pointer") {
           container.dispatchEvent(new PointerEvent("pointerdown"));
         } else if (intent === "touch") {
-          const touch: Touch = {
-            identifier: 1,
-            target: container,
-            clientX: 0,
-            clientY: 100,
-            pageX: 0,
-            pageY: 100,
-            screenX: 0,
-            screenY: 100,
-            radiusX: 1,
-            radiusY: 1,
-            rotationAngle: 0,
-            force: 1,
-          };
+          const touch = contact(1, container);
           container.dispatchEvent(
             new TouchEvent("touchstart", {
               touches: [touch],
@@ -322,49 +366,19 @@ describe("chat transcript scroll ownership", () => {
           );
         }
         container.dispatchEvent(new Event("scroll"));
-        expect(policy.chatFollowLocked).toBe(intent !== "following");
-        expect(policy.chatReadingHistory).toBe(intent !== "following");
+        expectReader(policy, intent !== "following");
         flushFrames();
-        expect(policy.chatFollowLocked).toBe(intent !== "following");
-        expect(policy.chatReadingHistory).toBe(intent !== "following");
+        expectReader(policy, intent !== "following");
       } finally {
         transcript.dispose();
       }
     },
   );
   it("preserves following through intermediate native movement of an active end command", async () => {
-    const flushFrames = stubAnimationFrames();
-    const { policy, transcript } = createPolicyTranscript("intermediate-end-retarget");
-    const { container } = await mountTestTranscript(
-      "intermediate-end-retarget",
-      Array.from({ length: 20 }, (_, index): TestContentRow => ({
-        kind: "content",
-        key: `row:${index}`,
-        content: <div>row {index}</div>,
-      })),
-      transcript,
-    );
-    let scrollHeight = 2000;
-    Object.defineProperties(container, {
-      clientHeight: { configurable: true, value: 600 },
-      scrollHeight: { configurable: true, get: () => scrollHeight },
-    });
-    container.scrollTo = (options?: ScrollToOptions | number) => {
-      // Smooth requests deliver native offsets later; they do not jump to the target.
-      if (typeof options === "object" && options.behavior !== "smooth") {
-        container.scrollTop = Math.min(options.top ?? container.scrollTop, scrollHeight - 600);
-      }
-    };
-    policy.chatScrollElement = () => container;
-    policy.chatScrollToEnd = (options) => transcript.scrollToEnd(options);
-    policy.chatIsProgrammaticScroll = () => transcript.isProgrammaticScroll;
-    policy.chatIsMaintenanceScroll = () => transcript.isMaintenanceScroll;
-    const onScroll = (event: Event) => handleChatScroll(policy, event);
-    container.addEventListener("scroll", onScroll);
+    const { policy, transcript, container, geometry, flushFrames, dispose } =
+      await mountEndRetarget("intermediate-end-retarget", true);
     try {
-      for (const observer of resizeObservers) {
-        observer.emitTarget(container, 800, 600);
-      }
+      resize(container, 600);
       container.scrollTop = 1300;
       policy.chatLastScrollTop = 1300;
       transcript.scrollToEnd({ source: "auto", behavior: "smooth" });
@@ -372,11 +386,10 @@ describe("chat transcript scroll ownership", () => {
 
       // Rows retire and grow before the queued native offset arrives. The end
       // journey still owns its intermediate upward movement, away from the new end.
-      scrollHeight = 1800;
+      geometry.height = 1800;
       container.scrollTop = 1200;
-      scrollHeight = 1920;
-      container.scrollTop = 1250;
-      container.dispatchEvent(new Event("scroll"));
+      geometry.height = 1920;
+      nativeScroll(container, 1250);
       expect(policy.chatFollowLocked, "end movement must not take reader control").toBe(false);
 
       container.dispatchEvent(new WheelEvent("wheel", { deltaY: -80 }));
@@ -384,48 +397,20 @@ describe("chat transcript scroll ownership", () => {
       container.dispatchEvent(new Event("scroll"));
       expect(policy.chatFollowLocked).toBe(true);
       expect(transcript.isProgrammaticScroll).toBe(false);
-      scrollHeight = 2040;
+      geometry.height = 2040;
       scheduleCommittedChatScroll(policy);
       flushFrames();
       expect(container.scrollTop).toBe(1170);
     } finally {
-      container.removeEventListener("scroll", onScroll);
-      transcript.dispose();
+      dispose();
     }
   });
 
   it("preserves following through an upward end retarget and no-op until real reader input takes over", async () => {
-    const flushFrames = stubAnimationFrames();
-    const { policy, transcript } = createPolicyTranscript("upward-end-retarget");
-    const { container } = await mountTestTranscript(
-      "upward-end-retarget",
-      Array.from({ length: 20 }, (_, index): TestContentRow => ({
-        kind: "content",
-        key: `row:${index}`,
-        content: <div>row {index}</div>,
-      })),
-      transcript,
-    );
-    let scrollHeight = 2000;
-    Object.defineProperties(container, {
-      clientHeight: { configurable: true, value: 600 },
-      scrollHeight: { configurable: true, get: () => scrollHeight },
-    });
-    container.scrollTo = (options?: ScrollToOptions | number) => {
-      if (typeof options === "object") {
-        container.scrollTop = Math.min(options.top ?? container.scrollTop, scrollHeight - 600);
-      }
-    };
-    policy.chatScrollElement = () => container;
-    policy.chatScrollToEnd = (options) => transcript.scrollToEnd(options);
-    policy.chatIsProgrammaticScroll = () => transcript.isProgrammaticScroll;
-    policy.chatIsMaintenanceScroll = () => transcript.isMaintenanceScroll;
-    const onScroll = (event: Event) => handleChatScroll(policy, event);
-    container.addEventListener("scroll", onScroll);
+    const { policy, transcript, container, geometry, flushFrames, dispose } =
+      await mountEndRetarget("upward-end-retarget", false);
     try {
-      for (const observer of resizeObservers) {
-        observer.emitTarget(container, 800, 600);
-      }
+      resize(container, 600);
       transcript.scrollToEnd({ source: "auto" });
       container.dispatchEvent(new Event("scroll"));
       flushFrames();
@@ -433,13 +418,13 @@ describe("chat transcript scroll ownership", () => {
 
       // Provisional rows retire before the next reply's measured range grows.
       // Deliver the native offset only after both changes, as browsers can do.
-      scrollHeight = 1800;
+      geometry.height = 1800;
       transcript.scrollToEnd({ source: "auto" });
       expect(container.scrollTop).toBe(1200);
       transcript.scrollToEnd({ source: "auto" });
       // Retiring the completed command does not represent reader input.
       transcript.cancelScroll();
-      scrollHeight = 1920;
+      geometry.height = 1920;
       container.dispatchEvent(new Event("scroll"));
       expect(policy.chatFollowLocked).toBe(false);
       scheduleCommittedChatScroll(policy);
@@ -451,13 +436,12 @@ describe("chat transcript scroll ownership", () => {
       container.scrollTop -= 80;
       container.dispatchEvent(new Event("scroll"));
       expect(policy.chatFollowLocked).toBe(true);
-      scrollHeight = 2040;
+      geometry.height = 2040;
       scheduleCommittedChatScroll(policy);
       flushFrames();
       expect(container.scrollTop).toBe(1240);
     } finally {
-      container.removeEventListener("scroll", onScroll);
-      transcript.dispose();
+      dispose();
     }
   });
 
@@ -485,10 +469,7 @@ describe("chat transcript scroll ownership", () => {
       [...content, typing],
       transcript,
     );
-    Object.defineProperties(container, {
-      clientHeight: { configurable: true, value: 600 },
-      scrollHeight: { configurable: true, get: () => transcriptSize(container) },
-    });
+    viewport(container, 600, () => transcriptSize(container));
     container.scrollTo = vi.fn((options?: ScrollToOptions | number, y?: number) => {
       container.scrollTop = typeof options === "number" ? (y ?? 0) : (options?.top ?? 0);
     });
@@ -534,11 +515,7 @@ describe("chat transcript scroll ownership", () => {
       canFollowEnd: () => !policy.chatFollowLocked,
       onReaderScroll: (towardEnd) => handleChatScrollTakeover(policy, towardEnd),
     });
-    const rows: TestContentRow[] = Array.from({ length: 12 }, (_, index) => ({
-      kind: "content",
-      key: `row:${index}`,
-      content: <div>row {index}</div>,
-    }));
+    const rows: TestContentRow[] = numberedContentRows(12);
     const { container, renderRows } = await mountTestTranscript(
       "measurement-reader",
       rows,
@@ -547,10 +524,7 @@ describe("chat transcript scroll ownership", () => {
     try {
       const total = transcriptSize(container);
       let maxScrollTop = total + 84 - 600;
-      Object.defineProperties(container, {
-        clientHeight: { configurable: true, value: 600 },
-        scrollHeight: { configurable: true, get: () => maxScrollTop + 600 },
-      });
+      viewport(container, 600, () => maxScrollTop + 600);
       container.scrollTo = (options?: ScrollToOptions | number) => {
         if (typeof options === "object") {
           container.scrollTop = Math.min(options.top ?? container.scrollTop, maxScrollTop);
@@ -559,11 +533,8 @@ describe("chat transcript scroll ownership", () => {
       policy.chatScrollElement = () => container;
       policy.chatIsProgrammaticScroll = () => transcript.isProgrammaticScroll;
       container.addEventListener("scroll", (event) => handleChatScroll(policy, event));
-      for (const observer of resizeObservers) {
-        observer.emitTarget(container, 800, 600);
-      }
-      container.scrollTop = total + 84 - 600;
-      container.dispatchEvent(new Event("scroll"));
+      resize(container, 600);
+      nativeScroll(container, total + 84 - 600);
       container.scrollTop -= 24;
       container.dispatchEvent(new Event("scroll"));
       expect(policy.chatReadingHistory).toBe(true);
@@ -577,26 +548,20 @@ describe("chat transcript scroll ownership", () => {
         "row above the viewport",
       );
       Object.defineProperty(row, "offsetHeight", { configurable: true, value: 160 });
-      for (const observer of resizeObservers) {
-        observer.emitTarget(row, 800, 160);
-      }
+      resize(row, 160);
       expect(container.scrollTop).toBe(total + 84 - 600);
       container.dispatchEvent(new Event("scroll"));
-      expect(policy.chatReadingHistory).toBe(true);
-      expect(policy.chatFollowLocked).toBe(true);
+      expectReader(policy, true);
       // A partial sizer commit lets TanStack retry the clamped adjustment as an absolute write.
       maxScrollTop += 16;
       renderRows(rows);
       expect(container.scrollTop).toBe(maxScrollTop);
       // The dock can keep shrinking the scroll range before the native read-back arrives.
       maxScrollTop -= 8;
-      container.scrollTop = maxScrollTop;
-      container.dispatchEvent(new Event("scroll"));
-      expect(policy.chatReadingHistory).toBe(true);
-      expect(policy.chatFollowLocked).toBe(true);
+      nativeScroll(container, maxScrollTop);
+      expectReader(policy, true);
       container.dispatchEvent(new WheelEvent("wheel", { deltaY: 1 }));
-      expect(policy.chatReadingHistory).toBe(false);
-      expect(policy.chatFollowLocked).toBe(false);
+      expectReader(policy, false);
       expect(transcript.isProgrammaticScroll).toBe(false);
     } finally {
       transcript.dispose();
@@ -668,27 +633,14 @@ describe("chat transcript scroll ownership", () => {
     "resolves pending restoration ownership for %s",
     async (command, key, content, preservesRestore, fixture = {}) => {
       const flushFrames = stubAnimationFrames();
-      const rows: TestContentRow[] = Array.from({ length: 40 }, (_, index) => ({
-        kind: "content",
-        key: `row:${index}`,
-        content: <div>row {index}</div>,
-      }));
+      const rows: TestContentRow[] = numberedContentRows(40);
       const { container, renderRows, transcript } = await mountTestTranscript(
         `restore-${command}`,
         rows,
       );
       let scrollHeight = 800;
-      Object.defineProperties(container, {
-        clientHeight: { configurable: true, value: 600 },
-        scrollHeight: { configurable: true, get: () => scrollHeight },
-      });
-      const writes: ScrollToOptions[] = [];
-      container.scrollTo = (options?: ScrollToOptions | number) => {
-        if (typeof options === "object") {
-          writes.push(options);
-          container.scrollTop = options.top ?? container.scrollTop;
-        }
-      };
+      viewport(container, 600, () => scrollHeight);
+      const writes = recordWrites(container);
       const settled = vi.fn();
       transcript.scrollToOffset(420, settled);
       renderRows(rows);
@@ -725,8 +677,7 @@ describe("chat transcript scroll ownership", () => {
             : new WheelEvent("wheel", { deltaY: command === "wheel" ? -100 : 100 }),
         );
         if (command !== "stationary wheel") {
-          container.scrollTop = command === "downward wheel" ? 520 : 300;
-          container.dispatchEvent(new Event("scroll"));
+          nativeScroll(container, command === "downward wheel" ? 520 : 300);
         }
       } else if (command === "automatic follow") {
         expect(transcript.scrollToEnd({ source: "auto" })).toBe(false);
@@ -756,26 +707,13 @@ describe("chat transcript scroll ownership", () => {
 
   it("keeps reader input in control after a reachable restoration settles", async () => {
     const flushFrames = stubAnimationFrames();
-    const rows: TestContentRow[] = Array.from({ length: 40 }, (_, index) => ({
-      kind: "content",
-      key: `row:${index}`,
-      content: <div>row {index}</div>,
-    }));
+    const rows: TestContentRow[] = numberedContentRows(40);
     const { container, renderRows, transcript } = await mountTestTranscript(
       "settled-restore-input",
       rows,
     );
-    Object.defineProperties(container, {
-      clientHeight: { configurable: true, value: 600 },
-      scrollHeight: { configurable: true, value: 4800 },
-    });
-    const writes: ScrollToOptions[] = [];
-    container.scrollTo = (options?: ScrollToOptions | number) => {
-      if (typeof options === "object") {
-        writes.push(options);
-        container.scrollTop = options.top ?? container.scrollTop;
-      }
-    };
+    viewport(container, 600, 4800);
+    const writes = recordWrites(container);
     const settled = vi.fn();
 
     try {
@@ -785,8 +723,7 @@ describe("chat transcript scroll ownership", () => {
 
       writes.length = 0;
       container.dispatchEvent(new WheelEvent("wheel", { deltaY: -100 }));
-      container.scrollTop = 300;
-      container.dispatchEvent(new Event("scroll"));
+      nativeScroll(container, 300);
       for (let frame = 0; frame < 15; frame += 1) {
         flushFrames();
         renderRows(rows);

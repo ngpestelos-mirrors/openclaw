@@ -12,6 +12,21 @@ import {
   threadProps,
 } from "./chat-transcript.test-support.ts";
 
+const savedMessage = (content: string, id: string, extra: object = {}) => ({
+  role: "user",
+  content,
+  __openclaw: { id, ...extra },
+});
+const caption = (id: string, text: string, transcriptId: string) => ({
+  id,
+  role: "user" as const,
+  text,
+  isStreaming: false,
+  transcriptId,
+});
+const membershipScans = (calls: readonly (readonly unknown[])[]) =>
+  calls.filter(([callback]) => callback === persistedMessageEntryId);
+
 function voiceProjection(props: ChatThreadProps) {
   const controller = createTestTranscript(props.paneId);
   const container = document.body.appendChild(document.createElement("div"));
@@ -46,9 +61,7 @@ describe("voice transcript membership", () => {
   it.each(["absent", "empty", "ID-less"] as const)(
     "skips the voice membership scan for %s captions",
     (kind) => {
-      const messages = [
-        { role: "user", content: "Saved message", __openclaw: { id: "voice:saved" } },
-      ];
+      const messages = [savedMessage("Saved message", "voice:saved")];
       const map = vi.spyOn(messages, "map");
       const props = threadProps(`voice-${kind}`, undefined, messages);
       props.realtimeTalkConversation =
@@ -59,83 +72,37 @@ describe("voice transcript membership", () => {
             : [{ id: "live", role: "user", text: "Still speaking", isStreaming: true }];
 
       expect(voiceProjection(props)()).toEqual(kind === "ID-less" ? ["Still speaking"] : []);
-      expect(map.mock.calls.filter(([callback]) => callback === persistedMessageEntryId)).toEqual(
-        [],
-      );
+      expect(membershipScans(map.mock.calls)).toEqual([]);
     },
   );
 
   it("uses one raw-history scan, preserving pending captions and refreshing replaced history", () => {
     const messages = [
-      { role: "user", content: "Hidden saved words", __openclaw: { id: "voice:saved" } },
-      { role: "user", content: "Pending input", __openclaw: { id: "pending:input" } },
-      {
-        role: "user",
-        content: "Pending send",
-        __openclaw: { id: "send:pending", kind: "pending-send", state: "unconfirmed" },
-      },
+      savedMessage("Hidden saved words", "voice:saved"),
+      savedMessage("Pending input", "pending:input"),
+      savedMessage("Pending send", "send:pending", { kind: "pending-send", state: "unconfirmed" }),
     ];
     const map = vi.spyOn(messages, "map");
     const props = threadProps("voice-membership", undefined, messages);
     props.realtimeTalkConversation = [
-      {
-        id: "saved",
-        role: "user",
-        text: "Saved caption",
-        isStreaming: false,
-        transcriptId: "voice:saved",
-      },
-      {
-        id: "unsaved",
-        role: "user",
-        text: "Unsaved caption",
-        isStreaming: false,
-        transcriptId: "voice:unsaved",
-      },
+      caption("saved", "Saved caption", "voice:saved"),
+      caption("unsaved", "Unsaved caption", "voice:unsaved"),
       { id: "live", role: "assistant", text: "Live caption", isStreaming: true },
-      {
-        id: "input",
-        role: "user",
-        text: "Pending input caption",
-        isStreaming: false,
-        transcriptId: "pending:input",
-      },
-      {
-        id: "send",
-        role: "user",
-        text: "Pending send caption",
-        isStreaming: false,
-        transcriptId: "send:pending",
-      },
+      caption("input", "Pending input caption", "pending:input"),
+      caption("send", "Pending send caption", "send:pending"),
     ];
     const state = getTranscriptState(props.paneId);
     state.search.toggle();
     state.search.setQuery("unmatched search");
     const project = voiceProjection(props);
+    const pendingCaptions = ["Live caption", "Pending input caption", "Pending send caption"];
 
-    expect(project()).toEqual([
-      "Unsaved caption",
-      "Live caption",
-      "Pending input caption",
-      "Pending send caption",
-    ]);
-    expect(
-      map.mock.calls.filter(([callback]) => callback === persistedMessageEntryId),
-    ).toHaveLength(1);
+    expect(project()).toEqual(["Unsaved caption", ...pendingCaptions]);
+    expect(membershipScans(map.mock.calls)).toHaveLength(1);
 
-    props.messages = [
-      { role: "user", content: "New saved words", __openclaw: { id: "voice:unsaved" } },
-      ...messages.slice(1),
-    ];
+    props.messages = [savedMessage("New saved words", "voice:unsaved"), ...messages.slice(1)];
     const replacementMap = vi.spyOn(props.messages, "map");
-    expect(project()).toEqual([
-      "Saved caption",
-      "Live caption",
-      "Pending input caption",
-      "Pending send caption",
-    ]);
-    expect(
-      replacementMap.mock.calls.filter(([callback]) => callback === persistedMessageEntryId),
-    ).toHaveLength(1);
+    expect(project()).toEqual(["Saved caption", ...pendingCaptions]);
+    expect(membershipScans(replacementMap.mock.calls)).toHaveLength(1);
   });
 });

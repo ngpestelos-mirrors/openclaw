@@ -1,6 +1,7 @@
 /* @vitest-environment jsdom */
 
 import { expectDefined } from "@openclaw/normalization-core";
+import type { JSX } from "@solidjs/web";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createTestTranscript } from "../chat-view.test-helpers.ts";
 import { contact, mountTestTranscript } from "../test-helpers/chat-transcript-native.tsx";
@@ -27,67 +28,47 @@ describe("chat transcript controller", () => {
         "agent:main:touch-map",
         (session) => session.messageElements,
       );
-      const initial: TestContentRow[] = [
-        {
-          kind: "content",
-          key: "retained-row",
-          content: (
-            <div
-              ref={messageElements.forKey("initial-retained")}
-              class="chat-bubble"
-              data-message-id="retained"
-            >
-              retained
-            </div>
-          ),
-        },
+      const contentRows = (key: string, content: JSX.Element): TestContentRow[] => [
+        { kind: "content", key, content },
       ];
-      const next: TestContentRow[] = [
-        {
-          kind: "content",
-          key: "expanded-row",
-          content: (
-            <>
-              <div
-                ref={messageElements.forKey("older")}
-                class="chat-bubble"
-                data-message-id="older"
-              >
-                older
-              </div>
-              <div
-                ref={messageElements.forKey("expanded-retained")}
-                class="chat-bubble"
-                data-message-id="retained"
-              >
-                retained
-              </div>
-            </>
-          ),
-        },
-      ];
+      const message = (ref: string, id: string) => (
+        <div ref={messageElements.forKey(ref)} class="chat-bubble" data-message-id={id}>
+          {id}
+        </div>
+      );
+      const syncRows = (key: string, ids: string[]) => {
+        const rows = new Map(ids.map((id) => [id, key]));
+        session.syncMessageRows(rows, rows);
+      };
+      const touch = (type: string, bubble: Element, touches: Touch[], changed: Touch[]) =>
+        bubble.dispatchEvent(
+          new TouchEvent(type, {
+            touches,
+            targetTouches: type === "touchstart" ? changed : [],
+            changedTouches: changed,
+            bubbles: true,
+          }),
+        );
+      const initial = contentRows("retained-row", message("initial-retained", "retained"));
+      const next = contentRows(
+        "expanded-row",
+        <>
+          {message("older", "older")}
+          {message("expanded-retained", "retained")}
+        </>,
+      );
       const { container, session, renderRows } = await mountTestTranscript(
         "touch-map",
         initial,
         transcript,
       );
       try {
-        session.syncMessageRows(
-          new Map([["retained", "retained-row"]]),
-          new Map([["retained", "retained-row"]]),
-        );
+        syncRows("retained-row", ["retained"]);
         renderRows(initial);
         const bubble = expectDefined(container.querySelector(".chat-bubble"), "retained bubble");
         const owned = contact(1, bubble);
         const remaining = outsideContact ? [contact(2, document.body)] : [];
-        bubble.dispatchEvent(
-          new TouchEvent("touchstart", {
-            touches: [...remaining, owned],
-            targetTouches: [owned],
-            changedTouches: [owned],
-            bubbles: true,
-          }),
-        );
+        touch("touchstart", bubble, [...remaining, owned], [owned]);
         if (idleBeforeRelease) {
           // The finger can remain down after native offset notifications settle.
           vi.useFakeTimers();
@@ -95,16 +76,7 @@ describe("chat transcript controller", () => {
           container.dispatchEvent(new Event("scroll"));
           await vi.advanceTimersByTimeAsync(200);
         }
-        session.syncMessageRows(
-          new Map([
-            ["older", "expanded-row"],
-            ["retained", "expanded-row"],
-          ]),
-          new Map([
-            ["older", "expanded-row"],
-            ["retained", "expanded-row"],
-          ]),
-        );
+        syncRows("expanded-row", ["older", "retained"]);
         renderRows(next);
         expect(transcriptRows(container).map((row) => row.dataset.virtualRowKey)).toEqual([
           "retained-row",
@@ -112,14 +84,7 @@ describe("chat transcript controller", () => {
         expect(container.textContent).not.toContain("older");
         expect(session.activeMessageId(["retained"])).toBe("retained");
         expect(session.activeMessageId(["older"])).toBeNull();
-        bubble.dispatchEvent(
-          new TouchEvent("touchend", {
-            touches: remaining,
-            targetTouches: [],
-            changedTouches: [owned],
-            bubbles: true,
-          }),
-        );
+        touch("touchend", bubble, remaining, [owned]);
         renderRows(next);
         expect(transcriptRows(container).map((row) => row.dataset.virtualRowKey)).toEqual([
           "expanded-row",
