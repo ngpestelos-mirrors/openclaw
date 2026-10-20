@@ -1,7 +1,6 @@
 import { PluginHostObject } from "../plugins/plugin-instance-owned-values.js";
-import { resolveCoreToolFacts } from "./tool-catalog.js";
+import { resolveCoreToolFacts, TOOL_CALL_RAW_TOOL_NAME } from "./tool-catalog.js";
 import { normalizeToolPolicyName } from "./tool-policy-shared.js";
-import { TOOL_CALL_RAW_TOOL_NAME } from "./tool-search-types.js";
 
 type AgentToolReplaySafety = "bounded-read" | "dispatcher";
 
