@@ -35,7 +35,7 @@ const receipt = () => ({
   repository: { id: 40, fullName: "example/repository" },
   actor: { accountId: 50, profileId: "person-1" },
   purpose: claim.purpose,
-  binding: claim.binding,
+  binding: { ...claim.binding },
   expiresAtMs: Date.now() + 60_000,
 });
 const params = {
@@ -60,21 +60,14 @@ it("accepts only the exact current actor, App installation, repository and sessi
   await readFactoryRepositoryAdmission(params);
   expect(fetcher.mock.calls.length).toBe(1);
 });
-it.each<[string, (value: ReturnType<typeof receipt>) => void]>([
-  ["actor", (value) => Object.assign(value.actor, { accountId: 51 })],
-  ["installation", (value) => Object.assign(value, { installationId: 21 })],
-  ["repository", (value) => Object.assign(value.repository, { id: 41 })],
-  [
-    "session",
-    (value) => {
-      value.binding = { ...value.binding, sessionId: "other-session" };
-    },
-  ],
-  ["expired", (value) => Object.assign(value, { expiresAtMs: Date.now() - 1 })],
-])("rejects a %s mismatch before execution issuance", async (_changed, mutate) => {
-  const value = receipt();
-  mutate(value);
-  respondWith(value);
+it.each<[string, Partial<ReturnType<typeof receipt>>]>([
+  ["actor", { actor: { accountId: 51, profileId: "person-1" } }],
+  ["installation", { installationId: 21 }],
+  ["repository", { repository: { id: 41, fullName: "example/repository" } }],
+  ["session", { binding: { ...claim.binding, sessionId: "other-session" } }],
+  ["expired", { expiresAtMs: 1 }],
+])("rejects a %s mismatch before execution issuance", async (_changed, overrides) => {
+  respondWith({ ...receipt(), ...overrides });
   await expect(readFactoryRepositoryAdmission(params)).rejects.toThrow(
     "Factory repository admission failed",
   );

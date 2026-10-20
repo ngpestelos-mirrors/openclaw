@@ -28,23 +28,14 @@ describe("gateway edge auth headers", () => {
     resetSecretRedactionRegistryForTest();
   });
 
-  it("rejects transport-owned headers case-insensitively", () => {
-    expect(() => normalizeEdgeAuthHeadersConfig({ Host: "test-secret" })).toThrow(
-      /transport-owned header/u,
-    );
-  });
-
-  it("rejects non-records, invalid names, empty maps, and case-duplicate names", () => {
-    expect(() => normalizeEdgeAuthHeadersConfig(["X-Edge-Auth", "test-secret"])).toThrow(
-      /expected a header map/u,
-    );
-    expect(() => normalizeEdgeAuthHeadersConfig({ "Bad Header": "test-secret" })).toThrow(
-      /invalid gateway\.remote\.edgeAuth header name/u,
-    );
-    expect(() => normalizeEdgeAuthHeadersConfig({})).toThrow(/must not be empty/u);
-    expect(() =>
-      normalizeEdgeAuthHeadersConfig({ "X-Edge-Auth": "one", "x-edge-auth": "two" }),
-    ).toThrow(/differ only by case/u);
+  it.each<[unknown, RegExp]>([
+    [{ Host: "test-secret" }, /transport-owned header/u],
+    [["X-Edge-Auth", "test-secret"], /expected a header map/u],
+    [{ "Bad Header": "test-secret" }, /invalid gateway\.remote\.edgeAuth header name/u],
+    [{}, /must not be empty/u],
+    [{ "X-Edge-Auth": "one", "x-edge-auth": "two" }, /differ only by case/u],
+  ])("rejects invalid header map %j", (value, error) => {
+    expect(() => normalizeEdgeAuthHeadersConfig(value)).toThrow(error);
   });
 
   it("materializes SecretRefs and registers every resolved value for redaction", async () => {
@@ -71,23 +62,13 @@ describe("gateway edge auth headers", () => {
   });
 
   it("binds configured headers to the exact configured remote Gateway scope", async () => {
-    const config = {
-      gateway: {
-        mode: "remote" as const,
-        remote: {
-          url: targetUrl,
-          edgeAuth: { "X-Edge-Auth": "test-secret" },
-        },
-      },
-    };
-
+    const edgeAuth = { "X-Edge-Auth": "test-secret" };
+    const config = { gateway: { remote: { url: targetUrl, edgeAuth } } };
     const matchingConfig = normalizeEdgeAuthHeadersConfig(
       gatewayEdgeAuthValueForTarget({ config, targetUrl }),
     );
-    expect(matchingConfig).toEqual({ "X-Edge-Auth": "test-secret" });
-    await expect(resolveHeaders(matchingConfig, { config })).resolves.toEqual({
-      "X-Edge-Auth": "test-secret",
-    });
+    expect(matchingConfig).toEqual(edgeAuth);
+    await expect(resolveHeaders(matchingConfig, { config })).resolves.toEqual(edgeAuth);
     expect(
       gatewayEdgeAuthValueForTarget({ config, targetUrl: "wss://other.example/rpc" }),
     ).toBeUndefined();

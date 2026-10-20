@@ -25,6 +25,7 @@ import { resetConfigOverrides } from "../config/runtime-overrides.js";
 import { clearSessionStoreCacheForTest } from "../config/sessions/store-writer-state.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { resetAgentEventsForTest } from "../infra/agent-events.js";
+import { waitForGatewayActiveWork } from "../infra/gateway-active-work.js";
 import {
   withPluginRuntimeGatewayRequestScope,
   withPluginRuntimeRegistryScope,
@@ -65,6 +66,15 @@ export type ProofCase = {
   bootstrap?: boolean;
   targetKey?: string;
 };
+export const requesterCase = (
+  id: string,
+  name: string,
+  overrides: Partial<ProofCase> = {},
+): ProofCase => ({ id, name, sender: "trusted", agent: "main", denied: false, ...overrides });
+export const FOLLOWUP_REPLY =
+  "Your message is queued for a new turn after the current turn finishes. It hasn’t changed the work already in progress.";
+export const STEERING_REFUSED_REPLY =
+  "Someone else’s turn is still running, and collaborative steering is disabled. Your message wasn’t queued. Resend it as /followup <message> to run it afterward.\n\nAdmins can enable collaborative steering with messages.queue.allowCollaborativeSteering: true.";
 type Outbound = { to: string; text: string; accountId?: string };
 export type RunResult = { runId?: string; status?: string; error?: unknown };
 type ModelRequest = { tools: string[]; output: unknown };
@@ -72,7 +82,7 @@ export type ProofModelRequest = ModelRequest & {
   prompt: string;
   result?: Record<string, unknown>;
 };
-type ProofModelReply = { tool?: { name: string; args: unknown }; text?: string };
+export type ProofModelReply = { tool?: { name: string; args: unknown }; text?: string };
 const modelScripts: Array<{
   marker: string;
   respond: (request: ProofModelRequest) => Promise<ProofModelReply> | ProofModelReply;
@@ -159,7 +169,23 @@ export function waitForProofGate(
 }
 
 export const proofDeliveries = (to: string) => outbound.filter((entry) => entry.to === to);
-export const proofToolReply = (name: string, args: unknown) => ({ tool: { name, args } });
+const proofToolReply = (name: string, args: unknown) => ({ tool: { name, args } });
+export const proofSend = (sessionKey: unknown, message: string, mode: "steer" | "followup") =>
+  proofToolReply("sessions_send", { sessionKey, message, mode, timeoutSeconds: 0 });
+export const proofSpawn = (
+  task: string,
+  options: { collect?: boolean; groupId?: string; expectsCompletionMessage?: boolean } = {},
+) => proofToolReply("sessions_spawn", { task, cleanup: "keep", ...options });
+
+export async function settleProofScenario(
+  scenario: Scenario,
+  work: readonly (Promise<unknown> | undefined)[],
+) {
+  scenario.releaseIncumbent.resolve();
+  scenario.releaseTarget.resolve();
+  await Promise.allSettled(work);
+  await waitForGatewayActiveWork(30_000);
+}
 
 export function waitForProofRun(runId: unknown): Promise<RunResult> {
   return gateway.client.request<RunResult>("agent.wait", { runId, timeoutMs: 30_000 });
@@ -600,6 +626,25 @@ export async function updateSenderPolicies(policies: Record<string, { deny: stri
     Object.entries(policies).flatMap(([senderKey, policy]) =>
       policy.deny === null ? [`tools.toolsBySender.${senderKey}.deny`] : [],
     ),
+  );
+}
+
+export function configureProofCollaboration(allow: boolean | undefined, bobDenied = false) {
+  return patchProofConfig(
+    {
+      messages: { queue: { allowCollaborativeSteering: allow ?? null } },
+      tools: {
+        toolsBySender: {
+          "id:alice": { deny: null },
+          "id:bob": { deny: bobDenied ? ["message"] : null },
+        },
+      },
+    },
+    [
+      "messages.queue.allowCollaborativeSteering",
+      "tools.toolsBySender.id:alice.deny",
+      ...(!bobDenied ? ["tools.toolsBySender.id:bob.deny"] : []),
+    ],
   );
 }
 

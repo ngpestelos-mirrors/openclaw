@@ -4,12 +4,14 @@ import { createDeferred } from "../../test/helpers/promise.js";
 import { getRuntimeConfig } from "../config/config.js";
 import { waitForGatewayActiveWork } from "../infra/gateway-active-work.js";
 import {
+  configureProofCollaboration,
   createScenario,
+  FOLLOWUP_REPLY,
   humanReplies,
-  patchProofConfig,
   proofDeliveries,
   providerErrors,
   runHuman,
+  settleProofScenario,
   waitForProofGate,
 } from "./gateway.sessions-send-provenance.test-support.js";
 
@@ -25,17 +27,10 @@ export async function verifyCollaborativeCancellation(signal: AbortSignal) {
   const contracts = await import("../sessions/session-controller.contracts.js");
   const previousSetting = getRuntimeConfig().messages?.queue?.allowCollaborativeSteering;
   try {
-    await patchProofConfig(
-      {
-        messages: { queue: { allowCollaborativeSteering: true } },
-        tools: { toolsBySender: { "id:alice": { deny: null }, "id:bob": { deny: ["message"] } } },
-      },
-      ["tools.toolsBySender.id:alice.deny"],
-    );
+    await configureProofCollaboration(true, true);
     for (const phase of ["preparation", "injection", "queued"] as const) {
       for (const cancel of ["source", "incumbent"] as const) {
         const id = `collaborative_cancel_${phase}_${cancel}`;
-        console.log("[collaborative cancellation start]", id);
         const scenario = createScenario(
           { name: id, id, sender: "bob", agent: "main", denied: true },
           `agent:main:telegram:group:provenance-${id}`,
@@ -191,7 +186,7 @@ export async function verifyCollaborativeCancellation(signal: AbortSignal) {
             expect(bobResult.result?.deferredToActiveRun).toBe("followup");
             expect(humanReplies.slice(firstReply)).toContainEqual({
               sender: "bob",
-              text: "Your message is queued for a new turn after the current turn finishes. It hasn’t changed the work already in progress.",
+              text: FOLLOWUP_REPLY,
             });
             expect(scenario.accepted).toMatchObject({ status: "accepted" });
             expect(scenario.sourceRequests.length).toBeGreaterThan(0);
@@ -202,23 +197,11 @@ export async function verifyCollaborativeCancellation(signal: AbortSignal) {
           }
         } finally {
           resume.resolve();
-          scenario.releaseIncumbent.resolve();
-          await Promise.allSettled([queuedPreparation, alice, bob]);
-          await waitForGatewayActiveWork(30_000);
+          await settleProofScenario(scenario, [queuedPreparation, alice, bob]);
         }
       }
     }
   } finally {
-    await patchProofConfig(
-      {
-        messages: { queue: { allowCollaborativeSteering: previousSetting ?? null } },
-        tools: { toolsBySender: { "id:alice": { deny: null }, "id:bob": { deny: null } } },
-      },
-      [
-        "messages.queue.allowCollaborativeSteering",
-        "tools.toolsBySender.id:alice.deny",
-        "tools.toolsBySender.id:bob.deny",
-      ],
-    );
+    await configureProofCollaboration(previousSetting);
   }
 }

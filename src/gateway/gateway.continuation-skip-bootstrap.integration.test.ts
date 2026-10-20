@@ -3,6 +3,10 @@ import fs from "node:fs/promises";
 import { createServer } from "node:http";
 import path from "node:path";
 import { expect, it } from "vitest";
+import {
+  closeHttpServer,
+  readRequestText,
+} from "../../test/helpers/gateway-integration-fixtures.js";
 import { writeOpenAiResponsesText } from "../../test/helpers/openai-responses-sse.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { createOpenClawTestState } from "../test-utils/openclaw-test-state.js";
@@ -30,11 +34,7 @@ it("continuation-skip stops re-sending workspace instructions on the next turn",
   const providerWork: Promise<void>[] = [];
   const endpoint = createServer((request, response) => {
     const work = (async () => {
-      const chunks: Buffer[] = [];
-      for await (const chunk of request) {
-        chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
-      }
-      requests.push(Buffer.concat(chunks).toString("utf8"));
+      requests.push(await readRequestText(request));
       writeOpenAiResponsesText(response, {
         text: "CONTINUATION_SKIP_REPLY",
         messageId: `msg_${randomUUID()}`,
@@ -135,9 +135,7 @@ it("continuation-skip stops re-sending workspace instructions on the next turn",
     endpoint.closeAllConnections();
     try {
       if (endpoint.listening) {
-        await new Promise<void>((resolve, reject) => {
-          endpoint.close((error) => (error ? reject(error) : resolve()));
-        });
+        await closeHttpServer(endpoint);
       }
       await Promise.all(providerWork);
     } finally {
