@@ -52,11 +52,7 @@ describe("Slack message handler thread resolution", () => {
         const listenerClient = client("synthetic-listener");
         const replacementClient = client("synthetic-replacement");
         const handler = createSlackMessageHandler({
-          ctx: createMonitorTestContext({
-            cfg: {},
-            accountId: "thread-test",
-            app,
-          }),
+          ctx: createMonitorTestContext({ cfg: {}, accountId: "thread-test", app }),
         });
         const message: SlackMessageEvent = {
           type: "message",

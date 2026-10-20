@@ -1,6 +1,7 @@
 import { createHmac } from "node:crypto";
 import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
+import { promisify } from "node:util";
 import {
   closeOpenClawStateDatabaseForTest,
   createChannelIngressQueueForTests,
@@ -58,24 +59,24 @@ async function startSlackLoopback() {
       }
       request.resume();
       requests.push(request.url ?? "");
-      response.statusCode = request.url?.startsWith("/api/") ? 200 : 404;
-      response.setHeader("content-type", "application/json");
-      response.end(
-        JSON.stringify(
-          request.url === "/api/auth.test"
-            ? {
-                ok: true,
-                user_id: "UBOT",
-                bot_id: "BBOT",
-                app_id: "ATEST",
-                team_id: "TTEST",
-                is_enterprise_install: false,
-              }
-            : request.url === "/api/apps.connections.open"
-              ? { ok: true, url: `ws://127.0.0.1:${(server.address() as AddressInfo).port}/socket` }
-              : { ok: false, error: "unexpected_test_request" },
-        ),
-      );
+      const payload =
+        request.url === "/api/auth.test"
+          ? {
+              ok: true,
+              user_id: "UBOT",
+              bot_id: "BBOT",
+              app_id: "ATEST",
+              team_id: "TTEST",
+              is_enterprise_install: false,
+            }
+          : request.url === "/api/apps.connections.open"
+            ? { ok: true, url: `ws://127.0.0.1:${(server.address() as AddressInfo).port}/socket` }
+            : { ok: false, error: "unexpected_test_request" };
+      response
+        .writeHead(request.url?.startsWith("/api/") ? 200 : 404, {
+          "content-type": "application/json",
+        })
+        .end(JSON.stringify(payload));
     });
   });
   const sockets = new WebSocketServer({ server });
@@ -95,13 +96,9 @@ async function startSlackLoopback() {
       for (const socket of sockets.clients) {
         socket.terminate();
       }
-      await new Promise<void>((resolve) => {
-        sockets.close(() => resolve());
-      });
+      await promisify(sockets.close.bind(sockets))();
       server.closeAllConnections();
-      await new Promise<void>((resolve, reject) => {
-        server.close((error) => (error ? reject(error) : resolve()));
-      });
+      await promisify(server.close.bind(server))();
     },
   };
 }
@@ -163,9 +160,9 @@ describe("Slack transport credential activation", () => {
             } else {
               const body = JSON.stringify({ type: "url_verification", challenge: "connected" });
               const timestamp = String(Math.floor(Date.now() / 1_000));
-              const signature = createHmac("sha256", signingSecret)
-                .update(`v0:${timestamp}:${body}`)
-                .digest("hex");
+              const sign = (secret: string) =>
+                `v0=${createHmac("sha256", secret).update(`v0:${timestamp}:${body}`).digest("hex")}`;
+              const signature = sign(signingSecret);
               const postChallenge = (signatureValue: string, path = "/slack/events") =>
                 fetch(`${loopback.url}${path}`, {
                   method: "POST",
@@ -176,23 +173,20 @@ describe("Slack transport credential activation", () => {
                   },
                   body,
                 });
-              const valid = await postChallenge(`v0=${signature}`);
+              const valid = await postChallenge(signature);
               expect(valid.status).toBe(200);
               expect(await valid.text()).toContain("connected");
               expect((await postChallenge("v0=invalid")).status).toBe(401);
-              expect((await postChallenge(`v0=${signature}`, "/slack/%65vents")).status).toBe(404);
+              expect((await postChallenge(signature, "/slack/%65vents")).status).toBe(404);
               await withMonitor(
                 config,
                 async () => {
-                  expect((await postChallenge(`v0=${signature}`)).status).toBe(200);
-                  const duplicateSignature = createHmac("sha256", "duplicate-signing-secret")
-                    .update(`v0:${timestamp}:${body}`)
-                    .digest("hex");
-                  expect((await postChallenge(`v0=${duplicateSignature}`)).status).toBe(401);
+                  expect((await postChallenge(signature)).status).toBe(200);
+                  expect((await postChallenge(sign("duplicate-signing-secret"))).status).toBe(401);
                 },
                 "duplicate",
               );
-              expect((await postChallenge(`v0=${signature}`)).status).toBe(200);
+              expect((await postChallenge(signature)).status).toBe(200);
             }
           });
           expect(loopback.registry.httpRoutes).toHaveLength(0);

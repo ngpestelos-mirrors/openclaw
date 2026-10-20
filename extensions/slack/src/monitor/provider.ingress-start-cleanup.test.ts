@@ -54,18 +54,7 @@ describe("Slack ingress startup cleanup", () => {
         }
       });
     });
-    state.config = {
-      ...state.config,
-      channels: {
-        slack: {
-          mode: "http",
-          signingSecret: "test-signing-secret",
-          dmPolicy: "open",
-          allowFrom: ["*"],
-          groupPolicy: "open",
-        },
-      },
-    };
+    state.config.channels = { slack: { mode: "http", signingSecret: "test-signing-secret" } };
     const controller = new AbortController();
     const run = monitorSlackProvider({
       scheduler: createTestPluginServiceScheduler(),
@@ -96,17 +85,9 @@ describe("Slack ingress startup cleanup", () => {
             headers: { "transfer-encoding": "chunked" },
           });
           clientRequest.on("error", () => {});
-          const response = new Promise<{ statusCode: number | undefined; body: string }>(
-            (resolve, reject) => {
-              clientRequest!.once("response", (res) => {
-                void text(res).then(
-                  (body) => resolve({ statusCode: res.statusCode, body }),
-                  reject,
-                );
-              });
-              clientRequest!.once("error", reject);
-            },
-          );
+          const response = new Promise<IncomingMessage>((resolve, reject) => {
+            clientRequest!.once("response", resolve).once("error", reject);
+          });
           clientRequest.flushHeaders();
 
           await accepted.promise;
@@ -116,7 +97,8 @@ describe("Slack ingress startup cleanup", () => {
           clientRequest.write(Buffer.alloc(768 * 1024, 0x61));
           clientRequest.end(Buffer.alloc(768 * 1024, 0x62));
 
-          await expect(response).resolves.toEqual({
+          const received = await response;
+          expect({ statusCode: received.statusCode, body: await text(received) }).toEqual({
             statusCode: 413,
             body: "Payload too large",
           });

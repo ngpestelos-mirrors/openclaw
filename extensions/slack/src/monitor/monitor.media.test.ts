@@ -20,12 +20,8 @@ function resolveTestSlackThreadStarter(
   });
 }
 
-function createThreadStarterRepliesClient(
-  response: { messages?: Array<{ text?: string; user?: string; ts?: string }> } = {
-    messages: [{ text: "root message", user: "U1", ts: "1000.1" }],
-  },
-): { replies: ReturnType<typeof vi.fn>; client: ThreadStarterClient } {
-  const replies = vi.fn(async () => response);
+function createThreadStarterRepliesClient(text = "root message") {
+  const replies = vi.fn(async () => ({ messages: [{ text }] }));
   const client = {
     conversations: { replies },
   } as unknown as ThreadStarterClient;
@@ -45,23 +41,9 @@ describe("resolveSlackThreadStarter cache", () => {
     vi.useRealTimers();
   });
 
-  it("returns cached thread starter without refetching within ttl", async () => {
-    const { replies, client } = createThreadStarterRepliesClient();
-
-    const first = await resolveTestSlackThreadStarter(client);
-    const second = await resolveTestSlackThreadStarter(client);
-
-    expect(first).toEqual(second);
-    expect(replies).toHaveBeenCalledTimes(1);
-  });
-
-  it("isolates the same channel and thread across Slack accounts", async () => {
-    const teamOne = createThreadStarterRepliesClient({
-      messages: [{ text: "team one root", user: "U1", ts: "1000.1" }],
-    });
-    const teamTwo = createThreadStarterRepliesClient({
-      messages: [{ text: "team two root", user: "U2", ts: "1000.1" }],
-    });
+  it("caches within ttl and isolates the same channel and thread across Slack accounts", async () => {
+    const teamOne = createThreadStarterRepliesClient("team one root");
+    const teamTwo = createThreadStarterRepliesClient("team two root");
 
     const scopeOne = { workspaceScope: { accountId: "account-one", teamId: "T1" } };
     const scopeTwo = { workspaceScope: { accountId: "account-two", teamId: "T2" } };
@@ -72,6 +54,7 @@ describe("resolveSlackThreadStarter cache", () => {
     expect(first?.text).toBe("team one root");
     expect(second?.text).toBe("team two root");
     expect(cachedFirst?.text).toBe("team one root");
+    expect(cachedFirst).toEqual(first);
     expect(teamOne.replies).toHaveBeenCalledTimes(1);
     expect(teamTwo.replies).toHaveBeenCalledTimes(1);
   });
@@ -91,9 +74,7 @@ describe("resolveSlackThreadStarter cache", () => {
   });
 
   it("does not cache empty starter text", async () => {
-    const { replies, client } = createThreadStarterRepliesClient({
-      messages: [{ text: "   ", user: "U1", ts: "1000.1" }],
-    });
+    const { replies, client } = createThreadStarterRepliesClient("   ");
 
     const first = await resolveTestSlackThreadStarter(client);
     const second = await resolveTestSlackThreadStarter(client);
