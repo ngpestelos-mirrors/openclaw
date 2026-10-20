@@ -19,6 +19,22 @@ import {
   createControlUiE2eSuite,
 } from "./control-ui-e2e-suite.test-support.ts";
 
+async function startGateway(owner: OpenClawTestInstance, prepare?: () => Promise<unknown>) {
+  try {
+    await prepare?.();
+    await owner.startGateway();
+    return { baseUrl: `http://127.0.0.1:${owner.port}/`, close: () => owner.cleanup() };
+  } catch (error) {
+    await runQaGatewayFixture(
+      async () => {
+        throw error;
+      },
+      () => owner.cleanup(),
+    );
+    throw error;
+  }
+}
+
 let instance: OpenClawTestInstance | undefined;
 const suite = createControlUiE2eSuite({
   name: "Control UI exact stagger with a real Gateway",
@@ -43,8 +59,8 @@ const suite = createControlUiE2eSuite({
       },
     });
     instance = owner;
-    try {
-      await owner.state.writeAuthProfiles({
+    return startGateway(owner, () =>
+      owner.state.writeAuthProfiles({
         version: 1,
         profiles: {
           "openai:cron-duration-fixture": {
@@ -53,18 +69,8 @@ const suite = createControlUiE2eSuite({
             key: "synthetic-cron-duration-inference-key",
           },
         },
-      });
-      await owner.startGateway();
-      return { baseUrl: `http://127.0.0.1:${owner.port}/`, close: () => owner.cleanup() };
-    } catch (error) {
-      await runQaGatewayFixture(
-        async () => {
-          throw error;
-        },
-        () => owner.cleanup(),
-      );
-      throw error;
-    }
+      }),
+    );
   },
 });
 const captureEnabled = process.env.OPENCLAW_CAPTURE_UI_PROOF === "1";
@@ -99,13 +105,7 @@ const catalogSuite = createControlUiE2eSuite({
       },
     });
     catalogInstance = owner;
-    try {
-      await owner.startGateway();
-      return { baseUrl: `http://127.0.0.1:${owner.port}/`, close: () => owner.cleanup() };
-    } catch (error) {
-      await owner.cleanup();
-      throw error;
-    }
+    return startGateway(owner);
   },
 });
 
@@ -177,17 +177,15 @@ catalogSuite.define(() => {
             server.onMessage((message) => {
               const frame = requireRecord(JSON.parse(message.toString()));
               const catalogReply = typeof frame.id === "string" && catalogRequests.has(frame.id);
+              const catalogChange =
+                frame.event === "config.changed" || frame.event === "chat.metadata.changed";
               if (catalogReply && typeof frame.id === "string") {
                 catalogRequests.delete(frame.id);
                 if (!catalogRequests.size) {
                   catalogDrained?.();
                 }
               }
-              if (
-                catalogReply ||
-                frame.event === "config.changed" ||
-                frame.event === "chat.metadata.changed"
-              ) {
+              if (catalogReply || catalogChange) {
                 frames.push({
                   direction: "received",
                   frame,
@@ -196,10 +194,7 @@ catalogSuite.define(() => {
               }
               // Exercise reads after real publication, not config changes during an in-flight read.
               // Keep the Gateway's notifications intact and in their original order.
-              if (
-                awaitCatalogPublication &&
-                (frame.event === "config.changed" || frame.event === "chat.metadata.changed")
-              ) {
+              if (awaitCatalogPublication && catalogChange) {
                 pendingNotifications.push(() => socket.send(message));
                 if (
                   frame.event === "chat.metadata.changed" &&
@@ -235,28 +230,26 @@ catalogSuite.define(() => {
           await page.locator("#cron-name").fill("Retain this draft");
           await page.locator("#cron-payload-text").fill("Do not submit this draft");
           const picker = page.locator("openclaw-select-picker:has(#cron-payload-model-picker)");
-          await expect
-            .poll(async () => {
-              await openPicker(picker);
-              return picker.locator('[role="option"][data-value="fixture/retiring"]').count();
-            })
-            .toBe(1);
-          if (captureEnabled) {
-            await page.screenshot({ path: path.join(catalogSuite.artifactDir, "initial.png") });
-          }
+          const modelOption = (id: string) =>
+            picker.locator(`[role="option"][data-value="fixture/${id}"]`);
+          const waitForModel = (id: string) =>
+            expect
+              .poll(async () => {
+                await openPicker(picker);
+                return modelOption(id).count();
+              })
+              .toBe(1);
+          const screenshot = async (stage: string) => {
+            if (captureEnabled) {
+              await page.screenshot({ path: path.join(catalogSuite.artifactDir, `${stage}.png`) });
+            }
+          };
+          await waitForModel("retiring");
+          await screenshot("initial");
           await publish("published");
-          await expect
-            .poll(async () => {
-              await openPicker(picker);
-              return picker.locator('[role="option"][data-value="fixture/published"]').count();
-            })
-            .toBe(1);
-          expect(
-            await picker.locator('[role="option"][data-value="fixture/retiring"]').count(),
-          ).toBe(0);
-          if (captureEnabled) {
-            await page.screenshot({ path: path.join(catalogSuite.artifactDir, "published.png") });
-          }
+          await waitForModel("published");
+          expect(await modelOption("retiring").count()).toBe(0);
+          await screenshot("published");
 
           rejectCatalogReplies = true;
           await publish("held");
@@ -265,31 +258,18 @@ catalogSuite.define(() => {
           await error.waitFor({ state: "visible" });
           expect(await error.textContent()).toContain("Catalog transport unavailable");
           await openPicker(picker);
-          expect(
-            await picker.locator('[role="option"][data-value="fixture/published"]').count(),
-          ).toBe(1);
-          if (captureEnabled) {
-            await page.screenshot({
-              path: path.join(catalogSuite.artifactDir, "read-failure.png"),
-            });
-          }
+          expect(await modelOption("published").count()).toBe(1);
+          await screenshot("read-failure");
 
           rejectCatalogReplies = false;
           await publish("recovered");
-          await expect
-            .poll(async () => {
-              await openPicker(picker);
-              return picker.locator('[role="option"][data-value="fixture/recovered"]').count();
-            })
-            .toBe(1);
+          await waitForModel("recovered");
           await error.waitFor({ state: "hidden" });
           expect(await page.locator("#cron-name").inputValue()).toBe("Retain this draft");
           expect(await page.locator("#cron-payload-text").inputValue()).toBe(
             "Do not submit this draft",
           );
-          if (captureEnabled) {
-            await page.screenshot({ path: path.join(catalogSuite.artifactDir, "recovered.png") });
-          }
+          await screenshot("recovered");
         },
       );
     } finally {
@@ -564,6 +544,11 @@ async function readAlertFields(page: Page) {
   };
 }
 
+async function openAdvanced(page: Page, name: unknown) {
+  await expect.poll(() => page.locator(".cron-detail-title").textContent()).toBe(name);
+  await page.locator("details.cron-advanced > summary").click();
+}
+
 suite.define(() => {
   it("timeout override: clearing restores the default after save and reload", async () => {
     await withGatewayCommands("real-timeout-clear-commands.json", async (cliJson) => {
@@ -634,8 +619,7 @@ suite.define(() => {
       const jobId = cronJobId(job);
       await withCronJobPage(cliJson, jobId, async (evidence) => {
         const { page } = evidence;
-        await expect.poll(() => page.locator(".cron-detail-title").textContent()).toBe(job.name);
-        await page.locator("details.cron-advanced > summary").click();
+        await openAdvanced(page, job.name);
         const amount = page.locator("#cron-stagger-amount");
         const loadedStagger = await amount.inputValue();
         await amount.scrollIntoViewIfNeeded();
@@ -678,10 +662,7 @@ suite.define(() => {
       const job = await seedAlertJob(cliJson, "Partial failure policy", policy);
       await withCronJobPage(cliJson, job.id, async (evidence) => {
         const { page } = evidence;
-        await expect
-          .poll(() => page.locator(".cron-detail-title").textContent())
-          .toBe(job.stored.name);
-        await page.locator("details.cron-advanced > summary").click();
+        await openAdvanced(page, job.stored.name);
         const loaded = await readAlertFields(page);
         await page.locator("#cron-failure-alert-cooldown-seconds").scrollIntoViewIfNeeded();
         await capture(evidence, "real-alert-loaded", {
@@ -699,10 +680,7 @@ suite.define(() => {
         const cloned = await submitCronForm(evidence, cliJson, "cron.add");
         const cloneId = cronJobId(cloned.stored);
         await page.locator(`[data-test-id="cron-row-${cloneId}"]`).click();
-        await expect
-          .poll(() => page.locator(".cron-detail-title").textContent())
-          .toBe(cloned.stored.name);
-        await page.locator("details.cron-advanced > summary").click();
+        await openAdvanced(page, cloned.stored.name);
         const clonedFields = await readAlertFields(page);
         await page.locator("#cron-failure-alert-cooldown-seconds").scrollIntoViewIfNeeded();
         await capture(evidence, "real-alert-cloned", {
@@ -720,10 +698,11 @@ suite.define(() => {
           savedFields: expectedFields,
           clonedFields: expectedFields,
         });
-        expect(saved.stored.failureAlert).toEqual(policy);
-        expect(cloned.stored.failureAlert).toEqual(policy);
-        expect(saved.stored.schedule).toEqual(job.stored.schedule);
-        expect(cloned.stored.schedule).toEqual(job.stored.schedule);
+        expect([saved.stored.failureAlert, cloned.stored.failureAlert]).toEqual([policy, policy]);
+        expect([saved.stored.schedule, cloned.stored.schedule]).toEqual([
+          job.stored.schedule,
+          job.stored.schedule,
+        ]);
       });
     });
   });
@@ -740,10 +719,7 @@ suite.define(() => {
       });
       await withCronJobPage(cliJson, job.id, async (evidence) => {
         const { page } = evidence;
-        await expect
-          .poll(() => page.locator(".cron-detail-title").textContent())
-          .toBe(job.stored.name);
-        await page.locator("details.cron-advanced > summary").click();
+        await openAdvanced(page, job.stored.name);
         const loaded = await readAlertFields(page);
         await capture(evidence, "real-alert-clear-loaded", {
           loaded,
@@ -868,12 +844,10 @@ suite.define(() => {
           const params = requireRecord(cloned.request.params);
           const submittedPayload = requireRecord(params.payload);
           const storedPayload = requireRecord(cloned.stored.payload);
-          for (const [field, value] of Object.entries(payload)) {
-            expect
-              .soft(submittedPayload[field], `${variant.name}: submitted ${field}`)
-              .toEqual(value);
-            expect.soft(storedPayload[field], `${variant.name}: stored ${field}`).toEqual(value);
-          }
+          expect
+            .soft(submittedPayload, `${variant.name}: submitted payload`)
+            .toMatchObject(payload);
+          expect.soft(storedPayload, `${variant.name}: stored payload`).toMatchObject(payload);
           for (const field of ["toolsAllowIsDefault", "externalContentSource"]) {
             expect
               .soft(submittedPayload, `${variant.name}: omitted ${field}`)

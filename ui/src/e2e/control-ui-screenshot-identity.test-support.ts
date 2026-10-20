@@ -98,23 +98,16 @@ export function defineControlUiFrameIdentityTests(createPage: () => Promise<Page
             // Mutate at the actual capture boundary, then forward the native CDP
             // capture. No fabricated pixels or helper readiness results.
             await page.locator("#proof").evaluate((element, mutation) => {
-              switch (mutation) {
-                case "hidden":
-                  element.setAttribute("style", "visibility: hidden");
-                  break;
-                case "clipped":
+              const mutations = {
+                hidden: () => element.setAttribute("style", "visibility: hidden"),
+                clipped: () => {
                   element.parentElement!.style.height = "0px";
-                  break;
-                case "removed":
-                  element.remove();
-                  break;
-                case "moved":
-                  element.setAttribute("style", "transform: translateX(10px)");
-                  break;
-                case "replaced":
-                  element.replaceWith(element.cloneNode(true));
-                  break;
-              }
+                },
+                removed: () => element.remove(),
+                moved: () => element.setAttribute("style", "transform: translateX(10px)"),
+                replaced: () => element.replaceWith(element.cloneNode(true)),
+              };
+              mutations[mutation]();
             }, change);
           }
           return send(method, params);
