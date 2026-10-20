@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { createAdmittedHostCapabilityTestFixture } from "openclaw/plugin-sdk/plugin-test-runtime";
 import { captureSessionEntryCurrentCheckAsync } from "openclaw/plugin-sdk/session-binding-runtime";
-import { getSessionEntry, resolveStorePath } from "openclaw/plugin-sdk/session-store-runtime";
+import { resolveStorePath } from "openclaw/plugin-sdk/session-store-runtime";
 import { Type } from "typebox";
 import { onTestFinished, vi } from "vitest";
 import { ensureCodexAppServerClientRuntime } from "./client-runtime.js";
@@ -10,6 +10,7 @@ import type { CodexInferenceThreadQualification } from "./inference-qualificatio
 import {
   createNativeSubagentAssignmentStore,
   createNativeSubagentSessionAuthority,
+  createNativeSubagentSubmissionStore,
 } from "./native-subagent-assignment-store.js";
 import type { CodexNativeSubagentHistoryOwner } from "./native-subagent-history-owner.js";
 import { defaultNativeSubagentMonitorRuntime } from "./native-subagent-monitor-runtime.js";
@@ -22,7 +23,6 @@ import {
   directSpawnItem,
   nativeHistoryOwner,
 } from "./native-subagent-monitor.test-support.js";
-import type { CodexNativeSubagentSubmissionStore } from "./native-subagent-submission.js";
 import { seedRunSessionOwnerForTest } from "./run-attempt-session-owners.test-support.js";
 import { createParams, tempDir } from "./run-attempt-test-harness.js";
 import {
@@ -39,19 +39,14 @@ export async function fixture() {
     sessionId: randomUUID(),
     sessionKey: "agent:main:inventory",
   };
-  await seedRunSessionOwnerForTest(identity.sessionId, identity.sessionKey, {
-    lifecycleRevision: "inventory-generation",
-  });
+  const lifecycleRevision = "inventory-generation";
+  await seedRunSessionOwnerForTest(identity.sessionId, identity.sessionKey, { lifecycleRevision });
   const sessionScope = {
     agentId: identity.agentId,
     sessionKey: identity.sessionKey,
     storePath: resolveStorePath(undefined, { agentId: identity.agentId }),
   };
-  const entry = getSessionEntry(sessionScope);
-  assert(entry?.lifecycleRevision);
   vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
-  onTestFinished(() => vi.useRealTimers());
-  const lifecycleRevision = entry.lifecycleRevision;
   const historyOwner = (parentThreadId = "parent-thread"): CodexNativeSubagentHistoryOwner => ({
     ...nativeHistoryOwner(parentThreadId),
     sessionId: identity.sessionId,
@@ -102,26 +97,13 @@ export async function fixture() {
     const completionScope = host.agentHarnessCompletionScope;
     const parent = await captureSessionEntryCurrentCheckAsync(sessionScope);
     const authority = createNativeSubagentSessionAuthority(parent);
-    const assignmentStore = createNativeSubagentAssignmentStore({
+    const storeScope = {
       bindingStore: registrationStore,
       readBinding: () => registrationStore.read(identity),
       identity,
       owner,
       assertLifecycleCurrentAsync: parent.assertCurrent,
       authority,
-    });
-    const writeSubmission =
-      (
-        kind: "record-native-subagent-submission" | "consume-native-subagent-submission",
-      ): CodexNativeSubagentSubmissionStore["record"] =>
-      (receipt, assertCurrent) =>
-        registrationStore.mutate(identity, { kind, owner, receipt }, assertCurrent, authority);
-    const submissionStore: CodexNativeSubagentSubmissionStore = {
-      assertCurrent: () => assignmentStore.assertCurrent(),
-      assertCurrentAsync: () => assignmentStore.assertCurrentAsync(),
-      read: () => registrationStore.readNativeSubagentSubmissions(identity, owner),
-      record: writeSubmission("record-native-subagent-submission"),
-      consume: writeSubmission("consume-native-subagent-submission"),
     };
     ensureCodexAppServerClientRuntime(client.client, { agentDir: tempDir });
     const registration: {
@@ -140,8 +122,8 @@ export async function fixture() {
             requesterSessionKey: identity.sessionKey,
             completionScope,
             historyOwner: owner,
-            assignmentStore,
-            submissionStore,
+            assignmentStore: createNativeSubagentAssignmentStore(storeScope),
+            submissionStore: createNativeSubagentSubmissionStore(storeScope),
             assertCurrentAsync: parent.assertCurrent,
             runtime,
             configurationQualification,

@@ -1,8 +1,4 @@
-import {
-  clearRuntimeConfigSnapshot,
-  setRuntimeConfigSnapshot,
-} from "openclaw/plugin-sdk/runtime-config-snapshot";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { fixture } from "./native-subagent-inventory.test-support.js";
 import { codexNativeSubagentMonitorRuntime } from "./native-subagent-monitor.js";
 import {
@@ -14,8 +10,6 @@ import {
 } from "./native-subagent-monitor.test-support.js";
 import { setupRunAttemptTestHooks } from "./run-attempt-test-harness.js";
 
-beforeEach(() => setRuntimeConfigSnapshot({}));
-afterEach(() => clearRuntimeConfigSnapshot());
 setupRunAttemptTestHooks();
 
 describe("native parent retirement after rotation", () => {
@@ -55,7 +49,6 @@ describe("native parent retirement after rotation", () => {
         await codexNativeSubagentMonitorRuntime.retireParent(client.client, "parent-thread");
         await codexNativeSubagentMonitorRuntime.retireParent(client.client, "replacement-parent");
         await replacement.unregister();
-        client.close();
       }
     },
   );
@@ -103,7 +96,6 @@ describe("native parent retirement after rotation", () => {
         await replacement.unregister();
       } finally {
         await monitor.dispose();
-        client.close();
       }
     },
   );
