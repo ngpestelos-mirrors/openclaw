@@ -22,7 +22,21 @@ function createRuntimeConfigPair(localModelLean = true) {
     ...sourceConfig,
     plugins: pluginConfig("resolved"),
   } as OpenClawConfig;
+  setRuntimeConfigSnapshot(runtimeConfig, sourceConfig);
   return { runtimeConfig, sourceConfig };
+}
+
+function resolveSurface(
+  config: OpenClawConfig,
+  options: Partial<Parameters<typeof resolveAgentToolSurfacePlan>[0]> = {},
+) {
+  return resolveAgentToolSurfacePlan({
+    config,
+    forceDirectMessageTool: true,
+    toolsEnabled: true,
+    isRawModelRun: false,
+    ...options,
+  }).toolSearchRuntimeConfig;
 }
 
 describe("resolveAgentToolSearchRuntimeConfig", () => {
@@ -32,15 +46,9 @@ describe("resolveAgentToolSearchRuntimeConfig", () => {
     "applies Tool Search after selecting the resolved snapshot for forced replies (lean: %s)",
     (localModelLean) => {
       const { runtimeConfig, sourceConfig } = createRuntimeConfigPair(localModelLean);
-      setRuntimeConfigSnapshot(runtimeConfig, sourceConfig);
-
-      const resolved = resolveAgentToolSurfacePlan({
-        config: sourceConfig,
+      const resolved = resolveSurface(sourceConfig, {
         model: localModelLean ? undefined : { toolSearchMode: "tools" },
-        forceDirectMessageTool: true,
-        toolsEnabled: true,
-        isRawModelRun: false,
-      }).toolSearchRuntimeConfig;
+      });
 
       expect(resolved?.tools?.toolSearch).toEqual({
         enabled: true,
@@ -60,38 +68,18 @@ describe("resolveAgentToolSearchRuntimeConfig", () => {
 
   it("returns the resolved snapshot unchanged for direct-message-only tool surfaces", () => {
     const { runtimeConfig, sourceConfig } = createRuntimeConfigPair();
-    setRuntimeConfigSnapshot(runtimeConfig, sourceConfig);
-
     expect(
-      resolveAgentToolSurfacePlan({
-        config: sourceConfig,
-        model: { toolSearchMode: "tools" },
-        forceDirectMessageTool: true,
-        toolsAllow: ["message"],
-        toolsEnabled: true,
-        isRawModelRun: false,
-      }).toolSearchRuntimeConfig,
+      resolveSurface(sourceConfig, { model: { toolSearchMode: "tools" }, toolsAllow: ["message"] }),
     ).toBe(runtimeConfig);
   });
 
-  it("preserves an explicit config that is unrelated to the active source snapshot", () => {
-    const { runtimeConfig, sourceConfig } = createRuntimeConfigPair();
-    setRuntimeConfigSnapshot(runtimeConfig, sourceConfig);
-    const explicitConfig = {
-      agents: { entries: { main: {} } },
-      plugins: pluginConfig("explicit"),
-    } as OpenClawConfig;
-
-    expect(resolveAgentRuntimeToolConfig(explicitConfig)).toBe(explicitConfig);
-    expect(resolveAgentToolSearchRuntimeConfig({ config: explicitConfig })).toBe(explicitConfig);
-  });
-
-  it("uses the input config when no runtime snapshot exists", () => {
-    const config = {
-      agents: { entries: { main: {} } },
-      tools: { toolSearch: false },
-    } as OpenClawConfig;
-
+  it.each([true, false])("preserves unrelated input with an active snapshot=%s", (snapshot) => {
+    if (snapshot) {
+      createRuntimeConfigPair();
+    }
+    const config: OpenClawConfig = snapshot
+      ? { plugins: pluginConfig("explicit") }
+      : { tools: { toolSearch: false } };
     expect(resolveAgentRuntimeToolConfig(config)).toBe(config);
     expect(resolveAgentToolSearchRuntimeConfig({ config })).toBe(config);
   });

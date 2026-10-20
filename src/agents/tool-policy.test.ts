@@ -58,31 +58,18 @@ describe("tool-policy", () => {
     expect(couldNormalizeToolNamePrefixToAllowedTool(prefix, allowed)).toBe(true);
   });
 
-  it("uses alsoAllow entries for plugin discovery without the synthetic allow-all", () => {
-    expect(collectExplicitAllowlist([pickSandboxToolPolicy({ alsoAllow: ["lobster"] })])).toEqual([
-      "lobster",
-      DEFAULT_PLUGIN_TOOLS_ALLOWLIST_ENTRY,
-    ]);
-    expect(
-      collectExplicitAllowlist([pickSandboxToolPolicy({ allow: [], alsoAllow: ["lobster"] })]),
-    ).toEqual(["*", "lobster"]);
-  });
-
-  it("does not treat additive allow-all policies as restrictive", () => {
-    expect(hasRestrictiveAllowPolicy(pickSandboxToolPolicy({ alsoAllow: ["optional-demo"] }))).toBe(
-      false,
-    );
-    expect(
-      hasRestrictiveAllowPolicy(pickSandboxToolPolicy({ allow: [], alsoAllow: ["optional-demo"] })),
-    ).toBe(false);
+  it.each<[string[] | undefined, string[]]>([
+    [undefined, ["lobster", DEFAULT_PLUGIN_TOOLS_ALLOWLIST_ENTRY]],
+    [[], ["*", "lobster"]],
+  ])("preserves additive allowlist provenance with allow=%j", (allow, expected) => {
+    const policy = pickSandboxToolPolicy({ allow, alsoAllow: ["lobster"] });
+    expect(collectExplicitAllowlist([policy])).toEqual(expected);
+    expect(hasRestrictiveAllowPolicy(policy)).toBe(false);
   });
 
   it("still treats explicit bounded allowlists as restrictive", () => {
     expect(hasRestrictiveAllowPolicy(pickSandboxToolPolicy({ allow: ["read"] }))).toBe(true);
   });
-});
-
-describe("sandbox tool policy", () => {
   it("applies allow and deny to literal constructor", () => {
     const name = "constructor";
     const allow = { allow: [` ${name.toUpperCase()} `] };
@@ -97,47 +84,28 @@ describe("sandbox tool policy", () => {
       expect(matches(deny, "other")).toBe(true);
     }
   });
-});
-
-describe("resolveSandboxToolPolicyForAgent", () => {
   const resolve = (allow: string[], deny: string[]) =>
     resolveSandboxToolPolicyForAgent({ tools: { sandbox: { tools: { allow, deny } } } }, undefined);
-  it("keeps allow-all semantics when allow is []", () => {
-    const resolved = resolve([], ["browser"]);
-    expect(resolved.sources.allow).toEqual({
-      source: "global",
-      key: "tools.sandbox.tools.allow",
+  it.each([
+    { allow: [], deny: ["browser"], expected: [] },
+    { allow: ["read"], deny: ["browser"], expected: ["read", "view_image"] },
+    { allow: ["read"], deny: ["view_image"], expected: ["read"] },
+  ])("resolves sandbox allow=$allow deny=$deny", ({ allow, deny, expected }) => {
+    const resolved = resolve(allow, deny);
+    expect(resolved).toMatchObject({
+      allow: expected,
+      deny,
+      sources: { allow: { source: "global", key: "tools.sandbox.tools.allow" } },
     });
-    expect(resolved.allow).toStrictEqual([]);
-    expect(resolved.deny).toEqual(["browser"]);
-
-    const policy: SandboxToolPolicy = { allow: resolved.allow, deny: resolved.deny };
-    expect(isToolAllowed(policy, "read")).toBe(true);
-    expect(isToolAllowed(policy, "browser")).toBe(false);
+    if (allow.length === 0) {
+      expect(resolved.allow).toStrictEqual([]);
+      expect(isToolAllowed(resolved, "read")).toBe(true);
+      expect(isToolAllowed(resolved, "browser")).toBe(false);
+    }
   });
-
-  it("auto-adds image to explicit allowlists unless denied", () => {
-    expect(resolve(["read"], ["browser"])).toMatchObject({
-      allow: ["read", "view_image"],
-      deny: ["browser"],
-    });
-  });
-
-  it("does not auto-add view_image when explicitly denied", () => {
-    expect(resolve(["read"], ["view_image"])).toMatchObject({
-      allow: ["read"],
-      deny: ["view_image"],
-    });
-  });
-});
-
-describe("isToolAllowedByPolicyName — legacy scheduler tool name (RFC 0026)", () => {
   it("denies the renamed tool through persisted legacy deny lists", () => {
     expect(isToolAllowedByPolicyName("automations", { deny: ["cron"] })).toBe(false);
   });
-});
-
-describe("isToolAllowedByPolicyName — apply_patch / write deny decoupling (#76749)", () => {
   it("does not deny apply_patch when write is denied", () => {
     expect(isToolAllowedByPolicyName("apply_patch", { deny: ["write"] })).toBe(true);
   });

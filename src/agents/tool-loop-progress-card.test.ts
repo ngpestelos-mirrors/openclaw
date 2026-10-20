@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, expect, it, vi } from "vitest";
 import type { SessionState } from "../logging/diagnostic-session-state.js";
 import { createPostCompactionLoopGuard } from "./embedded-agent-runner/post-compaction-loop-guard.js";
 import {
@@ -6,6 +6,7 @@ import {
   recordToolCall,
   recordToolCallOutcome,
 } from "./tool-loop-detection.js";
+import { jsonResult } from "./tools/common.js";
 import * as gateway from "./tools/in-process-gateway.js";
 import { createProgressCardTool } from "./tools/progress-card-tool.js";
 
@@ -48,106 +49,88 @@ function createFixture() {
       runId,
     });
     expect(record?.resultHash).toBeTypeOf("string");
-    return { result, record: record! };
+    return { result, record: { ...record!, resultHash: record!.resultHash! } };
   }
   return { state, execute };
 }
 
 const plan = (step: string, status: "pending" | "completed" = "pending") => [{ step, status }];
 
-describe("progress-card loop outcomes", () => {
-  it.each<Params>([
-    {
-      markdown,
-      plan: [...plan("Review"), ...plan("Verify")],
-    },
-    {},
-  ])(
-    "blocks repeated real receipts without changing revision acknowledgments: %j",
-    async (params) => {
-      const { state, execute } = createFixture();
-      const hashes = new Set();
-      const detect = (runId = "run-1") =>
-        detectToolCallLoop(state, "progress_card", params, { runId });
-      for (let index = 0; index < 20; index++) {
-        expect(detect()).not.toMatchObject({ level: "critical" });
-        const { result, record } = await execute(params);
-        expect(result.details).toMatchObject({
-          revision: Object.keys(params).length ? index + 1 : null,
-        });
-        hashes.add(record.resultHash);
-      }
-      expect(hashes.size).toBe(1);
-      expect(detect()).toMatchObject({
-        stuck: true,
-        level: "critical",
-        count: 20,
-      });
-      expect(detect("run-2")).toEqual({ stuck: false });
-    },
-  );
-  it("keeps markdown and plan changes meaningful even when counts match", async () => {
+it.each<Params>([{ markdown, plan: [...plan("Review"), ...plan("Verify")] }, {}])(
+  "blocks repeated real receipts without changing revision acknowledgments: %j",
+  async (params) => {
     const { state, execute } = createFixture();
     const hashes = new Set();
-    const inputs: Params[] = [
-      { markdown },
-      { markdown: "Review completed; verification running." },
-      { plan: plan("Review") },
-      { plan: plan("Verify") },
-      { plan: plan("Verify", "completed") },
-      {},
-    ];
-    for (const params of inputs) {
-      expect(detectToolCallLoop(state, "progress_card", params, { runId: "run-1" })).toEqual({
-        stuck: false,
+    const detect = (runId = "run-1") =>
+      detectToolCallLoop(state, "progress_card", params, { runId });
+    for (let index = 0; index < 20; index++) {
+      expect(detect()).not.toMatchObject({ level: "critical" });
+      const { result, record } = await execute(params);
+      expect(result.details).toMatchObject({
+        revision: Object.keys(params).length ? index + 1 : null,
       });
-      const { record } = await execute(params);
-      hashes.add([record.argsHash, record.resultHash].join(":"));
+      hashes.add(record.resultHash);
     }
-    expect(hashes.size).toBe(6);
-  });
-  it("feeds stable receipt outcomes to the armed post-compaction guard", async () => {
-    const { execute } = createFixture();
-    const guard = createPostCompactionLoopGuard();
-    guard.armPostCompaction();
-    for (let index = 0; index < 3; index++) {
-      const { record } = await execute({ markdown });
-      expect(
-        guard.observe({
-          toolName: record.toolName,
-          argsHash: record.argsHash,
-          resultHash: record.resultHash!,
-        }).shouldAbort,
-      ).toBe(index === 2);
-    }
-  });
-  it.each(["read", "error", "rewritten", "unmarked"] as const)(
-    "normalizes only private successful progress-card outcomes: %s",
-    async (kind) => {
-      const { execute } = createFixture();
-      const state = makeState();
-      for (let revision = 1; revision <= 2; revision++) {
-        const result =
-          kind === "unmarked"
-            ? {
-                isError: false,
-                details: { revision, steps: null },
-                content: [{ type: "text" as const, text: "Read failed at revision " + revision }],
-              }
-            : (await execute({ markdown })).result;
-        if (kind === "rewritten") {
-          expect(Object.keys(result).toSorted()).toEqual(["content", "details"]);
-          result.content = [{ type: "text", text: "New receipt wording " + revision }];
-        }
-        recordToolCallOutcome(state, {
-          toolName: kind === "read" ? "read" : "progress_card",
-          toolParams: { markdown },
-          result: kind === "error" ? Object.assign(result, { isError: true }) : result,
-        });
-      }
-      expect(new Set(state.toolCallHistory?.map((record) => record.resultHash)).size).toBe(
-        kind === "rewritten" ? 1 : 2,
-      );
-    },
-  );
+    expect(hashes.size).toBe(1);
+    expect(detect()).toMatchObject({
+      stuck: true,
+      level: "critical",
+      count: 20,
+    });
+    expect(detect("run-2")).toEqual({ stuck: false });
+  },
+);
+it("keeps markdown and plan changes meaningful even when counts match", async () => {
+  const { state, execute } = createFixture();
+  const hashes = new Set();
+  const inputs: Params[] = [
+    { markdown },
+    { markdown: "Review completed; verification running." },
+    { plan: plan("Review") },
+    { plan: plan("Verify") },
+    { plan: plan("Verify", "completed") },
+    {},
+  ];
+  for (const params of inputs) {
+    expect(detectToolCallLoop(state, "progress_card", params, { runId: "run-1" })).toEqual({
+      stuck: false,
+    });
+    const { record } = await execute(params);
+    hashes.add([record.argsHash, record.resultHash].join(":"));
+  }
+  expect(hashes.size).toBe(6);
 });
+it("feeds stable receipt outcomes to the armed post-compaction guard", async () => {
+  const { execute } = createFixture();
+  const guard = createPostCompactionLoopGuard();
+  guard.armPostCompaction();
+  for (let index = 0; index < 3; index++) {
+    const { record } = await execute({ markdown });
+    expect(guard.observe(record).shouldAbort).toBe(index === 2);
+  }
+});
+it.each(["read", "error", "rewritten", "unmarked"] as const)(
+  "normalizes only private successful progress-card outcomes: %s",
+  async (kind) => {
+    const { execute } = createFixture();
+    const state = makeState();
+    for (let revision = 1; revision <= 2; revision++) {
+      const result =
+        kind === "unmarked"
+          ? jsonResult({ revision, steps: null })
+          : (await execute({ markdown })).result;
+      if (kind === "rewritten") {
+        expect(Object.keys(result).toSorted()).toEqual(["content", "details"]);
+        result.content = [{ type: "text", text: "New receipt wording " + revision }];
+      }
+      recordToolCallOutcome(state, {
+        toolName: kind === "read" ? "read" : "progress_card",
+        toolParams: { markdown },
+        result: kind === "error" ? Object.assign(result, { isError: true }) : result,
+      });
+    }
+    expect(new Set(state.toolCallHistory?.map((record) => record.resultHash)).size).toBe(
+      kind === "rewritten" ? 1 : 2,
+    );
+  },
+);
