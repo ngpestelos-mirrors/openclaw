@@ -20,6 +20,10 @@ import { OpenClawStateLeaseError } from "./openclaw-state-lease-error.js";
 
 afterEach(() => vi.restoreAllMocks());
 
+function migrate(db: DatabaseSync, pathname: string, env: NodeJS.ProcessEnv) {
+  ensureOpenClawAgentDatabaseSchema(db, { agentId: "main", path: pathname, env });
+}
+
 function seedHistoricalData(db: DatabaseSync) {
   const event = ` {"type":"message","id":"first","id":"second","parentId":null,"message":{"role":"assistant","content":${JSON.stringify("saffronquasar 雪🦞 ".repeat(1024))}}}\n`;
   db.exec(`
@@ -226,27 +230,19 @@ function legacySnapshot(db: DatabaseSync) {
 it("refuses a schema22 dependent view without changing storage", async () => {
   await withOpenClawTestState({ scenario: "minimal" }, async (state) => {
     const pathname = state.path("unsupported22.sqlite");
-    const db = new DatabaseSync(pathname);
-    try {
-      seedOpenClawAgentSchemaV22(db);
-      seedHistoricalData(db);
-      db.exec(
-        "CREATE VIEW retained_fts_map AS SELECT fts_rowid, session_id FROM session_transcript_fts_rows",
-      );
-      const before = legacySnapshot(db);
-      await expect(
-        withAgentDatabaseMaintenanceLease({ env: state.env }, async () => {
-          ensureOpenClawAgentDatabaseSchema(db, {
-            agentId: "main",
-            path: pathname,
-            env: state.env,
-          });
-        }),
-      ).rejects.toThrow();
-      expect(legacySnapshot(db)).toEqual(before);
-    } finally {
-      db.close();
-    }
+    using db = new DatabaseSync(pathname);
+    seedOpenClawAgentSchemaV22(db);
+    seedHistoricalData(db);
+    db.exec(
+      "CREATE VIEW retained_fts_map AS SELECT fts_rowid, session_id FROM session_transcript_fts_rows",
+    );
+    const before = legacySnapshot(db);
+    await expect(
+      withAgentDatabaseMaintenanceLease({ env: state.env }, async () =>
+        migrate(db, pathname, state.env),
+      ),
+    ).rejects.toThrow();
+    expect(legacySnapshot(db)).toEqual(before);
   });
 });
 
@@ -254,7 +250,7 @@ describe("agent schema 22 storage cutover", () => {
   it("rolls back converted storage when the maintenance scope rejects publication", async () => {
     await withOpenClawTestState({ scenario: "minimal" }, async (state) => {
       const pathname = state.path("revoked-coverage21.sqlite");
-      const db = new DatabaseSync(pathname);
+      using db = new DatabaseSync(pathname);
       const scope = createOpenClawDatabaseMaintenanceScope();
       const refusal = new Error("Recovery backup coverage is no longer current");
       let reachedPublication = false;
@@ -273,23 +269,15 @@ describe("agent schema 22 storage cutover", () => {
         });
         await expect(
           scope.run(() =>
-            withAgentDatabaseMaintenanceLease({ env: state.env }, async () => {
-              ensureOpenClawAgentDatabaseSchema(db, {
-                agentId: "main",
-                path: pathname,
-                env: state.env,
-              });
-            }),
+            withAgentDatabaseMaintenanceLease({ env: state.env }, async () =>
+              migrate(db, pathname, state.env),
+            ),
           ),
         ).rejects.toBe(refusal);
         expect(reachedPublication).toBe(true);
         expect(legacySnapshot(db)).toEqual(before);
       } finally {
-        try {
-          await scope.close();
-        } finally {
-          db.close();
-        }
+        await scope.close();
       }
     });
   });
@@ -350,13 +338,9 @@ describe("agent schema 22 storage cutover", () => {
               expect(legacySnapshot(reader)).toEqual(before);
             }
           });
-          await withAgentDatabaseMaintenanceLease({ env: state.env }, async () => {
-            ensureOpenClawAgentDatabaseSchema(db, {
-              agentId: "main",
-              path: pathname,
-              env: state.env,
-            });
-          });
+          await withAgentDatabaseMaintenanceLease({ env: state.env }, async () =>
+            migrate(db, pathname, state.env),
+          );
           write.mockRestore();
           expect(observedPublication).toBe(true);
           expect(reader.prepare("PRAGMA user_version").get()).toEqual({
@@ -458,11 +442,7 @@ describe("agent schema 22 storage cutover", () => {
           expect(reader.prepare("PRAGMA integrity_check").get()).toEqual({ integrity_check: "ok" });
           expect(db.prepare("PRAGMA foreign_keys").get()).toEqual({ foreign_keys: 1 });
           const migrated = legacySnapshot(db);
-          ensureOpenClawAgentDatabaseSchema(db, {
-            agentId: "main",
-            path: pathname,
-            env: state.env,
-          });
+          migrate(db, pathname, state.env);
           expect(legacySnapshot(db)).toEqual(migrated);
         } finally {
           observer?.close();
@@ -507,11 +487,7 @@ describe("agent schema 22 storage cutover", () => {
               }
             });
             try {
-              ensureOpenClawAgentDatabaseSchema(db, {
-                agentId: "main",
-                path: pathname,
-                env: state.env,
-              });
+              migrate(db, pathname, state.env);
             } finally {
               vi.restoreAllMocks();
               if (reachedPublication) {
@@ -554,13 +530,9 @@ describe("agent schema 22 storage cutover", () => {
           ),
         ).toBe(true);
         expect(db.prepare("PRAGMA foreign_keys").get()).toEqual({ foreign_keys: 1 });
-        await withAgentDatabaseMaintenanceLease({ env: state.env }, async () => {
-          ensureOpenClawAgentDatabaseSchema(db, {
-            agentId: "main",
-            path: pathname,
-            env: state.env,
-          });
-        });
+        await withAgentDatabaseMaintenanceLease({ env: state.env }, async () =>
+          migrate(db, pathname, state.env),
+        );
         expect(db.prepare("PRAGMA user_version").get()).toEqual({
           user_version: OPENCLAW_AGENT_SCHEMA_VERSION,
         });

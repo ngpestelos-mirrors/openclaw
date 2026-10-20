@@ -18,20 +18,22 @@ import {
 const templates = useAutoCleanupTempDirTracker(afterAll);
 const tempDirs = useAutoCleanupTempDirTracker((cleanup) => {
   afterEach(async () => {
-    await closeOpenClawAgentDatabasesAsync();
-    closeOpenClawAgentDatabasesForTest();
-    await closeStateDatabaseForTest();
+    await closeDatabases();
     cleanup();
   });
 });
 let templatePath: string;
 
-beforeAll(async () => {
-  const env = { OPENCLAW_STATE_DIR: templates.make("agent-integrity-recovery-template-") };
-  templatePath = openOpenClawAgentDatabase({ agentId: "worker-1", env }).path;
+async function closeDatabases() {
   await closeOpenClawAgentDatabasesAsync();
   closeOpenClawAgentDatabasesForTest();
   await closeStateDatabaseForTest();
+}
+
+beforeAll(async () => {
+  const env = { OPENCLAW_STATE_DIR: templates.make("agent-integrity-recovery-template-") };
+  templatePath = openOpenClawAgentDatabase({ agentId: "worker-1", env }).path;
+  await closeDatabases();
 });
 
 it.each(["writable", "readonly", "async"] as const)(
@@ -39,13 +41,14 @@ it.each(["writable", "readonly", "async"] as const)(
   async (admission) => {
     const stateDir = tempDirs.make("agent-integrity-recovery-");
     const env = { OPENCLAW_STATE_DIR: stateDir };
-    const databasePath = resolveOpenClawAgentSqlitePath({ agentId: "worker-1", env });
+    const options = { agentId: "worker-1", env };
+    const databasePath = resolveOpenClawAgentSqlitePath(options);
     fs.mkdirSync(path.dirname(databasePath), { recursive: true });
     fs.copyFileSync(templatePath, databasePath, fs.constants.COPYFILE_EXCL);
 
     const { DatabaseSync } = requireNodeSqlite();
-    const corrupted = new DatabaseSync(databasePath);
-    try {
+    {
+      using corrupted = new DatabaseSync(databasePath);
       corrupted.exec("PRAGMA foreign_keys = OFF;");
       corrupted
         .prepare(
@@ -62,45 +65,37 @@ it.each(["writable", "readonly", "async"] as const)(
         parent: "session_nodes",
         fkid: 1,
       });
-    } finally {
-      corrupted.close();
     }
 
-    expect(() => openOpenClawAgentDatabase({ agentId: "worker-1", env })).toThrow(
+    expect(() => openOpenClawAgentDatabase(options)).toThrow(
       /foreign_key_check failed.*session_windows row 1 references session_nodes \(foreign key 1\)/iu,
     );
     if (admission === "readonly") {
       const failure = new Error("foreign_key_check failed before external repair");
       failure.name = "SqliteIntegrityError";
       recordOpenClawAgentDatabaseOpenFailure(databasePath, failure);
-      const changed = new DatabaseSync(databasePath);
-      try {
-        changed.prepare("UPDATE session_windows SET updated_at = 2").run();
-      } finally {
-        changed.close();
-      }
+      using changed = new DatabaseSync(databasePath);
+      changed.prepare("UPDATE session_windows SET updated_at = 2").run();
     }
     const open = async () => {
       if (admission === "readonly") {
-        const result = openOpenClawAgentDatabaseReadOnly({ agentId: "worker-1", env });
+        const result = openOpenClawAgentDatabaseReadOnly(options);
         expect(result.found).toBe(true);
         if (result.found) {
           result.database.close();
         }
       } else if (admission === "async") {
-        await withOpenClawAgentDatabaseAsync({ agentId: "worker-1", env }, () => undefined);
+        await withOpenClawAgentDatabaseAsync(options, () => undefined);
       } else {
-        openOpenClawAgentDatabase({ agentId: "worker-1", env });
+        openOpenClawAgentDatabase(options);
       }
     };
     await expect(open()).rejects.toThrow("foreign_key_check failed");
     // External repair changes persisted rows without clearing this process's latch.
-    const repaired = new DatabaseSync(databasePath);
-    try {
+    {
+      using repaired = new DatabaseSync(databasePath);
       repaired.prepare("DELETE FROM session_windows WHERE session_id = ?").run("orphan-window");
       expect(repaired.prepare("PRAGMA foreign_key_check").all()).toEqual([]);
-    } finally {
-      repaired.close();
     }
     await expect(open()).resolves.toBeUndefined();
   },

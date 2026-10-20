@@ -15,25 +15,19 @@ export function createCurrentOpenClawAgentDatabaseFixtures(
   templatePath: string,
   fixtures: ReadonlyArray<{ path: string; agentId: string }>,
 ): void {
-  const template = openNodeSqliteDatabase(templatePath);
-  try {
+  {
+    using template = openNodeSqliteDatabase(templatePath);
     runSqliteImmediateTransactionSync(template, () => {
       template.exec(OPENCLAW_AGENT_SCHEMA_SQL);
       template.exec(`PRAGMA user_version = ${OPENCLAW_AGENT_SCHEMA_VERSION}`);
       persistAgentSchemaMetadata(template, "fixture-template", OPENCLAW_AGENT_SCHEMA_VERSION);
     });
-  } finally {
-    template.close();
   }
   for (const fixture of fixtures) {
     fs.mkdirSync(path.dirname(fixture.path), { recursive: true });
     fs.copyFileSync(templatePath, fixture.path, fs.constants.COPYFILE_EXCL);
-    const database = openNodeSqliteDatabase(fixture.path);
-    try {
-      persistAgentSchemaMetadata(database, fixture.agentId, OPENCLAW_AGENT_SCHEMA_VERSION);
-    } finally {
-      database.close();
-    }
+    using database = openNodeSqliteDatabase(fixture.path);
+    persistAgentSchemaMetadata(database, fixture.agentId, OPENCLAW_AGENT_SCHEMA_VERSION);
   }
 }
 

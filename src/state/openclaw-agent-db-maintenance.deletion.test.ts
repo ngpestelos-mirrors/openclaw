@@ -20,8 +20,8 @@ it.for(["journal replaced", "lease expired"] as const)(
       openOpenClawStateDatabase({ env: state.env });
       const databasePath = path.join(state.agentDir("worker"), "openclaw-agent.sqlite");
       fs.mkdirSync(path.dirname(databasePath), { recursive: true });
-      const database = new DatabaseSync(databasePath);
-      try {
+      {
+        using database = new DatabaseSync(databasePath);
         database.exec(
           fs
             .readFileSync(
@@ -30,8 +30,6 @@ it.for(["journal replaced", "lease expired"] as const)(
             )
             .replaceAll("keeper", "worker"),
         );
-      } finally {
-        database.close();
       }
       registerOpenClawAgentDatabase({
         agentId: "worker",
@@ -56,18 +54,14 @@ it.for(["journal replaced", "lease expired"] as const)(
             interrupted = true;
             return;
           }
-          const foreign = new DatabaseSync(resolveOpenClawStateSqlitePath(state.env));
-          try {
-            const mutation = foreign
-              .prepare(
-                "UPDATE agent_deletion_journal SET operation_id = 'replacement' WHERE agent_id = 'worker'",
-              )
-              .run();
-            expect(mutation.changes).toBe(1);
-            interrupted = true;
-          } finally {
-            foreign.close();
-          }
+          using foreign = new DatabaseSync(resolveOpenClawStateSqlitePath(state.env));
+          const mutation = foreign
+            .prepare(
+              "UPDATE agent_deletion_journal SET operation_id = 'replacement' WHERE agent_id = 'worker'",
+            )
+            .run();
+          expect(mutation.changes).toBe(1);
+          interrupted = true;
         });
       try {
         let failure: unknown;
@@ -109,32 +103,24 @@ it.for(["journal replaced", "lease expired"] as const)(
         await cleanupSessionStateForTest({ stateDir: state.stateDir, rootPath: state.root });
       }
       expect(fs.readFileSync(databasePath)).toEqual(original);
-      const legacy = new DatabaseSync(databasePath, { readOnly: true });
-      try {
+      {
+        using legacy = new DatabaseSync(databasePath, { readOnly: true });
         expect(legacy.prepare("PRAGMA user_version").get()?.user_version).toBe(24);
         expect(legacy.prepare("PRAGMA integrity_check").all()).toEqual([{ integrity_check: "ok" }]);
-      } finally {
-        legacy.close();
       }
-      const shared = new DatabaseSync(resolveOpenClawStateSqlitePath(state.env), {
+      using shared = new DatabaseSync(resolveOpenClawStateSqlitePath(state.env), {
         readOnly: true,
       });
-      try {
-        expect(
-          shared
-            .prepare("SELECT schema_version FROM agent_databases WHERE agent_id = 'worker'")
-            .all(),
-        ).toEqual([{ schema_version: 24 }]);
-        expect(
-          shared
-            .prepare(
-              "SELECT cleanup_completed FROM agent_deletion_journal WHERE agent_id = 'worker'",
-            )
-            .get()?.cleanup_completed,
-        ).toBe(0);
-      } finally {
-        shared.close();
-      }
+      expect(
+        shared
+          .prepare("SELECT schema_version FROM agent_databases WHERE agent_id = 'worker'")
+          .all(),
+      ).toEqual([{ schema_version: 24 }]);
+      expect(
+        shared
+          .prepare("SELECT cleanup_completed FROM agent_deletion_journal WHERE agent_id = 'worker'")
+          .get()?.cleanup_completed,
+      ).toBe(0);
     });
   },
 );
