@@ -5437,7 +5437,6 @@
 ["src/flows/doctor-core-checks.test.ts","../agents/prepared-model-catalog.js","e6ac7193bf876df1c799bf92eff50995c1d3f52af6e847314f070f40ec432b66",1]
 ["src/flows/doctor-core-checks.test.ts","../commands/doctor-security.js","3dcdc15acd75f2c002f6d9eee1df5538cd03588db96309eccb57700883017dbe",1]
 ["src/flows/doctor-core-checks.test.ts","../commands/doctor-workspace-suggestions.js","51b30c16e3c790b51ff552908482634fa27be6d01c8d790b6635f663f4116484",1]
-["src/flows/doctor-core-checks.test.ts","../gateway/call.js","64011d40301330b379e7aea54e4e35d6dfa3da206700467657e3fa35f1e31c87",1]
 ["src/flows/doctor-core-checks.test.ts","./doctor-core-checks.runtime.js","dadc0407061535954901d92d605ad22b57b9e7bd4642deb54c3e43138fe3ef9c",1]
 ["src/flows/doctor-gateway-services-check.test.ts","../commands/doctor-gateway-services.js","2ca734c58828322d87902699aff4a74c936b8169954b8fe69ec29e050c9fb389",1]
 ["src/flows/doctor-gateway-token-repair.test.ts","../../packages/terminal-core/src/note.js","336fc791de8ce9b19eba2b7bc282f83250c9743ee50617878e94ae793b1f1113",1]
