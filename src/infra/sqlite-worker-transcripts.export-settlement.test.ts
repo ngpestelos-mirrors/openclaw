@@ -9,6 +9,7 @@ import { useStateDatabaseTempDirs } from "../test-utils/state-database-temp-dirs
 import type { TranscriptSessionDescriptor } from "../transcripts/provider-types.js";
 import { readTranscriptExportOwnership } from "../transcripts/store-sqlite-read.js";
 import { transcriptSessionExportKey, TranscriptsStore } from "../transcripts/store.js";
+import { observeSettlement } from "./sqlite-readonly.test-support.js";
 import type { SqliteWorkerOperationSettlement } from "./sqlite-worker-operation-settlement.js";
 import * as workerStore from "./sqlite-worker-store.js";
 
@@ -59,13 +60,8 @@ it("retains the export lease while accepted bookkeeping has an unknown settlemen
             )),
       );
     });
-  let observed = false;
-  const result = store
-    .materializeSessionArtifacts(session, "metadata")
-    .catch((error: unknown) => error)
-    .finally(() => {
-      observed = true;
-    });
+  const result = store.materializeSessionArtifacts(session, "metadata");
+  const observed = observeSettlement(result);
   const database = openOpenClawStateDatabase({ env });
   const identity = { scope: "meeting-transcript.export", key: transcriptSessionExportKey(session) };
   try {
@@ -76,7 +72,7 @@ it("retains the export lease while accepted bookkeeping has an unknown settlemen
       }),
     ]);
     await setImmediate();
-    expect(observed).toBe(false);
+    expect(observed.settled).toBe(false);
     const lease = readOpenClawStateLease(database.db, identity);
     expect(lease).toBeDefined();
     expect(readTranscriptExportOwnership(database.db, session)?.export_pending_json).toBe(
@@ -88,12 +84,12 @@ it("retains the export lease while accepted bookkeeping has an unknown settlemen
       kind: "unknown",
       error: new Error("Export bookkeeping settlement is unknown"),
     });
-    await expect(result).resolves.toMatchObject({ code: "outcome-unknown" });
+    await expect(result).rejects.toMatchObject({ code: "outcome-unknown" });
     expect(readOpenClawStateLease(database.db, identity)).toEqual(lease);
     expect(existsSync(store.sessionDir(session))).toBe(false);
   } finally {
     settlement.resolve({ kind: "completed" });
-    await result;
+    await result.catch(() => {});
     observer.mockRestore();
   }
 });
