@@ -1,6 +1,7 @@
 /* @vitest-environment jsdom */
 
 import { expectDefined } from "@openclaw/normalization-core";
+import type { JSX } from "@solidjs/web";
 import { createSignal } from "solid-js";
 import { expect, it, onTestFinished, vi } from "vitest";
 import type { ApplicationContext } from "../../app/context.ts";
@@ -35,27 +36,21 @@ function mountedFixture(
   return {
     ...fixture,
     sessionKey,
-    render: (props: () => Partial<ChatPaneProps> = () => ({})) =>
+    render: (props: Partial<ChatPaneProps> = {}) =>
       mountPane(fixture.context, () => (
-        <ChatPaneView paneId={id} sessionKey={sessionKey} {...props()} />
+        <ChatPaneView paneId={id} sessionKey={sessionKey} {...props} />
       )),
   };
 }
 
-function mountPane(
-  context: ApplicationContext,
-  content: Parameters<typeof mountSolid>[0],
-  nativeContext = true,
-) {
+function mountPane(context: ApplicationContext, render: () => JSX.Element, nativeContext = true) {
   const container = nativeContext
     ? document.body.appendChild(createApplicationContextProvider(context))
     : undefined;
   onTestFinished(() => container?.remove());
-  const view = mountSolid(
-    () => <ApplicationProvider value={context}>{content()}</ApplicationProvider>,
-    { container },
-  );
-  return view;
+  return mountSolid(() => <ApplicationProvider value={context}>{render()}</ApplicationProvider>, {
+    container,
+  });
 }
 
 function element<T extends Element>(root: ParentNode, selector: string): T {
@@ -75,22 +70,19 @@ it("exposes the current navigation face through the real pane host without a gat
   const request = vi.fn(async () => ({}));
   const context = createInitializationContext(createGatewayBrowserClientFixture({ request }));
   context.gateway.snapshot.phase = "stopped";
-  const [face, setFace] = createSignal<"chat" | "dashboard">("chat");
-  const view = mountPane(
-    context,
-    () => (
-      <ChatPaneView paneId="bridge-navigation" sessionKey="agent:main:bridge" routeFace={face()} />
-    ),
-    false,
-  );
-  const pane = view.container.querySelector<ChatPaneElement>("openclaw-chat-pane");
-  expect(pane).not.toBeNull();
-  await waitForSolid(() => expect(pane?.captureNavigationFace()).toBe("chat"));
+  const [props, setProps] = createSignal<Partial<ChatPaneProps>>({
+    paneId: "bridge-navigation",
+    sessionKey: "agent:main:bridge",
+    routeFace: "chat",
+  });
+  const view = mountPane(context, () => <ChatPaneView {...props()} />, false);
+  const pane = element<ChatPaneElement>(view.container, "openclaw-chat-pane");
+  await waitForSolid(() => expect(pane.captureNavigationFace()).toBe("chat"));
 
-  setFace("dashboard");
-  await waitForSolid(() => expect(pane?.captureNavigationFace()).toBe("dashboard"));
-  setFace("chat");
-  await waitForSolid(() => expect(pane?.captureNavigationFace()).toBe("chat"));
+  setProps((p) => ({ ...p, routeFace: "dashboard" }));
+  await waitForSolid(() => expect(pane.captureNavigationFace()).toBe("dashboard"));
+  setProps((p) => ({ ...p, routeFace: "chat" }));
+  await waitForSolid(() => expect(pane.captureNavigationFace()).toBe("chat"));
   expect(request).not.toHaveBeenCalled();
   view.unmount();
 });
@@ -100,20 +92,10 @@ it("applies a route draft and its focus cue to an already mounted native pane", 
   const clearInterval = vi.spyOn(globalThis, "clearInterval");
   const renderProbe = vi.fn<(host: object, phase: "invalidate" | "commit") => void>();
   vi.stubGlobal("openclawRenderLifecycleTestHook", renderProbe);
-  const fixture = mountedFixture("bridge-draft");
-  const { sessionKey } = fixture;
-  const [draft, setDraft] = createSignal<string | undefined>(undefined);
-  const [focusComposer, setFocusComposer] = createSignal(false);
-  const [presented, setPresented] = createSignal(true);
-  const view = mountPane(fixture.context, () => (
-    <ChatPaneView
-      paneId="bridge-draft"
-      sessionKey={sessionKey}
-      active
-      draft={draft()}
-      focusComposer={focusComposer()}
-      presented={presented()}
-    />
+  const { sessionKey, context } = mountedFixture("bridge-draft");
+  const [props, setProps] = createSignal<Partial<ChatPaneProps>>({ active: true, presented: true });
+  const view = mountPane(context, () => (
+    <ChatPaneView paneId="bridge-draft" sessionKey={sessionKey} {...props()} />
   ));
   const textarea = await waitForSolid(() =>
     element<HTMLTextAreaElement>(view.container, composerSelector),
@@ -129,8 +111,7 @@ it("applies a route draft and its focus cue to an already mounted native pane", 
   );
   expect(Reflect.get(runtime, "state")).toMatchObject({ sessionKey });
   expect(renderProbe).toHaveBeenCalledWith(pane, "commit");
-  setDraft("What can you do?");
-  setFocusComposer(true);
+  setProps((p) => ({ ...p, draft: "What can you do?", focusComposer: true }));
   await pane.updateComplete;
   expect(renderProbe).toHaveBeenCalledWith(runtime, "commit");
   expect(textarea.value).toBe("What can you do?");
@@ -140,12 +121,12 @@ it("applies a route draft and its focus cue to an already mounted native pane", 
   );
   const poll = intervals.mock.calls.findIndex(([, delay]) => delay === 60_000);
   expect(poll).toBeGreaterThanOrEqual(0);
-  setPresented(false);
+  setProps((p) => ({ ...p, presented: false }));
   await waitForSolid(() =>
     expect(clearInterval).toHaveBeenCalledWith(intervals.mock.results[poll]?.value),
   );
   const priorIntervals = intervals.mock.calls.length;
-  setPresented(true);
+  setProps((p) => ({ ...p, presented: true }));
   await pane.updateComplete;
   const resumedPoll = intervals.mock.calls.findIndex(
     ([, delay], index) => index >= priorIntervals && delay === 60_000,
@@ -223,12 +204,11 @@ it("settles clean hidden reads and fences actual property changes until reveal",
 it("replaces the command provider while document-hidden rendering is parked", async () => {
   let visibility: DocumentVisibilityState = "visible";
   vi.spyOn(document, "visibilityState", "get").mockImplementation(() => visibility);
-  const fixture = mountedFixture("bridge-board-provider");
-  const { sessionKey } = fixture;
+  const { sessionKey, render } = mountedFixture("bridge-board-provider");
   const first = createMockBoardProvider(sessionKey);
   const second = createMockBoardProvider(sessionKey);
   const subscribe = vi.spyOn(second.events, "subscribe");
-  const view = fixture.render(() => ({ boardProvider: first }));
+  const view = render({ boardProvider: first });
   const pane = element<ChatPaneElement>(view.container, "openclaw-chat-pane");
   await pane.updateComplete;
   visibility = "hidden";
@@ -256,7 +236,7 @@ it("opens provider findings through the mounted pane's first rendered frame", as
     agentId: "main",
     providerReview: review,
   });
-  const view = fixture.render(() => ({ active: true }));
+  const view = fixture.render({ active: true });
   const reviewButton = await waitForSolid(() =>
     element<HTMLButtonElement>(view.container, ".chat-provider-review button"),
   );

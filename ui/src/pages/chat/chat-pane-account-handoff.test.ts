@@ -14,10 +14,7 @@ import {
   loadChatComposerState,
 } from "./composer-persistence.ts";
 
-afterEach(() => {
-  vi.restoreAllMocks();
-  vi.unstubAllGlobals();
-});
+afterEach(vi.restoreAllMocks);
 it("keeps A offline input with A when a same-client B hello replaces the pane before recovery settles", async () => {
   vi.stubGlobal("sessionStorage", createStorageMock());
   const prepare = vi.spyOn(drafts, "prepareDurableComposerRecovery");
@@ -36,13 +33,10 @@ it("keeps A offline input with A when a same-client B hello replaces the pane be
   vi.spyOn(client, "offlineRecoveryScope", "get").mockImplementation(() => account);
   vi.spyOn(client, "recoveryScopeReady", "get").mockImplementation(() => ready);
   const { pane, state } = createTestChatPane({ client });
-  const context = pane.context;
   Object.assign(pane, { paneId: "p1", stagedAttachmentGatewayOwner: client });
-  Object.assign(state, {
-    settings: context.gateway.connection,
-    chatMessage: "A offline draft",
-    connected: false,
-  });
+  state.settings = pane.context.gateway.connection;
+  state.chatMessage = "A offline draft";
+  state.connected = false;
   pane.chatState.attach(state);
   const persistence = pane.chatState.composerPersistence;
   persistence.start();
@@ -67,10 +61,9 @@ it("keeps A offline input with A when a same-client B hello replaces the pane be
   persistence.persistNow();
   await settle();
   expect(loadChatComposerState(state, state.sessionKey).snapshot?.draft).toBe(privateDraft);
-  // GatewayBrowserClient replaces identity before notifying hello observers. The
-  // route can unmount the A pane before its persistence sees recovery readiness.
+  // Identity changes before hello observers; A can unmount before recovery is ready.
   account = "account-b";
-  context.gateway.snapshot.hello = {
+  pane.context.gateway.snapshot.hello = {
     type: "hello-ok",
     protocol: 1,
     auth: { role: "operator", scopes: [], recoveryScope: account },
@@ -85,7 +78,7 @@ it("keeps A offline input with A when a same-client B hello replaces the pane be
     chatAttachments: [] as ChatAttachment[],
     chatQueue: [],
   };
-  restorePaneStagedAttachments(context, "p1", destination, client);
+  restorePaneStagedAttachments(pane.context, "p1", destination, client);
   const b = new ChatComposerPersistence(() => destination);
   b.start();
   b.persistChangedState();

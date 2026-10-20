@@ -30,28 +30,27 @@ it("preserves threads while a same-client reconnect settles a pending answer", a
   ];
   const historyReady = createDeferred<void>();
   onTestFinished(() => historyReady.resolve());
-  const replies: Record<string, () => unknown> = {
-    "agents.list": () => ({
+  const replies: Record<string, unknown> = {
+    "agents.list": {
       defaultId: "main",
       mainKey: "main",
       scope: "per-sender",
       agents: [{ id: "main" }],
-    }),
-    "sessions.subscribe": () => ({ subscribed: true, list: sessionsResult([], 1) }),
-    "sessions.messages.subscribe": () => ({ subscribed: true, key: current }),
-    "sessions.messages.unsubscribe": () => ({ subscribed: false, key: current }),
-    "models.authStatus": () => ({ ts: 1, providers: [] }),
-    "models.list": () => ({ commands: [], models, swarmEnabled: false }),
-    "chat.metadata": () => ({ commands: [], models, swarmEnabled: false }),
+    },
+    "sessions.subscribe": { subscribed: true, list: sessionsResult([], 1) },
+    "sessions.messages.subscribe": { subscribed: true, key: current },
+    "sessions.messages.unsubscribe": { subscribed: false, key: current },
+    "models.authStatus": { ts: 1, providers: [] },
+    "models.list": { commands: [], models, swarmEnabled: false },
+    "chat.metadata": { commands: [], models, swarmEnabled: false },
   };
   const request = createGatewayRequestMock(async (method) => {
     if (method === "chat.startup") {
       await historyReady.promise;
       return { messages: [], sessionId: "session-current", hasMore: false, totalMessages: 0 };
     }
-    const reply = replies[method];
-    if (Object.hasOwn(replies, method) && reply) {
-      return reply();
+    if (Object.hasOwn(replies, method)) {
+      return replies[method];
     }
     throw new Error(`Unexpected gateway request: ${method}`);
   });
@@ -64,7 +63,7 @@ it("preserves threads while a same-client reconnect settles a pending answer", a
   const hydrate = (...exchanges: Array<{ question: string; answer: string; ts: number }>) =>
     threads.hydrate(current, async () => ({ exchanges }), "main");
   const earlier = { question: "Earlier question", answer: "Earlier answer", ts: 1 };
-  await hydrate({ ...earlier });
+  await hydrate(earlier);
   const pending = threads.submit(current, question, () => answer.promise, "main");
   threads.setDraft(other, "other draft", "main");
 
@@ -91,7 +90,7 @@ it("preserves threads while a same-client reconnect settles a pending answer", a
   pane.applyGatewaySnapshot({ ...pane.context.gateway.snapshot, phase: "connected" });
   expect(state.chatModelsLoading).toBe(true);
   expect(view(other).draft).toBe("other draft");
-  await hydrate({ ...earlier }, { question, answer: "Recovered answer", ts: 2 });
+  await hydrate(earlier, { question, answer: "Recovered answer", ts: 2 });
   expect(view().turns).toMatchObject([
     { ...earlier, status: "answered" },
     { question, status: "answered", answer: "Recovered answer", ts: 2 },

@@ -1,6 +1,6 @@
 /* @vitest-environment jsdom */
 
-import { afterEach, expect, it, vi } from "vitest";
+import { expect, it, onTestFinished, vi } from "vitest";
 import { createDeferred } from "../../../../test/helpers/promise.js";
 import type { GatewaySessionRow } from "../../api/types.ts";
 import { t } from "../../i18n/index.ts";
@@ -14,31 +14,22 @@ import {
 } from "./chat-pane.test-support.ts";
 
 vi.mock("../../lib/toast.ts", () => ({ showToast: vi.fn() }));
-const modal = document.createElement("div");
-afterEach(() => {
-  vi.unstubAllGlobals();
-  document.openClawModalLayers?.delete(modal);
-});
 
 const rowPatches: Record<string, Partial<GatewaySessionRow>> = {
   protected: { key: "agent:main:main" },
   archived: { archived: true },
   "non-durable": { sessionId: undefined },
 };
+const sessionRow = (id: string): GatewaySessionRow => ({
+  key: `agent:main:${id}`,
+  sessionId: `${id}-id`,
+  kind: "direct",
+});
 function fixture(guard = "") {
+  vi.mocked(showToast).mockClear();
   const client = createGatewayBrowserClientFixture();
-  const row: GatewaySessionRow = {
-    key: "agent:main:current",
-    sessionId: "current-id",
-    kind: "direct",
-    ...rowPatches[guard],
-  };
-  const other: GatewaySessionRow = {
-    key: "agent:main:other",
-    sessionId: "other-id",
-    kind: "direct",
-  };
-  const result = { ...sessionsResult([row, other]), path: "" };
+  const row = { ...sessionRow("current"), ...rowPatches[guard] };
+  const result = { ...sessionsResult([row, sessionRow("other")]), path: "" };
   const patch = vi.fn(async () => ({}));
   const sessions = createSessionCapabilityFixture({
     patch,
@@ -72,28 +63,36 @@ function press(pane: TestChatPane, init: KeyboardEventInit = {}) {
   return event;
 }
 
-it("uses the header lifecycle and Undo for the current session via the keyboard", async () => {
-  const { pane, state, patch, row } = fixture();
-  vi.mocked(showToast).mockClear();
+it.each(["success", "failure"])("archives via the keyboard with %s feedback", async (outcome) => {
+  const { pane, state, patch, sessions, row } = fixture();
+  if (outcome === "failure") {
+    patch.mockRejectedValue(new Error("Archive rejected"));
+  }
   const action = vi.spyOn(pane, "handleHeaderSessionAction");
   const scope = { agentId: "main", expectedSessionId: row.sessionId };
   expect(press(pane).defaultPrevented).toBe(true);
   expect(action).toHaveBeenCalledExactlyOnceWith({ kind: "toggle-archived" }, row);
   await action.mock.results[0]?.value;
-  expect(showToast).toHaveBeenCalledWith(
-    expect.objectContaining({ actionLabel: t("common.undo") }),
-  );
-  expect(patch).toHaveBeenCalledExactlyOnceWith(row.key, { archived: true }, scope);
   expect(state.chatMessage).toBe("Keep the unsent foreground draft");
   expect(pane.onPaneSessionChange).not.toHaveBeenCalled();
-  vi.mocked(showToast).mock.calls.at(-1)?.[0].onAction?.();
-  await vi.waitFor(() =>
-    expect(patch).toHaveBeenCalledWith(
-      row.key,
-      { archived: false },
-      { ...scope, deferListRefresh: true },
-    ),
-  );
+  if (outcome === "failure") {
+    expect(state.chatError).toContain("Archive rejected");
+    expect(showToast).not.toHaveBeenCalled();
+    expect(sessions.archiveVisibility(row.key)).toBeUndefined();
+  } else {
+    expect(showToast).toHaveBeenCalledWith(
+      expect.objectContaining({ actionLabel: t("common.undo") }),
+    );
+    expect(patch).toHaveBeenCalledExactlyOnceWith(row.key, { archived: true }, scope);
+    vi.mocked(showToast).mock.calls.at(-1)?.[0].onAction?.();
+    await vi.waitFor(() =>
+      expect(patch).toHaveBeenCalledWith(
+        row.key,
+        { archived: false },
+        { ...scope, deferListRefresh: true },
+      ),
+    );
+  }
 });
 
 it("deduplicates rapid requests through the shared archive owner", async () => {
@@ -135,7 +134,9 @@ it.each([
     pane.context.gateway.snapshot.hello!.features!.methods = [];
   }
   if (guard === "modal") {
+    const modal = document.createElement("div");
     (document.openClawModalLayers ??= new Set()).add(modal);
+    onTestFinished(() => document.openClawModalLayers?.delete(modal));
   }
   if (guard === "presentation") {
     pane.presented = false;
@@ -145,16 +146,4 @@ it.each([
   }
   await vi.dynamicImportSettled();
   expect(patch).not.toHaveBeenCalled();
-});
-
-it("keeps the draft and reports archive failure without navigating or offering Undo", async () => {
-  const { pane, state, patch, sessions, row } = fixture();
-  vi.mocked(showToast).mockClear();
-  patch.mockRejectedValue(new Error("Archive rejected"));
-  expect(press(pane).defaultPrevented).toBe(true);
-  await vi.waitFor(() => expect(state.chatError).toContain("Archive rejected"));
-  expect(state.chatMessage).toBe("Keep the unsent foreground draft");
-  expect(pane.onPaneSessionChange).not.toHaveBeenCalled();
-  expect(showToast).not.toHaveBeenCalled();
-  expect(sessions.archiveVisibility(row.key)).toBeUndefined();
 });

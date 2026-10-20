@@ -22,15 +22,12 @@ const listMethod = "sessions.catalog.list";
 const readMethod = "sessions.catalog.read";
 const session = {
   threadId: key.threadId,
-  name: "Closed pane fixture",
   status: "stored" as const,
   archived: false,
   canContinue: false,
   canArchive: false,
 };
 const listed = catalogList(key, [session], {
-  label: "Fixture catalog",
-  hostLabel: "Local fixture",
   capabilities: { continueSession: false, archive: false },
 });
 const readResult: SessionsCatalogReadResult = {

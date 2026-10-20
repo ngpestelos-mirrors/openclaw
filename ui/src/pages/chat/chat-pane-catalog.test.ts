@@ -40,13 +40,20 @@ const catalogSession: SessionCatalogSession = {
   canArchive: true,
 };
 
-function createCatalogContinuationPane(request: ReturnType<typeof vi.fn>) {
+function createCatalogPane(request: ReturnType<typeof vi.fn>, key = catalogKey) {
   const client = { request } as unknown as GatewayBrowserClient;
   const sessions = {} as SessionCapability;
-  const { pane, state } = createTestChatPane({ client, sessions });
+  const fixture = createTestChatPane({ client, sessions });
+  const { pane } = fixture;
   Object.defineProperty(pane, "isConnected", { configurable: true, value: false });
-  const key = catalogKey;
-  pane.sessionKey = state.sessionKey = buildCatalogSessionKey(key, "main");
+  pane.sessionKey = buildCatalogSessionKey(key, "main");
+  return { ...fixture, client, key, sessions };
+}
+
+function createCatalogContinuationPane(request: ReturnType<typeof vi.fn>) {
+  const fixture = createCatalogPane(request);
+  const { pane, state } = fixture;
+  state.sessionKey = pane.sessionKey;
   state.chatMessage = "Continue the original catalog conversation";
   state.handleChatDraftChange = vi.fn((draft: string) => {
     state.chatMessage = draft;
@@ -55,7 +62,7 @@ function createCatalogContinuationPane(request: ReturnType<typeof vi.fn>) {
   pane.history.catalogSession = { ...catalogSession };
   pane.onPaneSessionChange = vi.fn();
   Object.defineProperty(pane, "isConnected", { configurable: true, value: true });
-  return { client, key, pane, sessions, state };
+  return fixture;
 }
 
 function startContinuation() {
@@ -175,10 +182,7 @@ describe("chat pane catalog", () => {
       .mockResolvedValueOnce(catalogList(key, [], { nextCursor: "page-2" }))
       .mockResolvedValueOnce(catalogList(key, [selectedSession], { nextCursor: "page-2" }))
       .mockResolvedValueOnce({ hostId: key.hostId, threadId: key.threadId, items: [] });
-    const client = { request } as unknown as GatewayBrowserClient;
-    const { pane } = createTestChatPane({ client, sessions: {} as SessionCapability });
-    Object.defineProperty(pane, "isConnected", { configurable: true, value: false });
-    pane.sessionKey = buildCatalogSessionKey(key, "main");
+    const { pane } = createCatalogPane(request);
     Object.defineProperty(pane, "isConnected", { configurable: true, value: true });
 
     await pane.loadCatalogSession(key, false);
@@ -208,10 +212,7 @@ describe("chat pane catalog", () => {
       .fn()
       .mockResolvedValueOnce(catalogList(key, [{ ...catalogSession }], { capabilities: {} }))
       .mockImplementationOnce(() => read.promise);
-    const client = { request } as unknown as GatewayBrowserClient;
-    const { pane, state } = createTestChatPane({ client, sessions: {} as SessionCapability });
-    Object.defineProperty(pane, "isConnected", { configurable: true, value: false });
-    pane.sessionKey = buildCatalogSessionKey(key, "main");
+    const { pane, state } = createCatalogPane(request);
     state.sessionKey = pane.sessionKey;
     state.assistantAgentId = "main";
     Object.defineProperty(pane, "isConnected", { configurable: true, value: true });
@@ -265,14 +266,12 @@ describe("chat pane catalog", () => {
       items: [{ id: "x1", type: "other" }],
       nextCursor: "cursor-2",
     };
-    const client = {
-      request: vi.fn(async () => readPage),
-    } as unknown as GatewayBrowserClient;
-    const { pane, state } = createTestChatPane({ client, sessions: {} as SessionCapability });
     const key = { catalogId: "claude", hostId: "gateway:local", threadId: "thread-1" };
-    Object.defineProperty(pane, "isConnected", { configurable: true, value: false });
-    state.sessionKey = buildCatalogSessionKey(key, "main");
-    pane.sessionKey = state.sessionKey;
+    const { pane, state } = createCatalogPane(
+      vi.fn(async () => readPage),
+      key,
+    );
+    state.sessionKey = pane.sessionKey;
     pane.history.catalogCursor = "cursor-1";
     Object.defineProperty(pane, "isConnected", { configurable: true, value: true });
     expect(await pane.loadCatalogSession(key, true)).toBe(true);
