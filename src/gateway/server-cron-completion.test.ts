@@ -142,10 +142,7 @@ async function createCompletionFixture(
       pluginId: "telegram",
       source: "test",
       plugin: {
-        ...createChannelTestPluginBase({
-          id: "telegram",
-          config: { listAccountIds: () => ["default", "work"] },
-        }),
+        ...createChannelTestPluginBase({ id: "telegram" }),
         outbound: { deliveryMode: "direct", sendText },
       },
     },
@@ -278,33 +275,29 @@ async function createCompletionFixture(
       expect(readActiveCronRunReceiptsInDatabase(database, receipt.storeKey, [job.id])).toEqual([
         receipt,
       ]);
-      const retainedQuery = database.prepare(
-        "SELECT * FROM cron_run_receipts WHERE receipt_id = 'released-receipt'",
-      );
-      const retained = retainedQuery.get();
-      expect(retained).toMatchObject({
+      const snapshot = () => ({
+        retained: database
+          .prepare("SELECT * FROM cron_run_receipts WHERE receipt_id = 'released-receipt'")
+          .get(),
+        schema: database
+          .prepare(
+            "SELECT name, sql FROM sqlite_schema WHERE name IN ('cron_jobs', 'cron_run_receipts') ORDER BY name",
+          )
+          .all(),
+        jobJson: database
+          .prepare("SELECT job_json FROM cron_jobs WHERE store_key = ? AND job_id = ?")
+          .get(receipt.storeKey, job.id)?.job_json,
+      });
+      const before = snapshot();
+      expect(before.retained).toMatchObject({
         request_run_id: "released-request",
         status: "ok",
         started_at_ms: 10,
         finished_at_ms: 20,
         delivery_attempt_state: "unknown",
       });
-      const schemaQuery = database.prepare(
-        "SELECT name, sql FROM sqlite_schema WHERE name IN ('cron_jobs', 'cron_run_receipts') ORDER BY name",
-      );
-      const schema = schemaQuery.all();
-      return {
-        job: loaded,
-        assertPreserved() {
-          expect(retainedQuery.get()).toEqual(retained);
-          expect(schemaQuery.all()).toEqual(schema);
-          expect(
-            database
-              .prepare("SELECT job_json FROM cron_jobs WHERE store_key = ? AND job_id = ?")
-              .get(receipt.storeKey, job.id)?.job_json,
-          ).toBe(jobJson);
-        },
-      };
+      expect(before.jobJson).toBe(jobJson);
+      return { job: loaded, assertPreserved: () => expect(snapshot()).toEqual(before) };
     },
     async removeOccurrence() {
       await saveCronStore(cronStorePath, { version: 1, jobs: [] });
@@ -444,78 +437,69 @@ describe("completion announcement", () => {
     },
   );
 
-  it("still sends when destination conversation preparation fails", async () => {
-    await withCompletionFixture(kind, async (fixture) => {
-      vi.spyOn(outboundSession, "bindOutboundSessionEntry").mockRejectedValueOnce(
-        new Error("conversation binding unavailable"),
-      );
-
-      const result = await fixture.finalize();
-
-      expect(result).toMatchObject({
-        delivered: true,
-        deliveryError: undefined,
-        ...deliveryDiagnostics(
-          "result was delivered but was not added to the conversation: conversation binding unavailable",
-        ),
-      });
-      expect(fixture.sendText).toHaveBeenCalledOnce();
-      await fixture.assertNoResults();
-    });
-  });
-
-  it("sends a cross-agent destination without writing either conversation", async () => {
-    await withCompletionFixture(kind, async (fixture) => {
-      fixture.cfg.agents = { entries: { main: {}, other: {} } };
-      fixture.cfg.bindings = [
-        {
-          agentId: "other",
-          match: {
+  it.each(["binding failure", "cross-agent destination"] as const)(
+    "delivers without conversation writes after %s",
+    async (reason) => {
+      await withCompletionFixture(kind, async (fixture) => {
+        let otherDestination: typeof fixture.destination | undefined;
+        if (reason === "binding failure") {
+          vi.spyOn(outboundSession, "bindOutboundSessionEntry").mockRejectedValueOnce(
+            new Error("conversation binding unavailable"),
+          );
+        } else {
+          fixture.cfg.agents = { entries: { main: {}, other: {} } };
+          fixture.cfg.bindings = [
+            {
+              agentId: "other",
+              match: {
+                channel: "telegram",
+                accountId: "default",
+                peer: { kind: "direct", id: "123" },
+              },
+            },
+          ];
+          fixture.job.delivery = {
+            mode: "announce",
             channel: "telegram",
+            to: "123",
             accountId: "default",
-            peer: { kind: "direct", id: "123" },
-          },
-        },
-      ];
-      fixture.job.delivery = {
-        mode: "announce",
-        channel: "telegram",
-        to: "123",
-        accountId: "default",
-      };
-      const otherDestination = {
-        ...fixture.destination,
-        agentId: "other",
-        sessionKey: "agent:other:telegram:direct:123",
-        sessionId: "other-recipient-session",
-        storePath: path.resolve(
-          fixture.destination.storePath,
-          "../../../other/sessions/sessions.json",
-        ),
-      };
-      await replaceSessionEntry(otherDestination, {
-        sessionId: otherDestination.sessionId,
-        updatedAt: 1,
+          };
+          otherDestination = {
+            ...fixture.destination,
+            agentId: "other",
+            sessionKey: "agent:other:telegram:direct:123",
+            sessionId: "other-recipient-session",
+            storePath: path.resolve(
+              fixture.destination.storePath,
+              "../../../other/sessions/sessions.json",
+            ),
+          };
+          await replaceSessionEntry(otherDestination, {
+            sessionId: otherDestination.sessionId,
+            updatedAt: 1,
+          });
+        }
+        expect(await fixture.finalize()).toMatchObject({
+          delivered: true,
+          deliveryError: undefined,
+          ...deliveryDiagnostics(
+            reason === "binding failure"
+              ? "result was delivered but was not added to the conversation: conversation binding unavailable"
+              : "Conversation context skipped: the destination belongs to a different agent.",
+          ),
+        });
+        expect(fixture.sendText).toHaveBeenCalledOnce();
+        await fixture.assertNoResults();
+        if (otherDestination) {
+          expect(fixture.sendText.mock.calls[0]?.[0]).toMatchObject({
+            to: "123",
+            accountId: "default",
+          });
+          expect(await fixture.messages(otherDestination)).toEqual([]);
+        }
       });
-
-      const result = await fixture.finalize();
-
-      expect(result).toMatchObject({
-        delivered: true,
-        deliveryError: undefined,
-        ...deliveryDiagnostics(
-          "Conversation context skipped: the destination belongs to a different agent.",
-        ),
-      });
-      expect(fixture.sendText).toHaveBeenCalledOnce();
-      expect(fixture.sendText.mock.calls[0]?.[0]).toMatchObject({
-        to: "123",
-        accountId: "default",
-      });
-      await fixture.assertNoResults();
-      expect(await fixture.messages(otherDestination)).toEqual([]);
-    });
-  });
+    },
+  );
 
   it.each(["deleted", "reset"] as const)(
     "delivers to the explicit destination when the captured source was %s",

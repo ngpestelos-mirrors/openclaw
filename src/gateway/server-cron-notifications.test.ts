@@ -346,60 +346,55 @@ describe("dispatchGatewayCronFinishedNotifications", () => {
     }
   });
 
-  it("keeps webhook delivery cold when its token owner is unavailable", async () => {
-    const logger = { warn: vi.fn() };
-    const job = createCompletionWebhookJob();
-    setActiveDegradedSecretOwners([
-      {
-        ownerKind: "capability",
-        ownerId: "cron-webhook",
-        state: "unavailable",
-        paths: ["cron.webhookToken"],
-        refKeys: ["env:default:MISSING_WEBHOOK_TOKEN"],
-        reason: "secret provider failed",
-      },
-    ]);
-
-    dispatchCompletion(job, { logger });
-
-    await waitForFast(() =>
-      expect(logger.warn).toHaveBeenCalledWith(
-        expect.objectContaining({
-          jobId: job.id,
-          err: expect.stringContaining("Secret owner capability:cron-webhook"),
-        }),
-        "cron: webhook delivery failed",
-      ),
-    );
-    expect(mocks.fetchWithSsrFGuard).not.toHaveBeenCalled();
-    await waitForFast(() => expect(getActiveGatewayRootWorkCount()).toBe(0));
-  });
-
-  it("reports and releases an unsuccessful completion webhook", async () => {
-    const release = vi.fn(async () => {});
-    mocks.fetchWithSsrFGuard.mockResolvedValueOnce(
-      webhookResponse(new Response(null, { status: 500 }), release),
-    );
-    const logger = { warn: vi.fn() };
-    const job = createCompletionWebhookJob("https://example.invalid/cron?token=must-not-be-logged");
-
-    dispatchCompletion(job, { logger });
-
-    await waitForFast(() =>
-      expect(logger.warn).toHaveBeenCalledWith(
-        expect.objectContaining({
-          jobId: job.id,
-          source: "completionDestination",
-          err: expect.stringContaining("500"),
-          webhookUrl: "https://example.invalid/cron",
-        }),
-        "cron: webhook delivery failed",
-      ),
-    );
-    expect(release).toHaveBeenCalledOnce();
-    expect(JSON.stringify(logger.warn.mock.calls)).not.toContain("must-not-be-logged");
-    await waitForFast(() => expect(getActiveGatewayRootWorkCount()).toBe(0));
-  });
+  it.each(["unavailable token", "HTTP 500"] as const)(
+    "reports completion webhook failure for %s",
+    async (failure) => {
+      const unavailable = failure === "unavailable token";
+      const logger = { warn: vi.fn() };
+      const release = vi.fn(async () => {});
+      const job = createCompletionWebhookJob(
+        unavailable ? undefined : "https://example.invalid/cron?token=must-not-be-logged",
+      );
+      if (unavailable) {
+        setActiveDegradedSecretOwners([
+          {
+            ownerKind: "capability",
+            ownerId: "cron-webhook",
+            state: "unavailable",
+            paths: ["cron.webhookToken"],
+            refKeys: ["env:default:MISSING_WEBHOOK_TOKEN"],
+            reason: "secret provider failed",
+          },
+        ]);
+      } else {
+        mocks.fetchWithSsrFGuard.mockResolvedValueOnce(
+          webhookResponse(new Response(null, { status: 500 }), release),
+        );
+      }
+      dispatchCompletion(job, { logger });
+      await waitForFast(() =>
+        expect(logger.warn).toHaveBeenCalledWith(
+          expect.objectContaining({
+            jobId: job.id,
+            err: expect.stringContaining(
+              unavailable ? "Secret owner capability:cron-webhook" : "500",
+            ),
+            ...(unavailable
+              ? {}
+              : { source: "completionDestination", webhookUrl: "https://example.invalid/cron" }),
+          }),
+          "cron: webhook delivery failed",
+        ),
+      );
+      if (unavailable) {
+        expect(mocks.fetchWithSsrFGuard).not.toHaveBeenCalled();
+      } else {
+        expect(release).toHaveBeenCalledOnce();
+        expect(JSON.stringify(logger.warn.mock.calls)).not.toContain("must-not-be-logged");
+      }
+      await waitForFast(() => expect(getActiveGatewayRootWorkCount()).toBe(0));
+    },
+  );
 
   it.each([false, true])("releases an unread webhook response (stalled=%s)", async (stalled) => {
     vi.useFakeTimers();
