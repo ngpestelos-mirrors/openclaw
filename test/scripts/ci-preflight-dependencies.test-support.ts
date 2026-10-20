@@ -12,18 +12,8 @@ export function exportPreflightHarness(directory: string): string {
     }
   }
   execFileSync("git", ["init", "--quiet", workspace], { env });
-  execFileSync(
-    "git",
-    [
-      `--git-dir=${path.join(workspace, ".git")}`,
-      `--work-tree=${process.cwd()}`,
-      "add",
-      "--",
-      ".github/actions",
-      "scripts",
-    ],
-    { env },
-  );
+  const gitPaths = [`--git-dir=${path.join(workspace, ".git")}`, `--work-tree=${process.cwd()}`];
+  execFileSync("git", [...gitPaths, "add", "--", ".github/actions", "scripts"], { env });
   const result = spawnSync(
     "python3",
     ["-I", "-S", ".github/actions/git-owner/owner.py", "--policy", "-"],
@@ -98,13 +88,9 @@ registerHooks({
       OPENCLAW_CI_RUN_NODE: "false",
       OPENCLAW_CI_RUN_WINDOWS: "true",
       OPENCLAW_CI_RUN_UI_TESTS: "true",
-      // Exercise real planner and codec imports without a repository-wide PR
-      // owner graph. Changed-owner selection has separate integration coverage.
+      // Exercise planner/codec imports; changed-owner selection is covered separately.
       OPENCLAW_CI_CHANGED_PATHS_JSON: "[]",
     },
   });
-  return {
-    result,
-    manifest: existsSync(output) ? readFileSync(output, "utf8") : "",
-  };
+  return { result, manifest: existsSync(output) ? readFileSync(output, "utf8") : "" };
 }

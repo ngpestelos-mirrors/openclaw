@@ -16,6 +16,30 @@ const processConfig = "test/vitest/vitest.process.config.ts";
 const nodeFile = "src/process/spawn-broker/cleanup.test.ts";
 const bunFile = "src/process/spawn-broker/context.test.ts";
 
+type ShardOptions = NonNullable<Parameters<typeof runShardPlans>[1]>;
+function recordRun(plan: Parameters<typeof runShardPlans>[0][number], options: ShardOptions) {
+  const calls: Array<{
+    runtime: string | undefined;
+    args: string[];
+    includes?: string[];
+    members?: string[];
+  }> = [];
+  const readList = (file: string | undefined): string[] | undefined =>
+    file ? JSON.parse(readFileSync(file, "utf8")) : undefined;
+  return runShardPlans([plan], {
+    ...options,
+    runChild: async (args, env) => {
+      calls.push({
+        runtime: env.OPENCLAW_VITEST_RUNTIME,
+        args,
+        includes: readList(env.OPENCLAW_VITEST_INCLUDE_FILE),
+        members: readList(env.OPENCLAW_VITEST_POST_SHARD_INCLUDE_FILE),
+      });
+      return 0;
+    },
+  }).then(() => calls);
+}
+
 describe("CI test runtime policies", () => {
   it("keeps the blocked socket reset contract on Node", () => {
     for (const policy of ["bun-all", "dual-all"] as const) {
@@ -63,16 +87,11 @@ describe("CI test runtime policies", () => {
     ["gateway-client", []],
   ] as const)("preserves Gateway Node contracts for the %s inventory", async (name, files) => {
     for (const policy of ["bun-all", "dual-all"] as const) {
-      const calls: Array<{ runtime: string | undefined; args: string[] }> = [];
-      await runShardPlans(
-        [{ kind: "group", name, plan: { configs: [`test/vitest/vitest.${name}.config.ts`] } }],
+      const calls = await recordRun(
+        { kind: "group", name, plan: { configs: [`test/vitest/vitest.${name}.config.ts`] } },
         {
           env: { OPENCLAW_CI_TEST_RUNTIME_POLICY: policy },
           scratchDir: tempDirs.make("all-gateway-"),
-          runChild: async (args, env) => {
-            calls.push({ runtime: env.OPENCLAW_VITEST_RUNTIME, args });
-            return 0;
-          },
         },
       );
       const expected = files.map((file) => path.resolve(file)).toSorted();
@@ -177,9 +196,8 @@ describe("CI test runtime policies", () => {
     const scratch = tempDirs.make("all-includes-");
     const includeFile = path.join(scratch, "includes.json");
     writeFileSync(includeFile, JSON.stringify([path.resolve(nodeFile), path.resolve(bunFile)]));
-    const calls: Array<{ runtime: string | undefined; includes: string[]; args: string[] }> = [];
-    await runShardPlans(
-      [{ kind: "group", name: "unknown", plan: { configs: ["unknown.config.ts"] } }],
+    const calls = await recordRun(
+      { kind: "group", name: "unknown", plan: { configs: ["unknown.config.ts"] } },
       {
         env: {
           OPENCLAW_CI_TEST_RUNTIME_POLICY: "bun-all",
@@ -187,14 +205,6 @@ describe("CI test runtime policies", () => {
           OPENCLAW_NODE_TEST_VITEST_ARGS_JSON: JSON.stringify(["--retry=2", "--", "context"]),
         },
         scratchDir: scratch,
-        runChild: async (args, env) => {
-          calls.push({
-            runtime: env.OPENCLAW_VITEST_RUNTIME,
-            includes: JSON.parse(readFileSync(env.OPENCLAW_VITEST_INCLUDE_FILE!, "utf8")),
-            args,
-          });
-          return 0;
-        },
       },
     );
     expect(calls.map(({ runtime, includes }) => ({ runtime, includes }))).toEqual([
@@ -231,15 +241,13 @@ describe("CI test runtime policies", () => {
         { runtime: "node" },
       ]);
     }
-    const calls: Array<{ runtime: string | undefined; args: string[] }> = [];
-    await runShardPlans([{ kind: "target", name: "process", target: "src/process" }], {
-      env: { OPENCLAW_CI_TEST_RUNTIME_POLICY: "bun-all" },
-      scratchDir: tempDirs.make("all-targets-"),
-      runChild: async (args, env) => {
-        calls.push({ runtime: env.OPENCLAW_VITEST_RUNTIME, args });
-        return 0;
+    const calls = await recordRun(
+      { kind: "target", name: "process", target: "src/process" },
+      {
+        env: { OPENCLAW_CI_TEST_RUNTIME_POLICY: "bun-all" },
+        scratchDir: tempDirs.make("all-targets-"),
       },
-    });
+    );
     expect(calls).toHaveLength(2);
     expect(calls[0]!.runtime).toBe("node");
     expect(calls[0]!.args).toContain(nodeFile);
@@ -254,22 +262,18 @@ describe("CI test runtime policies", () => {
     async (source) => {
       const uiNode = "ui/src/pages/chat/chat-thread-retention.test.ts";
       const uiBun = "ui/src/pages/chat/chat-pane-history.test.ts";
-      const calls: Array<{ runtime: string | undefined; includes: string[]; members: string[] }> =
-        [];
       const scratch = tempDirs.make("all-ui-");
       const includeFile = path.join(scratch, "includes.json");
       writeFileSync(includeFile, JSON.stringify([uiNode, uiBun]));
-      await runShardPlans(
-        [
-          {
-            kind: "group",
-            name: "ui",
-            plan: {
-              configs: ["ui/vitest.config.ts"],
-              ...(source === "patterns" ? { includePatterns: [uiNode, uiBun] } : {}),
-            },
+      const calls = await recordRun(
+        {
+          kind: "group",
+          name: "ui",
+          plan: {
+            configs: ["ui/vitest.config.ts"],
+            ...(source === "patterns" ? { includePatterns: [uiNode, uiBun] } : {}),
           },
-        ],
+        },
         {
           env: {
             OPENCLAW_CI_TEST_RUNTIME_POLICY: "bun-all",
@@ -280,16 +284,6 @@ describe("CI test runtime policies", () => {
               : {}),
           },
           scratchDir: scratch,
-          runChild: async (_args, env) => {
-            calls.push({
-              runtime: env.OPENCLAW_VITEST_RUNTIME,
-              includes: JSON.parse(readFileSync(env.OPENCLAW_VITEST_INCLUDE_FILE!, "utf8")),
-              members: JSON.parse(
-                readFileSync(env.OPENCLAW_VITEST_POST_SHARD_INCLUDE_FILE!, "utf8"),
-              ),
-            });
-            return 0;
-          },
         },
       );
       expect(calls.map(({ runtime, includes }) => ({ runtime, includes }))).toEqual([

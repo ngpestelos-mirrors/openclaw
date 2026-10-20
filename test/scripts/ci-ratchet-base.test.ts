@@ -1,4 +1,4 @@
-import { execFileSync, spawnSync } from "node:child_process";
+import { execFileSync, spawnSync, type SpawnSyncReturns } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
@@ -20,62 +20,69 @@ function step(job: string, name: string): string {
   return selected.run;
 }
 
+const [expectedBase, expectedCandidate, merge, fork] = ["a", "b", "c", "d"].map((digit) =>
+  digit.repeat(40),
+);
+function compare(gh: string, merged = false) {
+  const root = tempDirs.make("openclaw-ci-ratchet-base-");
+  const output = path.join(root, "output");
+  const apiLog = path.join(root, "api");
+  const run = runWorkflowShellScript(
+    `${gh}\n${step("preflight", "Resolve checkout comparison base")}`,
+    {
+      cwd: root,
+      env: {
+        ...process.env,
+        GITHUB_OUTPUT: output,
+        GITHUB_REPOSITORY: "openclaw/openclaw",
+        BASE_SHA: expectedBase,
+        CHECKOUT_SHA: merged ? merge : expectedCandidate,
+        DIFF_HEAD_SHA: merge,
+        API_LOG: apiLog,
+        FORK_SHA: fork,
+      },
+    },
+  );
+  expect(run.error).toBeUndefined();
+  return { run, output, apiLog };
+}
+
+function expectRatchets(
+  run: SpawnSyncReturns<string>,
+  count: number,
+  base: string,
+  historical: boolean,
+) {
+  expect(run.status, String(run.stderr)).toBe(0);
+  const calls = String(run.stdout)
+    .split("\n")
+    .filter((line) => line.startsWith("CHECK check:"));
+  expect(calls).toHaveLength(count);
+  for (const call of calls) {
+    expect(call).toContain(`--base ${base}`);
+    expect(call.includes("--no-merge-base")).toBe(!historical);
+  }
+}
+
 describe("CI ratchet comparison ownership", () => {
   it.each([false, true])("resolves the actual checkout comparison (merge tree=%s)", (merged) => {
-    const root = tempDirs.make("openclaw-ci-ratchet-base-");
-    const base = "a".repeat(40);
-    const candidate = "b".repeat(40);
-    const merge = "c".repeat(40);
-    const fork = "d".repeat(40);
-    const output = path.join(root, "output");
-    const apiLog = path.join(root, "api");
-    const run = runWorkflowShellScript(
-      'gh() { printf "%s\\n" "$*" >> "$API_LOG"; printf "%s\\n" "$FORK_SHA"; }\n' +
-        step("preflight", "Resolve checkout comparison base"),
-      {
-        cwd: root,
-        env: {
-          ...process.env,
-          GITHUB_OUTPUT: output,
-          GITHUB_REPOSITORY: "openclaw/openclaw",
-          BASE_SHA: base,
-          CHECKOUT_SHA: merged ? merge : candidate,
-          DIFF_HEAD_SHA: merge,
-          API_LOG: apiLog,
-          FORK_SHA: fork,
-        },
-      },
+    const { run, output, apiLog } = compare(
+      'gh() { printf "%s\\n" "$*" >> "$API_LOG"; printf "%s\\n" "$FORK_SHA"; }',
+      merged,
     );
-    expect(run.error).toBeUndefined();
     expect(run.status, run.stderr).toBe(0);
-    expect(fs.readFileSync(output, "utf8")).toBe(`sha=${merged ? base : fork}\n`);
+    expect(fs.readFileSync(output, "utf8")).toBe(`sha=${merged ? expectedBase : fork}\n`);
     if (merged) {
       expect(fs.existsSync(apiLog)).toBe(false);
     } else {
       expect(fs.readFileSync(apiLog, "utf8")).toBe(
-        `api --method GET repos/openclaw/openclaw/compare/${base}...${candidate} --jq .merge_base_commit.sha\n`,
+        `api --method GET repos/openclaw/openclaw/compare/${expectedBase}...${expectedCandidate} --jq .merge_base_commit.sha\n`,
       );
     }
   });
 
   it("refuses an unavailable API ancestor without publishing a fallback", () => {
-    const root = tempDirs.make("openclaw-ci-ratchet-error-");
-    const output = path.join(root, "output");
-    const run = runWorkflowShellScript(
-      "gh() { return 1; }\n" + step("preflight", "Resolve checkout comparison base"),
-      {
-        cwd: root,
-        env: {
-          ...process.env,
-          GITHUB_OUTPUT: output,
-          GITHUB_REPOSITORY: "openclaw/openclaw",
-          BASE_SHA: "a".repeat(40),
-          CHECKOUT_SHA: "b".repeat(40),
-          DIFF_HEAD_SHA: "c".repeat(40),
-        },
-      },
-    );
-    expect(run.error).toBeUndefined();
+    const { run, output } = compare("gh() { return 1; }");
     expect(run.status, run.stderr).toBe(1);
     expect(fs.existsSync(output)).toBe(false);
   });
@@ -137,13 +144,7 @@ describe("CI ratchet comparison ownership", () => {
           env: { ...createNestedGitEnv(), RATCHET_PR_HEAD_SHA: candidate, RATCHET_BASE_REF: base },
         },
       );
-      expect(run.status, run.stderr).toBe(0);
-      const calls = run.stdout.split("\n").filter((line) => line.startsWith("CHECK check:"));
-      expect(calls).toHaveLength(7);
-      for (const call of calls) {
-        expect(call).toContain(`--base ${base}`);
-        expect(call.includes("--no-merge-base")).toBe(!historical);
-      }
+      expectRatchets(run, 7, base, historical);
       const pushScript = step("security-fast", "Check main push ratchets and protocol additions")
         .replace(
           "source .ci-harness/scripts/ci-collect-checks.sh",
@@ -158,13 +159,7 @@ describe("CI ratchet comparison ownership", () => {
         ["-c", 'pnpm() { printf "CHECK %s\\n" "$*"; }\n' + pushScript],
         { cwd: root, encoding: "utf8", env: { ...createNestedGitEnv(), BASE_SHA: base } },
       );
-      expect(push.status, push.stderr).toBe(0);
-      const pushCalls = push.stdout.split("\n").filter((line) => line.startsWith("CHECK check:"));
-      expect(pushCalls).toHaveLength(6);
-      for (const call of pushCalls) {
-        expect(call).toContain(`--base ${base}`);
-        expect(call.includes("--no-merge-base")).toBe(!historical);
-      }
+      expectRatchets(push, 6, base, historical);
     },
   );
 });
