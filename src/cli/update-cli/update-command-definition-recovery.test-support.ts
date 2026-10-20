@@ -35,15 +35,47 @@ export function registerUnverifiedDefinitionRecoveryTests({
     rollback: Mock<typeof import("./update-command-rollback.js").rollbackFailedUpdate>;
   };
 }) {
+  const rollbackOwner = () =>
+    vi.importActual<typeof import("./update-command-rollback.js")>("./update-command-rollback.js");
+  async function swappedFixture() {
+    const params = fixture();
+    const { transaction, packageRoot } = await createRetainedPackageSwap(makeHome());
+    params.root = params.result.root = packageRoot;
+    params.packageTransaction = transaction;
+    return { params, transaction, packageRoot };
+  }
+  async function finish(params: FinishUpdateParams) {
+    const run = params.opts.run!;
+    return withUpdateCommandExecutor(run.runId, async (executor) => {
+      run.executorFence = await executor.enter(params.root);
+      return finishUpdate(params).catch((error: unknown) => error);
+    });
+  }
+  function mockService(root: string, env: NodeJS.ProcessEnv, withPid = false) {
+    const runtime = () => ({
+      status: mocks.healthy ? "running" : "stopped",
+      ...(withPid && mocks.healthy ? { pid: 4321 } : {}),
+    });
+    vi.mocked(resolveGatewayService).mockReturnValue(
+      createMockGatewayService({ readRuntime: async () => runtime() }),
+    );
+    mocks.readService.mockImplementation(async () => ({
+      installed: true,
+      loadState: { status: "loaded" },
+      running: mocks.healthy,
+      runtime: runtime(),
+      env,
+      command: {
+        programArguments: [process.execPath, path.join(root, "dist/index.js"), "gateway"],
+      },
+    }));
+  }
   it.each(["healthy", "cold-start", "exception", "start-failed", "unrelated-failure"])(
     "retains unverified definition backups and recovers the stopped installed Gateway (%s)",
     async (startup) => {
-      const params = fixture();
-      const { transaction, packageRoot } = await createRetainedPackageSwap(makeHome());
-      params.root = params.result.root = packageRoot;
+      const { params, transaction, packageRoot } = await swappedFixture();
       params.result.before = { version: "1.0.0" };
       params.result.after = { version: "2.0.0" };
-      params.packageTransaction = transaction;
       params.rollbackBlockedReason = undefined;
       if (startup === "unrelated-failure") {
         params.packageTransaction = undefined;
@@ -64,30 +96,7 @@ export function registerUnverifiedDefinitionRecoveryTests({
       await fs.mkdir(path.join(packageRoot, "dist"), { recursive: true });
       await fs.writeFile(entrypoint, "// Synthetic installed CLI entrypoint.\n");
       mocks.version = "2.0.0";
-      const service = createMockGatewayService({
-        readRuntime: async () => ({
-          status: mocks.healthy ? "running" : "stopped",
-          ...(mocks.healthy ? { pid: 4321 } : {}),
-        }),
-      });
-      vi.mocked(resolveGatewayService).mockReturnValue(service);
-      mocks.readService.mockImplementation(async () => ({
-        installed: true,
-        loadState: { status: "loaded" },
-        running: mocks.healthy,
-        runtime: {
-          status: mocks.healthy ? "running" : "stopped",
-          ...(mocks.healthy ? { pid: 4321 } : {}),
-        },
-        env: process.env,
-        command: {
-          programArguments: [
-            process.execPath,
-            path.join(packageRoot, "dist", "index.js"),
-            "gateway",
-          ],
-        },
-      }));
+      mockService(packageRoot, process.env, true);
       mocks.revalidate.mockResolvedValue({
         kind: "owned",
         root: packageRoot,
@@ -150,42 +159,36 @@ export function registerUnverifiedDefinitionRecoveryTests({
         }
         return outcome;
       });
-      const rollback = await vi.importActual<typeof import("./update-command-rollback.js")>(
-        "./update-command-rollback.js",
-      );
+      const rollback = await rollbackOwner();
       mocks.rollback.mockImplementation(rollback.rollbackFailedUpdate);
       const complete = vi.spyOn(transaction, "complete");
       const restore = vi.spyOn(transaction, "rollback");
       const run = params.opts.run!;
-      await withUpdateCommandExecutor(run.runId, async (executor) => {
-        run.executorFence = await executor.enter(packageRoot);
-        const outcome = await finishUpdate(params).catch((error: unknown) => error);
-        const result = outcome instanceof UpdateCommandFailure ? outcome.result : outcome;
-        if (["healthy", "cold-start"].includes(startup)) {
-          expect(
-            outcome,
-            JSON.stringify({ result, errors: vi.mocked(defaultRuntime.error).mock.calls }),
-          ).not.toBeInstanceOf(UpdateCommandFailure);
-          expect(result).toMatchObject({
-            status: "ok",
-            recovery: { serviceRestartSafe: true, service: "healthy", version: "2.0.0" },
-          });
-        } else {
-          expect(outcome).toBeInstanceOf(UpdateCommandFailure);
-          expect(result).toMatchObject({
-            status: "error",
-            reason:
-              startup === "exception"
-                ? "post-update-failed"
-                : startup === "unrelated-failure"
-                  ? "update-failed"
-                  : "service-definition-rollback-unverified",
-            ...(["exception", "unrelated-failure"].includes(startup)
-              ? { recovery: { serviceRestartSafe: true, service: "healthy", version: "2.0.0" } }
-              : {}),
-          });
-        }
-      });
+      const outcome = await finish(params);
+      const result = outcome instanceof UpdateCommandFailure ? outcome.result : outcome;
+      const succeeded = ["healthy", "cold-start"].includes(startup);
+      const healthyRecovery = { serviceRestartSafe: true, service: "healthy", version: "2.0.0" };
+      if (succeeded) {
+        expect(
+          outcome,
+          JSON.stringify({ result, errors: vi.mocked(defaultRuntime.error).mock.calls }),
+        ).not.toBeInstanceOf(UpdateCommandFailure);
+        expect(result).toMatchObject({ status: "ok", recovery: healthyRecovery });
+      } else {
+        expect(outcome).toBeInstanceOf(UpdateCommandFailure);
+        expect(result).toMatchObject({
+          status: "error",
+          reason:
+            startup === "exception"
+              ? "post-update-failed"
+              : startup === "unrelated-failure"
+                ? "update-failed"
+                : "service-definition-rollback-unverified",
+          ...(["exception", "unrelated-failure"].includes(startup)
+            ? { recovery: healthyRecovery }
+            : {}),
+        });
+      }
       expect(mocks.restartCommand.mock.calls.map(([, action]) => action)).toEqual(
         startup === "unrelated-failure" ? ["restart"] : ["install", "restart"],
       );
@@ -198,16 +201,16 @@ export function registerUnverifiedDefinitionRecoveryTests({
           expect.any(Function),
         );
       }
-      await expect(
-        fs.readFile(path.join(transaction.backupRoot, "package.json"), "utf8"),
-      ).resolves.toContain('"version":"1.0.0"');
-      await expect(fs.readFile(path.join(packageRoot, "package.json"), "utf8")).resolves.toContain(
-        '"version":"2.0.0"',
-      );
+      for (const [root, version] of [
+        [transaction.backupRoot, "1.0.0"],
+        [packageRoot, "2.0.0"],
+      ] as const) {
+        await expect(fs.readFile(path.join(root, "package.json"), "utf8")).resolves.toContain(
+          `"version":"${version}"`,
+        );
+      }
       const recorded = getUpdateRun(run.runId, { env: run.env });
-      expect(recorded?.status).toBe(
-        ["healthy", "cold-start"].includes(startup) ? "succeeded" : "failed",
-      );
+      expect(recorded?.status).toBe(succeeded ? "succeeded" : "failed");
       const report = renderUpdateRunReport(recorded!).markdown;
       expect(report).toContain("openclaw update repair");
       expect(report).not.toMatch(/keep the gateway stopped/i);
@@ -216,17 +219,14 @@ export function registerUnverifiedDefinitionRecoveryTests({
           ? "Post-install fixture failed after activation"
           : startup === "start-failed"
             ? "startup fixture refused"
-            : ["healthy", "cold-start"].includes(startup)
+            : succeeded
               ? "service-definition-rollback-unverified"
               : "update-failed",
       );
     },
   );
   it("preserves a named Doctor risk when rollback adds a generic migration refusal", async () => {
-    const params = fixture();
-    const { transaction, packageRoot } = await createRetainedPackageSwap(makeHome());
-    params.root = params.result.root = packageRoot;
-    params.packageTransaction = transaction;
+    const { params } = await swappedFixture();
     params.rollbackBlockedReason = "state-migrated-no-rollback";
     params.result.status = "error";
     params.result.reason = "post-update-failed";
@@ -235,22 +235,15 @@ export function registerUnverifiedDefinitionRecoveryTests({
       reason: "runtime-verification-failed",
       dataAtRisk: "unreadable-state",
     };
-    const rollback = await vi.importActual<typeof import("./update-command-rollback.js")>(
-      "./update-command-rollback.js",
-    );
+    const rollback = await rollbackOwner();
     mocks.rollback.mockImplementation(rollback.rollbackFailedUpdate);
     const run = params.opts.run!;
-    await withUpdateCommandExecutor(run.runId, async (executor) => {
-      run.executorFence = await executor.enter(packageRoot);
-      const outcome = await finishUpdate(params).catch((error: unknown) => error);
-      expect(outcome).toBeInstanceOf(UpdateCommandFailure);
-      if (!(outcome instanceof UpdateCommandFailure)) {
-        throw new Error("Expected update failure");
-      }
-      expect(outcome.result.recovery).toMatchObject({
-        serviceRestartSafe: false,
-        dataAtRisk: "unreadable-state",
-      });
+    const outcome = await finish(params);
+    expect(outcome).toBeInstanceOf(UpdateCommandFailure);
+    assert(outcome instanceof UpdateCommandFailure);
+    expect(outcome.result.recovery).toMatchObject({
+      serviceRestartSafe: false,
+      dataAtRisk: "unreadable-state",
     });
     expect(mocks.restartCommand).not.toHaveBeenCalled();
     expect(getUpdateRun(run.runId, { env: run.env })?.verification.recovery).toMatchObject({
@@ -270,9 +263,7 @@ export function registerUnverifiedDefinitionRecoveryTests({
         reason,
         recovery: { serviceRestartSafe: false, reason: "runtime-verification-failed" },
       };
-      const rollback = await vi.importActual<typeof import("./update-command-rollback.js")>(
-        "./update-command-rollback.js",
-      );
+      const rollback = await rollbackOwner();
       const restore = vi.spyOn(transaction, "rollback");
       const run = params.opts.run!;
       await withUpdateCommandExecutor(run.runId, async (executor) => {
@@ -345,21 +336,7 @@ export function registerUnverifiedDefinitionRecoveryTests({
         });
         inspect.mockRestore();
       }
-      mocks.readService.mockImplementation(async () => ({
-        installed: true,
-        loadState: { status: "loaded" },
-        running: mocks.healthy,
-        runtime: { status: mocks.healthy ? "running" : "stopped" },
-        env: params.opts.run!.env!,
-        command: {
-          programArguments: [process.execPath, path.join(root, "dist/index.js"), "gateway"],
-        },
-      }));
-      vi.mocked(resolveGatewayService).mockReturnValue(
-        createMockGatewayService({
-          readRuntime: async () => ({ status: mocks.healthy ? "running" : "stopped" }),
-        }),
-      );
+      mockService(root, params.opts.run!.env!);
       mocks.revalidate.mockResolvedValue({ kind: "owned", root, fingerprint: "fixture" });
       params.preManagedServiceStop!.serviceUpdateVerdict = {
         kind: "owned",
@@ -372,11 +349,7 @@ export function registerUnverifiedDefinitionRecoveryTests({
         return "accepted";
       });
       // Native activation would make this runnable package healthy; the risk must prevent it.
-      const run = params.opts.run!;
-      const failure = await withUpdateCommandExecutor(run.runId, async (executor) => {
-        run.executorFence = await executor.enter(root);
-        return await finishUpdate(params).catch((error: unknown) => error);
-      });
+      const failure = await finish(params);
       assert(failure instanceof UpdateCommandFailure);
       const risk =
         producer === "inspection" ? "rollback-state-unverified" : "state-migrated-no-rollback";

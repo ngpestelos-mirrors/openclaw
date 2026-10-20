@@ -191,6 +191,15 @@ function readDatabase(file: string) {
   }
 }
 
+const expectMissing = (file: string) =>
+  expect(fs.stat(file)).rejects.toMatchObject({ code: "ENOENT" });
+const readVersion = async (root: string) =>
+  JSON.parse(await fs.readFile(path.join(root, "package.json"), "utf8")).version;
+const candidateRows = [
+  { rowid: 7, value: "candidate" },
+  { rowid: 42, value: "candidate" },
+];
+
 it.each([
   "package",
   "exited-writer",
@@ -236,6 +245,13 @@ it.each([
     const shared = path.join(stateDir, "state/openclaw.sqlite");
     const agent = path.join(stateDir, "agents/main/agent/openclaw-agent.sqlite");
     const missing = path.join(stateDir, "agents/unused/agent/openclaw-agent.sqlite");
+    const files = [shared, agent];
+    const readState = () => ({ shared: readDatabase(shared), agent: readDatabase(agent) });
+    const expectSnapshot = (file: string) => {
+      const snapshot = path.join(retainedSnapshotDirectory, buildBackupArchivePath("", file));
+      expect(readDatabase(snapshot)).toEqual(file === shared ? before.shared : before.agent);
+    };
+    const expectNoMigratedFile = (file: string) => expectMissing(`${file}.migrated-${run.runId}`);
     for (const directory of [stateDir, controlDir, path.dirname(shared), path.dirname(agent)]) {
       await fs.mkdir(directory, { recursive: true });
     }
@@ -275,7 +291,7 @@ it.each([
       }
       db.close();
     }
-    const before = { shared: readDatabase(shared), agent: readDatabase(agent) };
+    const before = readState();
     let retainedSnapshotDirectory = "";
     const doctorEvidence = path.join(base, "doctor-observed.json");
     const initialDoctor = path.join(base, "initial-doctor.json");
@@ -578,7 +594,7 @@ it.each([
               );
             }
             if (scenario === "post-migration-write" || scenario === "schema-neutral-write") {
-              for (const file of [shared, agent]) {
+              for (const file of files) {
                 const db = new DatabaseSync(file);
                 db.exec("INSERT INTO payload(rowid,value) VALUES(99,'after-migration')");
                 db.close();
@@ -656,8 +672,8 @@ it.each([
         await expect(laterDoctor()).rejects.toThrow();
         return "failed";
       }
-      expect({ shared: readDatabase(shared), agent: readDatabase(agent) }).toEqual(before);
-      await expect(fs.stat(missing)).rejects.toMatchObject({ code: "ENOENT" });
+      expect(readState()).toEqual(before);
+      await expectMissing(missing);
       await startService();
       expect(await readServing()).toEqual(servedBefore);
       recordUpdateRunVerification(
@@ -742,20 +758,7 @@ it.each([
         if (scenario === "git-edited") {
           expect([readDatabase(shared).version, readDatabase(agent).version]).toEqual([18, 23]);
         }
-        expect(
-          execution.result.reason,
-          JSON.stringify(
-            {
-              result: execution.result,
-              failure: execution.failure && {
-                detail: execution.failure.detail,
-                cause: String(execution.failure.cause),
-              },
-            },
-            null,
-            2,
-          ),
-        ).toBe(
+        expect(execution.result.reason).toBe(
           outsideWrite
             ? "state-migrated-no-rollback"
             : scenario === "package" ||
@@ -804,12 +807,9 @@ it.each([
           expect(rollback?.stderrTail).toContain(
             `retained snapshots at ${retainedSnapshotDirectory}`,
           );
-          for (const file of [shared, agent]) {
+          for (const file of files) {
             if (scenario === "git-edited") {
-              expect(readDatabase(file).rows).toEqual([
-                { rowid: 7, value: "candidate" },
-                { rowid: 42, value: "candidate" },
-              ]);
+              expect(readDatabase(file).rows).toEqual(candidateRows);
             } else {
               expect(readDatabase(file).rows).toContainEqual({
                 rowid: 99,
@@ -817,13 +817,10 @@ it.each([
               });
             }
             expect(readDatabase(file).version).toBe(migratedVersions[file === shared ? 0 : 1]);
-            await expect(fs.stat(`${file}.migrated-${run.runId}`)).rejects.toMatchObject({
-              code: "ENOENT",
-            });
-            const snapshot = path.join(retainedSnapshotDirectory, buildBackupArchivePath("", file));
-            expect(readDatabase(snapshot)).toEqual(file === shared ? before.shared : before.agent);
+            await expectNoMigratedFile(file);
+            expectSnapshot(file);
           }
-          const preserved = { shared: readDatabase(shared), agent: readDatabase(agent) };
+          const preserved = readState();
           if (preservesMigrated) {
             expect(execution.result.recovery).toMatchObject({
               serviceRestartSafe: false,
@@ -835,11 +832,8 @@ it.each([
               reason: preservesMigrated ? "post-update-failed" : "state-migrated-no-rollback",
             },
           });
-          expect({ shared: readDatabase(shared), agent: readDatabase(agent) }).toEqual(preserved);
-          const active = JSON.parse(
-            await fs.readFile(path.join(packageRoot, "package.json"), "utf8"),
-          );
-          expect(active.version).toBe("2.0.0");
+          expect(readState()).toEqual(preserved);
+          expect(await readVersion(packageRoot)).toBe("2.0.0");
           if (scenario === "git-edited") {
             expect(await git(packageRoot, "diff", "--name-only")).toBe("package.json");
             expect(await git(packageRoot, "rev-parse", "HEAD")).not.toBe(beforeGitSha);
@@ -877,13 +871,10 @@ it.each([
           return;
         }
         if (scenario === "serving") {
-          for (const file of [shared, agent]) {
+          for (const file of files) {
             expect(readDatabase(file).rows).toContainEqual({ rowid: 99, value: "after-capture" });
-            await expect(fs.stat(`${file}.migrated-${run.runId}`)).rejects.toMatchObject({
-              code: "ENOENT",
-            });
-            const snapshot = path.join(retainedSnapshotDirectory, buildBackupArchivePath("", file));
-            expect(readDatabase(snapshot)).toEqual(file === shared ? before.shared : before.agent);
+            await expectNoMigratedFile(file);
+            expectSnapshot(file);
           }
           expect(execution.databaseBackup).toBeUndefined();
           const captured = execution.result.steps.find((step) => step.name === "database snapshot");
@@ -896,7 +887,7 @@ it.each([
           expect(service).toBeUndefined();
           return;
         }
-        expect({ shared: readDatabase(shared), agent: readDatabase(agent) }).toEqual(before);
+        expect(readState()).toEqual(before);
         expect(execution.databaseBackup?.databases).toHaveLength(2);
         expect(execution.databaseBackup?.missingPaths).toContain(missing);
         expect(execution.result.steps.map((step) => step.name)).toEqual(
@@ -906,12 +897,7 @@ it.each([
           ]),
         );
         expect(starts).toEqual(["1.0.0"]);
-        let finishFailure: unknown;
-        try {
-          await finalize();
-        } catch (error) {
-          finishFailure = error;
-        }
+        const finishFailure = await finalize().catch((error: unknown) => error);
         expect(
           JSON.parse(await fs.readFile(doctorEvidence, "utf8")).map(
             (entry: { version: number }) => entry.version,
@@ -925,19 +911,13 @@ it.each([
           expect(observedStart).not.toHaveBeenCalled();
           expect(service).toBeUndefined();
           expect(starts).toEqual(["1.0.0"]);
-          const active = JSON.parse(
-            await fs.readFile(path.join(packageRoot, "package.json"), "utf8"),
-          );
-          const retained = JSON.parse(
-            await fs.readFile(
-              path.join(execution.packageTransaction!.backupRoot, "package.json"),
-              "utf8",
-            ),
-          );
-          expect([active.version, retained.version]).toEqual(["2.0.0", "1.0.0"]);
-          expect({ shared: readDatabase(shared), agent: readDatabase(agent) }).toEqual(before);
+          expect([
+            await readVersion(packageRoot),
+            await readVersion(execution.packageTransaction!.backupRoot),
+          ]).toEqual(["2.0.0", "1.0.0"]);
+          expect(readState()).toEqual(before);
           expect(
-            [shared, agent].map((file) => readDatabase(`${file}.migrated-${run.runId}`).version),
+            files.map((file) => readDatabase(`${file}.migrated-${run.runId}`).version),
           ).toEqual([18, 23]);
           expect(JSON.parse(await fs.readFile(serviceEnv.OPENCLAW_CONFIG_PATH!, "utf8"))).toEqual({
             ...config,
@@ -967,17 +947,12 @@ it.each([
             [agent, 23],
           ] as const) {
             expect(readDatabase(file).version).toBe(version);
-            expect(readDatabase(file).rows).toEqual([
-              { rowid: 7, value: "candidate" },
-              { rowid: 42, value: "candidate" },
-            ]);
-            await expect(fs.stat(`${file}.migrated-${run.runId}`)).rejects.toMatchObject({
-              code: "ENOENT",
-            });
+            expect(readDatabase(file).rows).toEqual(candidateRows);
+            await expectNoMigratedFile(file);
           }
           return;
         }
-        expect({ shared: readDatabase(shared), agent: readDatabase(agent) }).toEqual(before);
+        expect(readState()).toEqual(before);
         expect(
           finishFailure,
           finishFailure instanceof Error ? finishFailure.stack : String(finishFailure),

@@ -45,6 +45,22 @@ const {
 } = await import("./update-command-execution.test-support.js");
 
 const phaseAdmission = vi.hoisted(() => ({ active: false }));
+const execute = async (params = executionParams("git")) =>
+  executeMutableUpdate(await bindExecutionGuards(params));
+const readyCanary = (steps: UpdateStepResult[], durationMs = 1, logTail: string[] = []) => ({
+  status: "ok" as const,
+  phase: "readiness" as const,
+  steps,
+  durationMs,
+  logTail,
+});
+const candidateStep = (name: string, durationMs: number): UpdateStepResult => ({
+  name,
+  durationMs,
+  exitCode: 0,
+  command: name,
+  cwd: "/candidate",
+});
 vi.mock("../../infra/sqlite-worker-operation-admission.js", async (importOriginal) => {
   const actual =
     await importOriginal<typeof import("../../infra/sqlite-worker-operation-admission.js")>();
@@ -111,14 +127,12 @@ export function prepareBundledPluginRuntime({ repoRoot }) {
         const run = { runId: createUpdateRun({ trigger: "cli" }, { env }).runId, env };
         const execution = await withUpdateCommandTerminalResult(async (registerRun) => {
           registerRun(run);
-          const result = await executeMutableUpdate(
-            await bindExecutionGuards({
-              ...executionParams("git"),
-              root,
-              opts: { json: true, run },
-              onActivation,
-            }),
-          );
+          const result = await execute({
+            ...executionParams("git"),
+            root,
+            opts: { json: true, run },
+            onActivation,
+          });
           if (owner === "absent") {
             await expect(admitSourceUpdateArtifacts(root, run)).rejects.toThrow(
               `retained by PID ${process.pid}`,
@@ -175,13 +189,7 @@ export function prepareBundledPluginRuntime({ repoRoot }) {
     };
     mocks.validateCanary.mockImplementation(async ({ onStep }) => {
       await onStep(step);
-      return {
-        status: "ok",
-        phase: "readiness",
-        steps: [step],
-        durationMs: 1,
-        logTail: [message],
-      };
+      return readyCanary([step], 1, [message]);
     });
     const repair = await import("../../infra/update-repair-agent.js");
     const runRepair = vi.spyOn(repair, "runUpdateRepairLoop");
@@ -200,12 +208,7 @@ export function prepareBundledPluginRuntime({ repoRoot }) {
     mocks.runGitUpdate.mockImplementation(runStagedUpdate);
     const onStepComplete = vi.fn<NonNullable<UpdateStepProgress["onStepComplete"]>>();
 
-    const execution = await executeMutableUpdate(
-      await bindExecutionGuards({
-        ...executionParams("git"),
-        progress: { onStepComplete },
-      }),
-    );
+    const execution = await execute({ ...executionParams("git"), progress: { onStepComplete } });
 
     expect(execution?.result.status).toBe("ok");
     expect(accepted).toHaveBeenCalledOnce();
@@ -226,20 +229,8 @@ export function prepareBundledPluginRuntime({ repoRoot }) {
         ["candidate-gateway-startup", 308_123],
         ["candidate-state-cleanup", 900],
       ] as const
-    ).map(([name, durationMs]) => ({
-      name,
-      durationMs,
-      exitCode: 0,
-      command: name,
-      cwd: "/candidate",
-    }));
-    mocks.validateCanary.mockResolvedValue({
-      status: "ok",
-      phase: "readiness",
-      steps: canarySteps,
-      durationMs: 312_623,
-      logTail: [],
-    });
+    ).map(([name, durationMs]) => candidateStep(name, durationMs));
+    mocks.validateCanary.mockResolvedValue(readyCanary(canarySteps, 312_623));
     let accepted: unknown;
     mocks.runGitUpdate.mockImplementation(
       async ({ validateCandidate }: { validateCandidate: (root: string) => Promise<unknown> }) => {
@@ -248,7 +239,7 @@ export function prepareBundledPluginRuntime({ repoRoot }) {
       },
     );
 
-    const execution = await executeMutableUpdate(await bindExecutionGuards(executionParams("git")));
+    const execution = await execute();
 
     expect(execution?.result.status).toBe("ok");
     expect(accepted).toEqual(canarySteps);
@@ -272,13 +263,11 @@ export function prepareBundledPluginRuntime({ repoRoot }) {
     );
     const onStepComplete = vi.fn<NonNullable<UpdateStepProgress["onStepComplete"]>>();
 
-    const execution = await executeMutableUpdate(
-      await bindExecutionGuards({
-        ...executionParams("package"),
-        shouldRestart: false,
-        progress: { onStepComplete },
-      }),
-    );
+    const execution = await execute({
+      ...executionParams("package"),
+      shouldRestart: false,
+      progress: { onStepComplete },
+    });
 
     expect(execution?.result.status).toBe("ok");
     const step = execution?.result.steps.find((entry) => entry.name === "post-stop-checks");
@@ -432,21 +421,18 @@ export function prepareBundledPluginRuntime({ repoRoot }) {
             expect(candidate.root).toBe(cliRoot);
             return true;
           });
-          mocks.validateCanary.mockResolvedValue({
-            status: "ok",
-            phase: "readiness",
-            durationMs: 70_000,
-            logTail: [],
-            steps: [
-              {
-                name: "candidate-gateway-startup",
-                command: "gateway run",
-                cwd: root,
-                durationMs: 70_000,
-                exitCode: 0,
-              },
-            ],
-          });
+          mocks.validateCanary.mockResolvedValue(
+            readyCanary(
+              [
+                {
+                  ...candidateStep("candidate-gateway-startup", 70_000),
+                  command: "gateway run",
+                  cwd: root,
+                },
+              ],
+              70_000,
+            ),
+          );
           mocks.maybeStopService.mockImplementation(async ({ phase }) => {
             if (phase === "prepare") {
               stoppedAtMs = elapsedMs;
@@ -499,7 +485,7 @@ export function prepareBundledPluginRuntime({ repoRoot }) {
                 }),
               );
             });
-            return executeMutableUpdate(await bindExecutionGuards(params));
+            return execute(params);
           });
           expect(mocks.nativeSupport).toHaveBeenCalledOnce();
           expect(execution?.result.status, JSON.stringify(mocks.runtimeError.mock.calls)).toBe(
@@ -566,7 +552,7 @@ export function prepareBundledPluginRuntime({ repoRoot }) {
       },
     );
 
-    const execution = await executeMutableUpdate(await bindExecutionGuards(executionParams("git")));
+    const execution = await execute();
 
     expect(execution?.result).toMatchObject({
       status: "error",
