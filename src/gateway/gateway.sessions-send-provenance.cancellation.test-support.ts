@@ -161,30 +161,27 @@ export async function verifyCollaborativeCancellation(signal: AbortSignal) {
           const [aliceResult, bobResult] = await Promise.all([aliceOutcome, bobOutcome]);
           await queuedPreparation;
           await waitForGatewayActiveWork(30_000);
+          const replies = humanReplies.slice(firstReply);
+          const incumbentTexts = (cancel === "source" ? [1, 2] : [1]).map(
+            (index) => `${scenario.marker}_INCUMBENT_${index}`,
+          );
           expect(providerErrors).toEqual([]);
           expect(proofDeliveries(scenario.recipient)).toEqual([]);
           expect(
             proofDeliveries(`${scenario.recipient}-incumbent`).map((entry) => entry.text),
-          ).toEqual(
-            (cancel === "source" ? [1, 2] : [1]).map(
-              (index) => `${scenario.marker}_INCUMBENT_${index}`,
-            ),
-          );
+          ).toEqual(incumbentTexts);
           if (cancel === "source") {
             expect(aliceResult.error).toBeUndefined();
             if (bobResult.error !== undefined) {
               expect(bobResult.error).toMatchObject({ name: "AbortError" });
             }
             expect(bobResult.result?.deferredToActiveRun).toBeUndefined();
-            expect(scenario.sourceRequests).toEqual([]);
-            expect(scenario.targetRequests).toEqual([]);
-            expect(
-              humanReplies.slice(firstReply).filter((reply) => reply.sender === "bob"),
-            ).toEqual([]);
+            expect([scenario.sourceRequests, scenario.targetRequests]).toEqual([[], []]);
+            expect(replies.filter((reply) => reply.sender === "bob")).toEqual([]);
           } else {
             expect(bobResult.error, id).toBeUndefined();
             expect(bobResult.result?.deferredToActiveRun).toBe("followup");
-            expect(humanReplies.slice(firstReply)).toContainEqual({
+            expect(replies).toContainEqual({
               sender: "bob",
               text: FOLLOWUP_REPLY,
             });

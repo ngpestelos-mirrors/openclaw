@@ -60,6 +60,24 @@ const cases = [
     targetKey: busyReceiver,
   }),
 ];
+const acceptedSpawn = {
+  status: "accepted",
+  childSessionKey: expect.any(String),
+  runId: expect.any(String),
+};
+const acceptedSteer = { status: "accepted", targetDisposition: "steered" };
+const sentMessage = (to: string, text: string) => [{ to, text, accountId: "default" }];
+
+function expectToolAvailability(
+  requests: readonly { tools: string[] }[],
+  tool: string,
+  available: boolean,
+  name?: string,
+) {
+  const actual = requests.map((request) => request.tools.includes(tool));
+  const assertion = name === undefined ? expect(actual) : expect.soft(actual, name);
+  assertion.toEqual(requests.map(() => available));
+}
 
 function createProofIngress(signal: AbortSignal, marker: string) {
   return (
@@ -224,15 +242,11 @@ async function verifyRegisteredRequesterPolicy(signal: AbortSignal) {
                 payloads: [expect.objectContaining({ text: `INCUMBENT_COMPLETE_${spec.id}` })],
               },
         );
-        expect(
-          scenario.incumbentRequests.every((request) => request.tools.includes("message")),
-        ).toBe(true);
+        expectToolAvailability(scenario.incumbentRequests, "message", true);
         expect(proofDeliveries(`${scenario.recipient}-incumbent`)).toEqual(
-          [1, 2].map((index) => ({
-            to: `${scenario.recipient}-incumbent`,
-            text: `${scenario.marker}_INCUMBENT_${index}`,
-            accountId: "default",
-          })),
+          [1, 2].flatMap((index) =>
+            sentMessage(`${scenario.recipient}-incumbent`, `${scenario.marker}_INCUMBENT_${index}`),
+          ),
         );
       }
       if (rejectedSteering) {
@@ -256,11 +270,7 @@ async function verifyRegisteredRequesterPolicy(signal: AbortSignal) {
       const deliveries = proofDeliveries(scenario.recipient);
       expect
         .soft(deliveries, spec.name)
-        .toEqual(
-          spec.denied
-            ? []
-            : [{ to: scenario.recipient, text: scenario.marker, accountId: "default" }],
-        );
+        .toEqual(spec.denied ? [] : sentMessage(scenario.recipient, scenario.marker));
       if (spec.mode !== "steer") {
         expect
           .soft(scenario.effectAfterSourceCompletion, spec.name)
@@ -271,21 +281,12 @@ async function verifyRegisteredRequesterPolicy(signal: AbortSignal) {
           .soft(scenario.targetRequests[1]?.output, spec.name)
           .toMatch(/^(Tool message not found|message is not available in this turn\.)/);
       } else {
-        expect
-          .soft(
-            scenario.targetRequests.map((request) => request.tools.includes("message")),
-            spec.name,
-          )
-          .toEqual(scenario.targetRequests.map(() => true));
+        expectToolAvailability(scenario.targetRequests, "message", true, spec.name);
       }
       if (scenario.targetKey === sourceKey) {
-        expect.soft(proofDeliveries(scenario.sourceRecipient), spec.name).toEqual([
-          {
-            to: scenario.sourceRecipient,
-            text: `TARGET_COMPLETE_${spec.id}`,
-            accountId: "default",
-          },
-        ]);
+        expect
+          .soft(proofDeliveries(scenario.sourceRecipient), spec.name)
+          .toEqual(sentMessage(scenario.sourceRecipient, `TARGET_COMPLETE_${spec.id}`));
       }
     } finally {
       await settleProofScenario(scenario, [source, incumbent]);
@@ -341,20 +342,13 @@ async function verifyNativeSpawnRequester(signal: AbortSignal, collect: boolean)
   try {
     await waitForProofGate(spawned.promise, source, signal, "Spawn did not return");
     const spawnResult = parent.requests[1]?.result;
-    expect(spawnResult).toMatchObject({
-      status: "accepted",
-      childSessionKey: expect.any(String),
-      runId: expect.any(String),
-    });
+    expect(spawnResult).toMatchObject(acceptedSpawn);
     await waitForProofGate(childStarted.promise, source, signal, "Child did not start");
     issueSteer.resolve();
     await steering.waitForAdmission(source, signal);
     releaseChild.resolve();
     await source;
-    expect(parent.result).toMatchObject({
-      status: "accepted",
-      targetDisposition: "steered",
-    });
+    expect(parent.result).toMatchObject(acceptedSteer);
     expect(await waitForProofRun(spawnResult?.runId)).toMatchObject({ status: "ok" });
     await waitForGatewayActiveWork(30_000);
     expect(steeringAfterSourceCompletion).toEqual([true]);
@@ -428,14 +422,10 @@ async function verifyQueuedCollectorAdmission(signal: AbortSignal) {
     await waitForProofGate(blockerStarted.promise, source, signal, "Collector did not start");
     await source;
     for (const accepted of [blockerResult, parent.result]) {
-      expect(accepted).toMatchObject({
-        status: "accepted",
-        childSessionKey: expect.any(String),
-        runId: expect.any(String),
-      });
+      expect(accepted).toMatchObject(acceptedSpawn);
     }
     expect(blocker.requests.length).toBeGreaterThan(0);
-    expect(blocker.requests.every((request) => request.tools.includes("exec"))).toBe(true);
+    expectToolAvailability(blocker.requests, "exec", true);
     expect(queuedRequests).toEqual([]);
     await updateSenderPolicies({ [`id:${marker}`]: { deny: ["exec"] } });
     queuedCompletion = waitForProofRun(parent.result?.runId);
@@ -446,20 +436,17 @@ async function verifyQueuedCollectorAdmission(signal: AbortSignal) {
       signal,
       "Queued child did not start",
     );
-    expect(queuedRequests.every((request) => !request.tools.includes("exec"))).toBe(true);
+    expectToolAvailability(queuedRequests, "exec", false);
     source = run(steerSourcePrompt);
     await steering.waitForAdmission(source, signal);
     releaseQueued.resolve();
     await source;
-    expect(steeringSource.result).toMatchObject({
-      status: "accepted",
-      targetDisposition: "steered",
-    });
+    expect(steeringSource.result).toMatchObject(acceptedSteer);
     expect(await queuedCompletion).toMatchObject({ status: "ok" });
     expect(await waitForProofRun(blockerResult?.runId)).toMatchObject({ status: "ok" });
     await waitForGatewayActiveWork(30_000);
     expect(queuedRequests.some((request) => request.prompt.includes(steerInput))).toBe(true);
-    expect(queuedRequests.every((request) => !request.tools.includes("exec"))).toBe(true);
+    expectToolAvailability(queuedRequests, "exec", false);
     expect(queuedAfterSourceCompletion).toEqual(queuedRequests.map(() => true));
     expect(providerErrors).toEqual([]);
   } finally {
@@ -499,16 +486,12 @@ async function verifyCompletedChildFollowup(signal: AbortSignal) {
   let changedPolicy = false;
   try {
     await run(spawnPrompt);
-    expect(spawn.result).toMatchObject({
-      status: "accepted",
-      childSessionKey: expect.any(String),
-      runId: expect.any(String),
-    });
+    expect(spawn.result).toMatchObject(acceptedSpawn);
     const initialCompletion = await waitForProofRun(spawn.result?.runId);
     expect(initialCompletion).toMatchObject({ status: "ok" });
     await waitForGatewayActiveWork(30_000);
     expect(initial.requests.length).toBeGreaterThan(0);
-    expect(initial.requests.every((request) => request.tools.includes("exec"))).toBe(true);
+    expectToolAvailability(initial.requests, "exec", true);
     await updateSenderPolicies({ [`id:${marker}`]: { deny: ["exec"] } });
     changedPolicy = true;
     await run(sourceFollowupPrompt);
@@ -519,9 +502,7 @@ async function verifyCompletedChildFollowup(signal: AbortSignal) {
     expect(await waitForProofRun(sourceFollowup.result?.runId)).toMatchObject({ status: "ok" });
     await waitForGatewayActiveWork(30_000);
     expect(followup.requests.length).toBeGreaterThan(0);
-    expect(followup.requests.map((request) => request.tools.includes("exec"))).toEqual(
-      followup.requests.map(() => false),
-    );
+    expectToolAvailability(followup.requests, "exec", false);
     expect(providerErrors).toEqual([]);
   } finally {
     await waitForGatewayActiveWork(30_000);
@@ -595,10 +576,7 @@ async function verifySteeringPolicyCompatibility(
     await steering.waitForAdmission(compatible, signal);
     release.resolve();
     await compatible;
-    expect(compatibleSource.result).toMatchObject({
-      status: "accepted",
-      targetDisposition: "steered",
-    });
+    expect(compatibleSource.result).toMatchObject(acceptedSteer);
     await incumbent;
     await waitForGatewayActiveWork(30_000);
     expect(requests.some((request) => request.prompt.includes(restrictedInput))).toBe(false);
@@ -724,19 +702,11 @@ async function verifyCrossHumanAdmission(
   await running.alice;
   await waitForGatewayActiveWork(30_000);
   expect(providerErrors).toEqual([]);
-  expect(scenario.accepted, JSON.stringify(scenario.accepted)).toMatchObject({
-    status: "accepted",
-  });
-  expect(scenario.incumbentRequests.every((request) => request.tools.includes("message"))).toBe(
-    true,
-  );
+  expect(scenario.accepted).toMatchObject({ status: "accepted" });
+  expectToolAvailability(scenario.incumbentRequests, "message", true);
   expect(scenario.targetRequests.length).toBeGreaterThan(0);
-  expect(scenario.sourceRequests.map((request) => request.tools.includes("message"))).toEqual(
-    scenario.sourceRequests.map(() => collaborative),
-  );
-  expect(scenario.targetRequests.map((request) => request.tools.includes("message"))).toEqual(
-    scenario.targetRequests.map(() => collaborative),
-  );
+  expectToolAvailability(scenario.sourceRequests, "message", collaborative);
+  expectToolAvailability(scenario.targetRequests, "message", collaborative);
   if (collaborative) {
     expect(scenario.sourceRequests.length).toBeGreaterThanOrEqual(2);
     for (const request of scenario.sourceRequests.slice(0, 2)) {
@@ -749,7 +719,7 @@ async function verifyCrossHumanAdmission(
     }
   }
   expect(proofDeliveries(scenario.recipient)).toEqual(
-    collaborative ? [{ to: scenario.recipient, text: scenario.marker, accountId: "default" }] : [],
+    collaborative ? sentMessage(scenario.recipient, scenario.marker) : [],
   );
   expect(
     outbound
@@ -758,8 +728,7 @@ async function verifyCrossHumanAdmission(
   ).toEqual((collaborative ? [1] : [1, 2]).map((index) => `${scenario.marker}_INCUMBENT_${index}`));
 }
 
-// Global runtime cleanup retires the Gateway's plugin owner after each test.
-// Keep this shared Gateway and all registered boundary scenarios in one lifetime.
+// Share one test lifetime: global cleanup retires the Gateway's plugin owner after each test.
 it(
   "preserves requester provenance across delegation, steering, and queued human input",
   { timeout: 90_000 },

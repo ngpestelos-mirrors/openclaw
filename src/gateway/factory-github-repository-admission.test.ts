@@ -50,8 +50,11 @@ const params = {
   assertCurrent: () => {},
 };
 afterEach(() => vi.unstubAllGlobals());
-const respondWith = (value: ReturnType<typeof receipt>) => {
-  const fetcher = vi.fn(async () => Response.json(value));
+const respondWith = (value: ReturnType<typeof receipt>, beforeReply = () => {}) => {
+  const fetcher = vi.fn(async () => {
+    beforeReply();
+    return Response.json(value);
+  });
   vi.stubGlobal("fetch", fetcher);
   return fetcher;
 };
@@ -74,13 +77,9 @@ it.each<[string, Partial<ReturnType<typeof receipt>>]>([
 });
 it("checks current authority after the broker response", async () => {
   let current = true;
-  vi.stubGlobal(
-    "fetch",
-    vi.fn(async () => {
-      current = false;
-      return Response.json(receipt());
-    }),
-  );
+  respondWith(receipt(), () => {
+    current = false;
+  });
   await expect(
     readFactoryRepositoryAdmission({
       ...params,

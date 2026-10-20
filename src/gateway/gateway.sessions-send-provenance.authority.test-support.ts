@@ -36,6 +36,11 @@ import { connectGatewayClient, disconnectGatewayClient } from "./test-helpers.e2
 /** The channel authenticates the subject; canonical links supply its live human authority. */
 export async function verifyLinkedPrincipalDelivery(signal: AbortSignal) {
   const originalRoles = getRuntimeConfig().gateway?.roles;
+  const scopes = ["operator.read", "operator.write"];
+  const definitions = {
+    admin: { scopes: ["operator.admin"], agents: "*", sessions: { others: "write" } },
+    member: { scopes, agents: "*", sessions: { others: "view" } },
+  };
   const alice = await ensureCanonicalUserProfileForEmail("linked-alice@provenance.example.test");
   const bob = await ensureCanonicalUserProfileForEmail("linked-bob@provenance.example.test");
   const identity = { channelId: "telegram", accountId: "default", senderId: "linked-human" };
@@ -66,27 +71,13 @@ export async function verifyLinkedPrincipalDelivery(signal: AbortSignal) {
   };
   await runQaGatewayFixture(
     async () => {
-      await patchProofConfig({
-        gateway: {
-          roles: {
-            default: "member",
-            definitions: {
-              admin: { scopes: ["operator.admin"], agents: "*", sessions: { others: "write" } },
-              member: {
-                scopes: ["operator.read", "operator.write"],
-                agents: "*",
-                sessions: { others: "view" },
-              },
-            },
-          },
-        },
-      });
+      await patchProofConfig({ gateway: { roles: { default: "member", definitions } } });
       // Role publication invalidates the old connection after the config RPC responds.
       await disconnectGatewayClient(gateway.client);
       gateway.client = await connectGatewayClient({
         url: `ws://127.0.0.1:${gateway.port}`,
         token: process.env.OPENCLAW_GATEWAY_TOKEN,
-        scopes: ["operator.admin", "operator.read", "operator.write"],
+        scopes: ["operator.admin", ...scopes],
         signal,
       });
       for (const profile of [alice, bob]) {
