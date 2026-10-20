@@ -16,6 +16,12 @@ import type { DB } from "../../../../src/state/openclaw-state-db.generated.js";
 import { openExistingOpenClawStateDatabaseReadOnly } from "../../../../src/state/openclaw-state-db.js";
 import { withinTest, withTestTimeout } from "../../../helpers/promise.js";
 import { stopQaGatewayFixture } from "../../../helpers/qa-gateway-cleanup.js";
+import {
+  readTelegramRequest,
+  succeedTelegram as succeed,
+  settleTelegramCleanup as settleCleanup,
+  telegramGatewayOptions,
+} from "./telegram-gateway.test-support.js";
 import { createNativeModelPickerCliFixture } from "./telegram-model-picker-native-cli-fixture.js";
 
 type JsonObject = Record<string, unknown>;
@@ -32,15 +38,8 @@ const REPLACEMENT_MODEL_REF = `${REPLACEMENT_PROVIDER}/${REPLACEMENT_MODEL}`;
 const SOURCE_GATEWAY_TIMEOUT_MS = 120_000;
 
 async function readJson(req: IncomingMessage): Promise<JsonObject> {
-  let text = "";
-  for await (const chunk of req) {
-    text += chunk;
-  }
+  const text = await readTelegramRequest(req);
   return text ? (JSON.parse(text) as JsonObject) : {};
-}
-
-function succeed(res: ServerResponse, result: unknown = true) {
-  writeJson(res, 200, { ok: true, result });
 }
 
 function callbackUpdate(updateId: number, callbackId: string, data: string) {
@@ -100,6 +99,26 @@ function keyboardCallbackData(call: TelegramCall): string[] {
 
 function hasCallback(call: TelegramCall, callbackData: string) {
   return keyboardCallbackData(call).includes(callbackData);
+}
+
+async function readPickerCall(req: IncomingMessage, res: ServerResponse, missing = "not found") {
+  const pathname = new URL(req.url ?? "/", "http://127.0.0.1").pathname;
+  const match = pathname.match(/^\/bot([^/]+)\/([^/]+)$/);
+  if (!match) {
+    writeJson(res, 404, { ok: false, error: missing });
+    return;
+  }
+  const [, token = "", method = ""] = match;
+  const body = await readJson(req);
+  if (token !== BOT_TOKEN) {
+    writeJson(res, 401, { ok: false, error: "unexpected bot token" });
+    return;
+  }
+  if (method === "getMe") {
+    succeed(res, { id: 424242, is_bot: true, first_name: "QA Picker", username: "qa_picker_bot" });
+    return;
+  }
+  return { method, body };
 }
 
 function configuredModel(id: string): ModelDefinitionConfig {
@@ -417,16 +436,6 @@ process.on("message", async (message) => {
   return { request, output: () => output, close };
 }
 
-async function settleCleanup(...cleanups: Array<() => Promise<void>>) {
-  const failures: unknown[] = [];
-  for (const cleanup of cleanups) {
-    await cleanup().catch((error: unknown) => failures.push(error));
-  }
-  if (failures.length > 0) {
-    throw new AggregateError(failures, "Telegram model-picker gateway cleanup failed");
-  }
-}
-
 test("initializes unrestricted Telegram model browsing and reuses its prepared catalog", async () => {
   const telegramCalls: TelegramCall[] = [];
   const pendingUpdates: unknown[] = [];
@@ -485,27 +494,11 @@ test("initializes unrestricted Telegram model browsing and reuses its prepared c
       return;
     }
 
-    const telegramMatch = pathname.match(/^\/bot([^/]+)\/([^/]+)$/);
-    if (!telegramMatch) {
-      writeJson(res, 404, { ok: false, error: "not found" });
+    const call = await readPickerCall(req, res);
+    if (!call) {
       return;
     }
-    const [, token = "", method = ""] = telegramMatch;
-    const body = await readJson(req);
-    if (token !== BOT_TOKEN) {
-      writeJson(res, 401, { ok: false, error: "unexpected bot token" });
-      return;
-    }
-
-    if (method === "getMe") {
-      succeed(res, {
-        id: 424242,
-        is_bot: true,
-        first_name: "QA Picker",
-        username: "qa_picker_bot",
-      });
-      return;
-    }
+    const { method, body } = call;
     if (method === "getUpdates") {
       const update = pendingUpdates.shift();
       succeed(res, update ? [update] : []);
@@ -565,79 +558,55 @@ test("initializes unrestricted Telegram model browsing and reuses its prepared c
       await withTempDir("openclaw-telegram-model-picker-", async () => {
         const gatewayOwner = createQaGatewayChild();
         try {
-          const repoRoot = path.resolve(import.meta.dirname, "../../../..");
-          const gateway = await gatewayOwner.start({
-            repoRoot,
-            mockAuthAgentIds: [],
-            transportBaseUrl: apiRoot,
-            transport: {
-              requiredPluginIds: ["telegram"],
-              createGatewayConfig: () => ({
-                channels: {
-                  telegram: {
+          const gateway = await gatewayOwner.start(
+            telegramGatewayOptions({
+              apiRoot,
+              mockAuthAgentIds: [],
+              telegram: {
+                enabled: true,
+                defaultAccount: "picker",
+                accounts: {
+                  picker: {
                     enabled: true,
-                    defaultAccount: "picker",
-                    accounts: {
-                      picker: {
-                        enabled: true,
-                        botToken: BOT_TOKEN,
-                        apiRoot,
-                        dmPolicy: "open",
-                        allowFrom: ["*"],
-                        commands: { native: true },
-                      },
+                    botToken: BOT_TOKEN,
+                    apiRoot,
+                    dmPolicy: "open",
+                    allowFrom: ["*"],
+                    commands: { native: true },
+                  },
+                },
+              },
+              enabledPluginIds: ["ollama"],
+              primaryModel: `ollama/${PREPARED_MODEL}`,
+              alternateModel: `ollama/${PREPARED_MODEL}`,
+              runtimeEnvPatch: {
+                OPENCLAW_SKIP_STARTUP_MODEL_PREWARM: undefined,
+                OPENCLAW_SKIP_CHANNELS: undefined,
+                OPENCLAW_SKIP_PROVIDERS: undefined,
+              },
+              mutateConfig: (cfg) => {
+                const defaults = cfg.agents!.defaults!;
+                defaults.model = `ollama/${PREPARED_MODEL}`;
+                defaults.modelPolicy = { allow: [] };
+                defaults.models = { ...defaults.models, [`ollama/${PREPARED_MODEL}`]: {} };
+                cfg.agents!.entries!.qa!.model = `ollama/${PREPARED_MODEL}`;
+                cfg.models = {
+                  ...cfg.models,
+                  mode: "merge",
+                  catalogRefresh: { enabled: false },
+                  providers: {
+                    ...cfg.models?.providers,
+                    ollama: {
+                      baseUrl: `${apiRoot}/ollama`,
+                      api: "ollama",
+                      models: [],
                     },
                   },
-                },
-              }),
-            },
-            controlUiEnabled: false,
-            enabledPluginIds: ["ollama"],
-            primaryModel: `ollama/${PREPARED_MODEL}`,
-            alternateModel: `ollama/${PREPARED_MODEL}`,
-            runtimeEnvPatch: {
-              OPENCLAW_SKIP_STARTUP_MODEL_PREWARM: undefined,
-              OPENCLAW_SKIP_CHANNELS: undefined,
-              OPENCLAW_SKIP_PROVIDERS: undefined,
-              OPENCLAW_TEST_MINIMAL_GATEWAY: undefined,
-              TELEGRAM_BOT_TOKEN: undefined,
-            },
-            mutateConfig: (cfg) => ({
-              ...cfg,
-              agents: {
-                ...cfg.agents,
-                defaults: {
-                  ...cfg.agents?.defaults,
-                  model: `ollama/${PREPARED_MODEL}`,
-                  modelPolicy: { allow: [] },
-                  models: {
-                    ...cfg.agents?.defaults?.models,
-                    [`ollama/${PREPARED_MODEL}`]: {},
-                  },
-                },
-                entries: {
-                  ...cfg.agents?.entries,
-                  qa: {
-                    ...cfg.agents?.entries?.qa,
-                    model: `ollama/${PREPARED_MODEL}`,
-                  },
-                },
-              },
-              models: {
-                ...cfg.models,
-                mode: "merge",
-                catalogRefresh: { enabled: false },
-                providers: {
-                  ...cfg.models?.providers,
-                  ollama: {
-                    baseUrl: `${apiRoot}/ollama`,
-                    api: "ollama",
-                    models: [],
-                  },
-                },
+                };
+                return cfg;
               },
             }),
-          });
+          );
 
           pendingUpdates.push(initialModelsUpdate());
 
@@ -734,28 +703,14 @@ test("lists native CLI-bound models through Telegram polling and provider callba
   const boundRef = "anthropic/claude-sonnet-4-6";
   let providerRequests = 0;
   const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
-    const pathname = new URL(req.url ?? "/", "http://127.0.0.1").pathname;
-    const telegramMatch = pathname.match(/^\/bot([^/]+)\/([^/]+)$/);
-    if (!telegramMatch) {
+    if (!/^\/bot([^/]+)\/([^/]+)$/.test(new URL(req.url ?? "/", "http://127.0.0.1").pathname)) {
       providerRequests += 1;
-      writeJson(res, 404, { ok: false, error: "native command must not call a model" });
+    }
+    const call = await readPickerCall(req, res, "native command must not call a model");
+    if (!call) {
       return;
     }
-    const [, token = "", method = ""] = telegramMatch;
-    if (token !== BOT_TOKEN) {
-      writeJson(res, 401, { ok: false, error: "unexpected bot token" });
-      return;
-    }
-    const body = await readJson(req);
-    if (method === "getMe") {
-      succeed(res, {
-        id: 424242,
-        is_bot: true,
-        first_name: "QA Picker",
-        username: "qa_picker_bot",
-      });
-      return;
-    }
+    const { method, body } = call;
     if (method === "getUpdates") {
       const update = pendingUpdates.shift();
       succeed(res, update ? [update] : []);
@@ -778,61 +733,44 @@ test("lists native CLI-bound models through Telegram polling and provider callba
       async (apiRoot) => {
         const gatewayOwner = createQaGatewayChild();
         try {
-          const gateway = await gatewayOwner.start({
-            repoRoot: path.resolve(import.meta.dirname, "../../../.."),
-            transportBaseUrl: apiRoot,
-            transport: {
-              requiredPluginIds: ["telegram"],
-              createGatewayConfig: () => ({
-                channels: {
-                  telegram: {
-                    enabled: true,
-                    botToken: BOT_TOKEN,
-                    apiRoot,
-                    dmPolicy: "open",
-                    allowFrom: ["*"],
-                    commands: { native: true },
-                  },
-                },
-              }),
-            },
-            enabledPluginIds: ["anthropic"],
-            mockAuthAgentIds: [],
-            controlUiEnabled: false,
-            primaryModel: primaryRef,
-            alternateModel: boundRef,
-            runtimeEnvPatch: {
-              PATH: `${fixtureRoot}${path.delimiter}${process.env.PATH ?? ""}`,
-              ANTHROPIC_API_KEY: undefined,
-              ANTHROPIC_AUTH_TOKEN: undefined,
-              CLAUDE_CODE_OAUTH_TOKEN: undefined,
-              CLAUDE_CONFIG_DIR: path.join(fixtureRoot, "claude-state"),
-              TELEGRAM_BOT_TOKEN: undefined,
-              OPENCLAW_SKIP_STARTUP_MODEL_PREWARM: undefined,
-              OPENCLAW_TEST_MINIMAL_GATEWAY: undefined,
-            },
-            mutateConfig: (cfg) => ({
-              ...cfg,
-              auth: { profiles: {} },
-              agents: {
-                ...cfg.agents,
-                defaults: {
-                  ...cfg.agents?.defaults,
-                  model: primaryRef,
-                  modelPolicy: { allow: [] },
-                  models: {
-                    [primaryRef]: { agentRuntime: { id: "claude-cli" } },
-                    [boundRef]: { agentRuntime: { id: "claude-cli" } },
-                  },
-                },
-                entries: {
-                  ...cfg.agents?.entries,
-                  qa: { ...cfg.agents?.entries?.qa, model: primaryRef },
-                },
+          const gateway = await gatewayOwner.start(
+            telegramGatewayOptions({
+              apiRoot,
+              telegram: {
+                enabled: true,
+                botToken: BOT_TOKEN,
+                apiRoot,
+                dmPolicy: "open",
+                allowFrom: ["*"],
+                commands: { native: true },
               },
-              models: { providers: {} },
+              enabledPluginIds: ["anthropic"],
+              mockAuthAgentIds: [],
+              primaryModel: primaryRef,
+              alternateModel: boundRef,
+              runtimeEnvPatch: {
+                PATH: `${fixtureRoot}${path.delimiter}${process.env.PATH ?? ""}`,
+                ANTHROPIC_API_KEY: undefined,
+                ANTHROPIC_AUTH_TOKEN: undefined,
+                CLAUDE_CODE_OAUTH_TOKEN: undefined,
+                CLAUDE_CONFIG_DIR: path.join(fixtureRoot, "claude-state"),
+                OPENCLAW_SKIP_STARTUP_MODEL_PREWARM: undefined,
+              },
+              mutateConfig: (cfg) => {
+                cfg.auth = { profiles: {} };
+                const defaults = cfg.agents!.defaults!;
+                defaults.model = primaryRef;
+                defaults.modelPolicy = { allow: [] };
+                defaults.models = {
+                  [primaryRef]: { agentRuntime: { id: "claude-cli" } },
+                  [boundRef]: { agentRuntime: { id: "claude-cli" } },
+                };
+                cfg.agents!.entries!.qa!.model = primaryRef;
+                cfg.models = { providers: {} };
+                return cfg;
+              },
             }),
-          });
+          );
 
           // Observe startup auth without warming provider discovery before the channel command.
           await expect
@@ -956,27 +894,11 @@ test("recovers a replaced model catalog and drains the following Telegram callba
   };
 
   const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
-    const pathname = new URL(req.url ?? "/", "http://127.0.0.1").pathname;
-    const telegramMatch = pathname.match(/^\/bot([^/]+)\/([^/]+)$/);
-    if (!telegramMatch) {
-      writeJson(res, 404, { ok: false, error: "not found" });
+    const call = await readPickerCall(req, res);
+    if (!call) {
       return;
     }
-    const [, token = "", method = ""] = telegramMatch;
-    const body = await readJson(req);
-    if (token !== BOT_TOKEN) {
-      writeJson(res, 401, { ok: false, error: "unexpected bot token" });
-      return;
-    }
-    if (method === "getMe") {
-      succeed(res, {
-        id: 424242,
-        is_bot: true,
-        first_name: "QA Picker",
-        username: "qa_picker_bot",
-      });
-      return;
-    }
+    const { method, body } = call;
     if (method === "getUpdates") {
       telegramPolls += 1;
       getUpdatesOffsets.push(typeof body.offset === "number" ? body.offset : undefined);

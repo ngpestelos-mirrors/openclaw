@@ -19,6 +19,11 @@ import type { SessionsListResult } from "../../../../src/gateway/session-utils.t
 import { writeOpenAiResponsesSse } from "../../../helpers/openai-responses-sse.js";
 import { runQaGatewayFixture, stopQaGatewayFixture } from "../../../helpers/qa-gateway-cleanup.js";
 import { createQaPreparedRepoCliCommand } from "../../../helpers/qa-prepared-repo-cli.js";
+import {
+  succeedTelegram as succeed,
+  telegramGatewayOptions,
+  telegramPhaseReporter,
+} from "./telegram-gateway.test-support.js";
 
 type JsonObject = Record<string, unknown>;
 const BOT_TOKEN = `424242:${"A".repeat(35)}`;
@@ -36,10 +41,6 @@ async function readRequest(req: IncomingMessage): Promise<Buffer> {
   return Buffer.concat(chunks);
 }
 
-function succeed(res: ServerResponse, result: unknown = true) {
-  writeJson(res, 200, { ok: true, result });
-}
-
 const repoRoot = path.resolve(import.meta.dirname, "../../../..");
 const fixture = createFixtureLifetime();
 const setupAbort = new AbortController();
@@ -48,9 +49,6 @@ let owner: ReturnType<typeof createQaGatewayChild>;
 let gateway: QaGatewayChild;
 let workspace: string;
 
-let started = 0;
-let phase = "test-enter";
-let reported = false;
 let providerRequests = 0;
 let updateDelivered = false;
 const sends: JsonObject[] = [];
@@ -63,34 +61,19 @@ const finalizers: JsonObject[] = [];
 const markerResponses: boolean[] = [];
 let overloads = 0;
 const marker = `QA-RECOVERED-ARTIFACT-${randomUUID()}`;
-// Raw stderr remains visible under the E2E configuration silent mode.
-const emitPhase = (event: "enter" | "failure") => {
-  process.stderr.write(
-    `[qa-phase] ${JSON.stringify({
-      event,
-      phase,
-      elapsedMs: Math.round(performance.now() - started),
-      providerRequests,
-      updateDelivered,
-      sends: sends.length,
-      documents: documents.length,
-      writes: writeCalls.length,
-      finalizers: finalizers.length,
-      overloads,
-    })}\n`,
-  );
-};
-const enterPhase = (next: string) => {
-  phase = next;
-  emitPhase("enter");
-};
-const report = () => {
-  if (reported) {
-    return;
-  }
-  reported = true;
-  emitPhase("failure");
-};
+const phases = telegramPhaseReporter(
+  () => ({
+    providerRequests,
+    updateDelivered,
+    sends: sends.length,
+    documents: documents.length,
+    writes: writeCalls.length,
+    finalizers: finalizers.length,
+    overloads,
+  }),
+  0,
+);
+const { enterPhase, report } = phases;
 const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
   const pathname = new URL(req.url ?? "/", "http://127.0.0.1").pathname;
   const raw = await readRequest(req);
@@ -253,7 +236,7 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
 };
 
 afterAll(async () => {
-  if (phase !== "cleanup") {
+  if (phases.phase !== "cleanup") {
     report();
   }
   enterPhase("cleanup");
@@ -278,8 +261,7 @@ beforeAll(async () => {
     const cleanup = () => runQaGatewayFixture(async () => {}, ...cleanups.toReversed());
     try {
       setupAbort.signal.throwIfAborted();
-      started = performance.now();
-      emitPhase("enter");
+      phases.start();
       enterPhase("mock-start");
       mock = await startQaMockOpenAiServer();
       cleanups.push(() => mock.stop());
@@ -344,55 +326,46 @@ beforeAll(async () => {
       // Register the synchronous owner before startup can reject or time out.
       cleanups.push(() => stopQaGatewayFixture(owner));
       enterPhase("gateway-start");
-      gateway = await owner.start({
-        onListening: () => enterPhase("gateway-listening"),
-        repoRoot,
-        command: createQaPreparedRepoCliCommand(repoRoot),
-        forcedRuntime: "codex",
-        providerMode: "mock-openai",
-        providerBaseUrl: `${apiRoot}/v1`,
-        mockSessionObserverUrl: mock.sessionObserverUrl,
-        transportBaseUrl: apiRoot,
-        transport: {
-          requiredPluginIds: ["telegram"],
-          createGatewayConfig: () => ({
-            channels: {
-              telegram: {
+      gateway = await owner.start(
+        telegramGatewayOptions({
+          workspace,
+          apiRoot,
+          onListening: () => enterPhase("gateway-listening"),
+          command: createQaPreparedRepoCliCommand(repoRoot),
+          forcedRuntime: "codex",
+          providerMode: "mock-openai",
+          providerBaseUrl: `${apiRoot}/v1`,
+          mockSessionObserverUrl: mock.sessionObserverUrl,
+          telegram: {
+            enabled: true,
+            defaultAccount: "proof",
+            accounts: {
+              proof: {
                 enabled: true,
-                defaultAccount: "proof",
-                accounts: {
-                  proof: {
-                    enabled: true,
-                    botToken: BOT_TOKEN,
-                    apiRoot,
-                    groupPolicy: "open",
-                    groups: {
-                      [String(CHAT_ID)]: { groupPolicy: "open", requireMention: false },
-                    },
-                    streaming: { mode: "off" },
-                    commands: { native: false },
-                  },
+                botToken: BOT_TOKEN,
+                apiRoot,
+                groupPolicy: "open",
+                groups: {
+                  [String(CHAT_ID)]: { groupPolicy: "open", requireMention: false },
                 },
+                streaming: { mode: "off" },
+                commands: { native: false },
               },
             },
-          }),
-        },
-        controlUiEnabled: false,
-        runtimeEnvPatch: {
-          OPENCLAW_SKIP_CHANNELS: undefined,
-          OPENCLAW_SKIP_PROVIDERS: undefined,
-          OPENCLAW_TEST_MINIMAL_GATEWAY: undefined,
-          TELEGRAM_BOT_TOKEN: undefined,
-        },
-        mutateConfig: (cfg) => {
-          cfg.agents!.defaults!.workspace = workspace;
-          cfg.bindings = [
-            ...(cfg.bindings ?? []),
-            { agentId: "qa", match: { channel: "telegram", accountId: "proof" } },
-          ];
-          return cfg;
-        },
-      });
+          },
+          runtimeEnvPatch: {
+            OPENCLAW_SKIP_CHANNELS: undefined,
+            OPENCLAW_SKIP_PROVIDERS: undefined,
+          },
+          mutateConfig: (cfg) => {
+            cfg.bindings = [
+              ...(cfg.bindings ?? []),
+              { agentId: "qa", match: { channel: "telegram", accountId: "proof" } },
+            ];
+            return cfg;
+          },
+        }),
+      );
       setupAbort.signal.throwIfAborted();
       enterPhase("gateway-ready");
       return { cleanup };
@@ -402,14 +375,9 @@ beforeAll(async () => {
   });
 });
 
-test("delivers a recovered artifact once while preserving its inter-session transcript", async ({
-  signal,
-  onTestFailed,
-  onTestFinished,
-}) => {
-  signal.addEventListener("abort", report, { once: true });
-  onTestFailed(report);
-  onTestFinished(() => signal.removeEventListener("abort", report));
+test("delivers a recovered artifact once while preserving its inter-session transcript", async (context) => {
+  const { signal } = context;
+  phases.attach(context);
   return fixture.run(async () => {
     signal.throwIfAborted();
     enterPhase("route-seed");
@@ -438,12 +406,15 @@ test("delivers a recovered artifact once while preserving its inter-session tran
     const session = matchingSessions[0];
     expect(session?.key).toBeTypeOf("string");
     const sessionKey = session!.key;
-    await expect
-      .poll(
-        async () => (await sessions()).sessions.find((row) => row.key === sessionKey)?.hasActiveRun,
-        { timeout: 30_000 },
-      )
-      .toBe(false);
+    const expectSettled = () =>
+      expect
+        .poll(
+          async () =>
+            (await sessions()).sessions.find((row) => row.key === sessionKey)?.hasActiveRun,
+          { timeout: 30_000 },
+        )
+        .toBe(false);
+    await expectSettled();
     expect(documents).toHaveLength(0);
     // Route setup can read workspace context. Count every tool in the recovery
     // turn only after that seed run has settled, so extra recovery calls still fail.
@@ -486,7 +457,7 @@ test("delivers a recovered artifact once while preserving its inter-session tran
       process.stderr.write(
         `[qa-turn-failure] ${sanitize(
           JSON.stringify({
-            phase,
+            phase: phases.phase,
             status: waited.status,
             error:
               typeof waited.error === "string"
@@ -540,12 +511,7 @@ test("delivers a recovered artifact once while preserving its inter-session tran
     expect(markerMessages.filter((message) => !isProjectedForwardedMessage(message))).toHaveLength(
       1,
     );
-    await expect
-      .poll(
-        async () => (await sessions()).sessions.find((row) => row.key === sessionKey)?.hasActiveRun,
-        { timeout: 30_000 },
-      )
-      .toBe(false);
+    await expectSettled();
     expect(await readFile(path.join(workspace, FILE_NAME), "utf8")).toBe(FILE_CONTENT);
     enterPhase("cleanup");
     // Freeze delivery evidence only after the admitted run settles and its

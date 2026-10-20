@@ -1,5 +1,4 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
-import path from "node:path";
 import { withServer, withTempDir } from "openclaw/plugin-sdk/test-env";
 import { expect, test } from "vitest";
 import {
@@ -9,6 +8,13 @@ import {
   writeJson,
 } from "../../../../extensions/qa-lab/api.js";
 import { stopQaGatewayFixture } from "../../../helpers/qa-gateway-cleanup.js";
+import {
+  readTelegramRequest as readRequest,
+  succeedTelegram as succeed,
+  settleTelegramCleanup as settleCleanup,
+  telegramGatewayOptions,
+  telegramPhaseReporter,
+} from "./telegram-gateway.test-support.js";
 
 type JsonObject = Record<string, unknown>;
 type TelegramCall = { pathname: string; method: string; body: JsonObject };
@@ -21,18 +27,6 @@ const CURRENT_CHAT_SCENARIO = "TELEGRAM_EMOJI_LIST_CURRENT_CHAT";
 const FOREIGN_CHAT_SCENARIO = "TELEGRAM_EMOJI_LIST_FOREIGN_CHAT";
 const CONVERSATION_BINDING_ERROR =
   "Delegated Telegram conversation read requires the exact current chat and account.";
-
-async function readRequest(req: IncomingMessage): Promise<string> {
-  let text = "";
-  for await (const chunk of req) {
-    text += chunk;
-  }
-  return text;
-}
-
-function succeed(res: ServerResponse, result: unknown = true) {
-  writeJson(res, 200, { ok: true, result });
-}
 
 function inboundUpdate(updateId: number, scenario: string) {
   return {
@@ -103,59 +97,22 @@ function scriptMessageToolCall(payload: string, args: JsonObject) {
   return { payload: scriptedPayload, scripted };
 }
 
-async function settleCleanup(...cleanups: Array<() => Promise<void>>) {
-  const failures: unknown[] = [];
-  for (const cleanup of cleanups) {
-    await cleanup().catch((error: unknown) => failures.push(error));
-  }
-  if (failures.length > 0) {
-    throw new AggregateError(failures, "Telegram emoji-list gateway cleanup failed");
-  }
-}
-
-test("binds Telegram emoji discovery to the current conversation before Bot API I/O", async ({
-  signal,
-  onTestFailed,
-  onTestFinished,
-}) => {
+test("binds Telegram emoji discovery to the current conversation before Bot API I/O", async (context) => {
   const telegramCalls: TelegramCall[] = [];
   const pendingUpdates: unknown[] = [];
   const pendingPolls = new Set<ServerResponse>();
   const scriptedCalls: Array<{ scenario: string; arguments: JsonObject }> = [];
   let mock: Awaited<ReturnType<typeof startQaMockOpenAiServer>> | undefined;
-  const started = performance.now();
-  let phase = "test-enter";
-  let reported = false;
   let providerRequests = 0;
-  // Raw stderr remains visible under the E2E configuration silent mode.
-  const emitPhase = (event: "enter" | "failure") => {
-    process.stderr.write(
-      `[qa-phase] ${JSON.stringify({
-        event,
-        phase,
-        elapsedMs: Math.round(performance.now() - started),
-        providerRequests,
-        pendingUpdates: pendingUpdates.length,
-        scriptedCalls: scriptedCalls.length,
-        sends: telegramCalls.filter((call) => call.method === "sendMessage").length,
-      })}\n`,
-    );
-  };
-  const enterPhase = (next: string) => {
-    phase = next;
-    emitPhase("enter");
-  };
-  const report = () => {
-    if (reported) {
-      return;
-    }
-    reported = true;
-    emitPhase("failure");
-  };
-  signal.addEventListener("abort", report, { once: true });
-  onTestFailed(report);
-  onTestFinished(() => signal.removeEventListener("abort", report));
-  emitPhase("enter");
+  const phases = telegramPhaseReporter(() => ({
+    providerRequests,
+    pendingUpdates: pendingUpdates.length,
+    scriptedCalls: scriptedCalls.length,
+    sends: telegramCalls.filter((call) => call.method === "sendMessage").length,
+  }));
+  const { enterPhase } = phases;
+  phases.attach(context);
+  enterPhase("test-enter");
 
   const queueUpdate = (update: unknown) => {
     const poll = pendingPolls.values().next().value;
@@ -292,55 +249,45 @@ test("binds Telegram emoji discovery to the current conversation before Bot API 
       return await withTempDir("openclaw-telegram-emoji-list-", async (workspace) => {
         const gatewayOwner = createQaGatewayChild();
         try {
-          const repoRoot = path.resolve(import.meta.dirname, "../../../..");
           enterPhase("mock-start");
           mock = await startQaMockOpenAiServer();
           enterPhase("gateway-start");
-          await gatewayOwner.start({
-            onListening: () => enterPhase("gateway-listening"),
-            repoRoot,
-            providerBaseUrl: `${apiRoot}/v1`,
-            mockSessionObserverUrl: mock.sessionObserverUrl,
-            transportBaseUrl: apiRoot,
-            transport: {
-              requiredPluginIds: ["telegram"],
-              createGatewayConfig: () => ({
-                channels: {
-                  telegram: {
+          await gatewayOwner.start(
+            telegramGatewayOptions({
+              workspace,
+              apiRoot,
+              onListening: () => enterPhase("gateway-listening"),
+              providerBaseUrl: `${apiRoot}/v1`,
+              mockSessionObserverUrl: mock.sessionObserverUrl,
+              telegram: {
+                enabled: true,
+                defaultAccount: "proof",
+                accounts: {
+                  proof: {
                     enabled: true,
-                    defaultAccount: "proof",
-                    accounts: {
-                      proof: {
-                        enabled: true,
-                        botToken: BOT_TOKEN,
-                        apiRoot,
-                        dmPolicy: "open",
-                        allowFrom: ["*"],
-                        commands: { native: false },
-                      },
-                    },
+                    botToken: BOT_TOKEN,
+                    apiRoot,
+                    dmPolicy: "open",
+                    allowFrom: ["*"],
+                    commands: { native: false },
                   },
                 },
-              }),
-            },
-            controlUiEnabled: false,
-            runtimeEnvPatch: {
-              OPENCLAW_SKIP_CHANNELS: undefined,
-              OPENCLAW_SKIP_PROVIDERS: undefined,
-              OPENCLAW_TEST_MINIMAL_GATEWAY: undefined,
-              TELEGRAM_BOT_TOKEN: undefined,
-            },
-            mutateConfig: (cfg) => {
-              cfg.agents!.defaults!.workspace = workspace;
-              cfg.agents!.entries!.qa!.tools = { profile: "full" };
-              cfg.tools = { ...cfg.tools, profile: "full", toolSearch: false, codeMode: false };
-              cfg.bindings = [
-                ...(cfg.bindings ?? []),
-                { agentId: "qa", match: { channel: "telegram", accountId: "proof" } },
-              ];
-              return cfg;
-            },
-          });
+              },
+              runtimeEnvPatch: {
+                OPENCLAW_SKIP_CHANNELS: undefined,
+                OPENCLAW_SKIP_PROVIDERS: undefined,
+              },
+              mutateConfig: (cfg) => {
+                cfg.agents!.entries!.qa!.tools = { profile: "full" };
+                cfg.tools = { ...cfg.tools, profile: "full", toolSearch: false, codeMode: false };
+                cfg.bindings = [
+                  ...(cfg.bindings ?? []),
+                  { agentId: "qa", match: { channel: "telegram", accountId: "proof" } },
+                ];
+                return cfg;
+              },
+            }),
+          );
 
           enterPhase("gateway-ready");
           const findToolResult = async (scenario: string) => {
