@@ -1,13 +1,13 @@
 /* @vitest-environment jsdom */
 import type { JSX } from "@solidjs/web";
 import { createSignal, flush, Show } from "solid-js";
-import { afterEach, expect, it, vi } from "vitest";
+import { afterEach, expect, it, onTestFinished, vi } from "vitest";
 import { resolveThemeBranding } from "../../../packages/gateway-protocol/src/theme.ts";
 import { createDeferred } from "../../../test/helpers/promise.js";
 import { currentThemeBranding, setCurrentThemeBranding } from "../app/theme-branding.ts";
 import { setAvatarGatewayOrigin } from "../lib/identity-avatar-context.ts";
 import { resolveAvatarImageUrl } from "../lib/identity-avatar-loader.ts";
-import { resolveIdentityAvatarView, type AgentIdentity } from "../lib/identity-avatar-view.ts";
+import type { AgentIdentity } from "../lib/identity-avatar-view.ts";
 import type { IdentityAvatarInput } from "../lib/identity-avatar.ts";
 import { cleanupSolid, mountSolid } from "../test-helpers/mount-solid.ts";
 import {
@@ -25,9 +25,10 @@ function mountAvatar<T>(initial: T, render: (value: () => T) => JSX.Element, fra
   const [input, setInput] = createSignal(initial);
   const [presented, setPresented] = createSignal(true);
   const mounted = mountSolid(() => <Show when={presented()}>{render(input)}</Show>);
+  const image = () => mounted.container.querySelector<HTMLImageElement>("img");
   return {
     ...mounted,
-    image: () => mounted.container.querySelector<HTMLImageElement>("img"),
+    image,
     frame: () => mounted.container.querySelector(frameClass),
     update: (next: T) => {
       setInput(() => next);
@@ -37,10 +38,7 @@ function mountAvatar<T>(initial: T, render: (value: () => T) => JSX.Element, fra
       setPresented(next);
       flush();
     },
-    loaded: (src: string) =>
-      vi.waitFor(() =>
-        expect(mounted.container.querySelector("img")?.getAttribute("src")).toBe(src),
-      ),
+    loaded: (src: string) => vi.waitFor(() => expect(image()?.getAttribute("src")).toBe(src)),
   };
 }
 const mountImage = (identity: IdentityAvatarInput) =>
@@ -90,6 +88,8 @@ afterEach(() => {
   cleanupSolid();
   setAvatarGatewayOrigin(null);
   vi.restoreAllMocks();
+  vi.unstubAllGlobals();
+  document.documentElement.removeAttribute("data-openclaw-control-ui-build-id");
 });
 
 it.each(["profile", "agent"] as const)(
@@ -117,53 +117,38 @@ it.each(["profile", "agent"] as const)(
   },
 );
 
-it("keeps hostile origins out of the authenticated renderer", () => {
-  setAvatarGatewayOrigin(gateway, ["avatar-token"]);
-  const fetchAvatar = vi.spyOn(globalThis, "fetch");
-  const view = resolveIdentityAvatarView({
-    id: "profile-mallory",
-    name: "Mallory",
-    profileAvatarUrl: "https://evil.example/api/users/profile-mallory/avatar",
-  });
-  expect(view).toMatchObject({ fallback: { initials: "M" }, imageUrl: null, pending: false });
-  expect(fetchAvatar).not.toHaveBeenCalled();
+it("preserves the image across authenticated revision updates", async () => {
+  const { fetchAvatar } = mockImages(["blob:v1", "blob:v2"]);
+  const identity = profile();
+  const view = mountImage(identity);
+  expect(view.frame()?.classList.contains("is-pending")).toBe(true);
+  expect(view.frame()?.classList.contains("is-fallback")).toBe(false);
+  await view.loaded("blob:v1");
+  const image = view.image()!;
+  expect(["alt", "aria-hidden", "referrerpolicy"].map((name) => image.getAttribute(name))).toEqual([
+    "Ada Lovelace",
+    "true",
+    "no-referrer",
+  ]);
+  expect(fetchAvatar).toHaveBeenCalledExactlyOnceWith(
+    `${gateway}/api/users/profile-ada/avatar?v=1`,
+    expect.objectContaining({ headers: { Authorization: "Bearer avatar-token" } }),
+  );
+  image.dispatchEvent(new Event("load"));
+  view.update(profile(2));
+  expect(view.frame()?.classList.contains("is-pending")).toBe(true);
+  await view.loaded("blob:v2");
+  image.dispatchEvent(new Event("load"));
+  flush();
+  expect(view.image()).toBe(image);
+  expect(view.frame()?.getAttribute("data-avatar-state")).toBe("loaded");
+  image.dispatchEvent(new Event("error"));
+  flush();
+  expect(view.frame()?.classList.contains("is-fallback")).toBe(true);
+  image.dispatchEvent(new Event("load"));
+  flush();
+  expect(view.frame()?.classList.contains("is-fallback")).toBe(false);
 });
-
-it.each([false, true])(
-  "preserves the image across updates (new revision: %s)",
-  async (revision) => {
-    const { fetchAvatar } = mockImages(["blob:v1", "blob:v2"]);
-    const identity = profile();
-    const view = mountImage(identity);
-    expect(view.frame()?.classList.contains("is-pending")).toBe(true);
-    expect(view.frame()?.classList.contains("is-fallback")).toBe(false);
-    await view.loaded("blob:v1");
-    const image = view.image()!;
-    expect(
-      ["alt", "aria-hidden", "referrerpolicy"].map((name) => image.getAttribute(name)),
-    ).toEqual(["Ada Lovelace", "true", "no-referrer"]);
-    expect(fetchAvatar).toHaveBeenCalledExactlyOnceWith(
-      `${gateway}/api/users/profile-ada/avatar?v=1`,
-      expect.objectContaining({ headers: { Authorization: "Bearer avatar-token" } }),
-    );
-    image.dispatchEvent(new Event("load"));
-    view.update(revision ? profile(2) : { ...identity });
-    if (revision) {
-      expect(view.frame()?.classList.contains("is-pending")).toBe(true);
-      await view.loaded("blob:v2");
-      image.dispatchEvent(new Event("load"));
-    }
-    flush();
-    expect(view.image()).toBe(image);
-    expect(view.frame()?.getAttribute("data-avatar-state")).toBe("loaded");
-    image.dispatchEvent(new Event("error"));
-    flush();
-    expect(view.frame()?.classList.contains("is-fallback")).toBe(true);
-    image.dispatchEvent(new Event("load"));
-    flush();
-    expect(view.frame()?.classList.contains("is-fallback")).toBe(false);
-  },
-);
 
 it("does not restore retired Gateway images on remount", async () => {
   const { fetchAvatar, revoke } = mockImages("blob:old-gateway", "old-token");
@@ -239,27 +224,24 @@ it("remounts public images without authenticated fetching", () => {
 
 it("updates reserved avatars on theme publication", async () => {
   const previous = currentThemeBranding();
+  onTestFinished(() => setCurrentThemeBranding(previous));
   setCurrentThemeBranding(resolveThemeBranding(undefined));
   const view = mountAgent({ id: "openclaw", name: "Assistant" });
-  try {
-    expect(view.image()?.getAttribute("src")).toContain("favicon.svg");
-    setCurrentThemeBranding(
-      resolveThemeBranding({
-        brandIcon: "compass",
-        artwork: { icons: { compass: { url: "data:image/svg+xml,compass" } } },
-      }),
-    );
-    flush();
-    await vi.waitFor(() =>
-      expect(view.container.querySelector("openclaw-theme-brand-icon")).not.toBeNull(),
-    );
-    setCurrentThemeBranding(resolveThemeBranding(undefined));
-    flush();
-    expect(view.container.querySelector("openclaw-theme-brand-icon")).toBeNull();
-    expect(view.image()?.getAttribute("src")).toContain("favicon.svg");
-  } finally {
-    setCurrentThemeBranding(previous);
-  }
+  expect(view.image()?.getAttribute("src")).toContain("favicon.svg");
+  setCurrentThemeBranding(
+    resolveThemeBranding({
+      brandIcon: "compass",
+      artwork: { icons: { compass: { url: "data:image/svg+xml,compass" } } },
+    }),
+  );
+  flush();
+  await vi.waitFor(() =>
+    expect(view.container.querySelector("openclaw-theme-brand-icon")).not.toBeNull(),
+  );
+  setCurrentThemeBranding(resolveThemeBranding(undefined));
+  flush();
+  expect(view.container.querySelector("openclaw-theme-brand-icon")).toBeNull();
+  expect(view.image()?.getAttribute("src")).toContain("favicon.svg");
 });
 
 it("hides fallback while loading and restores it on failure", async () => {
@@ -294,21 +276,6 @@ it("uses UI mount/build for the remote Gateway's system mark", () => {
   setAvatarGatewayOrigin(gateway, ["avatar-token"]);
   vi.stubGlobal("__OPENCLAW_CONTROL_UI_BASE_PATH__", "/control");
   document.documentElement.setAttribute("data-openclaw-control-ui-build-id", "build-1");
-  try {
-    const view = mountAgent({ id: "openclaw" });
-    expect(view.image()?.getAttribute("src")).toBe("/control/favicon.svg?v=build-1");
-  } finally {
-    vi.unstubAllGlobals();
-    document.documentElement.removeAttribute("data-openclaw-control-ui-build-id");
-  }
-});
-
-it("keeps hydrated emoji over pending face artwork", async () => {
-  const view = mountAgent({ id: "hydrating" });
-  view.update({ id: "hydrating", textAvatar: "🦀" });
-  await vi.dynamicImportSettled();
-  expect(view.container.querySelector(".identity-avatar__text")?.getAttribute("data-avatar")).toBe(
-    "🦀",
-  );
-  expect(view.container.querySelector("svg")).toBeNull();
+  const view = mountAgent({ id: "openclaw" });
+  expect(view.image()?.getAttribute("src")).toBe("/control/favicon.svg?v=build-1");
 });

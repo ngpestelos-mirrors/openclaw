@@ -10,9 +10,8 @@ import { LinkReaderHovercardProvider } from "./link-reader-hovercard.ts";
 import { LINK_READER_PANEL_TOGGLE_EVENT } from "./panel-toggle-contract.ts";
 import "./link-reader-panel.tsx";
 
-const tag = "test-reader-metadata-" + crypto.randomUUID();
-customElements.define(tag, class extends LinkReaderHovercardProvider {});
 const url = "https://github.com/openclaw/openclaw/pull/99816";
+const openRequest = { detail: { url, open: true }, cancelable: true };
 const reader = {
   pluginId: "github",
   id: "items",
@@ -30,8 +29,6 @@ const open: ControlUiLinkReaderDocument = {
   body: "Description",
   badge: { label: "Open", tone: "positive" },
   metadata: [{ label: "", value: "+42" }],
-  coAuthors: [{ name: "reviewer" }],
-  coAuthorCount: 1,
 };
 const merged: ControlUiLinkReaderDocument = {
   ...open,
@@ -40,15 +37,11 @@ const merged: ControlUiLinkReaderDocument = {
 };
 function makeProvider(request: Parameters<typeof createTestGatewayClient>[0]) {
   const client = createTestGatewayClient(request);
-  const host = document.createElement(tag);
-  if (!(host instanceof LinkReaderHovercardProvider)) {
-    throw new Error("Missing reader bridge");
-  }
+  const host = new LinkReaderHovercardProvider();
   host.readers = [reader];
   const anchor = document.createElement("a");
   anchor.href = url;
   anchor.className = "markdown-github-item";
-  anchor.textContent = "PR #99816";
   host.append(anchor);
   document.body.append(host);
   host.client = client;
@@ -73,12 +66,7 @@ async function openPanel(
   Object.assign(panel, { client, available: true, readers: [reader], ...scope });
   mountSolid(() => panel);
   await panel.updateComplete;
-  panel.handleToggleRequest(
-    new CustomEvent(LINK_READER_PANEL_TOGGLE_EVENT, {
-      detail: { url, open: true },
-      cancelable: true,
-    }),
-  );
+  panel.handleToggleRequest(new CustomEvent(LINK_READER_PANEL_TOGGLE_EVENT, openRequest));
   return panel;
 }
 const card = () => document.querySelector<HTMLElement>(".link-reader-hovercard");

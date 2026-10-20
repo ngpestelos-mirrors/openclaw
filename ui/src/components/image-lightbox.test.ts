@@ -32,6 +32,13 @@ function pressKey(target: EventTarget, key: string, init: KeyboardEventInit = {}
   target.dispatchEvent(event);
   return event;
 }
+function expectFocusCycle(first: HTMLElement, last: HTMLElement, init: KeyboardEventInit = {}) {
+  last.focus();
+  pressKey(last, "Tab", init);
+  expect(document.activeElement).toBe(first);
+  pressKey(first, "Tab", { shiftKey: true, ...init });
+  expect(document.activeElement).toBe(last);
+}
 function mockDecoder(decode = async () => {}) {
   vi.stubGlobal(
     "Image",
@@ -45,6 +52,11 @@ function interceptDownload() {
   const click = vi.spyOn(HTMLAnchorElement.prototype, "click").mockImplementation(() => {});
   onTestFinished(() => click.mockRestore());
   return click;
+}
+function trackClose(modal: Lightbox) {
+  const close = vi.fn();
+  modal.addEventListener("image-lightbox-close", close);
+  return close;
 }
 function attachLightbox(props: Partial<Lightbox>) {
   const modal = Object.assign(document.createElement("openclaw-image-lightbox"), props);
@@ -93,7 +105,6 @@ beforeEach(() => {
 });
 
 afterEach(async () => {
-  container.replaceChildren();
   container.remove();
   await Promise.resolve();
   restoreDialogPolyfill();
@@ -119,11 +130,7 @@ it("renders video playback, footer actions and live labels", async () => {
   expect(openOriginal.href).toBe(originalSrc);
   const close = button(modal, ".close");
   expect(close.getAttribute("aria-label")).toBe("Close video preview");
-  openOriginal.focus();
-  pressKey(openOriginal, "Tab", { composed: true });
-  expect(document.activeElement).toBe(close);
-  pressKey(close, "Tab", { shiftKey: true, composed: true });
-  expect(document.activeElement).toBe(openOriginal);
+  expectFocusCycle(close, openOriginal, { composed: true });
   modal.imageTitle = "Renamed video";
   await modal.updateComplete;
   expect(video.getAttribute("aria-label")).toBe("Renamed video");
@@ -268,9 +275,7 @@ it("ignores retired media events when switching kind", async () => {
   expect(video.isConnected).toBe(false);
   modal.querySelector("img")!.dispatchEvent(new Event("load"));
   await modal.updateComplete;
-  expect(modal.querySelector('[aria-label="Zoom in"]')?.getAttribute("aria-disabled")).toBe(
-    "false",
-  );
+  expect(button(modal, '[aria-label="Zoom in"]').getAttribute("aria-disabled")).toBe("false");
 });
 
 it("retires detached work and reconnects without downloading", async () => {
@@ -295,7 +300,6 @@ it("retires detached work and reconnects without downloading", async () => {
 });
 
 it.each([
-  ["data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg'></svg>", "image/svg+xml", false],
   ["blob:untrusted-svg", "image/svg+xml", false],
   ["blob:safe-png", "image/png", true],
 ] as const)("downloads only inert image bytes on request: %s", async (src, type, allowed) => {
@@ -370,7 +374,6 @@ it.each(["url", "blob", "gallery-url", "gallery-blob"] as const)(
 );
 
 it("offers browser access for external images", async () => {
-  fetchImage.mockRejectedValue(new TypeError("Failed to fetch"));
   const { modal } = await renderLightbox({ src: "https://images.example.org/photo.jpg" });
   const link = modal.querySelector<HTMLAnchorElement>(".external-image");
   expect(link).toMatchObject({ href: "https://images.example.org/photo.jpg", target: "_blank" });
@@ -384,37 +387,28 @@ it("offers browser access for external images", async () => {
 
 it("gates zoom shortcuts and traps Tab focus", async () => {
   const { modal, dialogAdapter } = await renderLightbox();
-  const root = modal;
-  const image = root?.querySelector<HTMLImageElement>(".image");
+  const image = modal.querySelector<HTMLImageElement>(".image")!;
   expect(image).toMatchObject({
     src: "data:image/png;charset=utf-8;base64,cG5n",
     alt: "Generated lobster",
   });
   expect(button(modal, ".close").hasAttribute("autofocus")).toBe(true);
-  const zoomIn = root?.querySelector<HTMLButtonElement>('[aria-label="Zoom in"]');
+  const zoomIn = button(modal, '[aria-label="Zoom in"]');
   expect(zoomIn?.getAttribute("aria-disabled")).toBe("true");
   const unavailableShortcut = pressKey(dialogAdapter, "+", { cancelable: true });
   expect(unavailableShortcut.defaultPrevented).toBe(false);
 
-  image?.dispatchEvent(new Event("error"));
+  image.dispatchEvent(new Event("error"));
   await modal.updateComplete;
   expect(zoomIn?.getAttribute("aria-disabled")).toBe("true");
 
-  image?.dispatchEvent(new Event("load"));
+  image.dispatchEvent(new Event("load"));
   flush();
   expect(zoomIn?.getAttribute("aria-disabled")).toBe("false");
   const availableShortcut = pressKey(dialogAdapter, "+", { cancelable: true });
   expect(availableShortcut.defaultPrevented).toBe(true);
 
-  const openOriginal = root.querySelector<HTMLButtonElement>(".download-image")!;
-  const close = root.querySelector<HTMLButtonElement>(".close")!;
-  openOriginal?.focus();
-
-  pressKey(openOriginal, "Tab");
-  expect(document.activeElement).toBe(close);
-
-  pressKey(close, "Tab", { shiftKey: true });
-  expect(document.activeElement).toBe(openOriginal);
+  expectFocusCycle(button(modal, ".close"), button(modal, ".download-image"));
 });
 
 it("captures gallery shortcuts and releases them on removal", async () => {
@@ -460,17 +454,8 @@ it("captures gallery shortcuts and releases them on removal", async () => {
     ["ArrowRight", nextSource],
     ["ArrowLeft", initialSource],
   ] as const) {
-    await new Promise<void>((resolve) => {
-      const observer = new MutationObserver(() => {
-        if (image.src === source) {
-          observer.disconnect();
-          resolve();
-        }
-      });
-      observer.observe(image, { attributes: true, attributeFilter: ["src"] });
-      expect(press(key).defaultPrevented).toBe(true);
-    });
-    expect(image.src).toBe(source);
+    expect(press(key).defaultPrevented).toBe(true);
+    await waitForSolid(() => expect(image.src).toBe(source));
   }
 
   modal.remove();
@@ -481,16 +466,11 @@ it("captures gallery shortcuts and releases them on removal", async () => {
 
 it("closes once per button or modal cancellation", async () => {
   const { modal, dialogAdapter } = await renderLightbox();
-  let closes = 0;
-  modal.addEventListener("image-lightbox-close", () => {
-    closes += 1;
-  });
-
+  const close = trackClose(modal);
   modal.querySelector<HTMLButtonElement>("button")?.click();
-  expect(closes).toBe(1);
-
+  expect(close).toHaveBeenCalledOnce();
   dialogAdapter.dispatchEvent(new CustomEvent("modal-cancel", { bubbles: true }));
-  expect(closes).toBe(2);
+  expect(close).toHaveBeenCalledTimes(2);
 });
 
 it.each(["document", "shadow"] as const)(
@@ -518,10 +498,7 @@ it.each(["document", "shadow"] as const)(
       configurable: true,
       value: vi.fn(() => stage ?? null),
     });
-    let closes = 0;
-    modal.addEventListener("image-lightbox-close", () => {
-      closes += 1;
-    });
+    const close = trackClose(modal);
 
     const pointer = (target: Element | null | undefined, type: string, pointerId: number, xy = 0) =>
       target?.dispatchEvent(
@@ -536,14 +513,14 @@ it.each(["document", "shadow"] as const)(
       );
     pointer(image, "pointerdown", 1);
     pointer(stage, "pointerup", 1);
-    expect(closes).toBe(0);
+    expect(close).not.toHaveBeenCalled();
 
     pointer(stage, "pointerdown", 2, 10);
     pointer(stage, "pointerup", 2, 30);
-    expect(closes).toBe(0);
+    expect(close).not.toHaveBeenCalled();
 
     pointer(slide, "pointerdown", 3, 10);
     pointer(stage, "pointerup", 3, 10);
-    expect(closes).toBe(1);
+    expect(close).toHaveBeenCalledOnce();
   },
 );

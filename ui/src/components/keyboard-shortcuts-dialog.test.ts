@@ -28,11 +28,11 @@ afterEach(() => {
 });
 
 it.each([
-  { platform: "Win32", modifier: "Ctrl", shift: "Shift", alt: "Alt", enter: "Enter" },
-  { platform: "MacIntel", modifier: "⌘", shift: "⇧", alt: "⌥", enter: "⏎" },
+  ["Win32", "Ctrl", "Shift", "Alt", "Enter"],
+  ["MacIntel", "⌘", "⇧", "⌥", "⏎"],
 ])(
-  "renders shortcut groups and send preferences: $platform",
-  async ({ platform, modifier, shift, alt, enter }) => {
+  "renders shortcut groups and send preferences: %s",
+  async (platform, modifier, shift, alt, enter) => {
     vi.spyOn(navigator, "platform", "get").mockReturnValue(platform);
     const dialog = await openDialog();
 
@@ -40,14 +40,14 @@ it.each([
     expect(
       Array.from(dialog.querySelectorAll("h3") ?? [], (heading) => heading.textContent),
     ).toEqual(["General", "Chat", "Panels", "Sidebar", "Image viewer", "Approvals"]);
-    for (const [label, key] of [
-      ["Open New Session", "O"],
-      ["Archive current session", "A"],
+    for (const [label, keys] of [
+      ["Open New Session", [modifier, shift, "O"]],
+      ["Archive current session", [modifier, shift, "A"]],
+      ["Select multiple sessions", [alt, "Click"]],
+      ["Send message", [enter]],
     ] as const) {
-      expect(chips(dialog, label)).toEqual([modifier, shift, key]);
+      expect(chips(dialog, label)).toEqual(keys);
     }
-    expect(chips(dialog, "Select multiple sessions")).toEqual([alt, "Click"]);
-    expect(chips(dialog, "Send message")).toEqual([enter]);
 
     dialog.sendShortcut = "modifier-enter";
     await dialog.updateComplete;
@@ -74,17 +74,10 @@ it.each(
     const openNewSession = vi.fn(() => {
       expect(document.openClawModalLayers?.size ?? 0).toBe(0);
     });
+    const auth = { role: "operator", scopes: ["operator.write"] };
+    const hello = { auth, features: { methods: ["sessions.create"] } };
     const context = {
-      gateway: {
-        snapshot: {
-          client: {},
-          phase: "connected",
-          hello: {
-            auth: { role: "operator", scopes: ["operator.write"] },
-            features: { methods: ["sessions.create"] },
-          },
-        },
-      },
+      gateway: { snapshot: { client: {}, phase: "connected", hello } },
       agentSelection: { state: { selectedId: "research" } },
     };
     const sessionHost = document.body.appendChild(
@@ -113,6 +106,10 @@ it.each(
       modal.dispatchEvent(event);
       return event;
     };
+    const blocked = () => {
+      expect(key({}).defaultPrevented).toBe(false);
+      expect(dialog.isOpen).toBe(true);
+    };
     for (const init of [
       { repeat: true },
       { isComposing: true },
@@ -125,17 +122,14 @@ it.each(
     const otherModal = document.body.appendChild(document.createElement("openclaw-modal-dialog"));
     await otherModal.updateComplete;
     expect(otherModal.querySelector("dialog")?.open).toBe(true);
-    expect(key({}).defaultPrevented).toBe(false);
-    expect(dialog.isOpen).toBe(true);
+    blocked();
     otherModal.remove();
     dialog.newSessionHost = undefined;
-    expect(key({}).defaultPrevented).toBe(false);
-    expect(dialog.isOpen).toBe(true);
+    blocked();
     dialog.newSessionHost = sessionHost;
-    context.gateway.snapshot.hello.auth.scopes = ["operator.read"];
-    expect(key({}).defaultPrevented).toBe(false);
-    expect(dialog.isOpen).toBe(true);
-    context.gateway.snapshot.hello.auth.scopes = ["operator.sessions.write"];
+    auth.scopes = ["operator.read"];
+    blocked();
+    auth.scopes = ["operator.sessions.write"];
     expect(openNewSession).not.toHaveBeenCalled();
     expect(key({}).defaultPrevented).toBe(true);
     await dialog.updateComplete;

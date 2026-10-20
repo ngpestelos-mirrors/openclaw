@@ -67,30 +67,23 @@ function imageSource(width: number, height: number, color = "#264060") {
   return canvas.toDataURL("image/png");
 }
 
-async function focusFixture(title: string, deferredClose = false) {
+it.each(["removed", "retained", "newer"])("restores tile focus after %s close", async (mode) => {
   const trigger = document.body.appendChild(document.createElement("button"));
   trigger.textContent = "Open image tile";
   onTestFinished(() => trigger.remove());
   trigger.focus();
-  const mounted = await mountImage({ title }, deferredClose);
-  const animation = mounted.dialog.animate({ opacity: [1, 0.5] }, { duration: 60_000 });
+  const { viewer, modal, dialog } = await mountImage({}, mode === "removed");
+  const animation = dialog.animate({ opacity: [1, 0.5] }, { duration: 60_000 });
   animation.pause();
   onTestFinished(() => animation.cancel());
-  return { ...mounted, trigger, animation };
-}
-
-it("restores tile focus after Escape removes a closing modal", async () => {
-  const { viewer, trigger, dialog } = await focusFixture("Focus return", true);
-  expect(dialog.matches(":modal")).toBe(true);
-
-  await userEvent.keyboard("{Escape}");
-  await expect.poll(() => viewer.isConnected).toBe(false);
-  expect(dialog.open).toBe(false);
-  expect(document.activeElement).toBe(trigger);
-});
-
-it.each([false, true])("restores focus after retained close (newer focus: %s)", async (newer) => {
-  const { trigger, modal, dialog, animation } = await focusFixture("Retained close");
+  if (mode === "removed") {
+    expect(dialog.matches(":modal")).toBe(true);
+    await userEvent.keyboard("{Escape}");
+    await expect.poll(() => viewer.isConnected).toBe(false);
+    expect(dialog.open).toBe(false);
+    expect(document.activeElement).toBe(trigger);
+    return;
+  }
   const hidden = new Promise<void>((resolve) => {
     modal.addEventListener("overlay-after-hide", () => resolve(), { once: true });
   });
@@ -100,7 +93,7 @@ it.each([false, true])("restores focus after retained close (newer focus: %s)", 
   expect(document.activeElement).not.toBe(trigger);
 
   let expected: HTMLElement = trigger;
-  if (newer) {
+  if (mode === "newer") {
     const next = document.createElement("openclaw-modal-dialog");
     const input = document.createElement("input");
     input.autofocus = true;
@@ -119,12 +112,12 @@ it.each([false, true])("restores focus after retained close (newer focus: %s)", 
 });
 
 it.each([
-  { name: "landscape", width: 1600, height: 960, previewWidth: 1200, previewHeight: 720 },
-  { name: "portrait", width: 1600, height: 3000, previewWidth: 640, previewHeight: 1200 },
-  { name: "small", width: 320, height: 200, previewWidth: 320, previewHeight: 200 },
-])(
-  "preserves $name preview geometry and zoom on upgrade",
-  async ({ width, height, previewWidth, previewHeight }) => {
+  ["landscape", 1600, 960, 1200, 720],
+  ["portrait", 1600, 3000, 640, 1200],
+  ["small", 320, 200, 320, 200],
+] as const)(
+  "preserves %s preview geometry and zoom on upgrade",
+  async (_, width, height, previewWidth, previewHeight) => {
     const full = createDeferred<ImageLightboxItem | null>();
     const source = imageSource(width, height, "#264060");
     const { viewer, image } = await mountImage({

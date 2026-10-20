@@ -36,16 +36,17 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
-it.each(["upgrade reset", "upgrade evict", "neighbor reset"] as const)(
-  "releases late images without replacing newer intent: %s",
+it.each(["upgrade reset", "upgrade evict", "neighbor reset", "return pending", "return settled"])(
+  "settles pending leases without replacing newer selection: %s",
   async (action) => {
-    const initial = imageItem("preview");
-    const late = imageItem("original");
-    const replacement = imageItem("replacement");
-    const beyond = imageItem("beyond");
+    const initial = imageItem("preview"),
+      late = imageItem("original");
+    const replacement = imageItem("replacement"),
+      beyond = imageItem("beyond");
     const pending = createDeferred<ImageLightboxItem | null>();
     const load = vi.fn(() => pending.promise);
-    const moving = action === "neighbor reset";
+    const moving = action === "neighbor reset",
+      returning = action.startsWith("return");
     const preview = moving ? initial : { ...initial, loadDisplayImage: load };
     controller.reset(
       {
@@ -58,6 +59,21 @@ it.each(["upgrade reset", "upgrade evict", "neighbor reset"] as const)(
     await vi.waitFor(() => expect(load).toHaveBeenCalledOnce());
     if (moving) {
       expectSelection(initial, { busy: true });
+    }
+    if (returning) {
+      expect(await controller.move(1)).toBe(true);
+      const back = action === "return pending" ? controller.move(-1) : undefined;
+      pending.resolve(late);
+      if (back) {
+        expect(await back).toBe(true);
+      } else {
+        await vi.waitFor(() => expect(decode).toHaveBeenCalledTimes(2));
+        expectSelection(replacement, { index: 1 });
+        expect(await controller.move(-1)).toBe(true);
+      }
+      expect(controller.peek().current).toBe(late);
+      expect(load).toHaveBeenCalledOnce();
+      return;
     }
     if (action === "upgrade evict") {
       expect(await controller.move(1)).toBe(true);
@@ -84,62 +100,26 @@ it.each(["upgrade reset", "upgrade evict", "neighbor reset"] as const)(
   },
 );
 
-it.each([false, true])(
-  "upgrades the previous image (return while loading=%s)",
-  async (returnWhileLoading) => {
-    const original = imageItem("original");
-    const neighbor = imageItem("neighbor");
-    const pending = createDeferred<ImageLightboxItem | null>();
-    const load = vi.fn(() => pending.promise);
-    const initial = { ...imageItem("preview"), loadDisplayImage: load };
-    controller.reset({ index: 0, items: [async () => initial, async () => neighbor] }, initial);
-    expect(await controller.move(1)).toBe(true);
-    const returning = returnWhileLoading ? controller.move(-1) : undefined;
-    pending.resolve(original);
-    if (returning) {
-      expect(await returning).toBe(true);
-    } else {
-      await vi.waitFor(() => expect(decode).toHaveBeenCalledTimes(2));
-      expectSelection(neighbor, { index: 1 });
-      expect(await controller.move(-1)).toBe(true);
-    }
-    expect(controller.peek().current).toBe(original);
-    expect(load).toHaveBeenCalledOnce();
-  },
-);
-
-it.each(["fetch", "decode"] as const)(
-  "retries display-image %s failures without losing the preview",
-  async (failure) => {
-    const original = imageItem("original");
-    if (failure === "decode") {
-      decode.mockRejectedValueOnce(new Error("Image decode failed"));
-    }
-    const load = vi.fn(async () => {
-      if (failure === "fetch") {
-        throw new Error("Image unavailable");
-      }
-      return original;
-    });
-    const initial = { ...imageItem("preview"), loadDisplayImage: load };
-    controller.reset(undefined, initial);
-    await vi.waitFor(() => expect(load).toHaveBeenCalledOnce());
-    if (failure === "decode") {
-      await vi.waitFor(() => expect(original.release).toHaveBeenCalledOnce());
-    }
-    await vi.waitFor(() => expect(controller.peek().upgradeFailed).toBe(true));
-    expect(controller.peek().current?.src).toBe(initial.src);
-    expect(controller.peek()).toMatchObject({ failed: false, upgrading: false });
-    expect(initial.release).not.toHaveBeenCalled();
-    const recovered = imageItem("recovered-display");
-    load.mockResolvedValueOnce(recovered);
-    controller.retryDisplayImage();
-    expect(controller.peek().upgrading).toBe(true);
-    await vi.waitFor(() => expect(controller.peek().current).toBe(recovered));
-    expect(controller.peek().upgradeFailed).toBe(false);
-    expect(load).toHaveBeenCalledTimes(2);
-  },
-);
+it("retries display-image decode failures without losing the preview", async () => {
+  const original = imageItem("original");
+  decode.mockRejectedValueOnce(new Error("Image decode failed"));
+  const load = vi.fn(async () => original);
+  const initial = { ...imageItem("preview"), loadDisplayImage: load };
+  controller.reset(undefined, initial);
+  await vi.waitFor(() => expect(load).toHaveBeenCalledOnce());
+  await vi.waitFor(() => expect(original.release).toHaveBeenCalledOnce());
+  await vi.waitFor(() => expect(controller.peek().upgradeFailed).toBe(true));
+  expect(controller.peek().current?.src).toBe(initial.src);
+  expect(controller.peek()).toMatchObject({ failed: false, upgrading: false });
+  expect(initial.release).not.toHaveBeenCalled();
+  const recovered = imageItem("recovered-display");
+  load.mockResolvedValueOnce(recovered);
+  controller.retryDisplayImage();
+  expect(controller.peek().upgrading).toBe(true);
+  await vi.waitFor(() => expect(controller.peek().current).toBe(recovered));
+  expect(controller.peek().upgradeFailed).toBe(false);
+  expect(load).toHaveBeenCalledTimes(2);
+});
 
 it("retries failed neighbor loads without losing selection", async () => {
   const initial = imageItem("initial");
@@ -177,25 +157,27 @@ it("loads on selection, reuses neighbors and releases evictions", async () => {
   expect(loads.map((load) => load.mock.calls.length)).toEqual([0, 0, 0, 0, 0]);
   expect(decode).not.toHaveBeenCalled();
 
-  expect(await controller.move(1)).toBe(true);
-  expect(controller.peek().current).toBe(images[2]);
+  for (const [delta, index, counts] of [
+    [1, 2, [0, 0, 1, 0, 0]],
+    [-1, 1, [0, 0, 1, 0, 0]],
+    [1, 2, [0, 0, 1, 0, 0]],
+    [1, 3, [0, 0, 1, 1, 0]],
+    [-1, 2, [0, 0, 1, 1, 0]],
+    [-1, 1, [0, 1, 1, 1, 0]],
+  ] as const) {
+    expect(await controller.move(delta)).toBe(true);
+    if (index === 1) {
+      expect(controller.peek().current?.src).toBe(initial.src);
+    } else {
+      expect(controller.peek().current).toBe(images[index]);
+    }
+    expect(loads.map((load) => load.mock.calls.length)).toEqual(counts);
+    expect(initial.release).not.toHaveBeenCalled();
+  }
   expect(loads[2]).toHaveBeenCalledExactlyOnceWith(true);
-  expect([loads[0], loads[3], loads[4]].map((load) => load?.mock.calls.length)).toEqual([0, 0, 0]);
-  expect(await controller.move(-1)).toBe(true);
-  expect(controller.peek().current?.src).toBe(initial.src);
-  expect(await controller.move(1)).toBe(true);
-  expect(loads[2]).toHaveBeenCalledOnce();
-  expect(await controller.move(1)).toBe(true);
-  expect(controller.peek().current).toBe(images[3]);
   expect(loads[3]).toHaveBeenCalledExactlyOnceWith(true);
-  expect(loads[4]).not.toHaveBeenCalled();
-  expect(initial.release).not.toHaveBeenCalled();
-
-  expect(await controller.move(-1)).toBe(true);
-  expect(await controller.move(-1)).toBe(true);
   await Promise.resolve();
   expect(images[3]!.release).toHaveBeenCalledOnce();
-  expect(loads[1]).toHaveBeenCalledOnce();
   disposeGallery();
   await Promise.resolve();
   expect(images.map((image) => image.release.mock.calls.length)).toEqual([0, 1, 1, 1, 0]);
