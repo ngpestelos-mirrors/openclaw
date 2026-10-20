@@ -41,6 +41,19 @@ const doneMessage = { role: "assistant", content: "done", timestamp: 2 } as unkn
 const sessionKey = "agent:main:guildchat:channel:test-ctx-engine";
 const { hoisted, runAttempt, tempPaths } = useContextEngineAttemptHarness(sessionKey);
 
+function makeTool(
+  name: string,
+  label: string,
+  description: string,
+  parameters = {
+    type: "object",
+    properties: {},
+  },
+  result = "ok",
+) {
+  return { name, label, description, parameters, execute: async () => ({ text: result }) };
+}
+
 function capturePrompt(
   transform: boolean | "preprocessed" = false,
   assistant: unknown = doneMessage,
@@ -294,20 +307,8 @@ describe("runEmbeddedAttempt context engine sessionKey forwarding", () => {
 
   it.each([false, true])("keeps lean replies direct (private: %s)", async (privateReply) => {
     hoisted.createOpenClawCodingToolsMock.mockReturnValueOnce([
-      {
-        name: "message",
-        label: "Message",
-        description: "Send a visible reply.",
-        parameters: { type: "object", properties: {} },
-        execute: async () => ({ text: "sent" }),
-      },
-      {
-        name: "browser",
-        label: "Browser",
-        description: "Open a browser session.",
-        parameters: { type: "object", properties: {} },
-        execute: async () => ({ text: "opened" }),
-      },
+      makeTool("message", "Message", "Send a visible reply.", undefined, "sent"),
+      makeTool("browser", "Browser", "Open a browser session.", undefined, "opened"),
     ]);
 
     await runAttempt({
@@ -316,13 +317,7 @@ describe("runEmbeddedAttempt context engine sessionKey forwarding", () => {
         sourceReplyDeliveryMode: "message_tool_only",
         toolsAllow: privateReply ? ["message"] : undefined,
         config: {
-          agents: {
-            defaults: {
-              experimental: {
-                localModelLean: true,
-              },
-            },
-          },
+          agents: { defaults: { experimental: { localModelLean: true } } },
         } as OpenClawConfig,
       },
     });
@@ -339,25 +334,14 @@ describe("runEmbeddedAttempt context engine sessionKey forwarding", () => {
 
   it("quarantines unsupported tool schemas before creating the model session", async () => {
     hoisted.createOpenClawCodingToolsMock.mockReturnValue([
-      {
-        name: "healthy_lookup",
-        label: "Healthy Lookup",
-        description: "Look up safe data.",
-        parameters: { type: "object", properties: {} },
-        execute: async () => ({ text: "ok" }),
-      },
-      {
-        name: "fuzzplugin_move_angles",
-        label: "Fuzzplugin Move Angles",
-        description: "Move robot joints.",
-        parameters: {
-          type: "object",
-          properties: {
-            target: { $dynamicRef: "#target" },
-          },
-        },
-        execute: async () => ({ text: "bad" }),
-      },
+      makeTool("healthy_lookup", "Healthy Lookup", "Look up safe data."),
+      makeTool(
+        "fuzzplugin_move_angles",
+        "Fuzzplugin Move Angles",
+        "Move robot joints.",
+        { type: "object", properties: { target: { $dynamicRef: "#target" } } },
+        "bad",
+      ),
     ]);
 
     const activeToolNames: string[][] = [];
@@ -545,12 +529,7 @@ describe("runEmbeddedAttempt context engine sessionKey forwarding", () => {
     await runAttempt({
       attemptOverrides: {
         config: {
-          agents: {
-            defaults: {
-              bootstrapMaxChars: 50,
-              bootstrapTotalMaxChars: 50,
-            },
-          },
+          agents: { defaults: { bootstrapMaxChars: 50, bootstrapTotalMaxChars: 50 } },
         } as OpenClawConfig,
         prompt: "visible ask",
         transcriptPrompt: "visible ask",

@@ -15,14 +15,8 @@ const hoisted = getHoisted();
 const tempPaths: string[] = [];
 
 describe("runEmbeddedAttempt abort races", () => {
-  beforeAll(async () => {
-    await preloadRunEmbeddedAttemptForTests();
-  });
-
-  beforeEach(() => {
-    resetEmbeddedAttemptHarness();
-  });
-
+  beforeAll(preloadRunEmbeddedAttemptForTests);
+  beforeEach(() => resetEmbeddedAttemptHarness());
   afterEach(async () => {
     await cleanupTempPaths(tempPaths);
     tempPaths.length = 0;
@@ -148,17 +142,14 @@ describe("runEmbeddedAttempt abort races", () => {
   });
 
   it("preserves a run-budget timeout when abort blocks prompt submission", async () => {
-    let releasePendingEvents!: () => void;
-    const pendingEvents = new Promise<void>((resolve) => {
-      releasePendingEvents = resolve;
-    });
+    const pendingEvents = createDeferred();
     const baseSubscribe = hoisted.subscribeEmbeddedAgentSessionMock.getMockImplementation();
     if (!baseSubscribe) {
       throw new Error("missing embedded subscription mock");
     }
     hoisted.subscribeEmbeddedAgentSessionMock.mockImplementation((params) => ({
       ...baseSubscribe(params),
-      waitForPendingEvents: async () => await pendingEvents,
+      waitForPendingEvents: async () => await pendingEvents.promise,
     }));
 
     const attempt = createContextEngineAttemptRunner({
@@ -168,7 +159,7 @@ describe("runEmbeddedAttempt abort races", () => {
       sessionPrompt: async () => {},
       attemptOverrides: {
         timeoutMs: 20,
-        onAttemptTimeout: () => releasePendingEvents(),
+        onAttemptTimeout: () => pendingEvents.resolve(),
       },
     });
 

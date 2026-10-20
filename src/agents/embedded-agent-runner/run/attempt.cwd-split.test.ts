@@ -17,14 +17,17 @@ import {
 const hoisted = getHoisted();
 const tempPaths: string[] = [];
 const dirs = useAutoCleanupTempDirTracker(afterEach);
+type AttemptOptions = Parameters<typeof createContextEngineAttemptRunner>[0];
 function run(
-  attemptOverrides: Parameters<typeof createContextEngineAttemptRunner>[0]["attemptOverrides"],
+  attemptOverrides: AttemptOptions["attemptOverrides"],
+  sessionPrompt?: AttemptOptions["sessionPrompt"],
 ) {
   return createContextEngineAttemptRunner({
     contextEngine: createContextEngineBootstrapAndAssemble(),
     sessionKey: "agent:main:subagent:child",
     tempPaths,
     attemptOverrides,
+    sessionPrompt,
   });
 }
 function stubTool(name: string): AnyAgentTool {
@@ -33,7 +36,7 @@ function stubTool(name: string): AnyAgentTool {
     label: name,
     description: `${name} tool`,
     parameters: { type: "object", properties: {} },
-    execute: async () => ({ content: [], details: undefined }),
+    execute: vi.fn(async () => ({ content: [], details: undefined })),
   };
 }
 
@@ -107,11 +110,7 @@ describe("runEmbeddedAttempt cwd/workspace split", () => {
     const ready = createDeferred();
     const waiting = createDeferred();
     const read = stubTool("read");
-    const executeRead = vi.fn(read.execute);
-    read.execute = executeRead;
     const web = stubTool("web_search");
-    const executeWeb = vi.fn(web.execute);
-    web.execute = executeWeb;
     hoisted.createOpenClawCodingToolsMock.mockReturnValue([read, web]);
     await runWithAgentWorkspaceReadiness(
       {
@@ -123,15 +122,12 @@ describe("runEmbeddedAttempt cwd/workspace split", () => {
         assertCurrent: () => {},
       },
       async () =>
-        createContextEngineAttemptRunner({
-          contextEngine: createContextEngineBootstrapAndAssemble(),
-          sessionKey: "agent:main:subagent:child",
-          tempPaths,
-          attemptOverrides: {
+        run(
+          {
             disableTools: false,
             config: { tools: { toolSearch: false, codeMode: false } },
           },
-          sessionPrompt: async () => {
+          async () => {
             const tools = hoisted.createAgentSessionMock.mock.calls
               .at(-1)?.[0]
               ?.customTools?.map((tool) => wrapToolDefinition(tool));
@@ -142,14 +138,14 @@ describe("runEmbeddedAttempt cwd/workspace split", () => {
             const pending = boundRead!.execute("read", {});
             await Promise.race([waiting.promise, pending]);
             await boundWeb!.execute("web", {});
-            expect(executeWeb).toHaveBeenCalledOnce();
-            expect(executeRead).not.toHaveBeenCalled();
+            expect(web.execute).toHaveBeenCalledOnce();
+            expect(read.execute).not.toHaveBeenCalled();
             ready.resolve();
             await pending;
           },
-        }),
+        ),
     );
-    expect(executeRead).toHaveBeenCalledOnce();
+    expect(read.execute).toHaveBeenCalledOnce();
   });
 
   it("defaults rootless session permission boundaries to the canonical workspace", async () => {

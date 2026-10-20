@@ -164,19 +164,15 @@ describe("stripSessionsYieldArtifacts", () => {
     expect(readSessionTranscriptWatermark(scope).generation).not.toBe(generationBefore);
     const reopened = await SessionManager.openAsync(scope, dir);
     expect(reopened.buildSessionContext().messages).toEqual([toolResult]);
-    expect(reopened.getEntries()).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({
-          type: "custom",
-          customType: "plugin-state",
-          data: { enabled: true },
-        }),
-      ]),
+    expect(reopened.getEntries()).toContainEqual(
+      expect.objectContaining({
+        type: "custom",
+        customType: "plugin-state",
+        data: { enabled: true },
+      }),
     );
-    expect(await loadTranscriptEvents(scope)).not.toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({ type: "custom_message", customType: interruptType }),
-      ]),
+    expect(await loadTranscriptEvents(scope)).not.toContainEqual(
+      expect.objectContaining({ type: "custom_message", customType: interruptType }),
     );
   });
 });

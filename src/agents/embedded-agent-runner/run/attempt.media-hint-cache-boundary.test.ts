@@ -17,6 +17,7 @@ import {
   registerAgentSessionLoopTestLifecycle,
   testModel,
 } from "../../sessions/agent-session-loop-correctness.test-support.js";
+import { createToolResultPromptProjectionState } from "../session-prompt-state.js";
 import {
   prepareEmbeddedAttemptPromptAssembly,
   prepareEmbeddedAttemptPromptContext,
@@ -80,10 +81,7 @@ async function createTurnFixture(systemPromptOverride?: string) {
         pluginId: "cache-test",
         hookName: "before_prompt_build",
         source: "test",
-        handler: async () => ({
-          systemPrompt: systemPromptOverride,
-          prependSystemContext: HOOK,
-        }),
+        handler: async () => ({ systemPrompt: systemPromptOverride, prependSystemContext: HOOK }),
       },
     ],
   });
@@ -126,13 +124,7 @@ async function createTurnFixture(systemPromptOverride?: string) {
       isRawModelRun: false,
       sessionAgentId: "main",
       systemPromptText,
-      toolResultPromptProjectionState: {
-        replacements: new Map(),
-        frozen: new Set(),
-        ambiguousBaseKeys: new Set(),
-        restoredCacheTtl: new Map(),
-        sourceHashByKey: new Map(),
-      },
+      toolResultPromptProjectionState: createToolResultPromptProjectionState(),
     });
   };
 }

@@ -4,6 +4,8 @@ import { createDeferred } from "../../../../test/helpers/promise.js";
 
 const mocks = vi.hoisted(() => ({ warn: vi.fn() }));
 vi.mock("../logger.js", () => ({ log: { warn: mocks.warn } }));
+const runIdentity = { runId: "run-1", sessionId: "session-1" };
+const yieldIdentity = { ...runIdentity, reason: "sessions_yield" as const };
 
 beforeEach(() => {
   vi.useFakeTimers();
@@ -24,9 +26,7 @@ describe("waitForEmbeddedAbortSettle for sessions_yield", () => {
     const { waitForEmbeddedAbortSettle } = await import("./attempt-subscription-cleanup.js");
     await waitForEmbeddedAbortSettle({
       promise: Promise.reject(new Error("settle failed")),
-      runId: "run-1",
-      sessionId: "session-1",
-      reason: "sessions_yield",
+      ...yieldIdentity,
     });
 
     expect(mocks.warn).toHaveBeenCalledExactlyOnceWith(
@@ -39,9 +39,7 @@ describe("waitForEmbeddedAbortSettle for sessions_yield", () => {
     const { waitForEmbeddedAbortSettle } = await import("./attempt-subscription-cleanup.js");
     await waitForEmbeddedAbortSettle({
       promise: null,
-      runId: "run-1",
-      sessionId: "session-1",
-      reason: "sessions_yield",
+      ...yieldIdentity,
     });
 
     expect(vi.getTimerCount()).toBe(0);
@@ -80,8 +78,7 @@ describe("cleanupEmbeddedAttemptResources", () => {
       },
       aborted: true,
       abortSettlePromise: settle.promise,
-      runId: "run-1",
-      sessionId: "session-1",
+      ...runIdentity,
     });
 
     await Promise.resolve();
@@ -109,8 +106,7 @@ describe("cleanupEmbeddedAttemptResources", () => {
         ...orderedCleanup(order),
         aborted: true,
         abortSettlePromise: new Promise(() => {}),
-        runId: "run-1",
-        sessionId: "session-1",
+        ...runIdentity,
       });
 
       await vi.advanceTimersByTimeAsync(timeoutMs - 1);
