@@ -5,7 +5,7 @@ import { mountSolid } from "../../../test-helpers/mount-solid.ts";
 import { flush } from "../../../test-helpers/solid-settle.ts";
 import { ChatModelCatalogRefresh, ChatModelCatalogState } from "./chat-model-catalog-state.tsx";
 import {
-  modelControl,
+  modelControlSelector,
   modelOption,
   modelPickerProps,
   mountModelPicker,
@@ -61,12 +61,12 @@ it.each([
     if (presentation === "loading") {
       expect(container.textContent).not.toContain("No models available");
     } else if (presentation === "setup") {
-      modelControl<HTMLButtonElement>(container, "setup")?.click();
+      container.querySelector<HTMLButtonElement>(modelControlSelector("setup"))?.click();
       expect(setup).toHaveBeenCalledOnce();
     } else if (presentation === "settled") {
       mounted.unmount();
       render(ChatModelCatalogRefresh);
-      expect(modelControl(container, "refresh")).toBeNull();
+      expect(container.querySelector<HTMLElement>(modelControlSelector("refresh"))).toBeNull();
     }
   },
 );
@@ -105,7 +105,7 @@ it.each([
     });
   await waitForModelMenu(container);
   const pickerDetails = container.querySelector("details")!;
-  const input = modelControl<HTMLInputElement>(container, "search")!;
+  const input = container.querySelector<HTMLInputElement>(modelControlSelector("search"))!;
   const refresh = container.querySelector<HTMLButtonElement>("[data-chat-model-refresh] button")!;
   input.value = "model";
   input.dispatchEvent(new InputEvent("input", { bubbles: true }));
@@ -124,7 +124,7 @@ it.each([
   }
   await Promise.resolve();
 
-  expect(modelControl(container, "refresh")).toBeNull();
+  expect(container.querySelector<HTMLElement>(modelControlSelector("refresh"))).toBeNull();
   const expectedFocus = {
     "restore search": input,
     "restore trigger": container.querySelector("summary"),
@@ -166,6 +166,6 @@ it.each([
     expect(
       container.querySelector(".chat-controls__model-catalog-state-label")?.textContent?.trim(),
     ).toBe(label);
-    expect(modelControl(container, "setup")).not.toBeNull();
+    expect(container.querySelector<HTMLElement>(modelControlSelector("setup"))).not.toBeNull();
   },
 );

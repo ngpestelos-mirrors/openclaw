@@ -3,7 +3,7 @@ import { expect, it } from "vitest";
 import type { ModelProviderAuthLabel } from "../../../lib/model-provider-auth-label.ts";
 import { flush } from "../../../test-helpers/solid-settle.ts";
 import {
-  modelControl,
+  modelControlSelector,
   modelOption as option,
   modelPickerProps as pickerProps,
   mountModelPicker as mountPicker,
@@ -29,8 +29,12 @@ it.each([false, true])(
     const { container, update } = mountPicker(params);
     await waitForMenu(container);
     const details = container.querySelector<HTMLDetailsElement>("details")!;
-    const selected = modelControl<HTMLButtonElement>(container, "option", "selected/current")!;
-    const other = modelControl<HTMLButtonElement>(container, "option", "other/first")!;
+    const selected = container.querySelector<HTMLButtonElement>(
+      modelControlSelector("option", "selected/current"),
+    )!;
+    const other = container.querySelector<HTMLButtonElement>(
+      modelControlSelector("option", "other/first"),
+    )!;
     const toggle = selected
       .closest("section")!
       .querySelector<HTMLButtonElement>("[data-chat-model-provider-toggle]")!;
@@ -83,8 +87,8 @@ it.each([false, true])(
         : ["fixture/model-299", "fixture/model-0", "fixture/model-1"],
     );
     expect(rows[hasDefault ? 1 : 0]?.getAttribute("aria-selected")).toBe("true");
-    const more = modelControl<HTMLButtonElement>(container, "more-toggle")!;
-    const search = modelControl<HTMLInputElement>(container, "search")!;
+    const more = container.querySelector<HTMLButtonElement>(modelControlSelector("more-toggle"))!;
+    const search = container.querySelector<HTMLInputElement>(modelControlSelector("search"))!;
     search.value = "Model 298";
     search.dispatchEvent(new Event("input", { bubbles: true }));
     expect(visibleRows().map((row) => row.dataset.chatModelOption)).toEqual(["fixture/model-298"]);
@@ -111,13 +115,17 @@ it.each([false, true])(
       open: true,
     });
     await waitForMenu(container);
-    const more = modelControl<HTMLButtonElement>(container, "more-toggle")!;
+    const more = container.querySelector<HTMLButtonElement>(modelControlSelector("more-toggle"))!;
     const details = container.querySelector("details")!;
     details.open = true;
     details.dispatchEvent(new Event("toggle"));
     await waitForMenu(container);
-    const rest = modelControl<HTMLButtonElement>(container, "option", "fixture/rest")!;
-    const group = modelControl<HTMLButtonElement>(container, "provider-toggle")!;
+    const rest = container.querySelector<HTMLButtonElement>(
+      modelControlSelector("option", "fixture/rest"),
+    )!;
+    const group = container.querySelector<HTMLButtonElement>(
+      modelControlSelector("provider-toggle"),
+    )!;
     expect([more.hidden, rest.hidden]).toEqual([false, true]);
 
     more.focus();
@@ -125,7 +133,9 @@ it.each([false, true])(
     flush();
     expect([more.hidden, rest.hidden]).toEqual([true, false]);
     // Keyboard focus lands on the first selectable revealed model, else back on search.
-    expect(document.activeElement).toBe(restDisabled ? modelControl(container, "search") : rest);
+    expect(document.activeElement).toBe(
+      restDisabled ? container.querySelector<HTMLElement>(modelControlSelector("search")) : rest,
+    );
 
     group.click();
     flush();

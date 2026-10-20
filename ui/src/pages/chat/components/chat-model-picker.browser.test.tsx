@@ -9,7 +9,7 @@ import "../../../styles/base.css";
 import "../../../styles/chat/composer.css";
 import { focusComposerFromChrome } from "./chat-composer-dom.ts";
 import {
-  modelControl,
+  modelControlSelector,
   modelOption,
   modelPickerProps,
   waitForModelMenu,
@@ -18,8 +18,9 @@ import { ChatModelPicker } from "./chat-model-picker.tsx";
 import { installChatComposerPickerDismissal } from "./chat-picker-overlay.ts";
 
 const container = document.createElement("div");
-const getSearch = () => modelControl<HTMLInputElement>(container, "search")!;
-const option = (value: string) => modelControl<HTMLButtonElement>(container, "option", value)!;
+const getSearch = () => container.querySelector<HTMLInputElement>(modelControlSelector("search"))!;
+const option = (value: string) =>
+  container.querySelector<HTMLButtonElement>(modelControlSelector("option", value))!;
 let dispose: (() => void) | undefined;
 afterEach(() => {
   dispose?.();
@@ -85,7 +86,7 @@ function mountPicker(optionsReady = true) {
 
 it("opens during activation and preserves filter focus and query across catalog rerenders", async () => {
   const { composer, open, params, update, trigger } = mountPicker();
-  expect(modelControl(container, "option")).toBeNull();
+  expect(container.querySelector<HTMLElement>(modelControlSelector("option"))).toBeNull();
   expect(container.querySelector(".chat-controls__model-menu")).toBeNull();
   let visibleAtActivation = false;
   container.addEventListener(
@@ -129,7 +130,7 @@ it("clears the active descendant when a catalog refresh removes the filtered cho
   await open();
   const search = getSearch();
   await userEvent.keyboard("beta");
-  const highlighted = modelControl<HTMLElement>(container, "highlighted")!;
+  const highlighted = container.querySelector<HTMLElement>(modelControlSelector("highlighted"))!;
   expect(highlighted.textContent).toContain("Beta");
   expect(search.getAttribute("aria-activedescendant")).toBe(highlighted.id);
   params.modelOptions = params.modelOptions.filter((row) => row.value !== "example/beta");
@@ -137,7 +138,7 @@ it("clears the active descendant when a catalog refresh removes the filtered cho
   await Promise.resolve();
   expect(search.value).toBe("beta");
   expect(search.hasAttribute("aria-activedescendant")).toBe(false);
-  expect(modelControl(container, "highlighted")).toBeNull();
+  expect(container.querySelector<HTMLElement>(modelControlSelector("highlighted"))).toBeNull();
 });
 
 it("keeps a disabled picker closed on keyboard activation", async () => {
@@ -178,7 +179,7 @@ it("focuses the filter on keyboard open and reopen, and returns Escape to the tr
   trigger.focus();
   for (const key of ["{Enter}", " "]) {
     await toggle(() => userEvent.keyboard(key));
-    const search = modelControl<HTMLInputElement>(picker, "search")!;
+    const search = picker.querySelector<HTMLInputElement>(modelControlSelector("search"))!;
     expect(document.activeElement).toBe(search);
     await userEvent.keyboard("beta");
     await userEvent.keyboard("{Escape}");
@@ -219,7 +220,7 @@ it.each([
   }
   trigger.focus();
   await toggle(() => userEvent.keyboard("{Enter}"));
-  expect(modelControl(picker, "search")).toBeNull();
+  expect(picker.querySelector<HTMLElement>(modelControlSelector("search"))).toBeNull();
   if (state === "closed") {
     await toggle(() => userEvent.keyboard("{Escape}"));
   } else if (state !== "open") {
@@ -229,7 +230,7 @@ it.each([
   params.modelOptions = modelOptions;
   update();
   await new Promise(requestAnimationFrame);
-  const search = modelControl<HTMLInputElement>(picker, "search")!;
+  const search = picker.querySelector<HTMLInputElement>(modelControlSelector("search"))!;
   expect(search).not.toBeNull();
   expect(document.activeElement).toBe(state === "open" ? search : previousFocus);
 });

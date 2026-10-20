@@ -51,14 +51,6 @@ const archiveResult = (integrity = "sha256-test", digest = "a") => ({
   cleanup: mocks.cleanup,
 });
 
-function captureWarnings() {
-  const messages: string[] = [];
-  return {
-    logger: { warn: (message: string) => messages.push(message) },
-    warnings: () => messages.join("\n"),
-  };
-}
-
 const readLock = (workspaceDir: string) =>
   hub.readJson<{ skills: Record<string, Record<string, unknown>> }>(
     path.join(workspaceDir, ".clawhub/lock.json"),
@@ -359,7 +351,7 @@ describe("skills-clawhub", () => {
   });
 
   it("prints the ClawHub audit and installs releases with a Review outcome", async () => {
-    const { logger, warnings } = captureWarnings();
+    const { logger, warnings } = hub.captureWarnings();
     denySecurity(["security.status_not_clean"], {
       skillUrl: "https://clawhub.ai/acme/skills/agentreceipt",
       securityAuditUrl: "https://clawhub.ai/acme/skills/agentreceipt/security-audit?version=1.0.0",
@@ -422,7 +414,7 @@ describe("skills-clawhub", () => {
   });
 
   it("blocks ClawHub skill installs when moderation marks the release as malware-blocked", async () => {
-    const { logger, warnings } = captureWarnings();
+    const { logger, warnings } = hub.captureWarnings();
     denySecurity(["moderation.malware_blocked"], { security: { status: "clean", passed: false } });
 
     const result = await install("agentreceipt", { logger });
@@ -911,7 +903,7 @@ describe("skills-clawhub", () => {
   it("explains that a malicious skill update will not be downloaded (@acme/agentreceipt)", async () => {
     const tempRoot = await hub.tempDirs.make("openclaw-skill-malicious-update-");
     const quotedWorkspace = path.join(tempRoot, "agent's $(printf PWN) state");
-    const { logger, warnings } = captureWarnings();
+    const { logger, warnings } = hub.captureWarnings();
     await hub.writeTrackedSkill(quotedWorkspace, "agentreceipt", {
       ownerHandle: "acme",
       installedVersion: "0.9.0",
@@ -1245,7 +1237,10 @@ describe("ClawHub origin provenance readback", () => {
       });
 
       const link = readLink(workspaceDir, skillDir);
-      expect(link.status).toBe("linked");
+      expect(link?.status).toBe("linked");
+      if (link?.status !== "linked") {
+        throw new Error(`expected linked status, got ${link?.status}`);
+      }
       expect(link.artifact).toBeUndefined();
       expect(link.skillFile).toBeUndefined();
       expect(link.sourceUrl).toBeUndefined();

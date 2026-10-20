@@ -53,10 +53,6 @@ function mountPane(context: ApplicationContext, render: () => JSX.Element, nativ
   });
 }
 
-function element<T extends Element>(root: ParentNode, selector: string): T {
-  return expectDefined(root.querySelector<T>(selector), selector);
-}
-
 const composerSelector = ".agent-chat__composer-combobox textarea";
 
 function stubLifecycle() {
@@ -78,7 +74,7 @@ it("exposes the current navigation face through the real pane host without a gat
     routeFace: "chat",
   });
   const view = mountPane(context, () => <ChatPaneView {...props()} />, false);
-  const pane = element<ChatPaneElement>(view.container, "openclaw-chat-pane");
+  const pane = expectDefined(view.container.querySelector<ChatPaneElement>("openclaw-chat-pane"));
   await waitForSolid(() => expect(pane.captureNavigationFace()).toBe("chat"));
 
   setProps((p) => ({ ...p, routeFace: "dashboard" }));
@@ -100,9 +96,9 @@ it("applies a route draft and its focus cue to an already mounted native pane", 
     <ChatPaneView paneId="bridge-draft" sessionKey={sessionKey} {...props()} />
   ));
   const textarea = await waitForSolid(() =>
-    element<HTMLTextAreaElement>(view.container, composerSelector),
+    expectDefined(view.container.querySelector<HTMLTextAreaElement>(composerSelector)),
   );
-  const pane = element<ChatPaneElement>(view.container, "openclaw-chat-pane");
+  const pane = expectDefined(view.container.querySelector<ChatPaneElement>("openclaw-chat-pane"));
   const runtime = await waitForSolid(() =>
     expectDefined(
       renderProbe.mock.calls.find(
@@ -152,8 +148,8 @@ it("updates held Send as a mounted composer's draft changes between commands and
   const sendChat = vi.spyOn(pane.state, "handleSendChat").mockResolvedValue(undefined);
   pane.state.handleChatDraftChange("/stop");
   await pane.updateComplete;
-  const input = element<HTMLTextAreaElement>(pane, composerSelector);
-  const send = element<HTMLButtonElement>(pane, ".chat-send-btn--send");
+  const input = expectDefined(pane.querySelector<HTMLTextAreaElement>(composerSelector));
+  const send = expectDefined(pane.querySelector<HTMLButtonElement>(".chat-send-btn--send"));
   const edit = async (draft: string) => {
     input.value = draft;
     input.dispatchEvent(new Event("input", { bubbles: true }));
@@ -185,7 +181,7 @@ it("settles clean hidden reads and fences actual property changes until reveal",
     () => <ChatPaneView paneId="clean-hidden" presented={false} />,
     false,
   );
-  const pane = element<ChatPaneElement>(view.container, "openclaw-chat-pane");
+  const pane = expectDefined(view.container.querySelector<ChatPaneElement>("openclaw-chat-pane"));
   await pane.updateComplete;
   await expect(pane.updateComplete).resolves.toBe(true);
   render.mockClear();
@@ -205,13 +201,16 @@ it("settles clean hidden reads and fences actual property changes until reveal",
 
 it("replaces the command provider while document-hidden rendering is parked", async () => {
   let visibility: DocumentVisibilityState = "visible";
-  vi.spyOn(document, "visibilityState", "get").mockImplementation(() => visibility);
+  const visibilitySpy = vi
+    .spyOn(document, "visibilityState", "get")
+    .mockImplementation(() => visibility);
+  onTestFinished(() => visibilitySpy.mockRestore());
   const { sessionKey, render } = mountedFixture("bridge-board-provider");
   const first = createMockBoardProvider(sessionKey);
   const second = createMockBoardProvider(sessionKey);
   const subscribe = vi.spyOn(second.events, "subscribe");
   const view = render({ boardProvider: first });
-  const pane = element<ChatPaneElement>(view.container, "openclaw-chat-pane");
+  const pane = expectDefined(view.container.querySelector<ChatPaneElement>("openclaw-chat-pane"));
   await pane.updateComplete;
   visibility = "hidden";
   document.dispatchEvent(new Event("visibilitychange"));
@@ -240,7 +239,7 @@ it("opens provider findings through the mounted pane's first rendered frame", as
   });
   const view = fixture.render({ active: true });
   const reviewButton = await waitForSolid(() =>
-    element<HTMLButtonElement>(view.container, ".chat-provider-review button"),
+    expectDefined(view.container.querySelector<HTMLButtonElement>(".chat-provider-review button")),
   );
   expect(reviewButton.textContent).toContain("Review findings");
   reviewButton.click();

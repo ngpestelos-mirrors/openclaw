@@ -44,7 +44,9 @@ export async function withAdmissionFixture(
             incoming.body = body;
             respondJson(response, responseBody);
           })
-          .catch((error: Error) => response.destroy(error));
+          .catch((error: unknown) => {
+            response.destroy(error instanceof Error ? error : new Error(String(error)));
+          });
       },
       (baseUrl) =>
         withEnvAsync(

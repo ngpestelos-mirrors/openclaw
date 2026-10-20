@@ -6,7 +6,7 @@ import { createSessionsListResult } from "../../../test-helpers/chat-model.ts";
 import { mountSolid } from "../../../test-helpers/mount-solid.ts";
 import { flush } from "../../../test-helpers/solid-settle.ts";
 import { ChatModelControls } from "./chat-model-controls.tsx";
-import { modelControl, waitForModelMenu } from "./chat-model-picker.test-support.tsx";
+import { modelControlSelector, waitForModelMenu } from "./chat-model-picker.test-support.tsx";
 
 const models = ["primary", "fallback", "custom"].map((id) => ({
   id,
@@ -72,20 +72,29 @@ it.each([undefined, "fixture/primary", "fixture/automatic", null])(
     } else if (defaultModel === "fixture/automatic") {
       expected.push(defaultModel);
     }
-    expect(values.toSorted()).toEqual(expected.toSorted());
-    modelControl<HTMLButtonElement>(container, "option", "fixture/custom")?.click();
+    const compare = (a: string, b: string) => a.localeCompare(b);
+    expect(values.toSorted(compare)).toEqual(expected.toSorted(compare));
+    container
+      .querySelector<HTMLButtonElement>(modelControlSelector("option", "fixture/custom"))
+      ?.click();
     expect(onModelSelect).toHaveBeenCalledWith("fixture/custom", "main", undefined);
     if (restricted) {
       expect(container.textContent).not.toContain("forbidden");
-      expect(modelControl(container, "policy")?.textContent).toContain("administrator");
-      const reset = modelControl<HTMLButtonElement>(container, "default", "true");
+      expect(
+        container.querySelector<HTMLElement>(modelControlSelector("policy"))?.textContent,
+      ).toContain("administrator");
+      const reset = container.querySelector<HTMLButtonElement>(
+        modelControlSelector("default", "true"),
+      );
       if (defaultModel) {
         expect(reset?.getAttribute("data-chat-model-option")).toBe(defaultModel);
         reset?.click();
         expect(onModelSelect).toHaveBeenCalledWith("", "main", null);
       } else {
         expect(reset).toBeNull();
-        expect(modelControl(container, "select")?.textContent).toContain("Choose a model");
+        expect(
+          container.querySelector<HTMLElement>(modelControlSelector("select"))?.textContent,
+        ).toContain("Choose a model");
       }
     }
   },
@@ -103,12 +112,12 @@ it.each([false, true])(
       },
       retired,
     );
-    expect(modelControl(container, "option")).toBeNull();
+    expect(container.querySelector<HTMLElement>(modelControlSelector("option"))).toBeNull();
     if (retired) {
       expect(container.textContent).not.toContain("forbidden");
     } else {
       expect(container.textContent).toContain("No models are permitted by your administrator.");
-      expect(modelControl(container, "setup")).toBeNull();
+      expect(container.querySelector<HTMLElement>(modelControlSelector("setup"))).toBeNull();
     }
   },
 );
@@ -129,6 +138,10 @@ it("retains permitted runtime alternatives without offering denied ones", async 
     ],
     modelSelectionPolicy: { restricted: true, defaultModel: "fixture/primary" },
   });
-  expect(modelControl(container, "runtime", "permitted-route")).not.toBeNull();
-  expect(modelControl(container, "runtime", "denied-route")).toBeNull();
+  expect(
+    container.querySelector<HTMLElement>(modelControlSelector("runtime", "permitted-route")),
+  ).not.toBeNull();
+  expect(
+    container.querySelector<HTMLElement>(modelControlSelector("runtime", "denied-route")),
+  ).toBeNull();
 });

@@ -5,14 +5,8 @@ import { flush, waitForSolid } from "../../../test-helpers/solid-settle.ts";
 import { ChatModelPicker, type ChatModelPickerParams } from "./chat-model-picker.tsx";
 
 type PickerProps = ChatModelPickerParams;
-export function modelControl<T extends HTMLElement = HTMLElement>(
-  root: ParentNode,
-  name: string,
-  value?: string,
-) {
-  return root.querySelector<T>(
-    `[data-chat-model-${name}${value === undefined ? "" : `="${value}"`}]`,
-  );
+export function modelControlSelector(name: string, value?: string) {
+  return `[data-chat-model-${name}${value === undefined ? "" : `="${value}"`}]`;
 }
 type Option = PickerProps["modelOptions"][number];
 export function modelOption(provider: string, id: string, overrides: Partial<Option> = {}): Option {

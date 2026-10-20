@@ -28,7 +28,7 @@ it("preserves threads while a same-client reconnect settles a pending answer", a
   const models: ModelCatalogEntry[] = [
     { id: "fixture-model", name: "Fixture model", provider: "test", available: true },
   ];
-  const historyReady = createDeferred<void>();
+  const historyReady = createDeferred();
   onTestFinished(() => historyReady.resolve());
   const replies: Record<string, unknown> = {
     "agents.list": {

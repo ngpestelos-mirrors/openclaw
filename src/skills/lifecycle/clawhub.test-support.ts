@@ -262,6 +262,14 @@ export const missingWeatherVersionVerification: ClawHubSkillVerificationResponse
   provenance: { source: "unavailable" },
 };
 
+export function captureWarnings() {
+  const messages: string[] = [];
+  return {
+    logger: { warn: (message: string) => messages.push(message) },
+    warnings: () => messages.join("\n"),
+  };
+}
+
 export function mockInstalledSkillFile(content: string) {
   installPackageDirMock.mockImplementationOnce(async (params: { targetDir: string }) => {
     await fs.mkdir(params.targetDir, { recursive: true });
