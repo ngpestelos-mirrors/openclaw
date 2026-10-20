@@ -6,11 +6,6 @@ import { normalizeModelCatalogProviderRows } from "../../packages/model-catalog-
 import { setRuntimeConfigSnapshot, clearRuntimeConfigSnapshot } from "../config/config.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import type { DecisionRuntimeV2 } from "../decisions/types-v2.js";
-import {
-  onTrustedInternalDiagnosticEvent,
-  type DiagnosticEventPayload,
-} from "../infra/diagnostic-events.js";
-import { markTrustedOtelDiagnosticListener } from "../infra/diagnostic-otel-listener-provenance.js";
 import { withServer } from "../plugin-sdk/test-helpers/http-test-server.js";
 import { loadAndActivateRootPluginRegistry } from "../plugins/loader.js";
 import { resetPluginLoaderTestStateForTest } from "../plugins/loader.test-fixtures.js";
@@ -23,6 +18,11 @@ import {
 } from "../plugins/test-helpers/cold-plugin-fixtures.js";
 import { withEnvAsync } from "../test-utils/env.js";
 import { createOpenClawTestState } from "../test-utils/openclaw-test-state.js";
+import {
+  decisionOptions,
+  readDecisionRequest,
+  trackDecisionUsage,
+} from "./decision-inference.test-support.js";
 import { modelCatalogRowToEntry } from "./model-catalog-entry.js";
 import { buildAllowedModelSet } from "./model-selection-shared.js";
 import { resetPreparedModelRuntimeSnapshotsForTest } from "./prepared-model-runtime.test-support.js";
@@ -114,15 +114,13 @@ it.each([
           );
           return;
         }
-        const chunks: Buffer[] = [];
-        request.on("data", (chunk: Buffer) => chunks.push(chunk));
-        request.on("end", () => {
+        readDecisionRequest(request, (body) => {
           received.push({
             url: request.url,
             authorization: request.headers.authorization,
             tenant: String(request.headers["x-fixture-tenant"] ?? ""),
             customAuth: request.headers["x-fixture-auth"]?.toString(),
-            body: JSON.parse(Buffer.concat(chunks).toString("utf8")),
+            body,
           });
           response.writeHead(status, { "content-type": "application/json" });
           response.end(status === 200 ? JSON.stringify(responseBody()) : "synthetic-private-error");
@@ -299,16 +297,7 @@ it.each([
             expect(
               registry.decisionProviders.filter((entry) => entry.host.provider.id === "openrouter"),
             ).toHaveLength(1);
-            const events: Array<Extract<DiagnosticEventPayload, { type: "model.usage" }>> = [];
-            onTestFinished(
-              onTrustedInternalDiagnosticEvent(
-                markTrustedOtelDiagnosticListener((event) => {
-                  if (event.type === "model.usage") {
-                    events.push(event);
-                  }
-                }),
-              ),
-            );
+            const events = trackDecisionUsage();
             const runtime = trace.runtime;
             if (!runtime) {
               throw new Error("Missing registered decision SDK");
@@ -316,13 +305,12 @@ it.each([
             // ProviderHost starts the operation deadline before its lazy prepared-runtime import.
             // Compile that source-only dependency as fixture setup, outside the measured operation.
             await import("./decision-inference.js");
-            const options = () => ({
-              agentId: "main",
-              purpose: "openrouter-native-fixture",
-              rubricVersion: "1",
-              timeoutMs: 5000,
-              signal: new AbortController().signal,
-            });
+            const options = () =>
+              decisionOptions({
+                agentId: "main",
+                purpose: "openrouter-native-fixture",
+                rubricVersion: "1",
+              });
             const batch = {
               state: { type: "text" as const, text: "Synthetic evidence" },
               questions: {

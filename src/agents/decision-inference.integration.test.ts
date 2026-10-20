@@ -1,7 +1,8 @@
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { afterEach, expect, it, onTestFinished, vi } from "vitest";
+import type { ModelDecisionCapabilities } from "@openclaw/model-catalog-core/model-catalog-types";
+import { afterEach, expect, it, vi } from "vitest";
 import { useAutoCleanupTempDirTracker } from "../../test/helpers/temp-dir.js";
 import { setRuntimeConfigSnapshot, clearRuntimeConfigSnapshot } from "../config/config.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
@@ -12,12 +13,7 @@ import {
   createContext,
   createOperatorClient,
 } from "../gateway/server-plugin-in-process-dispatch.test-support.js";
-import {
-  onTrustedInternalDiagnosticEvent,
-  resetDiagnosticEventsForTest,
-  type DiagnosticEventPayload,
-} from "../infra/diagnostic-events.js";
-import { markTrustedOtelDiagnosticListener } from "../infra/diagnostic-otel-listener-provenance.js";
+import { resetDiagnosticEventsForTest } from "../infra/diagnostic-events.js";
 import { withServer } from "../plugin-sdk/test-helpers/http-test-server.js";
 import { loadAndActivateRootPluginRegistry } from "../plugins/loader.js";
 import { resetPluginLoaderTestStateForTest } from "../plugins/loader.test-fixtures.js";
@@ -43,6 +39,11 @@ import {
 import { VERSION } from "../version.js";
 import { resolveAgentDir, resolveDefaultAgentId } from "./agent-scope.js";
 import { executePreparedDecision } from "./decision-inference.js";
+import {
+  decisionOptions,
+  readDecisionRequest,
+  trackDecisionUsage,
+} from "./decision-inference.test-support.js";
 import * as modelAuth from "./model-auth-provider.js";
 import { acquireAgentRunPreparedModelRuntime } from "./prepared-model-runtime.js";
 import { resetPreparedModelRuntimeSnapshotsForTest } from "./prepared-model-runtime.test-support.js";
@@ -50,6 +51,15 @@ import { resetPreparedModelRuntimeSnapshotsForTest } from "./prepared-model-runt
 const roots = useAutoCleanupTempDirTracker(afterEach);
 const traceKey = Symbol.for("openclaw.test.decision-prepared-path");
 let profileState: OpenClawTestState | undefined;
+const textBatch = (text = "synthetic evidence") => ({
+  state: { type: "text" as const, text },
+  questions: { q: { type: "boolean" as const } },
+});
+const decision: ModelDecisionCapabilities = {
+  protocol: "fixture",
+  input: ["text"],
+  questions: { boolean: { probabilities: "none", abstention: true } },
+};
 type Trace = {
   calls: number;
   context?: DecisionProviderContextV2;
@@ -149,14 +159,12 @@ it.each([
                   inference: {
                     chat: authScope === "exchange",
                     decision: {
-                      protocol: "fixture",
+                      ...decision,
                       billing: {
                         unit: "tokens",
                         source: "provider-catalog",
                         usdPerMillion: { input: 2, output: 0 },
                       },
-                      input: ["text"],
-                      questions: { boolean: { probabilities: "none", abstention: true } },
                     },
                   },
                 },
@@ -276,16 +284,7 @@ it.each([
       if (!evaluate) {
         throw new Error("Decision registration omitted its runtime capability");
       }
-      const usageEvents: Array<Extract<DiagnosticEventPayload, { type: "model.usage" }>> = [];
-      onTestFinished(
-        onTrustedInternalDiagnosticEvent(
-          markTrustedOtelDiagnosticListener((event) => {
-            if (event.type === "model.usage") {
-              usageEvents.push(event);
-            }
-          }),
-        ),
-      );
+      const usageEvents = trackDecisionUsage();
       if (deadlinePhase) {
         const entered = createDeferredCore();
         const release = createDeferredCore();
@@ -321,16 +320,8 @@ it.each([
           { client, context, hasCurrentClientAuthority: () => true, isWebchatConnect: () => false },
           () =>
             evaluate(
-              {
-                state: { type: "text", text: "synthetic deadline" },
-                questions: { q: { type: "boolean" } },
-              },
-              {
-                purpose: "fixture",
-                rubricVersion: "v2",
-                timeoutMs: 500,
-                signal: controller.signal,
-              },
+              textBatch("synthetic deadline"),
+              decisionOptions({ timeoutMs: 500, signal: controller.signal }),
             ),
         );
         let settled = false;
@@ -390,6 +381,14 @@ it.each([
           requestTransportOverrides: "none" as const,
         };
         const original = modelRoutes.resolveProviderModelRoutes;
+        const selected = {
+          ...candidate,
+          ...(authScope === "plugin-route-fresh"
+            ? { inference: { chat: false, decision } }
+            : authScope === "plugin-route-cleared"
+              ? { inference: { chat: false } }
+              : {}),
+        };
         vi.spyOn(modelRoutes, "resolveProviderModelRoutes").mockImplementation((params) => {
           if (params.provider !== id || params.capability !== "decision") {
             return original(params);
@@ -399,25 +398,7 @@ it.each([
             routes:
               authScope === "plugin-route-multiple"
                 ? [candidate, { ...candidate, baseUrl: "https://other.fixture.invalid/v1" }]
-                : [
-                    {
-                      ...candidate,
-                      ...(authScope === "plugin-route-fresh"
-                        ? {
-                            inference: {
-                              chat: false,
-                              decision: {
-                                protocol: "fixture",
-                                input: ["text"],
-                                questions: { boolean: { probabilities: "none", abstention: true } },
-                              },
-                            },
-                          }
-                        : authScope === "plugin-route-cleared"
-                          ? { inference: { chat: false } }
-                          : {}),
-                    },
-                  ],
+                : [selected],
           };
         });
       }
@@ -466,19 +447,7 @@ it.each([
             }
           : evaluate;
       const evaluateFixture = () =>
-        invoke(
-          {
-            state: { type: "text", text: "synthetic evidence" },
-            questions: { q: { type: "boolean" } },
-          },
-          {
-            ...(authScope === "profile" ? { agentId: "main" } : {}),
-            purpose: "fixture",
-            rubricVersion: "v2",
-            timeoutMs: 5000,
-            signal: new AbortController().signal,
-          },
-        );
+        invoke(textBatch(), decisionOptions(authScope === "profile" ? { agentId: "main" } : {}));
       const outcome = await evaluateFixture();
       if (authScope.startsWith("plugin-route-") && authScope !== "plugin-route-fresh") {
         expect(outcome).toEqual({ status: "unavailable", reason: "unsupported-input" });
@@ -514,19 +483,11 @@ it.each([
         expect(usageEvents).toEqual([]);
         return;
       }
-      expect(
-        outcome,
-        JSON.stringify({
-          outcome,
-          providerCalls: trace.calls,
-        }),
-      ).toMatchObject({
+      expect(outcome).toMatchObject({
         status: "ok",
         result: { answers: { q: { answer: null } }, usage: { costUsd: 0 } },
       });
-      expect(trace.calls).toBe(1);
-      expect(trace.resultReads).toBe(1);
-      expect(trace.authenticated).toBe(true);
+      expect(trace).toMatchObject({ calls: 1, resultReads: 1, authenticated: true });
       if (authScope === "profile") {
         expect(trace.profileId).toBe(id + ":agent");
         expect(trace.agentId).toBe("main");
@@ -553,9 +514,11 @@ it.each([
         expect(usageEvents[1]).not.toHaveProperty("costUsd");
       }
       if (authScope === "exchange") {
-        expect(trace.modelBaseUrl).toBe("https://entitlement.fixture.invalid/v1");
+        expect(trace).toMatchObject({
+          modelBaseUrl: "https://entitlement.fixture.invalid/v1",
+          preparedApi: "openai-responses",
+        });
         expect(trace.modelBilling).toBeUndefined();
-        expect(trace.preparedApi).toBe("openai-responses");
         expect(trace.modelApi).toBe(trace.preparedApi);
         expect(trace.modelRequest).toMatchObject({
           headers: { "x-fixture-entitlement": "synthetic-entitlement" },
@@ -596,19 +559,11 @@ it.each([
           },
         });
         await expect(
-          evaluate(
-            {
-              state: { type: "text", text: "explicit profile" },
-              questions: { q: { type: "boolean" } },
-            },
-            {
-              purpose: "fixture",
-              rubricVersion: "v2",
-              timeoutMs: 5000,
-              signal: new AbortController().signal,
-            },
-          ),
-        ).resolves.toMatchObject({ status: "unavailable", reason: "credentials-unavailable" });
+          evaluate(textBatch("explicit profile"), decisionOptions()),
+        ).resolves.toMatchObject({
+          status: "unavailable",
+          reason: "credentials-unavailable",
+        });
         expect(trace.calls).toBe(2);
         setRuntimeConfigSnapshot(cfg);
       }
@@ -629,22 +584,14 @@ it.each([
         delete trace.resultOverride;
       }
 
-      let started!: () => void;
-      let finish!: () => void;
-      const dispatched = new Promise<void>((resolve) => {
-        started = resolve;
-      });
-      trace.work = new Promise<void>((resolve) => {
-        finish = resolve;
-      });
-      trace.onDispatch = started;
+      const dispatched = createDeferredCore();
+      const work = createDeferredCore();
+      trace.work = work.promise;
+      trace.onDispatch = () => dispatched.resolve();
       const controller = new AbortController();
       const pending = evaluate(
-        {
-          state: { type: "text", text: "synthetic cancellation" },
-          questions: { q: { type: "boolean" } },
-        },
-        { purpose: "fixture", rubricVersion: "v2", timeoutMs: 5000, signal: controller.signal },
+        textBatch("synthetic cancellation"),
+        decisionOptions({ signal: controller.signal }),
       );
       let settled = false;
       void pending
@@ -652,12 +599,12 @@ it.each([
           settled = true;
         })
         .catch(() => {});
-      await dispatched;
+      await dispatched.promise;
       controller.abort(new Error("fixture cancelled"));
       await Promise.resolve();
       expect(settled).toBe(false);
       expect(registry.decisionProviders[0]!.host.inspect(cfg).activeRequests).toBe(1);
-      finish();
+      work.resolve();
       await expect(pending).rejects.toThrow("fixture cancelled");
       expect(usageEvents).toHaveLength(2);
       expect(registry.decisionProviders[0]!.host.inspect(cfg).activeRequests).toBe(0);
@@ -684,13 +631,11 @@ it("runs both SDK versions through the source TypeSafe plugin, prepared auth, an
   const received: Array<{ url?: string; authorization?: string; body: unknown }> = [];
   await withServer(
     (request, response) => {
-      const chunks: Buffer[] = [];
-      request.on("data", (chunk: Buffer) => chunks.push(chunk));
-      request.on("end", () => {
+      readDecisionRequest(request, (body) => {
         received.push({
           url: request.url,
           authorization: request.headers.authorization,
-          body: JSON.parse(Buffer.concat(chunks).toString("utf8")),
+          body,
         });
         response.writeHead(status, { "content-type": "application/json" });
         response.end(
@@ -741,18 +686,7 @@ it("runs both SDK versions through the source TypeSafe plugin, prepared auth, an
             workspaceDir: path.join(root, "workspace"),
           });
           expect(registry.diagnostics.filter((item) => item.level === "error")).toEqual([]);
-          expect(
-            registry.providers.map((entry) => entry.provider.id),
-            JSON.stringify({
-              plugins: registry.plugins.map((p) => ({
-                id: p.id,
-                status: p.status,
-                error: p.error,
-              })),
-              diagnostics: registry.diagnostics,
-              paths: cfg.plugins?.load?.paths,
-            }),
-          ).toContain("typesafe");
+          expect(registry.providers.map((entry) => entry.provider.id)).toContain("typesafe");
           const agentId = resolveDefaultAgentId(cfg);
           // Retain the prepared caller across SDK assertions: releasing a warm-up
           // lease retires the owner and charges each call for cold catalog setup.
@@ -786,17 +720,10 @@ it("runs both SDK versions through the source TypeSafe plugin, prepared auth, an
           if (!evaluate || !legacy) {
             throw new Error("Missing registered decision SDK");
           }
-          const options = () => ({
-            purpose: "actual-engine-fixture",
-            rubricVersion: "1",
-            timeoutMs: 5000,
-            signal: new AbortController().signal,
-          });
-          const batch = {
-            state: { type: "text" as const, text: "synthetic evidence" },
-            questions: { q: { type: "boolean" as const } },
-          };
-          const outcome = await evaluate(batch, { ...options(), reasoning: "auto" });
+          const typesafeOptions = () =>
+            decisionOptions({ purpose: "actual-engine-fixture", rubricVersion: "1" });
+          const batch = textBatch();
+          const outcome = await evaluate(batch, { ...typesafeOptions(), reasoning: "auto" });
           expect(
             outcome,
             JSON.stringify({ outcome, receivedRequests: received.length }),
@@ -808,17 +735,22 @@ it("runs both SDK versions through the source TypeSafe plugin, prepared auth, an
             },
           });
           expect(
-            await legacy({ state: "synthetic evidence", questions: batch.questions }, options()),
+            await legacy(
+              { state: "synthetic evidence", questions: batch.questions },
+              typesafeOptions(),
+            ),
           ).toMatchObject({ status: "ok", result: { answers: { q: { probabilityTrue: 0.37 } } } });
           for (const reasoning of ["off", "on"] as const) {
-            await expect(evaluate(batch, { ...options(), reasoning })).resolves.toMatchObject({
+            await expect(
+              evaluate(batch, { ...typesafeOptions(), reasoning }),
+            ).resolves.toMatchObject({
               status: "unavailable",
               reason: "unsupported-input",
             });
           }
           for (const rejection of [413, 422]) {
             status = rejection;
-            expect(await evaluate(batch, options())).toMatchObject({
+            expect(await evaluate(batch, typesafeOptions())).toMatchObject({
               status: "unavailable",
               reason: "unsupported-input",
             });

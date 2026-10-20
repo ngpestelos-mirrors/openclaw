@@ -7,73 +7,49 @@ import {
 
 describe("resolveMainSessionDelegationMode", () => {
   it.each([
-    {
-      name: "canonical main session",
-      config: {},
-      agentId: "main",
-      sessionKey: "agent:main:main",
-      expected: "prefer",
-    },
-    {
-      name: "non-main session",
-      config: {},
-      agentId: "main",
-      sessionKey: "agent:main:slack:channel:C01234567",
-      expected: "suggest",
-    },
-    {
-      name: "custom main key",
-      config: { session: { mainKey: "inbox" } },
-      agentId: "main",
-      sessionKey: "agent:main:inbox",
-      expected: "prefer",
-    },
-    {
-      name: "global session scope",
-      config: { session: { scope: "global" } },
-      agentId: "main",
-      sessionKey: "global",
-      expected: "prefer",
-    },
-    {
-      name: "explicit default prefer outside main",
-      config: { agents: { defaults: { subagents: { delegationMode: "prefer" } } } },
-      agentId: "main",
-      sessionKey: "agent:main:dashboard:project",
-      expected: "prefer",
-    },
-    {
-      name: "explicit default suggest in main",
-      config: { agents: { defaults: { subagents: { delegationMode: "suggest" } } } },
-      agentId: "main",
-      sessionKey: "agent:main:main",
-      expected: "suggest",
-    },
-    {
-      name: "per-agent prefer overrides default suggest",
-      config: {
+    ["canonical main session", {}, "main", "agent:main:main", "prefer"],
+    ["non-main session", {}, "main", "agent:main:slack:channel:C01234567", "suggest"],
+    ["custom main key", { session: { mainKey: "inbox" } }, "main", "agent:main:inbox", "prefer"],
+    ["global session scope", { session: { scope: "global" } }, "main", "global", "prefer"],
+    [
+      "explicit default prefer outside main",
+      { agents: { defaults: { subagents: { delegationMode: "prefer" } } } },
+      "main",
+      "agent:main:dashboard:project",
+      "prefer",
+    ],
+    [
+      "explicit default suggest in main",
+      { agents: { defaults: { subagents: { delegationMode: "suggest" } } } },
+      "main",
+      "agent:main:main",
+      "suggest",
+    ],
+    [
+      "per-agent prefer overrides default suggest",
+      {
         agents: {
           defaults: { subagents: { delegationMode: "suggest" } },
           entries: { coordinator: { subagents: { delegationMode: "prefer" } } },
         },
       },
-      agentId: "coordinator",
-      sessionKey: "agent:coordinator:dashboard:project",
-      expected: "prefer",
-    },
-    {
-      name: "per-agent suggest overrides default prefer",
-      config: {
+      "coordinator",
+      "agent:coordinator:dashboard:project",
+      "prefer",
+    ],
+    [
+      "per-agent suggest overrides default prefer",
+      {
         agents: {
           defaults: { subagents: { delegationMode: "prefer" } },
           entries: { main: { subagents: { delegationMode: "suggest" } } },
         },
       },
-      agentId: "main",
-      sessionKey: "agent:main:main",
-      expected: "suggest",
-    },
-  ] as const)("resolves $name", ({ config, agentId, sessionKey, expected }) => {
+      "main",
+      "agent:main:main",
+      "suggest",
+    ],
+  ] as const)("resolves %s", (_name, config, agentId, sessionKey, expected) => {
     expect(
       resolveMainSessionDelegationMode({
         config: config as OpenClawConfig,

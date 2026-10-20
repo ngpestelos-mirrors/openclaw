@@ -21,6 +21,14 @@ function createTool(
   } as unknown as AnyAgentTool;
 }
 
+function resolveReport(overrides: Partial<Parameters<typeof resolveDelegationCapability>[0]> = {}) {
+  return resolveDelegationCapability({
+    fallbackActive: false,
+    inputProvenance: { kind: "inter_session", sourceTool: "subagent_announce" },
+    ...overrides,
+  });
+}
+
 describe("delegation capability", () => {
   it.each([
     "current",
@@ -88,46 +96,23 @@ describe("delegation capability", () => {
   });
 
   it("enters report-only mode for fallback completion reports", () => {
+    expect(resolveReport({ fallbackActive: true })).toBe("report_only");
     expect(
-      resolveDelegationCapability({
-        fallbackActive: true,
-        inputProvenance: { kind: "inter_session", sourceTool: "subagent_announce" },
-      }),
-    ).toBe("report_only");
-    expect(
-      resolveDelegationCapability({
+      resolveReport({
         fallbackActive: true,
         inputProvenance: { kind: "inter_session", sourceTool: "agent_harness_task" },
       }),
     ).toBe("report_only");
+    expect(resolveReport()).toBe("full");
     expect(
-      resolveDelegationCapability({
-        fallbackActive: false,
-        inputProvenance: { kind: "inter_session", sourceTool: "subagent_announce" },
-      }),
-    ).toBe("full");
-    expect(
-      resolveDelegationCapability({
-        fallbackActive: true,
-        inputProvenance: { kind: "external_user" },
-      }),
+      resolveReport({ fallbackActive: true, inputProvenance: { kind: "external_user" } }),
     ).toBe("full");
   });
 
-  it.each([
-    { sourceTool: "subagent_announce", disableTools: true },
-    { sourceTool: "subagent_announce", toolsAllow: [] },
-    { sourceTool: "subagent_announce", toolsAllow: ["message"] },
-  ])(
-    "blocks new delegation for restricted $sourceTool completion reports",
-    ({ sourceTool, ...restriction }) => {
-      expect(
-        resolveDelegationCapability({
-          fallbackActive: false,
-          inputProvenance: { kind: "inter_session", sourceTool },
-          ...restriction,
-        }),
-      ).toBe("report_only");
+  it.each([{ disableTools: true }, { toolsAllow: [] }, { toolsAllow: ["message"] }])(
+    "blocks new delegation for restricted completion reports: %j",
+    (restriction) => {
+      expect(resolveReport(restriction)).toBe("report_only");
     },
   );
 
@@ -135,13 +120,7 @@ describe("delegation capability", () => {
     { label: "wildcard with another tool", toolsAllow: ["message", "*"] },
     { label: "session glob", toolsAllow: ["sessions_*"] },
   ])("preserves $label delegation for completion reports", ({ toolsAllow }) => {
-    expect(
-      resolveDelegationCapability({
-        fallbackActive: false,
-        inputProvenance: { kind: "inter_session", sourceTool: "subagent_announce" },
-        toolsAllow,
-      }),
-    ).toBe("full");
+    expect(resolveReport({ toolsAllow })).toBe("full");
   });
 
   it("preserves independent allowlist intersections for completion reports", () => {
@@ -150,26 +129,20 @@ describe("delegation capability", () => {
       [["sessions_spawn", "message"], ["message"]],
     );
 
-    expect(
-      resolveDelegationCapability({
-        fallbackActive: false,
-        inputProvenance: { kind: "inter_session", sourceTool: "subagent_announce" },
-        toolsAllow,
-      }),
-    ).toBe("report_only");
+    expect(resolveReport({ toolsAllow })).toBe("report_only");
   });
 
   it("removes delegation tools but retains ordinary reporting tools", () => {
     const tools = [
-      createTool("sessions_spawn"),
-      createTool("sessions_send"),
-      createTool("openclaw"),
-      createTool("llm-task"),
-      createTool("codex_session_send"),
-      createTool("message"),
-      createTool("gateway"),
-      createTool("sessions_history"),
-    ];
+      "sessions_spawn",
+      "sessions_send",
+      "openclaw",
+      "llm-task",
+      "codex_session_send",
+      "message",
+      "gateway",
+      "sessions_history",
+    ].map((name) => createTool(name));
 
     expect(applyDelegationCapability(tools, "report_only").map((tool) => tool.name)).toEqual([
       "message",
@@ -188,21 +161,13 @@ describe("delegation capability", () => {
       "report_only",
     );
 
-    await expect(cron?.execute("cron-status", { action: "status" })).resolves.toEqual({
-      content: [],
-      details: {},
-    });
-    await expect(cron?.execute("cron-remove", { action: "remove" })).resolves.toEqual({
-      content: [],
-      details: {},
-    });
+    const result = { content: [], details: {} };
+    await expect(cron?.execute("cron-status", { action: "status" })).resolves.toEqual(result);
+    await expect(cron?.execute("cron-remove", { action: "remove" })).resolves.toEqual(result);
     await expect(cron?.execute("cron-add", { action: "add" })).rejects.toThrow(
       "New delegation is unavailable",
     );
-    await expect(image?.execute("image-status", { action: "status" })).resolves.toEqual({
-      content: [],
-      details: {},
-    });
+    await expect(image?.execute("image-status", { action: "status" })).resolves.toEqual(result);
     await expect(image?.execute("image-generate", {})).rejects.toThrow(
       "New delegation is unavailable",
     );

@@ -2,17 +2,12 @@ import dns from "node:dns/promises";
 import { syncBuiltinESMExports } from "node:module";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { afterEach, expect, it, onTestFinished, vi } from "vitest";
+import { afterEach, expect, it, vi } from "vitest";
 import { clearRuntimeConfigSnapshot, setRuntimeConfigSnapshot } from "../config/config.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { evaluateDecisionInRegistry, evaluateDecisionV2InRegistry } from "../decisions/runtime.js";
 import { DecisionContractError } from "../decisions/validation.js";
-import {
-  onTrustedInternalDiagnosticEvent,
-  resetDiagnosticEventsForTest,
-  type DiagnosticEventPayload,
-} from "../infra/diagnostic-events.js";
-import { markTrustedOtelDiagnosticListener } from "../infra/diagnostic-otel-listener-provenance.js";
+import { resetDiagnosticEventsForTest } from "../infra/diagnostic-events.js";
 import { withGuardedFetchRequestAuthority } from "../infra/net/fetch-request-authority.js";
 import { withServer } from "../plugin-sdk/test-helpers/http-test-server.js";
 import { loadAndActivateRootPluginRegistry } from "../plugins/loader.js";
@@ -28,6 +23,11 @@ import { withEnvAsync } from "../test-utils/env.js";
 import { createOpenClawTestState } from "../test-utils/openclaw-test-state.js";
 import { resolveAgentDir, resolveDefaultAgentId } from "./agent-scope.js";
 import * as authProfiles from "./auth-profiles.js";
+import {
+  decisionOptions,
+  readDecisionRequest,
+  trackDecisionUsage,
+} from "./decision-inference.test-support.js";
 import { acquireAgentRunPreparedModelRuntime } from "./prepared-model-runtime.js";
 import { resetPreparedModelRuntimeSnapshotsForTest } from "./prepared-model-runtime.test-support.js";
 import { closeProviderTransportDispatcherPool } from "./provider-transport-dispatcher-pool.js";
@@ -77,10 +77,8 @@ it.each([
         };
         // Count dispatch at headers, including a request aborted before its body ends.
         requests.push(received);
-        const chunks: Buffer[] = [];
-        request.on("data", (chunk: Buffer) => chunks.push(chunk));
-        request.on("end", () => {
-          received.body = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+        readDecisionRequest(request, (body) => {
+          received.body = body;
           reply.writeHead(200, { "content-type": "application/json" });
           reply.end(JSON.stringify(response));
         });
@@ -270,16 +268,12 @@ it.each([
                 ),
               ).toBe(true);
             }
-            const events: Array<Extract<DiagnosticEventPayload, { type: "model.usage" }>> = [];
-            onTestFinished(
-              onTrustedInternalDiagnosticEvent(
-                markTrustedOtelDiagnosticListener((event) => {
-                  if (event.type === "model.usage") {
-                    events.push(event);
-                  }
-                }),
-              ),
-            );
+            const events = trackDecisionUsage();
+            const expectNoEffects = () => {
+              expect(requests).toEqual([]);
+              expect(events).toEqual([]);
+              expect(registry.decisionProviders[0]?.host.inspect(config).activeRequests).toBe(0);
+            };
             const credentialRead = vi.spyOn(authProfiles, "resolveApiKeyForProfile");
             const dataUri = "data:image/png;base64,AA==";
             const entered = createDeferredCore();
@@ -298,8 +292,7 @@ it.each([
                 }
                 return lookup(...args);
               });
-              // Loaded plugin SDK transports use native modules, outside Vitest's facade.
-              // Pause their real DNS boundary without replacing the provider's final guard.
+              // The loaded SDK uses native modules, outside Vitest's facade.
               syncBuiltinESMExports();
               restoreDns = () => {
                 spy.mockRestore();
@@ -317,14 +310,13 @@ it.each([
                       visible: { type: "boolean", instructions: "Is the object visible?" },
                     },
                   },
-                  {
+                  decisionOptions({
                     agentId,
                     purpose: "openai-route-fixture",
                     rubricVersion: "1",
-                    timeoutMs: 5000,
                     reasoning: "auto",
                     signal,
-                  },
+                  }),
                   registry,
                   config,
                 ),
@@ -340,32 +332,9 @@ it.each([
               try {
                 const first = await Promise.race([
                   entered.promise.then(() => ({ phase: "dns" })),
-                  settled.then((result) => ({
-                    phase: "settled",
-                    ...("outcome" in result
-                      ? {
-                          status: result.outcome.status,
-                          reason:
-                            result.outcome.status === "unavailable"
-                              ? result.outcome.reason
-                              : undefined,
-                        }
-                      : {
-                          errorName:
-                            result.error instanceof Error ? result.error.name : "non-error",
-                        }),
-                  })),
+                  settled.then(() => ({ phase: "settled" })),
                 ]);
-                // Report only phase, contract outcome and counts; never request or auth bytes.
-                expect(
-                  first,
-                  JSON.stringify({
-                    first,
-                    dnsLookups,
-                    requestCount: requests.length,
-                    finalAdmission,
-                  }),
-                ).toEqual({ phase: "dns" });
+                expect(first).toEqual({ phase: "dns" });
                 expect(dnsLookups).toBe(1);
                 expect(requests).toEqual([]);
                 const revision = getActiveSecretsRuntimeSnapshotRevision();
@@ -378,9 +347,7 @@ it.each([
                 });
                 expect(signal.aborted).toBe(false);
                 expect(finalAdmission).toBe(false);
-                expect(requests).toEqual([]);
-                expect(events).toEqual([]);
-                expect(registry.decisionProviders[0]?.host.inspect(config).activeRequests).toBe(0);
+                expectNoEffects();
               } finally {
                 release.resolve();
                 await settled;
@@ -390,26 +357,20 @@ it.each([
             }
             if (route === "unresolved header") {
               await expect(pending).rejects.toBeInstanceOf(DecisionContractError);
-              expect(requests).toEqual([]);
               expect(credentialRead).not.toHaveBeenCalled();
-              expect(events).toEqual([]);
-              expect(registry.decisionProviders[0]?.host.inspect(config).activeRequests).toBe(0);
+              expectNoEffects();
               return;
             }
             const outcome = await pending;
             if (route === "private denied") {
               expect(outcome).toEqual({ status: "unavailable", reason: "transport" });
-              expect(requests).toEqual([]);
-              expect(events).toEqual([]);
-              expect(registry.decisionProviders[0]?.host.inspect(config).activeRequests).toBe(0);
+              expectNoEffects();
               return;
             }
             if (route === "locked subscription") {
               expect(outcome).toEqual({ status: "unavailable", reason: "credentials-unavailable" });
               expect(credentialRead).not.toHaveBeenCalled();
-              expect(requests).toEqual([]);
-              expect(events).toEqual([]);
-              expect(registry.decisionProviders[0]?.host.inspect(config).activeRequests).toBe(0);
+              expectNoEffects();
               return;
             }
             if (route === "mixed profiles") {
@@ -458,13 +419,11 @@ it.each([
             });
             const legacy = await evaluateDecisionInRegistry(
               { state: "legacy text", questions: { visible: { type: "boolean" } } },
-              {
+              decisionOptions({
                 agentId,
                 purpose: "openai-route-fixture",
                 rubricVersion: "1",
-                timeoutMs: 5000,
-                signal: new AbortController().signal,
-              },
+              }),
               registry,
               config,
             );
