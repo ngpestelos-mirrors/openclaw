@@ -219,18 +219,11 @@ describe("source reply settlement across provider retries", () => {
           return makeEmbeddedRunnerAttempt({
             sessionIdUsed: params.sessionId,
             lastAssistant: failed,
-            ...(attempts === 1
-              ? {
-                  toolMetas: [
-                    {
-                      toolName: "message",
-                      toolCallId: "send-once",
-                      replaySafe: mode === "dry-run",
-                    },
-                  ],
-                  didSendViaMessagingTool: mode !== "dry-run",
-                }
-              : {}),
+            toolMetas:
+              attempts === 1
+                ? [{ toolName: "message", toolCallId: "send-once", replaySafe: mode === "dry-run" }]
+                : [],
+            didSendViaMessagingTool: attempts === 1 && mode !== "dry-run",
             sourceReplyDeliveryState:
               attempts === 1 && operation.sourceReplyDelivered ? "delivered" : "missing",
           });
@@ -267,7 +260,7 @@ describe("source reply settlement across provider retries", () => {
                   : "No answer was returned. Ask again if you still need one. Note: some tool actions may have already been executed — please verify before retrying.",
             }),
           ]);
-          expect(result.meta.error?.kind).toBe("incomplete_turn");
+          expect(result.meta).toMatchObject({ error: { kind: "incomplete_turn" } });
           expect(result.meta.terminalReply).toEqual({ disposition: "empty" });
           expect(result.meta.finalAssistantVisibleText).toBeUndefined();
           expect(result.meta.finalAssistantRawText).toBeUndefined();

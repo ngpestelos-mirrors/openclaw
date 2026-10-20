@@ -21,6 +21,9 @@ import {
 } from "./test-helpers/embedded-agent-runner-e2e-mocks.js";
 
 const fixture = usePreparedModelRuntimeHarness({ label: "transport-refresh" });
+const oldUrl = "http://127.0.0.1:21431/v1";
+const currentUrl = "http://127.0.0.1:21432/v1";
+const remoteUrl = "https://model.example/v1";
 const attempt = vi.fn<(params: EmbeddedRunAttemptParams) => Promise<EmbeddedRunAttemptResult>>();
 // Load the runtime during collection, before lifecycle hook deadlines start.
 
@@ -57,11 +60,14 @@ beforeEach(() => {
 });
 
 function config(
-  baseUrl: string,
-  key: string | undefined,
-  header: string,
-  limits = { contextWindow: 16_000, maxTokens: 2048 },
+  current = false,
+  options: {
+    baseUrl?: string;
+    noAuth?: boolean;
+    limits?: { contextWindow: number; maxTokens: number };
+  } = {},
 ) {
+  const epoch = current ? "current" : "old";
   return {
     agents: {
       defaults: { workspace: fixture.state.workspaceDir, model: "local-fixture/chat" },
@@ -71,9 +77,9 @@ function config(
       providers: {
         "local-fixture": {
           api: "openai-completions",
-          baseUrl,
-          ...(key ? { apiKey: key } : {}),
-          headers: { "X-Local-Route": header },
+          baseUrl: options.baseUrl ?? (current ? currentUrl : oldUrl),
+          ...(!options.noAuth ? { apiKey: `synthetic-${epoch}-key` } : {}),
+          headers: { "X-Local-Route": `${epoch}-route` },
           models: [
             {
               id: "chat",
@@ -81,7 +87,7 @@ function config(
               reasoning: false,
               input: ["text"],
               cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-              ...limits,
+              ...(options.limits ?? { contextWindow: 16_000, maxTokens: 2048 }),
             },
           ],
         },
@@ -195,25 +201,22 @@ describe("connection retry transport refresh", () => {
           };
         });
       try {
-        const initial = config("http://127.0.0.1:21431/v1", "synthetic-old-key", "old-route");
+        const initial = config();
         const discard = scenario === "rejecting discard";
-        const current = config(
-          discard ? "https://model.example/v1" : "http://127.0.0.1:21432/v1",
-          discard ? undefined : "synthetic-current-key",
-          "current-route",
-        );
+        const current = config(true, {
+          baseUrl: discard ? remoteUrl : currentUrl,
+          noAuth: discard,
+        });
         await publish(initial);
         attempt.mockImplementationOnce(async (params) => {
           await publish(current);
           return failure(params.sessionId);
         });
         attempt.mockImplementationOnce(async (params) => {
-          expect(params.model.baseUrl).toBe(
-            discard ? "http://127.0.0.1:21431/v1" : "http://127.0.0.1:21432/v1",
-          );
-          expect(params.resolvedApiKey).toBe(
-            discard ? "synthetic-old-key" : "synthetic-current-key",
-          );
+          expect(params).toMatchObject({
+            model: { baseUrl: discard ? oldUrl : currentUrl },
+            resolvedApiKey: discard ? "synthetic-old-key" : "synthetic-current-key",
+          });
           return success(params.sessionId);
         });
         const result = run(initial, `cleanup-${scenario.replaceAll(" ", "-")}`);
@@ -268,19 +271,14 @@ describe("connection retry transport refresh", () => {
       initialNoAuth = false,
       remote = false,
     }) => {
-      const before = "http://127.0.0.1:21431/v1";
-      const after = remote
-        ? "https://model.example/v1"
-        : assistantFailure
-          ? before
-          : "http://127.0.0.1:21432/v1";
-      const initial = config(before, initialNoAuth ? undefined : "synthetic-old-key", "old-route");
-      const current = config(
-        after,
-        credentialWithdrawn ? undefined : "synthetic-current-key",
-        "current-route",
-        { contextWindow: 32_000, maxTokens: 4096 },
-      );
+      const before = oldUrl;
+      const after = remote ? remoteUrl : assistantFailure ? before : currentUrl;
+      const initial = config(false, { noAuth: initialNoAuth });
+      const current = config(true, {
+        baseUrl: after,
+        noAuth: credentialWithdrawn,
+        limits: { contextWindow: 32_000, maxTokens: 4096 },
+      });
       current.agents.defaults.model = "local-fixture/unrelated-model";
       await publish(initial);
       const history = [
@@ -385,16 +383,16 @@ describe("connection retry transport refresh", () => {
   );
 
   it("keeps the admitted transport on an accepted server-error retry", async () => {
-    const initial = config("http://127.0.0.1:21431/v1", "synthetic-old-key", "old-route");
+    const initial = config();
     await publish(initial);
     attempt.mockImplementationOnce(async (params) => {
-      await publish(config("http://127.0.0.1:21432/v1", "synthetic-current-key", "current-route"));
+      await publish(config(true));
       return failure(params.sessionId, true);
     });
     attempt.mockImplementationOnce(async (params) => {
       expect(params).toMatchObject({
         model: {
-          baseUrl: "http://127.0.0.1:21431/v1",
+          baseUrl: oldUrl,
           headers: { "X-Local-Route": "old-route" },
         },
         resolvedApiKey: "synthetic-old-key",

@@ -46,18 +46,11 @@ type AttemptObservation = {
   fault: ProviderFault;
 };
 
-type ScenarioOutcome =
-  | {
-      kind: "result";
-      provider: string;
-      model: string;
-      attempts: unknown[];
-      result: EmbeddedAgentRunResult;
-    }
-  | { kind: "error"; error: Error & { attempts?: unknown[] } };
+type ScenarioOutcome = Awaited<ReturnType<typeof runScenario>>;
 
 const sessionDirs = useSessionStoreTempDirs(afterAll, "openclaw-fault-sequences-");
-const runEmbeddedAttemptMock = vi.fn<(params: unknown) => Promise<EmbeddedRunAttemptResult>>();
+const runEmbeddedAttemptMock =
+  vi.fn<(params: EmbeddedRunAttemptParams) => Promise<EmbeddedRunAttemptResult>>();
 const { sleepWithAbortMock } = vi.hoisted(() => ({
   sleepWithAbortMock: vi.fn(async (_ms: number, _abortSignal?: AbortSignal) => undefined),
 }));
@@ -265,19 +258,13 @@ function makeAttemptForFault(
 
 function installFaultScript(faults: ProviderFault[], observations: AttemptObservation[]): void {
   let index = 0;
-  runEmbeddedAttemptMock.mockImplementation(async (rawParams: unknown) => {
-    const params = rawParams as {
-      provider: string;
-      modelId?: string;
-      authProfileId?: string;
-      sessionId: string;
-    };
+  runEmbeddedAttemptMock.mockImplementation(async (params) => {
     const fault = faults[index];
     if (!fault) {
       throw new Error(`unexpected provider attempt ${index + 1}`);
     }
     index += 1;
-    const ref = { provider: params.provider, model: params.modelId ?? "unknown" };
+    const ref = { provider: params.provider, model: params.modelId };
     observations.push({ ...ref, profileId: params.authProfileId, fault });
     return { ...makeAttemptForFault(fault, ref), sessionIdUsed: params.sessionId };
   });
@@ -288,7 +275,7 @@ async function runScenario(params: {
   workspaceDir: string;
   config: OpenClawConfig;
   runId: string;
-}): Promise<ScenarioOutcome> {
+}) {
   const { replaceSessionEntry } = await import("../config/sessions/session-accessor.js");
   const sessionTarget = {
     agentId: "test",
@@ -320,13 +307,8 @@ async function runScenario(params: {
         sessionId: sessionTarget.sessionId,
         sessionKey: sessionTarget.sessionKey,
         agentDir: params.agentDir,
-        classifyResult: ({ provider, model, result }) =>
-          classifyEmbeddedAgentRunResultForModelFallback({ provider, model, result }),
-        mergeExhaustedResult: ({ latestResult, preferredResult }) =>
-          mergeEmbeddedAgentRunResultForModelFallbackExhaustion({
-            latestResult,
-            preferredResult,
-          }),
+        classifyResult: classifyEmbeddedAgentRunResultForModelFallback,
+        mergeExhaustedResult: mergeEmbeddedAgentRunResultForModelFallbackExhaustion,
         run: async (provider, model, options) =>
           await runEmbeddedAgentWithPreparedAdmission({
             preparedRunAdmission,
@@ -349,18 +331,12 @@ async function runScenario(params: {
           }),
       }),
     );
-    return {
-      kind: "result",
-      provider: outcome.provider,
-      model: outcome.model,
-      attempts: outcome.attempts,
-      result: outcome.result,
-    };
+    return { kind: "result" as const, ...outcome };
   } catch (error) {
     if (!(error instanceof Error)) {
       throw error;
     }
-    return { kind: "error", error };
+    return { kind: "error" as const, error };
   } finally {
     try {
       // Profile failure bookkeeping can outlive the completed reply.
@@ -412,6 +388,10 @@ function expectError(outcome: ScenarioOutcome): Error & { attempts?: unknown[] }
   }
   return outcome.error;
 }
+
+const retryDelays = () => sleepWithAbortMock.mock.calls.map(([delay]) => delay);
+const attemptRoutes = (observations: AttemptObservation[]) =>
+  observations.map(({ provider, model, profileId }) => [provider, model, profileId]);
 
 async function expectPreparationInvalidationToDropRoutingWork(
   mode: "close" | "replace",
@@ -501,20 +481,14 @@ async function expectPreparationInvalidationToDropRoutingWork(
 }
 
 describe("runEmbeddedAgent provider fault sequences", () => {
-  it("drops routing work when the admitted run closes during attempt preparation", async () => {
-    await expectPreparationInvalidationToDropRoutingWork("close");
-  });
-
-  it("drops routing work when the admitted run is replaced during attempt preparation", async () => {
-    await expectPreparationInvalidationToDropRoutingWork("replace");
-  });
+  it.each(["close", "replace"] as const)(
+    "drops routing work after admission %s during preparation",
+    expectPreparationInvalidationToDropRoutingWork,
+  );
 
   it("recovers four short rate limits with the default budget without rotating profiles", async () => {
     const faults = [
-      { status: 429, window: "short" },
-      { status: 429, window: "short" },
-      { status: 429, window: "short" },
-      { status: 429, window: "short" },
+      ...Array.from({ length: 4 }, () => ({ status: 429, window: "short" }) as const),
       { status: 200, text: "fifth attempt ok" },
     ] satisfies ProviderFault[];
 
@@ -528,59 +502,66 @@ describe("runEmbeddedAgent provider fault sequences", () => {
       ).toEqual(
         faults.map(() => ({ provider: "openai", model: "mock-1", profileId: "openai:p1" })),
       );
-      expect(sleepWithAbortMock.mock.calls.map(([delay]) => delay)).toEqual([
-        1_000, 2_000, 4_000, 8_000,
-      ]);
-      expect(outcome.provider).toBe("openai");
-      expect(outcome.model).toBe("mock-1");
-      expect(outcome.attempts).toEqual([]);
+      expect(retryDelays()).toEqual([1_000, 2_000, 4_000, 8_000]);
+      expect(outcome).toMatchObject({ provider: "openai", model: "mock-1", attempts: [] });
       expect(outcome.result.payloads?.[0]?.text).toContain("fifth attempt ok");
       expect(usageStats["openai:p1"]?.cooldownUntil).toBeUndefined();
       expect(usageStats["openai:p1"]?.disabledUntil).toBeUndefined();
     });
   });
 
-  it("walks 429 -> 401 -> persistent 500 -> 200 across profile rotation and model fallback", async () => {
+  it.each([false, true])("walks the mixed fault chain (exhausted=%s)", async (exhausted) => {
     await withFaults(
-      "mixed-fault-chain",
+      exhausted ? "all-faults" : "mixed-fault-chain",
       [
         { status: 429, window: "long" },
         { status: 401 },
-        // Exhaust the provider-reported three-retry cap before advancing the model.
         ...Array.from({ length: 4 }, () => ({ status: 500 as const })),
-        { status: 200, text: "fallback chain ok" },
+        exhausted ? { status: 402 } : { status: 200, text: "fallback chain ok" },
       ],
       { openai: 2, groq: true },
       ["groq/mock-2", "groq/mock-3"],
-      (context) => {
-        const { observations, usageStats } = context;
-        const outcome = expectResult(context.outcome);
-
-        expect(
-          observations.map(({ provider, model, profileId }) => [provider, model, profileId]),
-        ).toEqual([
+      ({ outcome: raw, observations, usageStats }) => {
+        expect(attemptRoutes(observations)).toEqual([
           ["openai", "mock-1", "openai:p1"],
           ["openai", "mock-1", "openai:p2"],
           ...Array.from({ length: 4 }, () => ["groq", "mock-2", "groq:p1"]),
           ["groq", "mock-3", "groq:p1"],
         ]);
-        expect(sleepWithAbortMock.mock.calls.map(([delay]) => delay)).toEqual([
-          1_000, 2_000, 4_000,
-        ]);
-        expect(outcome.provider).toBe("groq");
-        expect(outcome.model).toBe("mock-3");
-        expect(outcome.attempts).toMatchObject([
-          { provider: "openai", model: "mock-1", reason: expect.stringMatching(/^auth/) },
-          // FIXED(refactor-02): shared message evidence keeps the concrete server-error reason.
-          { provider: "groq", model: "mock-2", reason: "server_error" },
-        ]);
-        expect(outcome.result.payloads?.[0]?.text).toContain("fallback chain ok");
-
+        expect(retryDelays()).toEqual([1_000, 2_000, 4_000]);
         expect(usageStats["openai:p1"]?.cooldownReason).toBe("rate_limit");
-        expect(usageStats["openai:p1"]?.failureCounts?.rate_limit).toBe(1);
         expect(usageStats["openai:p2"]?.cooldownReason).toMatch(/^auth/);
-        expect(usageStats["openai:p2"]?.failureCounts?.auth).toBe(1);
-        expect(usageStats["groq:p1"]?.cooldownUntil).toBeUndefined();
+        if (exhausted) {
+          const error = expectError(raw);
+          expect(error.message).toMatch(/^All models failed \(3\): /);
+          expect(error.message).toMatch(
+            /openai\/mock-1: .* \(auth(?:_permanent)?\) \| groq\/mock-2: .* \(server_error\) \| groq\/mock-3: .* \(billing\)/,
+          );
+          expect(isFailoverError(error)).toBe(true);
+          if (!isFailoverError(error)) {
+            throw new Error("expected typed failover exhaustion");
+          }
+          expect(error.attempts).toMatchObject([
+            { provider: "openai", model: "mock-1", reason: "auth" },
+            { provider: "groq", model: "mock-2", reason: "server_error" },
+            { provider: "groq", model: "mock-3", reason: "billing" },
+          ]);
+          expect(usageStats["groq:p1"]?.disabledReason).toBe("billing");
+        } else {
+          const outcome = expectResult(raw);
+          expect(outcome).toMatchObject({
+            provider: "groq",
+            model: "mock-3",
+            attempts: [
+              { provider: "openai", model: "mock-1", reason: expect.stringMatching(/^auth/) },
+              { provider: "groq", model: "mock-2", reason: "server_error" },
+            ],
+          });
+          expect(outcome.result.payloads?.[0]?.text).toContain("fallback chain ok");
+          expect(usageStats["openai:p1"]?.failureCounts?.rate_limit).toBe(1);
+          expect(usageStats["openai:p2"]?.failureCounts?.auth).toBe(1);
+          expect(usageStats["groq:p1"]?.cooldownUntil).toBeUndefined();
+        }
       },
     );
   });
@@ -602,13 +583,11 @@ describe("runEmbeddedAgent provider fault sequences", () => {
         { openai: modelFallback ? 1 : 2, groq: modelFallback },
         modelFallback ? ["groq/mock-2"] : [],
         ({ outcome, observations, usageStats }) => {
-          expect(
-            observations.map(({ provider, model, profileId }) => [provider, model, profileId]),
-          ).toEqual([
+          expect(attemptRoutes(observations)).toEqual([
             ["openai", "mock-1", "openai:p1"],
             modelFallback ? ["groq", "mock-2", "groq:p1"] : ["openai", "mock-1", "openai:p2"],
           ]);
-          expect(sleepWithAbortMock.mock.calls.map(([delay]) => delay)).not.toContain(9_897_000);
+          expect(retryDelays()).not.toContain(9_897_000);
           if (exhausted) {
             const error = expectError(outcome);
             expect(error).toMatchObject({ reason: "rate_limit" });
@@ -654,33 +633,44 @@ describe("runEmbeddedAgent provider fault sequences", () => {
     );
   });
 
-  it("surfaces context overflow as the current blocked outcome after recovery is exhausted", async () => {
-    await withFaults(
-      "context-overflow",
-      [{ status: "context_overflow" }],
-      { openai: 1 },
-      [],
-      (context) => {
-        const { observations, usageStats } = context;
-        const outcome = expectResult(context.outcome);
-
-        expect(observations).toHaveLength(1);
-        expect(outcome.result.meta.error).toMatchObject({ kind: "context_overflow" });
-        expect(outcome.result.payloads?.[0]).toMatchObject({
-          isError: true,
-          text: expect.stringContaining("Context overflow: prompt too large for the model"),
-        });
-        expect(outcome.attempts).toEqual([
-          expect.objectContaining({
-            provider: "openai",
-            model: "mock-1",
-            reason: "context_overflow",
-          }),
-        ]);
-        expect(usageStats["openai:p1"]?.cooldownUntil).toBeUndefined();
-      },
-    );
-  });
+  it.each([false, true])(
+    "surfaces blocked oversized input (request ceiling=%s)",
+    async (ceiling) => {
+      const runId = ceiling ? "request-size-ceiling" : "context-overflow";
+      const fault: ProviderFault = ceiling ? { status: 413 } : { status: "context_overflow" };
+      await withFaults(
+        runId,
+        [fault],
+        { openai: 1, groq: ceiling },
+        ceiling ? ["groq/mock-2"] : [],
+        ({ outcome: raw, observations, usageStats }) => {
+          const outcome = expectResult(raw);
+          expect(observations).toHaveLength(1);
+          expect(outcome.result.meta.error).toMatchObject({ kind: "context_overflow" });
+          expect(outcome.result.payloads?.[0]).toMatchObject({
+            isError: true,
+            text: expect.stringContaining(
+              ceiling ? "Try /reset (or /new)" : "Context overflow: prompt too large for the model",
+            ),
+          });
+          if (ceiling) {
+            // Compaction cannot admit the request; the eligible fallback stays unspent.
+            expect(outcome.result.meta.livenessState).toBe("blocked");
+            expect(outcome.attempts).toEqual([]);
+          } else {
+            expect(outcome.attempts).toEqual([
+              expect.objectContaining({
+                provider: "openai",
+                model: "mock-1",
+                reason: "context_overflow",
+              }),
+            ]);
+          }
+          expect(usageStats["openai:p1"]?.cooldownUntil).toBeUndefined();
+        },
+      );
+    },
+  );
 
   it("compacts a provider overflow after settled writes and continues their recorded results", async () => {
     await withScenarioWorkspace(async ({ agentDir, workspaceDir }) => {
@@ -735,8 +725,7 @@ describe("runEmbeddedAgent provider fault sequences", () => {
       });
       writeProfiles(agentDir, { openai: 2, groq: true });
       runEmbeddedAttemptMock
-        .mockImplementationOnce(async (rawParams) => {
-          const params = rawParams as EmbeddedRunAttemptParams;
+        .mockImplementationOnce(async (params) => {
           for (const message of messages) {
             await appendMessage({ ...target, message });
           }
@@ -750,8 +739,7 @@ describe("runEmbeddedAgent provider fault sequences", () => {
             itemLifecycle: { startedCount: 1, completedCount: 1, activeCount: 0 },
           });
         })
-        .mockImplementationOnce(async (rawParams) => {
-          const params = rawParams as EmbeddedRunAttemptParams;
+        .mockImplementationOnce(async (params) => {
           expect(params.prompt).not.toBe(user.content);
           expect(params.suppressNextUserMessagePersistence).toBe(true);
           expect(params.initialReplayState).toMatchObject({
@@ -807,77 +795,5 @@ describe("runEmbeddedAgent provider fault sequences", () => {
         content: [{ type: "text", text: "The change is saved." }],
       });
     });
-  });
-
-  it("stops on a provider request-size ceiling without spending a fallback candidate", async () => {
-    await withFaults(
-      "request-size-ceiling",
-      [{ status: 413 }],
-      { openai: 1, groq: true },
-      ["groq/mock-2"],
-      (context) => {
-        const { observations, usageStats } = context;
-        const outcome = expectResult(context.outcome);
-
-        // Compaction cannot admit this request; leave the configured fallback unspent.
-        // Transport-owning rotation is covered by model-fallback.test.ts.
-        expect(observations).toHaveLength(1);
-        expect(outcome.result.meta.livenessState).toBe("blocked");
-        expect(outcome.result.meta.error).toMatchObject({ kind: "context_overflow" });
-        expect(outcome.result.payloads?.[0]).toMatchObject({
-          isError: true,
-          text: expect.stringContaining("Try /reset (or /new)"),
-        });
-        expect(outcome.attempts).toEqual([]);
-        // Waiting cannot admit this request, so the profile must not be put in rate-limit cooldown.
-        expect(usageStats["openai:p1"]?.cooldownUntil).toBeUndefined();
-      },
-    );
-  });
-
-  it("preserves the current exhausted-fallback prose for an all-fault sequence", async () => {
-    await withFaults(
-      "all-faults",
-      [
-        { status: 429, window: "long" },
-        { status: 401 },
-        ...Array.from({ length: 4 }, () => ({ status: 500 as const })),
-        { status: 402 },
-      ],
-      { openai: 2, groq: true },
-      ["groq/mock-2", "groq/mock-3"],
-      ({ outcome, observations, usageStats }) => {
-        const error = expectError(outcome);
-
-        expect(
-          observations.map(({ provider, model, profileId }) => [provider, model, profileId]),
-        ).toEqual([
-          ["openai", "mock-1", "openai:p1"],
-          ["openai", "mock-1", "openai:p2"],
-          ...Array.from({ length: 4 }, () => ["groq", "mock-2", "groq:p1"]),
-          ["groq", "mock-3", "groq:p1"],
-        ]);
-        // FIXED(refactor-02): the shared concrete reason propagates through exhaustion prose and attempts.
-        expect(sleepWithAbortMock.mock.calls.map(([delay]) => delay)).toEqual([
-          1_000, 2_000, 4_000,
-        ]);
-        expect(error.message).toMatch(/^All models failed \(3\): /);
-        expect(error.message).toMatch(
-          /openai\/mock-1: .* \(auth(?:_permanent)?\) \| groq\/mock-2: .* \(server_error\) \| groq\/mock-3: .* \(billing\)/,
-        );
-        expect(isFailoverError(error)).toBe(true);
-        if (!isFailoverError(error)) {
-          throw new Error("expected typed failover exhaustion");
-        }
-        expect(error.attempts).toMatchObject([
-          { provider: "openai", model: "mock-1", reason: "auth" },
-          { provider: "groq", model: "mock-2", reason: "server_error" },
-          { provider: "groq", model: "mock-3", reason: "billing" },
-        ]);
-        expect(usageStats["openai:p1"]?.cooldownReason).toBe("rate_limit");
-        expect(usageStats["openai:p2"]?.cooldownReason).toMatch(/^auth/);
-        expect(usageStats["groq:p1"]?.disabledReason).toBe("billing");
-      },
-    );
   });
 });

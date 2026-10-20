@@ -8,6 +8,7 @@ import {
   clearRuntimeConfigSnapshot,
   setRuntimeConfigSnapshot,
 } from "../config/runtime-snapshot.js";
+import { createDeferredCore } from "../shared/deferred.js";
 import { useSessionStoreTempDirs } from "../test-utils/session-state-cleanup.js";
 import type {
   EmbeddedRunAttemptParams,
@@ -26,19 +27,12 @@ import {
 
 const sessionDirs = useSessionStoreTempDirs(afterAll, "nested-finalization-");
 const runAttempt = vi.fn<(params: EmbeddedRunAttemptParams) => Promise<EmbeddedRunAttemptResult>>();
-let runEmbeddedAgent: typeof import("./embedded-agent-runner/run.js").runEmbeddedAgent;
-let prepareSystemAgentRunAdmission: typeof import("./admitted-run-context.js").prepareSystemAgentRunAdmission;
-let withPreparedEmbeddedRunToolAuthority: typeof import("./harness/tool-authority.runtime.js").withPreparedEmbeddedRunToolAuthority;
-let withOwnedSessionTranscriptWrites: typeof import("../config/sessions/transcript-write-context.js").withOwnedSessionTranscriptWrites;
-let getGatewayToolCallerIdentity: typeof import("./tools/gateway-caller-context.js").getGatewayToolCallerIdentity;
-let attachActiveEmbeddedRun: typeof import("./embedded-agent-runner/runs.js").attachActiveEmbeddedRun;
-let detachActiveEmbeddedRun: typeof import("./embedded-agent-runner/runs.js").detachActiveEmbeddedRun;
-let createEmbeddedRunHandle: typeof import("./embedded-agent-runner/runs.test-support.js").createEmbeddedRunHandle;
-let replaceSessionEntry: typeof import("../config/sessions/session-accessor.js").replaceSessionEntry;
-let appendMessage: typeof import("../plugin-sdk/session-transcript-runtime.js").appendSessionTranscriptMessageByIdentity;
-let readMessages: typeof import("../plugin-sdk/session-transcript-runtime.js").readVisibleSessionTranscriptMessageEntries;
-
+let runtime: Awaited<ReturnType<typeof loadRuntime>>;
 beforeAll(async () => {
+  runtime = await loadRuntime();
+});
+
+async function loadRuntime() {
   installEmbeddedRunnerBaseE2eMocks({ hookRunner: "full" });
   installEmbeddedRunnerFastRunE2eMocks({ runEmbeddedAttempt: (params) => runAttempt(params) });
   // Keep the real harness boundary, including its temporary tool-authority scope.
@@ -50,21 +44,20 @@ beforeAll(async () => {
     resolveModelAsync: async (provider: string, modelId: string) =>
       createResolvedEmbeddedRunnerModel(provider, modelId),
   }));
-  ({ runEmbeddedAgent } = await import("./embedded-agent-runner/run.js"));
-  ({ prepareSystemAgentRunAdmission } = await import("./admitted-run-context.js"));
-  ({ withPreparedEmbeddedRunToolAuthority } = await import("./harness/tool-authority.runtime.js"));
-  ({ withOwnedSessionTranscriptWrites } =
-    await import("../config/sessions/transcript-write-context.js"));
-  ({ getGatewayToolCallerIdentity } = await import("./tools/gateway-caller-context.js"));
-  ({ attachActiveEmbeddedRun, detachActiveEmbeddedRun } =
-    await import("./embedded-agent-runner/runs.js"));
-  ({ createEmbeddedRunHandle } = await import("./embedded-agent-runner/runs.test-support.js"));
-  ({ replaceSessionEntry } = await import("../config/sessions/session-accessor.js"));
-  ({
-    appendSessionTranscriptMessageByIdentity: appendMessage,
-    readVisibleSessionTranscriptMessageEntries: readMessages,
-  } = await import("../plugin-sdk/session-transcript-runtime.js"));
-});
+  return {
+    run: (await import("./embedded-agent-runner/run.js")).runEmbeddedAgent,
+    prepare: (await import("./admitted-run-context.js")).prepareSystemAgentRunAdmission,
+    withAuthority: (await import("./harness/tool-authority.runtime.js"))
+      .withPreparedEmbeddedRunToolAuthority,
+    withTranscript: (await import("../config/sessions/transcript-write-context.js"))
+      .withOwnedSessionTranscriptWrites,
+    caller: (await import("./tools/gateway-caller-context.js")).getGatewayToolCallerIdentity,
+    runs: await import("./embedded-agent-runner/runs.js"),
+    handle: (await import("./embedded-agent-runner/runs.test-support.js")).createEmbeddedRunHandle,
+    replace: (await import("../config/sessions/session-accessor.js")).replaceSessionEntry,
+    transcript: await import("../plugin-sdk/session-transcript-runtime.js"),
+  };
+}
 
 afterEach(() => {
   runAttempt.mockReset();
@@ -103,18 +96,9 @@ describe("nested settled-turn finalization ownership", () => {
         sessionId: "parent-session",
         sessionKey: "agent:test:parent",
       };
-      const childAdmission = prepareSystemAgentRunAdmission(
-        config,
-        "child-run",
-        "test",
-        "nested-finalization-test",
-      );
-      const parentAdmission = prepareSystemAgentRunAdmission(
-        config,
-        "parent-run",
-        "test",
-        "nested-finalization-parent",
-      );
+      const admit = (id: string, boundary: string) => runtime.prepare(config, id, "test", boundary);
+      const childAdmission = admit("child-run", "nested-finalization-test");
+      const parentAdmission = admit("parent-run", "nested-finalization-parent");
       const completedTool = buildEmbeddedRunnerAssistant({
         stopReason: "toolUse",
         content: [{ type: "toolCall", id: "write-once", name: "write", arguments: {} }],
@@ -137,15 +121,18 @@ describe("nested settled-turn finalization ownership", () => {
       };
       runAttempt.mockImplementation(async (params: EmbeddedRunAttemptParams) => {
         attemptTurns.push(params.replyOperation);
-        const handle = createEmbeddedRunHandle({
+        const handle = runtime.handle({
           runId: params.runId,
           toolAuthorityFingerprint: params.toolAuthorityFingerprint,
         });
-        const attachment = attachActiveEmbeddedRun(
+        const runIdentity = [
           params.sessionId,
           handle,
           params.sessionKey,
           params.sessionFile,
+        ] as const;
+        const attachment = runtime.runs.attachActiveEmbeddedRun(
+          ...runIdentity,
           params.agentId,
           params.replyOperation,
         );
@@ -162,7 +149,7 @@ describe("nested settled-turn finalization ownership", () => {
             sessionId: target.sessionId,
             sessionKey,
           };
-          expect(getGatewayToolCallerIdentity()?.operationalRunInstance).toBe(
+          expect(runtime.caller()?.operationalRunInstance).toBe(
             params.admittedRunContext.operationalRunInstance,
           );
           if (params.operation === "settled-tool-finalization") {
@@ -171,36 +158,33 @@ describe("nested settled-turn finalization ownership", () => {
             if (finalization === "closed") {
               childAdmission.close();
             }
-            if (finalization === "empty") {
-              const assistant = buildEmbeddedRunnerAssistant({ content: [] });
-              return makeEmbeddedRunnerAttempt({
-                sessionIdUsed: params.sessionId,
-                lastAssistant: assistant,
-                currentAttemptCompletedAssistant: assistant,
-                assistantTexts: [],
-              });
-            }
-            if (finalization !== "answer") {
+            if (finalization !== "answer" && finalization !== "empty") {
               throw new Error("Synthetic summary provider unavailable");
             }
+            const answer = finalization === "answer";
             const assistant = buildEmbeddedRunnerAssistant({
-              content: [{ type: "text", text: "The write completed." }],
+              content: answer ? [{ type: "text", text: "The write completed." }] : [],
             });
-            await appendMessage({
-              ...appendTarget,
-              message: assistant,
-            });
+            if (answer) {
+              await runtime.transcript.appendSessionTranscriptMessageByIdentity({
+                ...appendTarget,
+                message: assistant,
+              });
+            }
             return makeEmbeddedRunnerAttempt({
               sessionIdUsed: params.sessionId,
               lastAssistant: assistant,
               currentAttemptCompletedAssistant: assistant,
-              assistantTexts: ["The write completed."],
-              assistantTranscriptOwned: true,
+              assistantTexts: answer ? ["The write completed."] : [],
+              ...(answer ? { assistantTranscriptOwned: true } : {}),
             });
           }
           toolRuns += 1;
           for (const message of messages) {
-            await appendMessage({ ...appendTarget, message });
+            await runtime.transcript.appendSessionTranscriptMessageByIdentity({
+              ...appendTarget,
+              message,
+            });
           }
           return makeEmbeddedRunnerAttempt({
             sessionIdUsed: params.sessionId,
@@ -213,25 +197,15 @@ describe("nested settled-turn finalization ownership", () => {
             settledTurnFinalizationContext: { source: "openclaw-transcript", messages },
           });
         } finally {
-          detachActiveEmbeddedRun(
-            params.sessionId,
-            handle,
-            params.sessionKey,
-            params.sessionFile,
-            undefined,
-            attachment,
-          );
+          runtime.runs.detachActiveEmbeddedRun(...runIdentity, undefined, attachment);
         }
       });
-      let release!: () => void;
-      const released = new Promise<void>((resolve) => {
-        release = resolve;
-      });
-      let child: ReturnType<typeof runEmbeddedAgent> | undefined;
+      const { promise: released, resolve: release } = createDeferredCore();
+      let child: ReturnType<typeof runtime.run> | undefined;
       try {
-        await replaceSessionEntry(target, { sessionId: target.sessionId, updatedAt: 1 });
+        await runtime.replace(target, { sessionId: target.sessionId, updatedAt: 1 });
         const parentContext = await parentAdmission.admit("embedded");
-        await withPreparedEmbeddedRunToolAuthority(
+        await runtime.withAuthority(
           { admittedRunContext: parentContext },
           {
             ...parentTarget,
@@ -244,7 +218,7 @@ describe("nested settled-turn finalization ownership", () => {
           },
           undefined,
           async () =>
-            withOwnedSessionTranscriptWrites(
+            runtime.withTranscript(
               {
                 sessionTarget: parentTarget,
                 assertCommitAllowed: () => {
@@ -256,7 +230,7 @@ describe("nested settled-turn finalization ownership", () => {
                 // Admission happens independently, but the queued promise retains
                 // the originating parent ALS scopes just like an in-process send.
                 child = released.then(() =>
-                  runEmbeddedAgent({
+                  runtime.run({
                     preparedRunAdmission: childAdmission,
                     ...target,
                     sessionTarget: target,
@@ -277,19 +251,17 @@ describe("nested settled-turn finalization ownership", () => {
         );
         parentAdmission.close();
         release();
-        if (finalization === "closed") {
-          await expect(child).rejects.toThrow("admitted run authority is no longer active");
-          expect(toolRuns).toBe(1);
-          expect(finalizerRuns).toBe(1);
-          expectFinalizerBorrowsChildTurn();
-          expect(await readMessages(target)).toHaveLength(messages.length);
-          return;
-        }
-        const result = await child;
+        const result =
+          finalization === "closed"
+            ? await expect(child)
+                .rejects.toThrow("admitted run authority is no longer active")
+                .then(() => undefined)
+            : await child;
         expect(toolRuns).toBe(1);
         expect(finalizerRuns).toBe(finalization === "empty" ? 2 : 1);
         expectFinalizerBorrowsChildTurn();
-        const transcript = await readMessages(target);
+        const transcript =
+          await runtime.transcript.readVisibleSessionTranscriptMessageEntries(target);
         if (finalization === "answer") {
           expect(result?.payloads).toEqual([
             expect.objectContaining({ text: "The write completed." }),
@@ -300,8 +272,10 @@ describe("nested settled-turn finalization ownership", () => {
             content: [{ type: "text", text: "The write completed." }],
           });
         } else {
-          expect(result?.payloads).toBeUndefined();
-          expect(result?.meta.error).toMatchObject({ kind: "incomplete_turn" });
+          if (finalization !== "closed") {
+            expect(result?.payloads).toBeUndefined();
+            expect(result?.meta.error).toMatchObject({ kind: "incomplete_turn" });
+          }
           expect(transcript).toHaveLength(messages.length);
         }
       } finally {
