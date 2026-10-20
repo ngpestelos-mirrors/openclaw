@@ -17,6 +17,23 @@ type TestContext = { label: string };
 type TestModule = { renderSolid: (props: SolidRouteProps<TestData>) => JSX.Element };
 type TestData = { label: string };
 
+type TestPage = Parameters<typeof definePage<RouteId, TestContext, TestModule, TestData>>[0];
+function page(
+  id: RouteId,
+  component: TestPage["component"] | TestModule | Promise<TestModule> = module(id),
+  loader: TestPage["loader"] | TestData | Promise<TestData> = { label: id },
+) {
+  return definePage<RouteId, TestContext, TestModule, TestData>({
+    id,
+    path: "/" + id,
+    component: typeof component === "function" ? component : () => component,
+    loader: typeof loader === "function" || loader === undefined ? loader : () => loader,
+  });
+}
+function testRouter(...routes: TestPage[]) {
+  return createRouter<RouteId, TestContext, TestModule, TestData>({ routes });
+}
+
 function location(pathname: string): RouteLocation {
   return { pathname, search: "", hash: "" };
 }
@@ -45,22 +62,10 @@ describe("router outlet pending presentation", () => {
       .fn()
       .mockRejectedValueOnce(new TypeError("Failed to fetch dynamically imported module"))
       .mockResolvedValue(module("second"));
-    const router = createRouter<RouteId, TestContext, TestModule, TestData>({
-      routes: [
-        definePage({
-          id: "first",
-          path: "/first",
-          component: () => module("first"),
-          loader: () => ({ label: "first" }),
-        }),
-        definePage({
-          id: "second",
-          path: "/second",
-          component: () => retryControlUiImport(load),
-          loader: () => ({ label: "second" }),
-        }),
-      ],
-    });
+    const router = testRouter(
+      page("first"),
+      page("second", () => retryControlUiImport(load), { label: "second" }),
+    );
     onTestFinished(() => {
       router.stop();
       vi.unstubAllGlobals();
@@ -89,22 +94,10 @@ describe("router outlet pending presentation", () => {
     vi.useFakeTimers();
     const secondModule = createDeferredCore<TestModule>();
     const secondData = createDeferredCore<TestData>();
-    const router = createRouter<RouteId, TestContext, TestModule, TestData>({
-      routes: [
-        definePage({
-          id: "first",
-          path: "/first",
-          component: () => module("first"),
-          loader: () => ({ label: "first" }),
-        }),
-        definePage({
-          id: "second",
-          path: "/second",
-          component: () => secondModule.promise,
-          loader: () => secondData.promise,
-        }),
-      ],
-    });
+    const router = testRouter(
+      page("first"),
+      page("second", secondModule.promise, secondData.promise),
+    );
     onTestFinished(() => router.stop());
     const outlet = mountRouterOutlet({ router });
     await router.navigate("first", { label: "test" });
@@ -124,7 +117,7 @@ describe("router outlet pending presentation", () => {
     await navigation;
     await settleRouterOutlet(outlet);
     expect(outlet.querySelector('[data-route="second"]')?.textContent).toBe("second");
-    const replacement = createRouter<RouteId, TestContext, TestModule, TestData>({ routes: [] });
+    const replacement = testRouter();
     onTestFinished(() => replacement.stop());
     outlet.setInputs({ router: replacement });
     await settleRouterOutlet(outlet);
@@ -134,16 +127,7 @@ describe("router outlet pending presentation", () => {
   it("shows the pending destination when its outlet is replaced before the module loads", async () => {
     const routeModule = createDeferredCore<TestModule>();
     const routeData = createDeferredCore<TestData>();
-    const router = createRouter<RouteId, TestContext, TestModule, TestData>({
-      routes: [
-        definePage({
-          id: "first",
-          path: "/first",
-          component: () => routeModule.promise,
-          loader: () => routeData.promise,
-        }),
-      ],
-    });
+    const router = testRouter(page("first", routeModule.promise, routeData.promise));
     onTestFinished(() => router.stop());
     let outlet = mountRouterOutlet({ router });
     const navigation = router.navigate("first", { label: "test" });
@@ -164,16 +148,7 @@ describe("router outlet pending presentation", () => {
 
 describe("router outlet not-found recovery", () => {
   function createTestRouter() {
-    const router = createRouter<RouteId, TestContext, TestModule, TestData>({
-      routes: [
-        definePage({
-          id: "first",
-          path: "/first",
-          component: () => module("first"),
-          loader: () => ({ label: "first" }),
-        }),
-      ],
-    });
+    const router = testRouter(page("first"));
     onTestFinished(() => router.stop());
     return router;
   }
@@ -219,24 +194,12 @@ describe("router outlet not-found recovery", () => {
 
   it("preserves navigation started by an earlier not-found subscriber", async () => {
     const secondModule = createDeferredCore<TestModule>();
-    const router = createRouter<RouteId, TestContext, TestModule, TestData>({
-      routes: [
-        definePage({
-          id: "first",
-          path: "/first",
-          component: () => module("first"),
-          loader: (): TestData => {
-            throw Object.assign(new Error("Initial route not found"), { type: "notFound" });
-          },
-        }),
-        definePage({
-          id: "second",
-          path: "/second",
-          component: () => secondModule.promise,
-          loader: () => ({ label: "second" }),
-        }),
-      ],
-    });
+    const router = testRouter(
+      page("first", module("first"), (): TestData => {
+        throw Object.assign(new Error("Initial route not found"), { type: "notFound" });
+      }),
+      page("second", secondModule.promise),
+    );
     onTestFinished(() => router.stop());
     let recovery: Promise<void> | undefined;
     let redirected = false;
@@ -313,22 +276,10 @@ describe("router outlet agent startup", () => {
           details: { code: "agent-database-inspection-pending" },
         });
       });
-      const router = createRouter<RouteId, TestContext, TestModule, TestData>({
-        routes: [
-          definePage({
-            id: "first",
-            path: "/first",
-            component: () => module("first"),
-            loader: read,
-          }),
-          definePage({
-            id: "second",
-            path: "/second",
-            component: () => module("second"),
-            loader: () => ({ label: "ready" }),
-          }),
-        ],
-      });
+      const router = testRouter(
+        page("first", module("first"), read),
+        page("second", module("second"), { label: "ready" }),
+      );
       onTestFinished(() => router.stop());
       const retryContext = { label: "test" };
       const outlet = mountRouterOutlet({ router, retryContext });

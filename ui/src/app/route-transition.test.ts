@@ -1,9 +1,12 @@
 import { createRouter } from "@openclaw/uirouter";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { createDeferredCore } from "../../../src/shared/deferred.js";
 import type { RouteId } from "../app-routes.ts";
 import { CHAT_ROUTE_READY_EVENT } from "../pages/chat/chat-history-events.ts";
 import type { ControlUiReadinessOutlet } from "./control-ui-readiness.ts";
 import { navigateWithRouteTransition } from "./route-transition.ts";
+
+const location = (pathname: string, search = "") => ({ pathname, search, hash: "" });
 
 function testDocumentWithOutlet(animate = vi.fn()) {
   const router = createRouter<RouteId>({
@@ -24,6 +27,20 @@ function testDocumentWithOutlet(animate = vi.fn()) {
     document,
     outlet,
     router,
+    transition: (
+      navigate: () => Promise<void>,
+      options: Partial<Parameters<typeof navigateWithRouteTransition>[0]> = {},
+    ) =>
+      navigateWithRouteTransition({
+        document,
+        getOutlet: () => outlet,
+        router,
+        from: "new-session",
+        to: "chat",
+        navigate,
+        prefersReducedMotion: false,
+        ...options,
+      }),
   };
 }
 
@@ -34,26 +51,13 @@ describe("navigateWithRouteTransition", () => {
     const finished = Promise.resolve({} as Animation);
     const animate = vi.fn(() => ({ finished }) as Animation);
     const test = testDocumentWithOutlet(animate);
-    let finishNavigation!: () => void;
-    const navigate = vi.fn(
-      () =>
-        new Promise<void>((resolve) => {
-          finishNavigation = resolve;
-        }),
-    );
+    const navigation = createDeferredCore();
+    const navigate = vi.fn(() => navigation.promise);
 
-    const transition = navigateWithRouteTransition({
-      document: test.document,
-      getOutlet: () => test.outlet,
-      router: test.router,
-      from: "new-session",
-      to: "chat",
-      navigate,
-      prefersReducedMotion: false,
-    });
+    const transition = test.transition(navigate);
     expect(navigate).toHaveBeenCalledOnce();
     expect(animate).not.toHaveBeenCalled();
-    finishNavigation();
+    navigation.resolve();
     document.dispatchEvent(new Event(CHAT_ROUTE_READY_EVENT));
     await transition;
 
@@ -71,17 +75,7 @@ describe("navigateWithRouteTransition", () => {
       throw failure;
     });
 
-    await expect(
-      navigateWithRouteTransition({
-        document: test.document,
-        getOutlet: () => test.outlet,
-        router: test.router,
-        from: "new-session",
-        to: "chat",
-        navigate,
-        prefersReducedMotion: false,
-      }),
-    ).rejects.toBe(failure);
+    await expect(test.transition(navigate)).rejects.toBe(failure);
 
     expect(navigate).toHaveBeenCalledOnce();
     expect(test.animate).not.toHaveBeenCalled();
@@ -94,15 +88,7 @@ describe("navigateWithRouteTransition", () => {
     const test = testDocumentWithOutlet();
     const navigate = vi.fn(async () => undefined);
 
-    await navigateWithRouteTransition({
-      document: test.document,
-      getOutlet: () => test.outlet,
-      router: test.router,
-      from,
-      to,
-      navigate,
-      prefersReducedMotion,
-    });
+    await test.transition(navigate, { from, to, prefersReducedMotion });
 
     expect(navigate).toHaveBeenCalledOnce();
     expect(test.animate).not.toHaveBeenCalled();
@@ -113,15 +99,7 @@ describe("navigateWithRouteTransition", () => {
     const running: Partial<Animation> = { finished: new Promise(() => {}), cancel };
     const animate = vi.fn(() => running as Animation);
     const test = testDocumentWithOutlet(animate);
-    const transition = navigateWithRouteTransition({
-      document: test.document,
-      getOutlet: () => test.outlet,
-      router: test.router,
-      from: "new-session",
-      to: "chat",
-      navigate: async () => undefined,
-      prefersReducedMotion: false,
-    });
+    const transition = test.transition(async () => undefined);
     document.dispatchEvent(new Event(CHAT_ROUTE_READY_EVENT));
     await vi.waitFor(() => expect(animate).toHaveBeenCalledOnce());
 
@@ -134,15 +112,7 @@ describe("navigateWithRouteTransition", () => {
   it("waits for the chat route without animating when motion is reduced", async () => {
     const test = testDocumentWithOutlet();
     const navigate = vi.fn(async () => undefined);
-    const transition = navigateWithRouteTransition({
-      document: test.document,
-      getOutlet: () => test.outlet,
-      router: test.router,
-      from: "new-session",
-      to: "chat",
-      navigate,
-      prefersReducedMotion: true,
-    });
+    const transition = test.transition(navigate, { prefersReducedMotion: true });
 
     await vi.waitFor(() => expect(navigate).toHaveBeenCalledOnce());
     document.dispatchEvent(new Event(CHAT_ROUTE_READY_EVENT));
@@ -158,21 +128,9 @@ describe("navigateWithRouteTransition", () => {
       "chat",
       undefined,
       {},
-      {
-        pathname: "/chat/main/first",
-        search: "?focusComposer=1",
-        hash: "",
-      },
+      location("/chat/main/first", "?focusComposer=1"),
     );
-    const transition = navigateWithRouteTransition({
-      document,
-      getOutlet: () => test.outlet,
-      router: test.router,
-      from: "new-session",
-      to: "chat",
-      navigate: () => navigation,
-      prefersReducedMotion: false,
-    });
+    const transition = test.transition(() => navigation);
     await navigation;
     let settled = false;
     void transition.then(() => {
@@ -182,23 +140,10 @@ describe("navigateWithRouteTransition", () => {
       "chat",
       undefined,
       { history: "replace" },
-      {
-        pathname: "/chat/main/first",
-        search: "",
-        hash: "",
-      },
+      location("/chat/main/first"),
     );
     expect(settled).toBe(false);
-    await test.router.navigate(
-      "chat",
-      undefined,
-      {},
-      {
-        pathname: "/chat/main/second",
-        search: "",
-        hash: "",
-      },
-    );
+    await test.router.navigate("chat", undefined, {}, location("/chat/main/second"));
     await transition;
     document.dispatchEvent(new Event(CHAT_ROUTE_READY_EVENT));
     expect(test.animate).not.toHaveBeenCalled();
