@@ -6,77 +6,31 @@ import {
 } from "./system-agent-chat-turn.js";
 
 function makeEngine() {
-  const handle = vi.fn();
-  const answerWizard = vi.fn();
-  const cancelWizard = vi.fn();
-  return {
-    answerWizard,
-    cancelWizard,
-    handle,
-    engine: { answerWizard, cancelWizard, handle },
-  };
+  const engine = { handle: vi.fn(), answerWizard: vi.fn(), cancelWizard: vi.fn() };
+  return { engine, ...engine };
 }
+
+const wizardAnswer = { stepId: "channel", value: "twitch" };
+const wizardCancel = { stepId: "channel" };
+const delegation = { agentId: "main", sessionKey: "agent:main:main" };
 
 describe("system-agent chat input", () => {
   it.each([
-    {
-      input: {
-        sessionId: "s1",
-        message: "5",
-        wizardAnswer: { stepId: "channel", value: "twitch" },
-      },
-      error: "Send either message or wizardAnswer, not both.",
-    },
-    {
-      input: {
-        sessionId: "s1",
+    [{ message: "5", wizardAnswer }, "Send either message or wizardAnswer, not both."],
+    [
+      {
         wizardAnswer: { stepId: "secret", value: "not-forwarded" },
-        delegation: { agentId: "main", sessionKey: "agent:main:main" },
+        delegation,
       },
-      error: "Delegated OpenClaw sessions cannot submit structured wizard answers.",
-    },
-    {
-      input: {
-        sessionId: "s1",
-        wizardAnswer: { stepId: "channel", value: "twitch" },
-        reset: true,
-      },
-      error: "A wizard answer cannot reset its OpenClaw chat session.",
-    },
-    {
-      input: {
-        sessionId: "s1",
-        message: "cancel",
-        wizardCancel: { stepId: "channel" },
-      },
-      error: "Send wizardCancel without a message or wizardAnswer.",
-    },
-    {
-      input: {
-        sessionId: "s1",
-        wizardAnswer: { stepId: "channel", value: "twitch" },
-        wizardCancel: { stepId: "channel" },
-      },
-      error: "Send wizardCancel without a message or wizardAnswer.",
-    },
-    {
-      input: {
-        sessionId: "s1",
-        wizardCancel: { stepId: "channel" },
-        delegation: { agentId: "main", sessionKey: "agent:main:main" },
-      },
-      error: "Delegated OpenClaw sessions cannot cancel hosted wizards.",
-    },
-    {
-      input: {
-        sessionId: "s1",
-        wizardCancel: { stepId: "channel" },
-        reset: true,
-      },
-      error: "A wizard cancel cannot reset its OpenClaw chat session.",
-    },
-  ])("rejects invalid mixed input: $error", ({ input, error }) => {
-    expect(getSystemAgentChatInputError(input)).toBe(error);
+      "Delegated OpenClaw sessions cannot submit structured wizard answers.",
+    ],
+    [{ wizardAnswer, reset: true }, "A wizard answer cannot reset its OpenClaw chat session."],
+    [{ message: "cancel", wizardCancel }, "Send wizardCancel without a message or wizardAnswer."],
+    [{ wizardAnswer, wizardCancel }, "Send wizardCancel without a message or wizardAnswer."],
+    [{ wizardCancel, delegation }, "Delegated OpenClaw sessions cannot cancel hosted wizards."],
+    [{ wizardCancel, reset: true }, "A wizard cancel cannot reset its OpenClaw chat session."],
+  ] as const)("rejects invalid mixed input: %j (%s)", (input, error) => {
+    expect(getSystemAgentChatInputError({ sessionId: "s1", ...input })).toBe(error);
   });
 
   it("routes a structured wizard answer through the typed engine seam", async () => {
@@ -86,14 +40,11 @@ describe("system-agent chat input", () => {
     await expect(
       runSystemAgentChatInput({
         engine,
-        input: {
-          sessionId: "s1",
-          wizardAnswer: { stepId: "channel", value: "twitch" },
-        },
+        input: { sessionId: "s1", wizardAnswer },
       }),
     ).resolves.toEqual({ text: "Next step.", action: "none" });
 
-    expect(answerWizard).toHaveBeenCalledWith({ stepId: "channel", value: "twitch" });
+    expect(answerWizard).toHaveBeenCalledWith(wizardAnswer);
     expect(handle).not.toHaveBeenCalled();
   });
 
@@ -104,14 +55,11 @@ describe("system-agent chat input", () => {
     await expect(
       runSystemAgentChatInput({
         engine,
-        input: {
-          sessionId: "s1",
-          wizardCancel: { stepId: "channel" },
-        },
+        input: { sessionId: "s1", wizardCancel },
       }),
     ).resolves.toEqual({ text: "Setup cancelled.", action: "none" });
 
-    expect(cancelWizard).toHaveBeenCalledWith({ stepId: "channel" });
+    expect(cancelWizard).toHaveBeenCalledWith(wizardCancel);
     expect(answerWizard).not.toHaveBeenCalled();
     expect(handle).not.toHaveBeenCalled();
   });
