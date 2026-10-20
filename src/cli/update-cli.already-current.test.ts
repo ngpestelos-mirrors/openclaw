@@ -31,6 +31,7 @@ await vi.hoisted(() => import("./update-cli-mocks.test-support.js"));
 
 describe("update-cli", () => {
   const setup = createUpdateCliFixture();
+  const { updateCommand, ExitError } = modules;
   async function prepareCurrentPackage(prefix?: string, tag = "latest", rewrite = false) {
     const root = await setup.mockPackageInstallAtCaseDir(prefix, rewrite ? "1.0.0" : VERSION);
     if (rewrite) {
@@ -40,12 +41,9 @@ describe("update-cli", () => {
     setup.primeNpmChannelTag(tag, VERSION);
     return root;
   }
-  const serviceArgs = (root: string) => [
-    "node",
-    path.join(root, "dist", "index.js"),
-    "gateway",
-    "run",
-  ];
+  function serviceArgs(root: string) {
+    return ["node", path.join(root, "dist/index.js"), "gateway", "run"];
+  }
   async function prepareRunningCurrentPackage(...args: Parameters<typeof prepareCurrentPackage>) {
     const root = await prepareCurrentPackage(...args);
     setup.mockRunningManagedGateway(serviceArgs(root));
@@ -79,15 +77,7 @@ describe("update-cli", () => {
     message: string,
   ) {
     setup.mockNpmPluginOutcomes(
-      [
-        {
-          pluginId,
-          status: changed ? "updated" : "unchanged",
-          currentVersion: "2026.9.2",
-          nextVersion: "2026.9.3",
-          message,
-        },
-      ],
+      [{ pluginId, status: changed ? "updated" : "unchanged", message }],
       changed,
       {
         ...setup.baseConfig,
@@ -96,16 +86,12 @@ describe("update-cli", () => {
     );
   }
 
-  it.each(
-    runtimeRecovery.alreadyCurrentConvergenceCases.filter(
-      ({ failure, platform }) =>
-        failure === "stop" || failure === "changed owner" || platform === "linux",
-    ),
-  )(
-    "converges plugins on an already-current core (failure=$failure, platform=$platform)",
-    async ({ failure, platform }) => {
-      if (platform) {
-        vi.spyOn(process, "platform", "get").mockReturnValue(platform);
+  it.each(["stop", "changed owner", "linux"] as const)(
+    "converges plugins on an already-current core (%s)",
+    async (scenario) => {
+      const failure = scenario === "linux" ? undefined : scenario;
+      if (scenario === "linux") {
+        vi.spyOn(process, "platform", "get").mockReturnValue("linux");
         vi.spyOn(serviceMembership, "inspectServiceProcessMembershipSync").mockReturnValue(
           "absent",
         );
@@ -136,9 +122,9 @@ describe("update-cli", () => {
         });
       }
       if (failure) {
-        await expect(
-          modules.updateCommand({ yes: true, restart: true, json: true }),
-        ).rejects.toEqual(new modules.ExitError(1));
+        await expect(updateCommand({ yes: true, restart: true, json: true })).rejects.toEqual(
+          new ExitError(1),
+        );
         expect(mocks.serviceStop).toHaveBeenCalledTimes(failure === "changed owner" ? 0 : 1);
         // The native stop mutation precedes the failed listener check; recovery must start it.
         expect(proof.freshRestartCalls()).toHaveLength(failure === "stop" ? 1 : 0);
@@ -164,7 +150,7 @@ describe("update-cli", () => {
         });
         return;
       }
-      await modules.updateCommand({ yes: true, restart: true, json: true });
+      await updateCommand({ yes: true, restart: true, json: true });
 
       expect(mocks.updateNpmInstalledPlugins).toHaveBeenCalledExactlyOnceWith(
         expect.objectContaining({ coreVersion: VERSION, syncOfficialPluginInstalls: true }),
@@ -228,8 +214,8 @@ describe("update-cli", () => {
     vi.mocked(modules.resolveGatewayInstallEntrypoint).mockResolvedValue(
       setup.FRESH_POST_UPDATE_ENTRYPOINT,
     );
-    const command = modules.updateCommand({ yes: true, restart: false, json: true });
-    await expect(command).rejects.toEqual(new modules.ExitError(1));
+    const command = updateCommand({ yes: true, restart: false, json: true });
+    await expect(command).rejects.toEqual(new ExitError(1));
     expect(proof.lastWriteJsonCall()).toMatchObject(fixture.runtimeRefusal);
     proof.expectNoSideEffects(mocks.pluginAvailabilityPreflight, mocks.updateNpmInstalledPlugins);
     proof.expectNoSideEffects(mocks.serviceStop, mocks.serviceRestart, modules.runDaemonRestart);
@@ -251,7 +237,7 @@ describe("update-cli", () => {
       installRecords: records,
     });
 
-    await modules.updateCommand({ yes: true, json: false });
+    await updateCommand({ yes: true, json: false });
 
     expect(mocks.updateNpmInstalledPlugins).toHaveBeenCalledOnce();
     proof.expectNoSideEffects(mocks.serviceStop, mocks.serviceRestart, modules.runDaemonRestart);
@@ -272,7 +258,7 @@ describe("update-cli", () => {
         );
       }
 
-      await modules.updateCommand({ admission: "auto", yes: true, restart: true, json: true });
+      await updateCommand({ admission: "auto", yes: true, restart: true, json: true });
 
       expectNoActivation();
       expect(mocks.managedUpdateHandoff.start).not.toHaveBeenCalled();
@@ -330,15 +316,14 @@ describe("update-cli", () => {
           OPENCLAW_DEBUG_PROXY_URL: undefined,
           OPENCLAW_DEBUG_PROXY_REQUIRE: undefined,
         },
-        async () => {
-          await modules.updateCommand({
+        () =>
+          updateCommand({
             admission: "auto",
             channel: "beta",
             yes: true,
             restart: true,
             json: true,
-          });
-        },
+          }),
       );
 
       expectNoActivation();
@@ -412,7 +397,7 @@ describe("update-cli", () => {
       setup.configSnapshot({ update: { channel: "dev" } }),
     );
 
-    await modules.updateCommand({ channel: "stable", yes: true, restart: false, json: true });
+    await updateCommand({ channel: "stable", yes: true, restart: false, json: true });
 
     proof.expectPackageInstallSpec(`openclaw@${VERSION}`);
     expect(mocks.candidateValidation).toHaveBeenCalled();
@@ -434,7 +419,7 @@ describe("update-cli", () => {
     mocks.readPackageVersion.mockResolvedValue("2026.4.22");
     if (tag === "latest") {
       setup.primeNpmChannelTag(tag, null);
-      await modules.updateCommand({});
+      await updateCommand({});
 
       expect(proof.getErrorOutput()).not.toContain("Downgrade confirmation required.");
       expect(modules.defaultRuntime.exit).not.toHaveBeenCalled();
@@ -450,7 +435,7 @@ describe("update-cli", () => {
       error: "HTTP 404",
     });
 
-    await expect(modules.updateCommand({ tag })).rejects.toEqual(new modules.ExitError(1));
+    await expect(updateCommand({ tag })).rejects.toEqual(new ExitError(1));
 
     expect(proof.getLogOutput()).toContain(
       "OpenClaw update skipped: downgrade-confirmation-required.",

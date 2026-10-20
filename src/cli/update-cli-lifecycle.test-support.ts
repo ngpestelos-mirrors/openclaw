@@ -36,6 +36,7 @@ import {
   pluginSyncResult,
 } from "./update-cli/update-cli-config.test-support.js";
 import { reportUpdateCliHomeCleanupFailure } from "./update-cli/update-cli-failure-recovery.test-support.js";
+import { runtimeFixture } from "./update-cli/update-command-fixtures.test-support.js";
 import { getNodeRuntimeFixture } from "./update-cli/update-command-runtime-recovery.test-support.js";
 
 await vi.hoisted(() => import("./update-cli-mocks.test-support.js"));
@@ -49,7 +50,7 @@ export const candidateStartupStep = (cwd: string, valid = true) => ({
   ...(!valid ? { stderrTail: "candidate readiness failed" } : {}),
 });
 
-function selectHostPlatform(): () => void {
+function selectHostPlatform() {
   const descriptor = expectDefined(
     Object.getOwnPropertyDescriptor(process, "platform"),
     "host platform descriptor",
@@ -59,16 +60,12 @@ function selectHostPlatform(): () => void {
     enumerable: descriptor.enumerable,
     value: mocks.sqliteHostPlatform,
   });
-  return () => Object.defineProperty(process, "platform", descriptor);
+  return { [Symbol.dispose]: () => Object.defineProperty(process, "platform", descriptor) };
 }
 
 async function onHostPlatform<T>(operation: () => Promise<T>): Promise<T> {
-  const restore = selectHostPlatform();
-  try {
-    return await operation();
-  } finally {
-    restore();
-  }
+  using _ = selectHostPlatform();
+  return await operation();
 }
 
 type UpdateCliLifecycleFixture = {
@@ -96,16 +93,13 @@ export function registerUpdateCliLifecycle(fixture: UpdateCliLifecycleFixture): 
   beforeEach(async () => {
     vi.spyOn(taskProbe, "probeScheduledTaskUpdateAccess").mockReturnValue({ status: "allowed" });
     // Default install roots use cwd; artifact admission must own the fixture, not the checkout.
-    process.chdir(path.join(fixture.fixtureRoot, "checkout"));
+    const checkoutRoot = path.join(fixture.fixtureRoot, "checkout");
+    process.chdir(checkoutRoot);
     process.exitCode = undefined;
     const { createTempHomeEnv } = await import("../test-utils/temp-home.js");
     tempHome = await createTempHomeEnv("openclaw-update-cli-home-");
     // Original-state capture must discover this simulated install's plugins.
-    process.env.OPENCLAW_BUNDLED_PLUGINS_DIR = path.join(
-      fixture.fixtureRoot,
-      "checkout",
-      "extensions",
-    );
+    process.env.OPENCLAW_BUNDLED_PLUGINS_DIR = path.join(checkoutRoot, "extensions");
     process.env.OPENCLAW_TEST_TRUST_BUNDLED_PLUGINS_DIR = "1";
     mocks.commandTransport.npmPrefix = fixture.tempDirs.make("openclaw-cli-npm-prefix-");
     process.env.NPM_CONFIG_GLOBALCONFIG = fixture.globalNpmConfig;
@@ -160,8 +154,7 @@ export function registerUpdateCliLifecycle(fixture: UpdateCliLifecycleFixture): 
     );
     mocks.retainUpdateRuntime.mockImplementation(async ({ assertCurrent }) => assertCurrent());
     mocks.systemdPolicy.mockResolvedValue({ kind: "unchanged" });
-    // Service simulations do not provide foreign-platform ACL libraries. Keep
-    // real exclusive host creation; actual Windows runs retain the native DACL path.
+    // Keep host file exclusivity; native Windows still tests DACL creation.
     if (mocks.sqliteHostPlatform !== "win32") {
       vi.spyOn(windowsPrivateDirectory, "createPrivateWindowsDirectory").mockImplementation(
         (directoryPath) => {
@@ -182,23 +175,13 @@ export function registerUpdateCliLifecycle(fixture: UpdateCliLifecycleFixture): 
     vi.spyOn(updateTempRoot, "resolvePreferredOpenClawTmpDir").mockReturnValue(executorTmp);
     const pidAlive = await import("../shared/pid-alive.js");
     const readHostProcessStartTime = pidAlive.getFileLockProcessStartTime;
-    // Service-platform doubles cannot change the OS that owns real fixture PIDs.
-    // Keep actual PID/start reads, switching only their synchronous platform dispatch.
+    // Read real PID/start identity using the host OS despite service-platform doubles.
     vi.spyOn(pidAlive, "getFileLockProcessStartTime").mockImplementation((...args) => {
-      if (process.platform === mocks.sqliteHostPlatform) {
-        return readHostProcessStartTime(...args);
-      }
-      const restore = selectHostPlatform();
-      try {
-        return readHostProcessStartTime(...args);
-      } finally {
-        restore();
-      }
+      using _ = selectHostPlatform();
+      return readHostProcessStartTime(...args);
     });
-    // Cache the real host process identity before cases spoof the native service
-    // platform. Lease ownership still uses the production PID/start checks.
-    const { getFileLockProcessStartTime } = await import("../shared/pid-alive.js");
-    expect(getFileLockProcessStartTime(process.pid)).not.toBeNull();
+    // Cache real PID/start identity before cases spoof the service platform.
+    expect(pidAlive.getFileLockProcessStartTime(process.pid)).not.toBeNull();
     mocks.pluginAvailabilityPreflight.mockResolvedValue([]);
     mocks.sourceRuntimeCompletion.mockResolvedValue({ changed: false });
     mocks.triageAfterFailure.mockResolvedValue(undefined);
@@ -272,20 +255,8 @@ export function registerUpdateCliLifecycle(fixture: UpdateCliLifecycleFixture): 
     });
     fixture.primeNpmChannelTag("latest", "9999.0.0");
     mocks.nodeVersionSatisfiesEngine.mockReturnValue(true);
-    const nodeRuntime = getNodeRuntimeFixture();
-    mocks.resolveNodeRuntimeInfo.mockResolvedValue({
-      status: "supported",
-      version: nodeRuntime.versions.node,
-      sqliteVersion: nodeRuntime.versions.sqlite,
-      nodeSharedSqlite: false,
-      sqliteProbe: {
-        available: true,
-        version: nodeRuntime.versions.sqlite,
-        text: true,
-        blob: true,
-        json: true,
-      },
-    });
+    const { versions } = getNodeRuntimeFixture();
+    mocks.resolveNodeRuntimeInfo.mockResolvedValue(runtimeFixture(versions.node, versions.sqlite));
     vi.mocked(update.resolveUpdateInstallKind).mockResolvedValue("git");
     vi.mocked(update.resolveUpdateInstallIdentity).mockResolvedValue({
       installKind: "git",
@@ -295,26 +266,6 @@ export function registerUpdateCliLifecycle(fixture: UpdateCliLifecycleFixture): 
       root: "/test/path",
       installKind: "git",
       packageManager: "pnpm",
-      git: {
-        root: "/test/path",
-        sha: "abcdef1234567890",
-        tag: "v1.2.3",
-        branch: "main",
-        upstream: "origin/main",
-        dirty: false,
-        ahead: 0,
-        behind: 0,
-        fetchOk: true,
-      },
-      deps: {
-        manager: "pnpm",
-        status: "ok",
-        lockfilePath: "/test/path/pnpm-lock.yaml",
-        markerPath: "/test/path/node_modules",
-      },
-      registry: {
-        latestVersion: "1.2.3",
-      },
     });
     vi.mocked(update.runCommandWithTimeout).mockImplementation(async (argv) => {
       if (argv[1] === "--version") {
@@ -393,7 +344,6 @@ export function registerUpdateCliLifecycle(fixture: UpdateCliLifecycleFixture): 
         repaired: false,
       }),
     );
-    mocks.launchdUpdateCleanupMocks.disableCurrentOpenClawUpdateLaunchdJob.mockReset();
     mocks.launchdUpdateCleanupMocks.disableCurrentOpenClawUpdateLaunchdJob.mockResolvedValue(false);
     mocks.confirm.mockResolvedValue(false);
     mocks.select.mockResolvedValue("stable");

@@ -3,13 +3,12 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { createCliRuntimeCapture } from "./test-runtime-capture.js";
 
 const callGatewayFromCli = vi.fn();
-const addGatewayClientOptions = vi.fn((command: Command) => command);
 
 const { runtimeLogs, runtimeErrors, defaultRuntime, resetRuntimeCapture } =
   createCliRuntimeCapture();
 
 vi.mock("./gateway-rpc.js", () => ({
-  addGatewayClientOptions,
+  addGatewayClientOptions: (command: Command) => command,
   callGatewayFromCli,
 }));
 
@@ -32,13 +31,11 @@ describe("system-cli", () => {
   async function runCli(args: string[]) {
     const program = new Command();
     registerSystemCli(program);
-    try {
-      await program.parseAsync(args, { from: "user" });
-    } catch (err) {
+    await program.parseAsync(args, { from: "user" }).catch((err: unknown) => {
       if (!(err instanceof Error && err.message.startsWith("__exit__:"))) {
         throw err;
       }
-    }
+    });
   }
 
   beforeEach(() => {
@@ -76,7 +73,6 @@ describe("system-cli", () => {
     error.name = "AgentSelectionRequiredError";
     callGatewayFromCli.mockRejectedValueOnce(error);
 
-    // The root failure owner renders this; the command must not print a second copy.
     await expect(runCli(["system", "event", "--text", "hello"])).rejects.toBe(error);
 
     expect(runtimeLogs).toEqual([]);

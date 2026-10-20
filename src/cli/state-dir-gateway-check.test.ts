@@ -28,6 +28,8 @@ describe("state-dir-gateway-check", () => {
   let root: string;
   const check = (config: Parameters<typeof checkCliGatewayStateDir>[0]["config"] = {}) =>
     checkCliGatewayStateDir({ command: "openclaw configure", config });
+  const serviceEnv = (environment: NodeJS.ProcessEnv) =>
+    mocks.readServiceCommand.mockResolvedValue({ environment });
 
   beforeEach(async () => {
     root = tempDirs.make("openclaw-state-dir-check-");
@@ -41,16 +43,14 @@ describe("state-dir-gateway-check", () => {
   afterEach(() => vi.unstubAllEnvs());
 
   it("uses canonical path identity for a missing config below a symlink", async () => {
-    const gatewayStateDir = path.join(root, "gateway");
-    await fs.mkdir(gatewayStateDir);
     const stateLink = path.join(root, "gateway-link");
-    await fs.symlink(gatewayStateDir, stateLink);
+    await fs.symlink(root, stateLink);
 
     expect(
       compareCliGatewayStateDirs({
         cliStateDir: stateLink,
         cliConfigPath: path.join(stateLink, "openclaw.json"),
-        gatewayStateDir,
+        gatewayStateDir: root,
         source: "live Gateway",
         mode: "refuse",
       }),
@@ -62,16 +62,11 @@ describe("state-dir-gateway-check", () => {
     const serviceHome = path.join(canonicalRoot, "service-home");
     const cliHome = path.join(canonicalRoot, "cli-home");
     const serviceRuntimeHome = path.join(serviceHome, "runtime");
-    await fs.mkdir(serviceHome);
-    await fs.mkdir(cliHome);
     vi.stubEnv("HOME", serviceHome);
     vi.stubEnv("OPENCLAW_HOME", cliHome);
     vi.stubEnv("OPENCLAW_STATE_DIR", undefined);
     vi.stubEnv("OPENCLAW_CONFIG_PATH", undefined);
-    mocks.readServiceCommand.mockResolvedValue({
-      programArguments: ["node", "gateway.js"],
-      environment: { HOME: serviceHome, OPENCLAW_HOME: serviceRuntimeHome },
-    });
+    serviceEnv({ HOME: serviceHome, OPENCLAW_HOME: serviceRuntimeHome });
 
     await expect(check()).resolves.toMatchObject({
       kind: "refuse",
@@ -93,10 +88,7 @@ describe("state-dir-gateway-check", () => {
       if (failure === "error") {
         mocks.readServiceCommand.mockRejectedValue(new Error("private-service-inspection-canary"));
       } else {
-        mocks.readServiceCommand.mockResolvedValue({
-          programArguments: ["node", "gateway.js"],
-          environment: { PATH: "/synthetic/bin" },
-        });
+        serviceEnv({ PATH: "/synthetic/bin" });
       }
       const result = await check();
       expect(result).toMatchObject({
