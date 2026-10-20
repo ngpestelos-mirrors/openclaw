@@ -31,6 +31,7 @@ import {
 } from "./embedded-agent-subscribe.e2e-harness.js";
 import { readSubagentRunAnnounceResultUsing } from "./subagents/announce/subagent-announce-result.js";
 import type { SubagentRunRecord } from "./subagents/registry/subagent-registry.types.js";
+import { makeEmbeddedRunnerAttempt } from "./test-helpers/embedded-agent-runner-e2e-fixtures.js";
 
 type Options = Omit<Parameters<typeof createSubscribedSessionHarness>[0], "runId">;
 function setup(options: Options = {}) {
@@ -145,22 +146,22 @@ describe("Astra async response tails", () => {
   const answered = [lookupCall, finalAnswer("msg_answer", "Use counter B.")];
   const answeredTail = ["toolUse:toolCall", "stop:text", "stop:text"];
   const keptReply = { disposition: "visible", text: "Use counter B." } as const;
+  const keptAnswer = {
+    delivery: "deferred",
+    requests: [answered, "NO_REPLY"],
+    transcript: answeredTail,
+    delivered: ["Use counter B."],
+    reply: keptReply,
+  } as const;
   it.each([
     {
+      ...keptAnswer,
       name: "a later NO_REPLY keeps the completed answer",
-      delivery: "deferred",
-      requests: [answered, "NO_REPLY"],
-      transcript: answeredTail,
-      delivered: ["Use counter B."],
-      reply: keptReply,
     },
     {
+      ...keptAnswer,
       name: "a heartbeat turn without block streaming keeps the completed answer",
       delivery: "off",
-      requests: [answered, "NO_REPLY"],
-      transcript: answeredTail,
-      delivered: ["Use counter B."],
-      reply: keptReply,
       heartbeat: true,
     },
     {
@@ -189,12 +190,9 @@ describe("Astra async response tails", () => {
       reply: { disposition: "visible", text: "First part.Second part." },
     },
     {
+      ...keptAnswer,
       name: "a repeated answer is delivered once",
-      delivery: "deferred",
       requests: [answered, "Use counter B."],
-      transcript: answeredTail,
-      delivered: ["Use counter B."],
-      reply: keptReply,
     },
     {
       name: "a later silent attachment supersedes the completed answer",
@@ -237,34 +235,28 @@ describe("Astra async response tails", () => {
       reply: { disposition: "silent" },
     },
     {
+      ...keptAnswer,
       name: "interim progress before a later NO_REPLY does not replace the completed answer",
-      delivery: "deferred",
       requests: [
         answered,
         { items: [finalAnswer("msg_progress", "Exporting the rest now.")], endTurn: false },
         "NO_REPLY",
       ],
       transcript: [...answeredTail, "stop:text"],
-      delivered: ["Use counter B."],
-      reply: keptReply,
       announce: true,
     },
     {
+      ...keptAnswer,
       name: "quiet mode keeps the completed answer private",
-      delivery: "deferred",
-      requests: [answered, "NO_REPLY"],
-      transcript: answeredTail,
       delivered: ["Sent with the message tool."],
-      reply: keptReply,
       quiet: true,
     },
     {
+      ...keptAnswer,
       name: "reasoning sent with the completed answer is not repeated after NO_REPLY",
       delivery: "live",
       requests: [[lookupCall, reasoning, finalAnswer("msg_answer", "Use counter B.")], "NO_REPLY"],
-      transcript: answeredTail,
       delivered: ["Counter B is next to the entrance.", "Use counter B."],
-      reply: keptReply,
       reasoning: true,
     },
   ] as const)("$name", async ({ delivery, requests, transcript, delivered, ...row }) => {
@@ -273,17 +265,16 @@ describe("Astra async response tails", () => {
     const sent: string[] = [];
     const show = (payload: { text?: string; mediaUrl?: string }) =>
       payload.text ?? payload.mediaUrl ?? "";
+    const record = (payload: Parameters<typeof show>[0]) => {
+      sent.push(show(payload));
+    };
     const blockStreamingEnabled = delivery !== "off";
     const pipeline = createBlockReplyPipeline({
-      onBlockReply: (payload) => {
-        sent.push(show(payload));
-      },
+      onBlockReply: record,
       timeoutMs: 5000,
     });
     const handler = createBlockReplyDeliveryHandler({
-      onBlockReply: (payload) => {
-        sent.push(show(payload));
-      },
+      onBlockReply: record,
       normalizeStreamingText: (payload) => ({ text: payload.text, skip: false }),
       applyReplyToMode: (payload) => payload,
       typingSignals: createTypingSignaler({
@@ -373,33 +364,30 @@ describe("Astra async response tails", () => {
     ).toEqual(transcript);
     const completed = h.subscription.getCurrentAttemptAssistant();
     const attempt: EmbeddedRunAttemptWithReceiptEvidence = {
-      terminal: { kind: "ok" },
-      sessionIdUsed: "session",
-      messagesSnapshot: messages,
-      assistantTexts: h.subscription.assistantTexts,
+      ...makeEmbeddedRunnerAttempt({
+        sessionIdUsed: "session",
+        messagesSnapshot: messages,
+        assistantTexts: h.subscription.assistantTexts,
+        lastAssistantTextMessageIndex: h.subscription.getLastAssistantTextMessageIndex(),
+        toolMetas: h.subscription.toolMetas.filter(
+          (meta): meta is typeof meta & { toolName: string } => meta.toolName !== undefined,
+        ),
+        lastAssistant: completed,
+        currentAttemptAssistant: completed,
+        currentAttemptCompletedAssistant: completed,
+        didSendViaMessagingTool: quiet,
+        ...(quiet
+          ? { messagingToolSourceReplyPayloads: [{ text: "Sent with the message tool." }] }
+          : {}),
+        replayMetadata: { hadPotentialSideEffects: false, replaySafe: true },
+        itemLifecycle: {
+          startedCount: lookup.mock.calls.length,
+          completedCount: lookup.mock.calls.length,
+          activeCount: 0,
+        },
+      }),
       answerSegments: h.subscription.answerSegments,
       keptAnswer: h.subscription.getKeptAnswer(),
-      lastAssistantTextMessageIndex: h.subscription.getLastAssistantTextMessageIndex(),
-      toolMetas: h.subscription.toolMetas.filter(
-        (meta): meta is typeof meta & { toolName: string } => meta.toolName !== undefined,
-      ),
-      lastAssistant: completed,
-      currentAttemptAssistant: completed,
-      currentAttemptCompletedAssistant: completed,
-      didSendViaMessagingTool: quiet,
-      messagingToolSentTexts: [],
-      messagingToolSentMediaUrls: [],
-      messagingToolSentTargets: [],
-      ...(quiet
-        ? { messagingToolSourceReplyPayloads: [{ text: "Sent with the message tool." }] }
-        : {}),
-      cloudCodeAssistFormatError: false,
-      replayMetadata: { hadPotentialSideEffects: false, replaySafe: true },
-      itemLifecycle: {
-        startedCount: lookup.mock.calls.length,
-        completedCount: lookup.mock.calls.length,
-        activeCount: 0,
-      },
     };
     const runParams = {
       admittedRunContext: createTestAdmittedRunContext("run"),

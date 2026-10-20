@@ -46,6 +46,10 @@ const responsesModel: Model<"openai-responses"> = {
 };
 const audioUrl = "https://example.invalid/clip.ogg";
 const nextParagraph = "A second paragraph gives the completed example enough text to drain.\n\n";
+const texts = (payloads: ReplyPayload[]) => payloads.map((payload) => payload.text ?? "");
+const hasNoMedia = (payload: ReplyPayload) => !payload.mediaUrl && !payload.mediaUrls?.length;
+const hasNoReplyTarget = (payload: ReplyPayload) =>
+  !payload.replyToId && !payload.replyToCurrent && !payload.replyToTag;
 
 function createDeliveryHarness(
   options: { minChars?: number; blockReplyBreak?: "text_end" | "message_end" } = {},
@@ -172,10 +176,9 @@ const replacementChunks = [
   "Keep this sentence unchanged. Retain each result. ",
   "The final summary also remains unchanged.\n",
 ] as const;
-const prefixCorrectionCases = [
-  { value: "thirty-three", leadChunks: ["First lead stays.\n", "Next lead stays.\n"] },
-].map(({ value, leadChunks }) => ({
-  name: `authoritative prefix correction ${leadChunks.length ? "with early chunks" : value}`,
+const leadChunks = ["First lead stays.\n", "Next lead stays.\n"];
+const prefixCorrection = {
+  name: "authoritative prefix correction with early chunks",
   chunks: [...leadChunks, ...replacementChunks],
   marker: "Keep this sentence unchanged.",
   unchangedLeadSentences: leadChunks.map((text) => text.trimEnd()),
@@ -184,15 +187,15 @@ const prefixCorrectionCases = [
   prepared: true,
   terminalText:
     leadChunks.join("") +
-    replacementChunks[0].replace("one", value) +
+    replacementChunks[0].replace("one", "thirty-three") +
     replacementChunks.slice(1).join(""),
   correctedText:
-    `The current value is ${value} for this item. Continue. ` +
+    "The current value is thirty-three for this item. Continue. " +
     "Keep this sentence unchanged. Retain each result. " +
     "The final summary also remains unchanged.",
-}));
+};
 
-it.each([...cases, ...prefixCorrectionCases])(
+it.each([...cases, prefixCorrection])(
   "preserves $name through the delivery handler",
   async (scenario) => {
     const route = "prepared" in scenario ? "responses prepared" : "google raw";
@@ -294,11 +297,11 @@ it.each([...cases, ...prefixCorrectionCases])(
       expect(delivered.length).toBeGreaterThan(0);
       const beforeTerminalCount = delivered.length;
       if ("prefixCorrection" in scenario) {
-        expect(delivered.map((payload) => payload.text).join("\n")).toBe(
+        expect(texts(delivered).join("\n")).toBe(
           scenario.chunks.map((text) => text.trimEnd()).join("\n"),
         );
       }
-      const text = delivered.map((payload) => payload.text ?? "").join("");
+      const text = texts(delivered).join("");
       if ("preservedLiteral" in scenario) {
         expect(text).toContain(scenario.preservedLiteral);
       }
@@ -328,28 +331,20 @@ it.each([...cases, ...prefixCorrectionCases])(
           )
           .toBe(true);
       } else {
-        expect
-          .soft(
-            delivered.every(
-              (payload) => !payload.replyToId && !payload.replyToCurrent && !payload.replyToTag,
-            ),
-          )
-          .toBe(true);
+        expect.soft(delivered.every(hasNoReplyTarget)).toBe(true);
       }
       expect
         .soft(delivered.filter((payload) => payload.audioAsVoice && payload.text).length)
         .toBe("voiceEdges" in scenario ? scenario.voiceEdges : 0);
       if ("textOnly" in scenario) {
-        expect(delivered.every((payload) => !payload.mediaUrl && !payload.mediaUrls?.length)).toBe(
-          true,
-        );
+        expect(delivered.every(hasNoMedia)).toBe(true);
       }
       releaseTerminal.resolve();
       await settled;
       await subscription.waitForPendingEvents();
       await pipeline.flush({ force: true });
       if ("prefixCorrection" in scenario) {
-        const recipientText = delivered.map((payload) => payload.text ?? "");
+        const recipientText = texts(delivered);
         const additional = recipientText.slice(beforeTerminalCount);
         // A rewritten native item is delivered again without reconstructing its
         // historical chunk breaks. The unchanged earlier prefix stays delivered once.
@@ -359,9 +354,7 @@ it.each([...cases, ...prefixCorrectionCases])(
         }
       }
       if ("textOnly" in scenario) {
-        expect(delivered.every((payload) => !payload.mediaUrl && !payload.mediaUrls?.length)).toBe(
-          true,
-        );
+        expect(delivered.every(hasNoMedia)).toBe(true);
       }
       if (hasAudio) {
         const audio = delivered.filter(isAudioPayload);
@@ -414,7 +407,7 @@ it("does not replay signed Google text when a later part shares its signature", 
   const running = runDeliveryLoop({ emit, subscription }, googleModel, response, async (delta) => {
     if (delta === first) {
       await pipeline.flush({ force: true });
-      firstCheckpoint = delivered.map((payload) => payload.text ?? "").join("");
+      firstCheckpoint = texts(delivered).join("");
       firstDelivered.resolve();
     }
   });
@@ -424,11 +417,7 @@ it("does not replay signed Google text when a later part shares its signature", 
     await pipeline.flush({ force: true });
 
     expect(firstCheckpoint).toBe("Alpha  beta.");
-    const text = delivered
-      .map((payload) => payload.text ?? "")
-      .join(" ")
-      .replace(/\s+/g, " ")
-      .trim();
+    const text = texts(delivered).join(" ").replace(/\s+/g, " ").trim();
     expect(text).toBe("Alpha beta. Second.");
   } finally {
     firstDelivered.resolve();
@@ -436,37 +425,27 @@ it("does not replay signed Google text when a later part shares its signature", 
   }
 });
 
-const prefix = "x".repeat(48);
-it.each([
-  {
-    name: "ordinary word completion",
-    initialText: `${prefix}\nM`,
-    deltas: ["e", "tal"],
-    expectedText: `${prefix}\nMetal`,
-    expectedMedia: [],
-  },
-])("holds a partial MEDIA prefix through $name", async (scenario) => {
+it("holds a partial MEDIA prefix through ordinary word completion", async () => {
+  const prefix = "x".repeat(48);
   const { delivered, blocks, emit, flush } = createDeliveryHarness({
     minChars: 50,
   });
-  let text = scenario.initialText;
+  let text = `${prefix}\nM`;
   emit({ type: "message_start", message: createAssistantOutput(googleModel) });
   emitText(emit, "text_delta", text);
   await flush();
   expect.soft(blocks).toEqual([]);
   expect.soft(delivered).toEqual([]);
 
-  for (const delta of scenario.deltas) {
+  for (const delta of ["e", "tal"]) {
     text += delta;
     emitText(emit, "text_delta", text, { delta });
   }
   emitText(emit, "text_end", text);
   emit({ type: "message_end", message: textMessage(text) });
   await flush();
-  expect.soft(delivered.map((payload) => payload.text ?? "").join("")).toBe(scenario.expectedText);
-  expect
-    .soft(delivered.flatMap((payload) => payload.mediaUrls ?? []))
-    .toEqual(scenario.expectedMedia);
+  expect.soft(texts(delivered).join("")).toBe(`${prefix}\nMetal`);
+  expect.soft(delivered.flatMap((payload) => payload.mediaUrls ?? [])).toEqual([]);
 });
 
 it.each(["literal", "voice", "token"] as const)(
@@ -484,7 +463,7 @@ it.each(["literal", "voice", "token"] as const)(
     emit({ type: "message_end", message: textMessage(parts) });
     await flush();
     if (kind === "literal") {
-      const text = delivered.map((payload) => payload.text ?? "").join("");
+      const text = texts(delivered).join("");
       expect.soft(text).toContain(marker);
       expect.soft(text.split(marker)).toHaveLength(2);
       for (const payload of [...blocks, ...delivered]) {

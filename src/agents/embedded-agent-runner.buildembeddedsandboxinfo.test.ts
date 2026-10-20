@@ -38,6 +38,11 @@ const promptInfo = {
   browserBridgeUrl: "http://localhost:9222",
   hostBrowserAllowed: true,
 };
+const fullPolicy = { mode: "full", security: "full", ask: "off" } as const;
+const elevatedInfo = (
+  execPolicy: Parameters<typeof buildEmbeddedSandboxInfo>[2],
+  hostPolicy: Parameters<typeof buildEmbeddedSandboxInfo>[3],
+) => buildEmbeddedSandboxInfo(sandbox(), elevation, execPolicy, hostPolicy)?.elevated;
 
 beforeEach(() => {
   vi.restoreAllMocks();
@@ -91,26 +96,10 @@ describe("embedded sandbox reporting", () => {
     expect(buildEmbeddedSandboxInfo(sandbox(), elevation, policy)?.elevated).toEqual(blocked);
   });
   it("advertises full access only when host approval floors allow it", () => {
-    const fullPolicy = { mode: "full", security: "full", ask: "off" } as const;
+    expect(elevatedInfo(fullPolicy, { security: "allowlist", ask: "off" })).toEqual(blocked);
+    expect(elevatedInfo(fullPolicy, { security: "full", ask: "always" })).toEqual(blocked);
     expect(
-      buildEmbeddedSandboxInfo(sandbox(), elevation, fullPolicy, {
-        security: "allowlist",
-        ask: "off",
-      })?.elevated,
-    ).toEqual(blocked);
-    expect(
-      buildEmbeddedSandboxInfo(sandbox(), elevation, fullPolicy, {
-        security: "full",
-        ask: "always",
-      })?.elevated,
-    ).toEqual(blocked);
-    expect(
-      buildEmbeddedSandboxInfo(
-        sandbox(),
-        elevation,
-        { ...fullPolicy, ask: "on-miss" },
-        { security: "full", ask: "on-miss" },
-      )?.elevated,
+      elevatedInfo({ ...fullPolicy, ask: "on-miss" }, { security: "full", ask: "on-miss" }),
     ).toEqual({
       allowed: true,
       defaultLevel: "full",

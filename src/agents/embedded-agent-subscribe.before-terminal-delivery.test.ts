@@ -14,8 +14,10 @@ import {
 } from "./embedded-agent-subscribe.e2e-harness.js";
 import { makeAgentAssistantMessage } from "./test-helpers/agent-message-fixtures.js";
 import { makeEmbeddedRunnerAttempt } from "./test-helpers/embedded-agent-runner-e2e-fixtures.js";
-import { textAssistant } from "./test-helpers/sparse-transcript.test-support.js";
+import { textAssistant, textToolResult } from "./test-helpers/sparse-transcript.test-support.js";
 
+const visibleTexts = (replies: { text?: unknown }[]) =>
+  replies.map(({ text }) => text).filter(Boolean);
 type Options = Parameters<typeof createSubscribedSessionHarness>[0];
 const subscriptions: ReturnType<typeof createSubscribedSessionHarness>["subscription"][] = [];
 const unhandledRejections: unknown[] = [];
@@ -102,6 +104,8 @@ function setup({
     onBlockReply,
     onPartialReply,
     onAgentEvent,
+    replies: () => onBlockReply.mock.calls.map(([payload]) => payload),
+    partials: () => onPartialReply.mock.calls.map(([payload]) => payload),
     end: (messages: AssistantMessage[] = []) =>
       emit({ type: "agent_end", messages, willRetry: false }),
     drain: () => subscription.waitForPendingEvents(),
@@ -114,6 +118,12 @@ function setup({
         ([event]) => event.stream === "lifecycle" && event.data.phase === "end",
       ),
   };
+}
+
+function expectNoReplies(h: ReturnType<typeof setup>) {
+  expect(h.onBlockReply).not.toHaveBeenCalled();
+  expect(h.onPartialReply).not.toHaveBeenCalled();
+  expect(h.assistantEvents()).toEqual([]);
 }
 
 function payloads(subscription: ReturnType<typeof setup>["subscription"]) {
@@ -172,9 +182,7 @@ describe("terminal delivery gate", () => {
       const h = setup({ onBeforeTerminalDelivery });
       const message = answer("Visible stream.");
       h.message(message);
-      expect(h.onBlockReply).not.toHaveBeenCalled();
-      expect(h.onPartialReply).not.toHaveBeenCalled();
-      expect(h.assistantEvents()).toEqual([]);
+      expectNoReplies(h);
       h.end([message]);
       await entered.promise;
       expect(onBeforeTerminalDelivery).toHaveBeenCalledExactlyOnceWith(
@@ -199,9 +207,7 @@ describe("terminal delivery gate", () => {
       await draining;
       expect(h.lifecycleEnded()).toBe(decision !== "suppress");
       if (decision === "suppress") {
-        expect(h.onBlockReply).not.toHaveBeenCalled();
-        expect(h.onPartialReply).not.toHaveBeenCalled();
-        expect(h.assistantEvents()).toEqual([]);
+        expectNoReplies(h);
       } else {
         expect(h.onBlockReply).toHaveBeenCalledExactlyOnceWith(
           expect.objectContaining({ text: "Visible stream." }),
@@ -246,8 +252,8 @@ describe("delivery failures", () => {
     h.end();
     await h.drain();
     expect(callback).toHaveBeenCalledTimes(2);
-    expect(h.subscription.getVisibleBlockReplyCount()).toBe(0);
     expect(h.subscription.getPendingToolMediaReply()).toEqual(generatedMedia);
+    expect(h.subscription.getVisibleBlockReplyCount()).toBe(0);
     expect(h.subscription.hasToolMediaBlockReply()).toBe(false);
   });
 
@@ -344,11 +350,7 @@ describe("deferred reply supersession", () => {
         stopReason: "toolUse",
       });
       const result = {
-        role: "toolResult" as const,
-        toolCallId: "read",
-        toolName: "read",
-        content: [{ type: "text" as const, text: "Note saved." }],
-        isError: false,
+        ...textToolResult("read", "read", "Note saved.", { isError: false }),
         timestamp: 1,
       };
       const final = answer(markdown, "toolUse", "final_answer"),
@@ -435,16 +437,12 @@ describe("deferred reply supersession", () => {
       });
       {
         const result = {
-          role: "toolResult",
-          toolName: "read",
-          toolCallId: "read",
-          content: [
-            {
-              type: "text",
-              text: skipped ? "Skipped due to queued user message." : "Read complete.",
-            },
-          ],
-          isError: skipped,
+          ...textToolResult(
+            "read",
+            "read",
+            skipped ? "Skipped due to queued user message." : "Read complete.",
+            { isError: skipped },
+          ),
           timestamp: 0,
         };
         h.message(progress);
@@ -467,7 +465,7 @@ describe("deferred reply supersession", () => {
       await h.drain();
       const expected = [skipped ? "A1" : "A2", "A3"];
       expect(payloads(h.subscription).map((payload) => payload.text)).toEqual(expected);
-      expect(h.onBlockReply.mock.calls.map(([payload]) => payload.text)).toEqual(expected);
+      expect(h.replies().map((payload) => payload.text)).toEqual(expected);
       expect(h.subscription.answerSegments).toHaveLength(1);
     },
   );
@@ -482,23 +480,12 @@ describe("deferred reply supersession", () => {
     await h.drain();
     h.message(final);
     await h.drain();
-    expect(h.onBlockReply).not.toHaveBeenCalled();
-    expect(h.onPartialReply).not.toHaveBeenCalled();
-    expect(h.assistantEvents()).toEqual([]);
+    expectNoReplies(h);
     h.end(messages);
     await h.drain();
-    expect(h.onBlockReply.mock.calls.map(([payload]) => payload.text).filter(Boolean)).toEqual([
-      "Result:complete",
-    ]);
-    expect(h.onPartialReply.mock.calls.map(([payload]) => payload.text).filter(Boolean)).toEqual([
-      "Result:complete",
-    ]);
-    expect(
-      h
-        .assistantEvents()
-        .map((data) => data.text)
-        .filter(Boolean),
-    ).toEqual(["Result:complete"]);
+    expect(visibleTexts(h.replies())).toEqual(["Result:complete"]);
+    expect(visibleTexts(h.partials())).toEqual(["Result:complete"]);
+    expect(visibleTexts(h.assistantEvents())).toEqual(["Result:complete"]);
     expect(h.lifecycleEnded()).toBe(true);
   });
 
@@ -545,7 +532,7 @@ describe("deferred reply supersession", () => {
     });
     h.end([media, commentary, final]);
     await h.drain();
-    const replies = h.onBlockReply.mock.calls.map(([payload]) => payload);
+    const replies = h.replies();
     const mediaReplies = replies.filter((payload) => payload.mediaUrls?.length);
     expect(mediaReplies).toHaveLength(1);
     const mediaReply = mediaReplies[0];
@@ -558,12 +545,10 @@ describe("deferred reply supersession", () => {
     expect(replies.filter((payload) => payload.isReasoning).map((payload) => payload.text)).toEqual(
       ["Checking the generated track."],
     );
-    expect(
-      replies
-        .filter((payload) => !payload.isReasoning)
-        .map((payload) => payload.text)
-        .filter(Boolean),
-    ).toEqual(["Completed answer.", "Second answer block."]);
+    expect(visibleTexts(replies.filter((payload) => !payload.isReasoning))).toEqual([
+      "Completed answer.",
+      "Second answer block.",
+    ]);
     expect(h.assistantEvents()).not.toEqual(
       expect.arrayContaining([
         expect.objectContaining({ text: expect.stringContaining("Obsolete") }),
@@ -579,16 +564,16 @@ describe("deferred reply supersession", () => {
   });
 });
 
-it.each([true])("keeps checkpoint delivery nonterminal (buffered=%s)", async (buffered) => {
+it("keeps buffered checkpoint delivery nonterminal", async () => {
   const decide = vi
     .fn()
     .mockResolvedValueOnce({ continueCurrentTurn: true })
     .mockResolvedValueOnce(undefined);
-  const h = setup({ onBeforeTerminalDelivery: decide, deferTerminalDelivery: buffered });
+  const h = setup({ onBeforeTerminalDelivery: decide, deferTerminalDelivery: true });
   h.message(answer("Checkpoint: a repair remains."));
   await h.drain();
   expect(h.assistantEvents().some((data) => data.text === "Checkpoint: a repair remains.")).toBe(
-    !buffered,
+    false,
   );
   h.end();
   await h.drain();
@@ -599,7 +584,7 @@ it.each([true])("keeps checkpoint delivery nonterminal (buffered=%s)", async (bu
   h.emit({ type: "agent_start" });
   h.message(answer("All repairs verified."));
   await h.drain();
-  expect(h.assistantEvents().some((data) => data.text === "All repairs verified.")).toBe(!buffered);
+  expect(h.assistantEvents().some((data) => data.text === "All repairs verified.")).toBe(false);
   h.end();
   await h.drain();
   expect(h.lifecycleEnded()).toBe(true);
