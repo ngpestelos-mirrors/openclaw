@@ -2,6 +2,7 @@ import { readSessionMessageSequence } from "@openclaw/gateway-client/browser";
 import { asOptionalRecord } from "@openclaw/normalization-core/record-coerce";
 import { requestResult, transactionComplete } from "../../lib/chat/control-ui-database.runtime.ts";
 import { removePairingQrContent } from "../../lib/chat/pairing-qr.ts";
+import { isBoardSnapshot } from "../../lib/protocol-validators.generated/board.js";
 import {
   isChatTranscriptMetadata,
   isProgressCard,
@@ -155,22 +156,18 @@ async function parseSnapshotRecord(
   }
   const { board, ...snapshot } = parsed.snapshot;
   const historyState = snapshot.historyState;
-  const [boardValidator, historyValidator] = await Promise.all([
-    board ? import("../../lib/protocol-validators.generated/board.js") : undefined,
-    historyState !== undefined
-      ? import("../../lib/protocol-validators.generated/history-state.js")
-      : undefined,
-  ]);
   let restoredBoard: ChatSessionSnapshot["board"] = board === null ? null : undefined;
   if (board) {
-    if (!boardValidator?.isBoardSnapshot(board.snapshot)) {
+    if (!isBoardSnapshot(board.snapshot)) {
       return null;
     }
     restoredBoard = { snapshot: board.snapshot, receivedAtMs: board.receivedAtMs };
   }
   let restoredHistoryState: ChatSessionSnapshot["historyState"];
   if (historyState !== undefined) {
-    if (!historyValidator?.isChatHistoryState(historyState)) {
+    const { isChatHistoryState } =
+      await import("../../lib/protocol-validators.generated/history-state.js");
+    if (!isChatHistoryState(historyState)) {
       return null;
     }
     restoredHistoryState = historyState;

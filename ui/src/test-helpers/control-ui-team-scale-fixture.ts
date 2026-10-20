@@ -125,7 +125,7 @@ section{padding:24px;border:1px solid #304356;border-radius:16px;background:#1a2
 </style></head><body><h1>Team metric 1</h1><div class="cards">
 ${[72, 85, 96].map((value, index) => `<section><h2>${["Completed work", "Service health", "Availability"][index]}</h2><div class="value">${value}%</div><div class="chart">${[43, 68, 51, 78, 64, value].map((height) => `<i style="height:${height}%"></i>`).join("")}</div></section>`).join("")}
 </div><script>
-document.fonts.ready.then(()=>requestAnimationFrame(()=>requestAnimationFrame(()=>{
+document.fonts.load('16px "FixtureDashboard"').then(()=>document.fonts.ready).then(()=>requestAnimationFrame(()=>requestAnimationFrame(()=>{
   document.body.dataset.dashboardReady="true";
   parent.postMessage({type:"openclaw:bench-dashboard-ready",fontLoaded:[...document.fonts].some(face=>face.family==="FixtureDashboard"&&face.status==="loaded")},"*");
 })));
