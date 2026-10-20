@@ -3,7 +3,7 @@ import type { QuestionPrompt } from "../../../app/question-prompt.ts";
 import { t } from "../../../lib/reactive/i18n.ts";
 import type { QuestionPanelQuestion } from "./chat-question-types.ts";
 
-export function terminalAnswer(prompt: QuestionPrompt, question: QuestionPanelQuestion): string {
+function terminalAnswer(prompt: QuestionPrompt, question: QuestionPanelQuestion): string {
   if (prompt.status === "cancelled") {
     return t("chat.questions.skipped");
   }

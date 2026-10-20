@@ -13,7 +13,6 @@ import {
   buildChatModelOptionFromLookup,
   buildQualifiedChatModelValue,
   formatCatalogChatModelDisplayFromLookup,
-  normalizeChatModelAvailabilityKey,
   normalizeChatModelProviderId,
   normalizeChatModelOverrideValue,
   resolvePreferredServerChatModelValue,
@@ -123,6 +122,17 @@ function resolveDefaultModelValue(state: ChatModelSelectStateInput): string {
     state.sessionsResult?.defaults?.modelProvider,
     state.chatModelCatalog,
   );
+}
+
+function normalizeChatModelAvailabilityKey(value: string): string {
+  const normalized = value.trim().toLowerCase();
+  const separator = normalized.indexOf("/");
+  if (separator <= 0) {
+    return normalized;
+  }
+  return `${normalizeChatModelProviderId(normalized.slice(0, separator))}/${normalized.slice(
+    separator + 1,
+  )}`;
 }
 
 function catalogModelAvailabilityKey(entry: ModelCatalogEntry): string {
