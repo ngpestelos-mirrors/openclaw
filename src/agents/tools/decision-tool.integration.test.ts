@@ -58,9 +58,31 @@ it("returns rich native outcomes through the core tool, registered host and real
   const root = roots.make("decision-tool-native-");
   const pluginRoot = path.join(root, "plugin");
   const emptyBundled = path.join(root, "bundled");
+  const workspaceDir = path.join(root, "workspace");
   fs.mkdirSync(pluginRoot);
   fs.mkdirSync(emptyBundled);
   const id = "decision-tool-fixture";
+  const model = {
+    id: "native",
+    name: "Native fixture",
+    inference: {
+      chat: false,
+      decision: {
+        protocol: "fixture",
+        input: ["text", "image"],
+        questions: {
+          boolean: { probabilities: "none", abstention: true },
+          choice: { probabilities: "none", abstention: true },
+          score: { probabilities: "none", abstention: false },
+          box: { probabilities: "none", abstention: false },
+        },
+        limits: {
+          maxQuestions: 8,
+          image: { maxBytes: 4194304, mimeTypes: ["image/png", "image/jpeg"], remoteUrls: false },
+        },
+      },
+    },
+  };
   const fixture = createColdPluginFixture({
     rootDir: pluginRoot,
     pluginId: id,
@@ -70,40 +92,7 @@ it("returns rich native outcomes through the core tool, registered host and real
       channelConfigs: {},
       providerAuthChoices: [],
       contracts: { decisionProviders: [id] },
-      modelCatalog: {
-        providers: {
-          [id]: {
-            authScope: "plugin",
-            models: [
-              {
-                id: "native",
-                name: "Native fixture",
-                inference: {
-                  chat: false,
-                  decision: {
-                    protocol: "fixture",
-                    input: ["text", "image"],
-                    questions: {
-                      boolean: { probabilities: "none", abstention: true },
-                      choice: { probabilities: "none", abstention: true },
-                      score: { probabilities: "none", abstention: false },
-                      box: { probabilities: "none", abstention: false },
-                    },
-                    limits: {
-                      maxQuestions: 8,
-                      image: {
-                        maxBytes: 4194304,
-                        mimeTypes: ["image/png", "image/jpeg"],
-                        remoteUrls: false,
-                      },
-                    },
-                  },
-                },
-              },
-            ],
-          },
-        },
-      },
+      modelCatalog: { providers: { [id]: { authScope: "plugin", models: [model] } } },
     },
   });
   fs.writeFileSync(
@@ -145,7 +134,7 @@ it("returns rich native outcomes through the core tool, registered host and real
       defaults: {
         model: "unrelated/not-configured",
         decisionModel: `${id}/native`,
-        workspace: path.join(root, "workspace"),
+        workspace: workspaceDir,
       },
     },
     plugins: {
@@ -162,16 +151,13 @@ it("returns rich native outcomes through the core tool, registered host and real
     },
     async () => {
       setRuntimeConfigSnapshot(cfg);
-      const registry = await loadAndActivateRootPluginRegistry({
-        config: cfg,
-        workspaceDir: path.join(root, "workspace"),
-      });
+      const registry = await loadAndActivateRootPluginRegistry({ config: cfg, workspaceDir });
       expect(registry.diagnostics.filter((item) => item.level === "error")).toEqual([]);
       expect(registry.decisionProviders).toHaveLength(1);
       await using prepared = await acquireReadOnlyPreparedModelRuntime({
         agentId: "main",
         agentDir: resolveAgentDir(cfg, "main"),
-        workspaceDir: path.join(root, "workspace"),
+        workspaceDir,
         config: cfg,
       });
       const tool = createDecisionTool("main", {
@@ -199,8 +185,7 @@ it("returns rich native outcomes through the core tool, registered host and real
           costUsd: 0,
         }),
       ]);
-      expect(trace.authenticated).toBe(true);
-      expect(trace.calls).toBe(1);
+      expect(trace).toMatchObject({ authenticated: true, calls: 1 });
       expect(trace.batch).toEqual({
         state: { type: "json", value: batch.state },
         questions: batch.questions,

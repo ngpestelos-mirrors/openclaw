@@ -72,6 +72,25 @@ const runtimeIdentity = {
 function onGateway<T>(resolve: () => GatewayRequestContext, run: () => Promise<T>) {
   return withGatewayToolCallerIdentity({ ...mainCaller, gatewayContextResolver: resolve }, run);
 }
+type Request = Parameters<typeof callAgentToolGatewayRequest>[0];
+const callRequest = (
+  method: string,
+  params: Request["params"] = {},
+  options: Omit<Request, "method" | "params"> = {},
+) => callAgentToolGatewayRequest({ method, params, ...options });
+function holdCommit() {
+  const entered = createDeferred();
+  const release = createDeferred();
+  const commit = vi.fn();
+  mocks.dispatch.mockImplementationOnce(async (_method, _params, options) => {
+    entered.resolve();
+    await release.promise;
+    options.sessionMutationCommitGuard?.();
+    commit();
+    return { ok: true };
+  });
+  return { entered: entered.promise, release: () => release.resolve(), commit };
+}
 
 describe("trusted in-process Gateway session creation", () => {
   const creation = {
@@ -471,16 +490,18 @@ describe("request-shaped in-process Gateway dispatch", () => {
         sessionKey: "agent:main:discord:direct:colin",
       };
 
-      await callAgentToolGatewayRequest({
-        method: "agent",
-        params: { sessionKey: "agent:main:worker", message: "run" },
-        agentToolCaller,
-        replyExpectation: "optional",
-        expectFinal: true,
-        onAccepted,
-        timeoutMs,
-        signal: controller.signal,
-      });
+      await callRequest(
+        "agent",
+        { sessionKey: "agent:main:worker", message: "run" },
+        {
+          agentToolCaller,
+          replyExpectation: "optional",
+          expectFinal: true,
+          onAccepted,
+          timeoutMs,
+          signal: controller.signal,
+        },
+      );
 
       expect(mocks.dispatch).toHaveBeenCalledWith(
         "agent",
@@ -503,41 +524,61 @@ describe("request-shaped in-process Gateway dispatch", () => {
     },
   );
 
-  it("refuses abort cleanup after its admitted Gateway is replaced", async () => {
-    const admitted = {} as GatewayRequestContext;
-    let current = admitted;
-    mocks.dispatch.mockImplementation(
-      async (
-        method: string,
-        _params: unknown,
-        options?: { onSignalAbort?: () => Promise<void> },
-      ) => {
+  it.each([false, true])(
+    "allows closed-caller abort cleanup only on the original Gateway (replaced=%s)",
+    async (replaced) => {
+      const context = {} as GatewayRequestContext;
+      let currentGateway = context;
+      let currentCaller = true;
+      let cancelled = false;
+      const controller = new AbortController();
+      const params = { turnId: replaced ? "turn-1" : "owned-turn" };
+      mocks.dispatch.mockImplementation(async (method, _params, options) => {
         if (method === "conversations.turn.cancel") {
-          return { status: "ok" };
+          expect(options.resolveGatewayContext()).toBe(context);
+          expect(readInProcessAgentRuntimeIdentity(options)).toBeUndefined();
+          cancelled = true;
+          return { ok: true };
         }
-        current = {} as GatewayRequestContext;
-        await options?.onSignalAbort?.();
+        if (replaced) {
+          currentGateway = {} as GatewayRequestContext;
+        } else {
+          currentCaller = false;
+          controller.abort();
+        }
+        await options.onSignalAbort();
         throw new Error("primary aborted");
-      },
-    );
-    await expect(
-      onGateway(
-        () => current,
+      });
+      const pending = withGatewayToolCallerIdentity(
+        {
+          ...(replaced ? mainCaller : foregroundCaller),
+          ...(!replaced
+            ? { receiptAuthority: () => currentCaller, approvalSignals: [controller.signal] }
+            : {}),
+          gatewayContextResolver: () => currentGateway,
+        },
         () =>
-          callAgentToolGatewayRequest({
-            method: "conversations.turn",
-            params: { turnId: "turn-1" },
+          callRequest("conversations.turn", params, {
+            ...(!replaced ? { signal: controller.signal } : {}),
             onSignalAbort: async (request) => {
-              await request("conversations.turn.cancel", { turnId: "turn-1" });
+              await request("conversations.turn.cancel", params);
             },
           }),
-      ),
-    ).rejects.toThrow("Gateway instance unavailable");
-    expect(
-      mocks.dispatch.mock.calls.filter(([method]) => method === "conversations.turn.cancel"),
-    ).toHaveLength(0);
-    expect(mocks.callGateway).not.toHaveBeenCalled();
-  });
+      );
+      if (replaced) {
+        await expect(pending).rejects.toThrow("Gateway instance unavailable");
+      } else {
+        await expect(pending).rejects.toThrow();
+      }
+      expect(cancelled).toBe(!replaced);
+      expect(mocks.dispatch.mock.calls.map(([method]) => method)).toEqual(
+        replaced ? ["conversations.turn"] : ["conversations.turn", "conversations.turn.cancel"],
+      );
+      if (replaced) {
+        expect(mocks.callGateway).not.toHaveBeenCalled();
+      }
+    },
+  );
 
   it("keeps a captured multi-request operation on its original Gateway", async () => {
     const admitted = {} as GatewayRequestContext;
@@ -584,13 +625,13 @@ describe("request-shaped in-process Gateway dispatch", () => {
         : undefined;
       try {
         const run = () =>
-          callAgentToolGatewayRequest({
-            method: withCaller ? "agent" : "sessions.patch",
-            params: withCaller
+          callRequest(
+            withCaller ? "agent" : "sessions.patch",
+            withCaller
               ? { sessionKey: "agent:main:child", message: "Continue the child task" }
               : { key: "target", pinned: true },
-            assertDispatchCurrent,
-          });
+            { assertDispatchCurrent },
+          );
         const pending = admission
           ? withGatewayToolCallerIdentity(
               createAdmittedGatewayToolCallerIdentity({
@@ -645,17 +686,8 @@ describe("built-in Gateway foreground authority", () => {
   it.each(["dispatch", "commit"] as const)(
     "rejects retired caller authority before %s",
     async (boundary) => {
-      const entered = createDeferred();
-      const release = createDeferred();
+      const held = holdCommit();
       let current = true;
-      let committed = false;
-      mocks.dispatch.mockImplementation(async (_method, _params, options) => {
-        entered.resolve();
-        await release.promise;
-        options.sessionMutationCommitGuard?.();
-        committed = true;
-        return { ok: true };
-      });
       const pending = withGatewayToolCallerIdentity(
         {
           ...foregroundCaller,
@@ -665,20 +697,17 @@ describe("built-in Gateway foreground authority", () => {
           if (boundary === "dispatch") {
             current = false;
           }
-          return await callAgentToolGatewayRequest({
-            method: "sessions.patch",
-            params: { key: "target", pinned: true },
-          });
+          return await callRequest("sessions.patch", { key: "target", pinned: true });
         },
       );
       const rejected = expect(pending).rejects.toThrow(/authority.*no longer active/i);
       if (boundary === "commit") {
-        await entered.promise;
+        await held.entered;
         current = false;
-        release.resolve();
+        held.release();
       }
       await rejected;
-      expect(committed).toBe(false);
+      expect(held.commit).not.toHaveBeenCalled();
       if (boundary === "dispatch") {
         expect(mocks.dispatch).not.toHaveBeenCalled();
       }
@@ -689,16 +718,7 @@ describe("built-in Gateway foreground authority", () => {
 
   it("keeps a preserved write fenced by its original request signal", async () => {
     const controller = new AbortController();
-    const entered = createDeferred();
-    const release = createDeferred();
-    const commit = vi.fn();
-    mocks.dispatch.mockImplementationOnce(async (_method, _params, options) => {
-      entered.resolve();
-      await release.promise;
-      options.sessionMutationCommitGuard?.();
-      commit();
-      return { ok: true };
-    });
+    const held = holdCommit();
     const pending = bindAgentToolGatewayRequest({ revalidateOnCompletion: false })({
       method: "message.action",
       params: { action: "channel-edit" },
@@ -706,58 +726,15 @@ describe("built-in Gateway foreground authority", () => {
     });
     const rejected = expect(pending).rejects.toThrow("message request canceled");
     try {
-      await entered.promise;
+      await held.entered;
       controller.abort(new Error("message request canceled"));
-      release.resolve();
+      held.release();
       await rejected;
-      expect(commit).not.toHaveBeenCalled();
+      expect(held.commit).not.toHaveBeenCalled();
     } finally {
-      release.resolve();
+      held.release();
       await Promise.allSettled([pending]);
     }
-  });
-
-  it("lets host-owned abort cleanup settle without reopening the closed foreground caller", async () => {
-    const context = {} as GatewayRequestContext;
-    const controller = new AbortController();
-    let current = true;
-    let cancelled = false;
-    mocks.dispatch.mockImplementation(async (method, _params, options) => {
-      if (method === "conversations.turn.cancel") {
-        expect(options.resolveGatewayContext()).toBe(context);
-        expect(readInProcessAgentRuntimeIdentity(options)).toBeUndefined();
-        cancelled = true;
-        return { ok: true };
-      }
-      current = false;
-      controller.abort();
-      await options.onSignalAbort();
-      throw new Error("primary aborted");
-    });
-    await expect(
-      withGatewayToolCallerIdentity(
-        {
-          ...foregroundCaller,
-          receiptAuthority: () => current,
-          approvalSignals: [controller.signal],
-          gatewayContextResolver: () => context,
-        },
-        () =>
-          callAgentToolGatewayRequest({
-            method: "conversations.turn",
-            params: { turnId: "owned-turn" },
-            signal: controller.signal,
-            onSignalAbort: async (request) => {
-              await request("conversations.turn.cancel", { turnId: "owned-turn" });
-            },
-          }),
-      ),
-    ).rejects.toThrow();
-    expect(cancelled).toBe(true);
-    expect(mocks.dispatch.mock.calls.map(([method]) => method)).toEqual([
-      "conversations.turn",
-      "conversations.turn.cancel",
-    ]);
   });
 });
 
@@ -835,11 +812,7 @@ describe("Cron mutation completion through in-process Gateway", () => {
         }
         return { created: outcome === "committed" };
       });
-      const result = callAgentToolGatewayRequest({
-        method: "cron.add",
-        params: {},
-        signal: controller.signal,
-      });
+      const result = callRequest("cron.add", {}, { signal: controller.signal });
       if (outcome === "committed") {
         await expect(result).resolves.toEqual({ created: true });
       } else if (outcome === "committed-error") {
@@ -859,13 +832,9 @@ describe("Cron mutation completion through in-process Gateway", () => {
       commit();
       return { created: true };
     });
-    await expect(
-      callAgentToolGatewayRequest({
-        method: "cron.add",
-        params: {},
-        signal: controller.signal,
-      }),
-    ).rejects.toThrow("cancelled before commit");
+    await expect(callRequest("cron.add", {}, { signal: controller.signal })).rejects.toThrow(
+      "cancelled before commit",
+    );
     expect(commit).not.toHaveBeenCalled();
   });
 
@@ -875,7 +844,7 @@ describe("Cron mutation completion through in-process Gateway", () => {
       previousCommit = captureCronMutationCommit("cron.add");
       return { created: false, updated: false, job: { id: "previous" } };
     });
-    await callAgentToolGatewayRequest({ method: "cron.add", params: {} });
+    await callRequest("cron.add");
     expect(previousCommit).toBeTypeOf("function");
     const caller = createCaller({ method: "cron.add", params: {} });
     mocks.dispatch.mockImplementationOnce(async () => {
