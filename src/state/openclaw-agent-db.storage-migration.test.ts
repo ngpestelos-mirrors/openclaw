@@ -24,6 +24,12 @@ function migrate(db: DatabaseSync, pathname: string, env: NodeJS.ProcessEnv) {
   ensureOpenClawAgentDatabaseSchema(db, { agentId: "main", path: pathname, env });
 }
 
+function readRows(db: DatabaseSync, sql: string, bigints = false) {
+  const statement = db.prepare(sql);
+  statement.setReadBigInts(bigints);
+  return statement.all();
+}
+
 function seedHistoricalData(db: DatabaseSync) {
   const event = ` {"type":"message","id":"first","id":"second","parentId":null,"message":{"role":"assistant","content":${JSON.stringify("saffronquasar 雪🦞 ".repeat(1024))}}}\n`;
   db.exec(`
@@ -176,23 +182,14 @@ function ftsStorage(db: DatabaseSync) {
       ["content", "rowid"],
       ["docsize", "rowid"],
       ["config", "k"],
-    ].map(([suffix, order]) => {
-      const statement = db.prepare(
-        `SELECT * FROM session_transcript_fts_${suffix} ORDER BY ${order}`,
-      );
-      statement.setReadBigInts(true);
-      return [suffix, statement.all()];
-    }),
+    ].map(([suffix, order]) => [
+      suffix,
+      readRows(db, `SELECT * FROM session_transcript_fts_${suffix} ORDER BY ${order}`, true),
+    ]),
   );
 }
 
 function legacySnapshot(db: DatabaseSync) {
-  const fts = db.prepare("SELECT rowid, * FROM session_transcript_fts ORDER BY rowid");
-  fts.setReadBigInts(true);
-  const matches = db.prepare(
-    "SELECT rowid FROM session_transcript_fts WHERE session_transcript_fts MATCH 'saffronquasar' ORDER BY rank",
-  );
-  matches.setReadBigInts(true);
   return {
     schema: db
       .prepare("SELECT type, name, tbl_name, sql FROM sqlite_schema ORDER BY type, name")
@@ -216,13 +213,15 @@ function legacySnapshot(db: DatabaseSync) {
       ) {
         return undefined;
       }
-      const statement = db.prepare("SELECT * FROM session_transcript_fts_rows ORDER BY rowid");
-      statement.setReadBigInts(true);
-      return statement.all();
+      return readRows(db, "SELECT * FROM session_transcript_fts_rows ORDER BY rowid", true);
     })(),
     ftsStorage: ftsStorage(db),
-    fts: fts.all(),
-    matches: matches.all(),
+    fts: readRows(db, "SELECT rowid, * FROM session_transcript_fts ORDER BY rowid", true),
+    matches: readRows(
+      db,
+      "SELECT rowid FROM session_transcript_fts WHERE session_transcript_fts MATCH 'saffronquasar' ORDER BY rank",
+      true,
+    ),
     preserved: preservedRows(db),
   };
 }
@@ -343,39 +342,26 @@ describe("agent schema 22 storage cutover", () => {
           );
           write.mockRestore();
           expect(observedPublication).toBe(true);
-          expect(reader.prepare("PRAGMA user_version").get()).toEqual({
+          const after = legacySnapshot(reader);
+          expect(after.version).toEqual({
             user_version: OPENCLAW_AGENT_SCHEMA_VERSION,
           });
           expect(reader.prepare("SELECT schema_version FROM schema_meta").get()).toEqual({
             schema_version: OPENCLAW_AGENT_SCHEMA_VERSION,
           });
-          expect(preservedRows(reader)).toEqual(expectedPreserved);
+          expect(after.preserved).toEqual(expectedPreserved);
           expect(reader.prepare("SELECT * FROM session_entry_snapshots").all()).toEqual([]);
-          const fts = reader.prepare("SELECT rowid, * FROM session_transcript_fts ORDER BY rowid");
-          fts.setReadBigInts(true);
-          expect(fts.all()).toEqual(before.fts);
-          expect(ftsStorage(reader)).toEqual(before.ftsStorage);
-          const matches = reader.prepare(
-            "SELECT rowid FROM session_transcript_fts WHERE session_transcript_fts MATCH 'saffronquasar' ORDER BY rank",
-          );
-          matches.setReadBigInts(true);
-          expect(matches.all()).toEqual(before.matches);
-          const identities = reader.prepare(
-            "SELECT id, session_id, message_id FROM session_transcript_fts_rows ORDER BY id",
-          );
-          identities.setReadBigInts(true);
-          expect(identities.all()).toEqual(
+          expect(after.fts).toEqual(before.fts);
+          expect(after.ftsStorage).toEqual(before.ftsStorage);
+          expect(after.matches).toEqual(before.matches);
+          expect(after.ftsMapping).toEqual(
             before.fts.map((row) => ({
               id: row.rowid,
               session_id: row.session_id,
               message_id: row.message_id,
             })),
           );
-          expect(
-            reader
-              .prepare("SELECT * FROM session_transcript_index_state ORDER BY session_id")
-              .all(),
-          ).toEqual(
+          expect(after.indexState).toEqual(
             before.indexState.map((row) => {
               const { fts_row_count: _count, ...preserved } = row;
               return {
@@ -409,27 +395,19 @@ describe("agent schema 22 storage cutover", () => {
           expect(rows[0]?.event_zstd instanceof Uint8Array).toBe(
             encoding === "UTF-8" && resolveZstdCodec() !== null,
           );
-          const chunk = reader
-            .prepare("SELECT chunk_rowid, embedding FROM memory_index_chunks WHERE id = 'chunk'")
-            .get()!;
+          const chunk = after.chunks.find((row) => row.id === "chunk")!;
           expect(chunk.chunk_rowid).toBe(17);
           if (!(chunk.embedding instanceof Uint8Array)) {
             throw new Error("Expected binary chunk vector");
           }
           expect(decodeMemoryEmbedding(chunk.embedding)).toEqual([1 + Number.EPSILON, 0.1]);
-          const vector = reader
-            .prepare("SELECT rowid, embedding, dims, updated_at FROM memory_embedding_cache")
-            .get()!;
+          const vector = after.vectors[0]!;
           expect(vector).toMatchObject({ rowid: 23, dims: 2, updated_at: 20 });
           if (!(vector.embedding instanceof Uint8Array)) {
             throw new Error("Expected binary cached vector");
           }
           expect(decodeMemoryEmbedding(vector.embedding)).toEqual([1 + Number.EPSILON, 0.1]);
-          const cached = reader
-            .prepare(
-              "SELECT scope, value_json, blob, updated_at FROM cache_entries WHERE key = 'usage'",
-            )
-            .get()!;
+          const cached = after.cache.find((row) => row.key === "usage")!;
           expect(cached).toMatchObject({ scope: "session-cost-usage-rollup-v3", updated_at: 31 });
           if (typeof cached.value_json !== "string" || !(cached.blob instanceof Uint8Array)) {
             throw new Error("Expected migrated usage envelope/body");

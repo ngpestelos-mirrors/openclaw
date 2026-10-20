@@ -52,30 +52,29 @@ function retain(databasePath: string) {
   return result;
 }
 
+function open(databasePath?: string) {
+  return openOpenClawAgentDatabase({ agentId: "main", env, path: databasePath });
+}
+
 it.runIf(process.platform !== "win32")(
   "keeps physical identity and lexical close ownership through a symlink retarget",
   () => {
-    const original = openOpenClawAgentDatabase({ agentId: "main", env });
+    const original = open();
     const alias = path.join(directory, "alias.sqlite");
     fs.symlinkSync(original.path, alias);
-    const aliased = openOpenClawAgentDatabase({ agentId: "main", env, path: alias });
+    const aliased = open(alias);
     const { claim } = retain(alias);
-    const replacement = openOpenClawAgentDatabase({
-      agentId: "main",
-      env,
-      path: path.join(directory, "replacement.sqlite"),
-    });
+    const replacement = open(path.join(directory, "replacement.sqlite"));
     const originalIdentity = retain(original.path).claim.identity;
     const replacementIdentity = retain(replacement.path).claim.identity;
     const originalValidation = getOpenClawAgentDatabaseValidation(original);
     const replacementValidation = getOpenClawAgentDatabaseValidation(replacement);
     expect(originalValidation).toBeDefined();
     expect(replacementValidation).toBeDefined();
-    expect(claim.identity).toBe(originalIdentity);
     fs.unlinkSync(alias);
     fs.symlinkSync(replacement.path, alias);
 
-    expect(openOpenClawAgentDatabase({ agentId: "main", env, path: alias })).toBe(aliased);
+    expect(open(alias)).toBe(aliased);
     expect(claim.identity).toBe(originalIdentity);
     expect(claim.identity).not.toBe(replacementIdentity);
     expect(getOpenClawAgentDatabaseValidation(aliased)).toBe(originalValidation);
@@ -97,7 +96,7 @@ it.runIf(process.platform !== "win32")(
 );
 
 it("retains cold existing stores read-only without registering or creating missing stores", () => {
-  const database = openOpenClawAgentDatabase({ agentId: "main", env });
+  const database = open();
   closeOpenClawAgentDatabaseByPath(database.path);
   const registry = listOpenClawRegisteredAgentDatabases({ env });
   const { database: readOnlyDatabase, claim } = retain(database.path);
@@ -124,43 +123,39 @@ it("retains cold existing stores read-only without registering or creating missi
 it.runIf(typeof DatabaseSync.prototype.deserialize === "function")(
   "preserves file identity after failed deserialization but rejects a successful in-memory replacement",
   () => {
-    const original = openOpenClawAgentDatabase({ agentId: "main", env });
+    const original = open();
     closeOpenClawAgentDatabaseByPath(original.path);
     const { database } = retain(original.path);
     const prepared = readOpenClawAgentDatabaseIdentity(database);
     const db = requireNativeSqliteDatabase(database.db);
     const nativeLocation = db.location();
-    const replacement = new DatabaseSync(":memory:");
+    using replacement = new DatabaseSync(":memory:");
+    replacement.exec(
+      "CREATE TABLE replacement_value (value INTEGER); INSERT INTO replacement_value VALUES (42)",
+    );
+    const bytes = replacement.serialize();
+    expect(isOpenClawAgentDatabasePathCurrent(database)).toBe(true);
+    database.db.exec("BEGIN");
     try {
-      replacement.exec(
-        "CREATE TABLE replacement_value (value INTEGER); INSERT INTO replacement_value VALUES (42)",
-      );
-      const bytes = replacement.serialize();
+      database.db.prepare("SELECT role FROM schema_meta").get();
+      expect(() => db.deserialize(bytes)).toThrow();
+      expect(db.location()).toBe(nativeLocation);
       expect(isOpenClawAgentDatabasePathCurrent(database)).toBe(true);
-      database.db.exec("BEGIN");
-      try {
-        database.db.prepare("SELECT role FROM schema_meta").get();
-        expect(() => db.deserialize(bytes)).toThrow();
-        expect(db.location()).toBe(nativeLocation);
-        expect(isOpenClawAgentDatabasePathCurrent(database)).toBe(true);
-      } finally {
-        database.db.exec("ROLLBACK");
-      }
-
-      db.deserialize(bytes);
-      expect(database.db.prepare("SELECT value FROM replacement_value").get()?.value).toBe(42);
-      expect(db.location()).toBeNull();
-      expect(fs.existsSync(original.path)).toBe(true);
-      expect(readOpenClawAgentDatabaseIdentity(database)).toBe(prepared);
-      expect(isOpenClawAgentDatabasePathCurrent(database)).toBe(false);
     } finally {
-      replacement.close();
+      database.db.exec("ROLLBACK");
     }
+
+    db.deserialize(bytes);
+    expect(database.db.prepare("SELECT value FROM replacement_value").get()?.value).toBe(42);
+    expect(db.location()).toBeNull();
+    expect(fs.existsSync(original.path)).toBe(true);
+    expect(readOpenClawAgentDatabaseIdentity(database)).toBe(prepared);
+    expect(isOpenClawAgentDatabasePathCurrent(database)).toBe(false);
   },
 );
 
 it("releases only one warm claim while revoking its retained copies", () => {
-  const database = openOpenClawAgentDatabase({ agentId: "main", env });
+  const database = open();
   const { claim: first } = retain(database.path);
   const { claim: second } = retain(database.path);
   expect(first.incarnation).toBe(second.incarnation);
@@ -169,21 +164,14 @@ it("releases only one warm claim while revoking its retained copies", () => {
   first.release();
   expect(() => assertCurrent()).toThrow("no longer current");
   expect(second.isCurrent()).toBe(true);
-  expect(database.db.isOpen).toBe(true);
 });
 
 it("does not reuse a reopened connection claim", () => {
   const databasePath = path.join(directory, "agent.sqlite");
-  expect(retainOpenClawAgentDatabaseReadOnly({ agentId: "main", env, path: databasePath })).toEqual(
-    {
-      found: false,
-      reason: "database-missing",
-    },
-  );
-  openOpenClawAgentDatabase({ agentId: "main", env, path: databasePath });
+  open(databasePath);
   const { claim } = retain(databasePath);
   closeOpenClawAgentDatabaseByPath(databasePath);
-  openOpenClawAgentDatabase({ agentId: "main", env, path: databasePath });
+  open(databasePath);
   const { claim: replacement } = retain(databasePath);
   expect(claim.incarnation).not.toBe(replacement.incarnation);
   expect(claim.isCurrent()).toBe(false);

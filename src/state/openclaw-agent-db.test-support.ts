@@ -10,7 +10,7 @@ import { persistAgentSchemaMetadata } from "./openclaw-agent-db-metadata-write.j
 import { OPENCLAW_AGENT_SCHEMA_V21_SQL } from "./openclaw-agent-schema-v21.test-support.js";
 import { OPENCLAW_AGENT_SCHEMA_SQL } from "./openclaw-agent-schema.js";
 
-/** Materialize distinct current databases without runtime handles, leases, or registrations. */
+/** Materialize databases without runtime handles, leases, or registrations. */
 export function createCurrentOpenClawAgentDatabaseFixtures(
   templatePath: string,
   fixtures: ReadonlyArray<{ path: string; agentId: string }>,
@@ -31,38 +31,24 @@ export function createCurrentOpenClawAgentDatabaseFixtures(
   }
 }
 
-/** Remove only the schema owner's future projection before carving a historical database. */
+/** Remove the future validation projection before carving a historical database. */
 export function removeCanonicalValidationFromHistoricalAgentFixture(database: DatabaseSync): void {
-  const definitions = [
-    ...canonicalSessionValidationSchemaSql(OPENCLAW_AGENT_SCHEMA_V21_SQL).matchAll(
-      /^CREATE (TABLE|TRIGGER) IF NOT EXISTS ([a-z_]+)\b/gm,
+  const definitions = Array.from(
+    canonicalSessionValidationSchemaSql(OPENCLAW_AGENT_SCHEMA_V21_SQL).matchAll(
+      /^CREATE (?:TABLE|TRIGGER) IF NOT EXISTS [a-z_]+\b/gm,
     ),
-  ];
-  // Drop triggers before their pending table; unrelated fixture dependents remain intact.
-  for (const match of definitions.toReversed()) {
-    const kind = match[1];
-    const name = match[2];
-    if ((kind !== "TABLE" && kind !== "TRIGGER") || typeof name !== "string") {
-      throw new Error("Invalid canonical-validation schema fixture definition");
-    }
-    database.exec(`DROP ${kind} IF EXISTS "${name}"`);
+  );
+  // Drop triggers before their pending table.
+  for (const [definition] of definitions.toReversed()) {
+    database.exec(definition.replace("CREATE", "DROP").replace("IF NOT EXISTS", "IF EXISTS"));
   }
 }
 
 export function seedSchema19SessionKeyRepairFixture(database: DatabaseSync): void {
   removeCanonicalValidationFromHistoricalAgentFixture(database);
-  database
-    .prepare(
-      `INSERT INTO session_nodes (session_key, current_session_id, entry_json, updated_at)
-       VALUES (?, ?, ?, ?)`,
-    )
-    .run(
-      "agent:worker-1:session-1",
-      "session-1",
-      JSON.stringify({ sessionId: "session-1", updatedAt: 1 }),
-      1,
-    );
   database.exec(`
+    INSERT INTO session_nodes (session_key, current_session_id, entry_json, updated_at)
+      VALUES ('agent:worker-1:session-1', 'session-1', '{"sessionId":"session-1","updatedAt":1}', 1);
     DROP TABLE session_transcript_cold_archives;
     PRAGMA user_version = 19;
     UPDATE schema_meta SET schema_version = 19 WHERE meta_key = 'primary';

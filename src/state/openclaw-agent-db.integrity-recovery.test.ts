@@ -49,21 +49,17 @@ it.each(["writable", "readonly", "async"] as const)(
     const { DatabaseSync } = requireNodeSqlite();
     {
       using corrupted = new DatabaseSync(databasePath);
-      corrupted.exec("PRAGMA foreign_keys = OFF;");
-      corrupted
-        .prepare(
-          "INSERT INTO session_windows (session_id, session_key, created_at, updated_at) VALUES (?, ?, ?, ?)",
-        )
-        .run("orphan-window", "missing-node", 1, 1);
-      expect(corrupted.prepare("PRAGMA quick_check").get()).toEqual({ quick_check: "ok" });
-      expect(corrupted.prepare("PRAGMA integrity_check").get()).toEqual({
-        integrity_check: "ok",
-      });
-      expect(corrupted.prepare("PRAGMA foreign_key_check").get()).toEqual({
-        table: "session_windows",
-        rowid: 1,
-        parent: "session_nodes",
-        fkid: 1,
+      corrupted.exec(`PRAGMA foreign_keys = OFF;
+        INSERT INTO session_windows (session_id, session_key, created_at, updated_at)
+          VALUES ('orphan-window', 'missing-node', 1, 1);`);
+      expect({
+        quick: corrupted.prepare("PRAGMA quick_check").get(),
+        integrity: corrupted.prepare("PRAGMA integrity_check").get(),
+        foreignKey: corrupted.prepare("PRAGMA foreign_key_check").get(),
+      }).toEqual({
+        quick: { quick_check: "ok" },
+        integrity: { integrity_check: "ok" },
+        foreignKey: { table: "session_windows", rowid: 1, parent: "session_nodes", fkid: 1 },
       });
     }
 

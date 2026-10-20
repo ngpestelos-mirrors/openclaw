@@ -64,8 +64,7 @@ it.for(["journal replaced", "lease expired"] as const)(
           interrupted = true;
         });
       try {
-        let failure: unknown;
-        await withAgentDeletion(
+        const failure: unknown = await withAgentDeletion(
           "worker",
           async (begin) => {
             const deletion = await begin({
@@ -88,9 +87,7 @@ it.for(["journal replaced", "lease expired"] as const)(
             );
           },
           { env: state.env },
-        ).catch((error: unknown) => {
-          failure = error;
-        });
+        ).catch((error: unknown) => error);
         expect(failure).toBeInstanceOf(Error);
         expect(interrupted, String(failure)).toBe(true);
         expect(String(failure)).toMatch(
