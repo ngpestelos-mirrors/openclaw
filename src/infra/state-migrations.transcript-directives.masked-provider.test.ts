@@ -42,6 +42,32 @@ afterEach(() => {
 
 describe("historical transcript masked provider repair", () => {
   const MASKED = '"provider":"***"';
+  const copilotFact = { modelId: "claude-opus-5.5", provider: "github-copilot" };
+
+  function fixture() {
+    const env = { OPENCLAW_STATE_DIR: makeTempDir(tempDirs, "transcript-masked-provider-") };
+    const opened = openOpenClawAgentDatabase({ agentId: "main", env });
+    return { env, databasePath: opened.path, database: requireNativeSqliteDatabase(opened.db) };
+  }
+
+  function singleSession(content?: string, sessionId = "session") {
+    const context = fixture();
+    const masked = maskedAssistant("masked", copilotFact.modelId, 1);
+    const tagged =
+      content === undefined
+        ? []
+        : [
+            messageEvent({
+              content: [{ type: "text", text: content }],
+              id: "tagged",
+              role: "assistant",
+              timestamp: 2,
+            }),
+          ];
+    insertSession(context.database, { events: [masked, ...tagged], generation: "g", sessionId });
+    insertTrajectory(context.database, sessionId, [copilotFact]);
+    return { ...context, masked, tagged: tagged[0] };
+  }
 
   function maskedAssistant(id: string, model: string, timestamp: number): FixtureEvent {
     const event = messageEvent({
@@ -134,11 +160,7 @@ describe("historical transcript masked provider repair", () => {
   it.each(["identity", "zstd"])(
     "restores %s masked providers from recorded session facts and leaves ambiguity masked",
     async (storage) => {
-      const stateDir = makeTempDir(tempDirs, "transcript-masked-provider-");
-      const env = { OPENCLAW_STATE_DIR: stateDir };
-      const opened = openOpenClawAgentDatabase({ agentId: "main", env });
-      const databasePath = opened.path;
-      const database = requireNativeSqliteDatabase(opened.db);
+      const { env, databasePath, database } = fixture();
       const copilot = maskedAssistant("copilot", "claude-opus-5.5", 1);
       const user = messageEvent({ content: "next", id: "user", role: "user", timestamp: 2 });
       const openai = maskedAssistant("openai", "gpt-6.1-sol", 3);
@@ -183,8 +205,8 @@ describe("historical transcript masked provider repair", () => {
         database,
         "multi-session",
         [
-          { modelId: "claude-opus-5.5", provider: "github-copilot" },
-          { modelId: "claude-opus-5.5", provider: "github-copilot" },
+          copilotFact,
+          copilotFact,
           { modelId: "gpt-6.1-sol", provider: "openai" },
           { modelId: "gpt-6.1-sol", provider: "***" },
         ],
@@ -193,18 +215,10 @@ describe("historical transcript masked provider repair", () => {
       insertTrajectory(
         database,
         "ambiguous-session",
-        [
-          { modelId: "claude-opus-5.5", provider: "github-copilot" },
-          { modelId: "claude-opus-5.5", provider: "openrouter" },
-        ],
+        [copilotFact, { modelId: "claude-opus-5.5", provider: "openrouter" }],
         storage === "zstd",
       );
-      insertTrajectory(
-        database,
-        "archived-session",
-        [{ modelId: "claude-opus-5.5", provider: "github-copilot" }],
-        storage === "zstd",
-      );
+      insertTrajectory(database, "archived-session", [copilotFact], storage === "zstd");
 
       const archived = maskedAssistant("archived", "claude-opus-5.5", 7);
       const archivedUser = messageEvent({
@@ -217,7 +231,7 @@ describe("historical transcript masked provider repair", () => {
       const archiveEncoding = storage === "zstd" ? "zstd" : "identity";
       const archiveBytes = encodeArchiveContent(archiveContent, archiveEncoding, "fixture");
       const archiveName = `archived-session.jsonl.deleted.2026-01-01T00-00-00.000Z.archive-gen${archiveEncoding === "zstd" ? SESSION_ARCHIVE_ZSTD_SUFFIX : ""}`;
-      opened.db
+      database
         .prepare(
           `INSERT INTO session_transcript_archives(
           session_id,generation,session_key,reason,encoding,archive_blob,archive_sha256,
@@ -315,23 +329,10 @@ describe("historical transcript masked provider repair", () => {
   );
 
   it("reopens a completed version 1 pass once for masked providers only", async () => {
-    const stateDir = makeTempDir(tempDirs, "transcript-masked-provider-reopen-");
-    const env = { OPENCLAW_STATE_DIR: stateDir };
-    const opened = openOpenClawAgentDatabase({ agentId: "main", env });
-    const databasePath = opened.path;
-    const database = requireNativeSqliteDatabase(opened.db);
-    const masked = maskedAssistant("masked", "claude-opus-5.5", 1);
     // Version 1 completion means directives were already handled; this pass must not reparse them.
-    const tagged = messageEvent({
-      content: [{ type: "text", text: "[[reply_to_current]] kept" }],
-      id: "tagged",
-      role: "assistant",
-      timestamp: 2,
-    });
-    insertSession(database, { events: [masked, tagged], generation: "g", sessionId: "session" });
-    insertTrajectory(database, "session", [
-      { modelId: "claude-opus-5.5", provider: "github-copilot" },
-    ]);
+    const { env, databasePath, database, masked, tagged } = singleSession(
+      "[[reply_to_current]] kept",
+    );
     writeCursor(database, { phase: "complete" });
     closeOpenClawAgentDatabasesForTest();
 
@@ -353,22 +354,7 @@ describe("historical transcript masked provider repair", () => {
   });
 
   it("backs up and reindexes a session whose rows also need directive normalization", async () => {
-    const stateDir = makeTempDir(tempDirs, "transcript-masked-provider-directives-");
-    const env = { OPENCLAW_STATE_DIR: stateDir };
-    const opened = openOpenClawAgentDatabase({ agentId: "main", env });
-    const databasePath = opened.path;
-    const database = requireNativeSqliteDatabase(opened.db);
-    const masked = maskedAssistant("masked", "claude-opus-5.5", 1);
-    const tagged = messageEvent({
-      content: [{ type: "text", text: "[[reply_to_current]] Final answer" }],
-      id: "tagged",
-      role: "assistant",
-      timestamp: 2,
-    });
-    insertSession(database, { events: [masked, tagged], generation: "g", sessionId: "session" });
-    insertTrajectory(database, "session", [
-      { modelId: "claude-opus-5.5", provider: "github-copilot" },
-    ]);
+    const { env, databasePath, masked } = singleSession("[[reply_to_current]] Final answer");
     closeOpenClawAgentDatabasesForTest();
 
     const result = await migrateHistoricalTranscriptDirectives({ env });
@@ -399,16 +385,7 @@ describe("historical transcript masked provider repair", () => {
   });
 
   it("restarts an interrupted version 1 pass from the first session", async () => {
-    const stateDir = makeTempDir(tempDirs, "transcript-masked-provider-restart-");
-    const env = { OPENCLAW_STATE_DIR: stateDir };
-    const opened = openOpenClawAgentDatabase({ agentId: "main", env });
-    const databasePath = opened.path;
-    const database = requireNativeSqliteDatabase(opened.db);
-    const masked = maskedAssistant("masked", "claude-opus-5.5", 1);
-    insertSession(database, { events: [masked], generation: "g", sessionId: "a-session" });
-    insertTrajectory(database, "a-session", [
-      { modelId: "claude-opus-5.5", provider: "github-copilot" },
-    ]);
+    const { env, databasePath, database, masked } = singleSession(undefined, "a-session");
     // Version 1 stopped after this session id; earlier sessions never saw the provider repair.
     writeCursor(database, { phase: "transcripts", sessionId: "z-session" });
     closeOpenClawAgentDatabasesForTest();
@@ -423,18 +400,10 @@ describe("historical transcript masked provider repair", () => {
   });
 
   it("leaves masked rows untouched while the agent database writer is active", async () => {
-    const stateDir = makeTempDir(tempDirs, "transcript-masked-provider-writer-");
-    const env = { OPENCLAW_STATE_DIR: stateDir };
-    const opened = openOpenClawAgentDatabase({ agentId: "main", env });
-    const database = requireNativeSqliteDatabase(opened.db);
-    const masked = maskedAssistant("masked", "claude-opus-5.5", 1);
-    insertSession(database, { events: [masked], generation: "g", sessionId: "session" });
-    insertTrajectory(database, "session", [
-      { modelId: "claude-opus-5.5", provider: "github-copilot" },
-    ]);
+    const { env, databasePath, database, masked } = singleSession();
     writeCursor(database, { phase: "complete" });
     closeOpenClawAgentDatabasesForTest();
-    const leaseId = claimOpenClawAgentDatabaseLease({ agentId: "main", path: opened.path, env });
+    const leaseId = claimOpenClawAgentDatabaseLease({ agentId: "main", path: databasePath, env });
 
     const result = await migrateHistoricalTranscriptDirectives({ env }).finally(() => {
       releaseOpenClawAgentDatabaseLease(leaseId, { env });
@@ -444,7 +413,7 @@ describe("historical transcript masked provider repair", () => {
     expect(result.warnings).toEqual([
       expect.stringContaining("database is still open in another process"),
     ]);
-    expect(readEventJson(opened.path, "session", 0)).toBe(JSON.stringify(masked));
-    expect(readMigrationCursor(opened.path)).toEqual({ phase: "complete" });
+    expect(readEventJson(databasePath, "session", 0)).toBe(JSON.stringify(masked));
+    expect(readMigrationCursor(databasePath)).toEqual({ phase: "complete" });
   });
 });
