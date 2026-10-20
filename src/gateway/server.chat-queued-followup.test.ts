@@ -21,6 +21,9 @@ import { createPreparedLifecycleWriteTracker } from "./session-lifecycle-state.t
 import { dispatchInboundMessageMock, onceMessage, rpcReq } from "./test-helpers.js";
 
 const CHAT_RESPONSE_TIMEOUT_MS = 10_000;
+const ANSWER = "late answer arrived over the live WebSocket";
+const completedOutcome = { kind: "completed" as const };
+const canvasCompleted = { ...completedOutcome, allowCanvasOnly: true as const };
 let ws: WebSocket;
 let lifecycleWrites: ReturnType<typeof createPreparedLifecycleWriteTracker>;
 const gatewaySuite = installGatewayServerChatTestSuite(
@@ -30,13 +33,6 @@ const gatewaySuite = installGatewayServerChatTestSuite(
   // Synthetic events lack a request scope; join their producer before draining writers.
   () => lifecycleWrites.drain(),
 );
-
-function waitForFast<T>(
-  callback: () => T | Promise<T>,
-  options: { timeout?: number; interval?: number } = {},
-) {
-  return vi.waitFor(callback, { interval: 1, ...options });
-}
 
 describe("queued WebChat follow-up delivery", () => {
   let observedFollowupRunId: string | undefined;
@@ -60,30 +56,10 @@ describe("queued WebChat follow-up delivery", () => {
   const { withMainSessionStore } = gatewaySuite;
 
   test.each([
-    {
-      name: "text",
-      completion: { kind: "completed" as const },
-      payloads: [{ text: "late answer arrived over the live WebSocket" }],
-      state: "final",
-    },
-    {
-      name: "canvas",
-      completion: { kind: "completed" as const, allowCanvasOnly: true as const },
-      payloads: [],
-      state: "final",
-    },
-    {
-      name: "silent-canvas",
-      completion: { kind: "completed" as const, allowCanvasOnly: true as const },
-      payloads: [],
-      state: "final",
-    },
-    {
-      name: "suppressed-canvas",
-      completion: { kind: "completed" as const },
-      payloads: [],
-      state: "final",
-    },
+    { name: "text", completion: completedOutcome, state: "final" },
+    { name: "canvas", completion: canvasCompleted, state: "final" },
+    { name: "silent-canvas", completion: canvasCompleted, state: "final" },
+    { name: "suppressed-canvas", completion: completedOutcome, state: "final" },
     {
       name: "timeout",
       completion: {
@@ -92,18 +68,16 @@ describe("queued WebChat follow-up delivery", () => {
         errorKind: "timeout" as const,
         stopReason: "timeout",
       },
-      payloads: [],
       state: "error",
     },
     {
       name: "abort",
       completion: { kind: "aborted" as const, stopReason: "restart" },
-      payloads: [],
       state: "aborted",
     },
   ])(
     "keeps a queued WebChat $name pending until its follow-up completes",
-    async ({ name, completion, payloads, state }) => {
+    async ({ name, completion, state }) => {
       await withMainSessionStore(async () => {
         let options: InternalGetReplyOptions | undefined;
         let queued: FollowupRun | undefined;
@@ -137,18 +111,17 @@ describe("queued WebChat follow-up delivery", () => {
         });
 
         const sourceRunId = `idem-live-webchat-late-source-${name}`;
+        const canvasOnly = name.includes("canvas");
         const terminalFrames: unknown[] = [];
         const deltaFrames: Extract<ChatEvent, { state: "delta" }>[] = [];
         const recordFollowup = (raw: RawData) => {
           const frame = JSON.parse(rawDataToString(raw));
-          if (
-            frame.event === "chat" &&
-            frame.payload?.runId === sourceRunId &&
-            frame.payload?.state !== "delta"
-          ) {
-            terminalFrames.push(frame.payload);
-          } else if (frame.event === "chat" && frame.payload?.runId === sourceRunId) {
-            deltaFrames.push(frame.payload);
+          if (frame.event === "chat" && frame.payload?.runId === sourceRunId) {
+            if (frame.payload.state === "delta") {
+              deltaFrames.push(frame.payload);
+            } else {
+              terminalFrames.push(frame.payload);
+            }
           }
         };
         ws.on("message", recordFollowup);
@@ -159,8 +132,9 @@ describe("queued WebChat follow-up delivery", () => {
             idempotencyKey: sourceRunId,
           });
           expect(response.ok).toBe(true);
-          await waitForFast(() =>
-            expect(options?.onQueuedFollowupReplyBatch).toBeTypeOf("function"),
+          await vi.waitFor(
+            () => expect(options?.onQueuedFollowupReplyBatch).toBeTypeOf("function"),
+            { interval: 1 },
           );
           releaseDispatch.resolve();
           await gatewaySuite.requestExecution.waitForDispatch(sourceRunId);
@@ -183,12 +157,7 @@ describe("queued WebChat follow-up delivery", () => {
           registerAgentRunContext(followupRunId, { sessionKey: "main" });
           registerAgentRunContext(followupRunId, { completionSource: "reply-dispatch" });
           options?.onAgentRunStart?.(followupRunId);
-          if (
-            name === "canvas" ||
-            name === "silent-canvas" ||
-            name === "suppressed-canvas" ||
-            name === "abort"
-          ) {
+          if (canvasOnly || name === "abort") {
             emit("tool", {
               phase: "result",
               name: "show_widget",
@@ -222,15 +191,10 @@ describe("queued WebChat follow-up delivery", () => {
               payloads: [{ text: "working" }],
             });
           }
-          emit("assistant", {
-            text:
-              name === "canvas" || name === "suppressed-canvas" || name === "silent-canvas"
-                ? ""
-                : "late answer arrived over the live WebSocket",
-          });
+          emit("assistant", { text: canvasOnly ? "" : ANSWER });
           if (completion.kind === "failed" || completion.kind === "aborted") {
             emit("assistant", {
-              text: "late answer arrived over the live WebSocket tail",
+              text: `${ANSWER} tail`,
               delta: " tail",
             });
           }
@@ -242,10 +206,10 @@ describe("queued WebChat follow-up delivery", () => {
           });
           await options?.onQueuedFollowupReplyBatch?.({
             kind: "queued-followup",
-            completion,
+            completion: { ...completion },
             runId: followupRunId,
             originatingChannel: "webchat",
-            payloads,
+            payloads: name === "text" ? [{ text: ANSWER }] : [],
           });
           const completed = await queuedFinal;
           await rpcReq(ws, "health", {});
@@ -271,7 +235,7 @@ describe("queued WebChat follow-up delivery", () => {
             expect(completed.payload?.message).toMatchObject({
               content: [
                 { type: "text", text: "working" },
-                { type: "text", text: "late answer arrived over the live WebSocket" },
+                { type: "text", text: ANSWER },
               ],
             });
           }
@@ -282,16 +246,12 @@ describe("queued WebChat follow-up delivery", () => {
               undefined,
             );
             expect(liveMessage).toMatchObject({
-              content: expect.arrayContaining([
-                { type: "text", text: "late answer arrived over the live WebSocket tail" },
-              ]),
+              content: expect.arrayContaining([{ type: "text", text: `${ANSWER} tail` }]),
             });
           }
           if (completion.kind === "aborted") {
             expect(completed.payload?.message).toMatchObject({
-              content: expect.arrayContaining([
-                { type: "text", text: "late answer arrived over the live WebSocket tail" },
-              ]),
+              content: expect.arrayContaining([{ type: "text", text: `${ANSWER} tail` }]),
             });
           }
         } finally {

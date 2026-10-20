@@ -76,8 +76,7 @@ async function startModelServer() {
     requests.push(body);
     // Hold the peer turn at the provider so requester activity overlaps deterministically.
     if (body.includes(opsPrompt)) {
-      opsRequests += 1;
-      if (opsRequests === 1) {
+      if (++opsRequests === 1) {
         opsStarted.resolve();
         await releaseOps.promise;
       }
@@ -121,9 +120,8 @@ async function startModelServer() {
     }
     reply(response, "NO_REPLY", `fallback_${randomUUID()}`);
   }
-  const url = await listenProvider(server);
   return {
-    url,
+    url: await listenProvider(server),
     opsStarted: opsStarted.promise,
     releaseOps: () => releaseOps.resolve(),
     childStarted: childStarted.promise,
@@ -176,9 +174,7 @@ function buildConfig(workspace: string, modelUrl: string): OpenClawConfig {
   };
 }
 
-afterEach(async () => {
-  await resetSubagentRegistryForTests({ persist: false });
-});
+afterEach(() => resetSubagentRegistryForTests({ persist: false }));
 
 it("delivers an idle requester's child completion to that requester while a peer global run is active", async () => {
   const model = await startModelServer();
@@ -207,24 +203,30 @@ it("delivers an idle requester's child completion to that requester while a peer
       ) {
         childDeleted.resolve();
       }
-      if (event.event === "chat" && payload?.state === "final") {
-        if (payload.runId === parentRunId) {
-          parentTerminal.resolve();
-        }
+      if (event.event === "chat" && payload?.state === "final" && payload.runId === parentRunId) {
+        parentTerminal.resolve();
       }
     },
   });
+  const send = (agentId: string, message: string, idempotencyKey: string) =>
+    gateway.client.request<{ runId: string }>("chat.send", {
+      sessionKey: "global",
+      agentId,
+      message,
+      idempotencyKey,
+      deliver: false,
+    });
+  const wait = (runId: string) =>
+    expect(
+      gateway.client.request("agent.wait", { runId, timeoutMs: 30_000 }),
+    ).resolves.toMatchObject({
+      status: "ok",
+    });
   try {
     await gateway.server.startupSettled;
     await gateway.client.request("sessions.subscribe", {});
     // Establish the research requester and its private child through public Gateway ingress.
-    const parentAccepted = await gateway.client.request<{ runId: string }>("chat.send", {
-      sessionKey: "global",
-      agentId: "research",
-      message: parentPrompt,
-      idempotencyKey: parentRunId,
-      deliver: false,
-    });
+    const parentAccepted = await send("research", parentPrompt, parentRunId);
     expect(parentAccepted.runId).toBe(parentRunId);
     await model.childStarted;
     const child = await model.childAccepted;
@@ -232,28 +234,18 @@ it("delivers an idle requester's child completion to that requester while a peer
     await parentTerminal.promise;
 
     // Keep a different agent's identical bare key active while the child completes.
-    const opsAccepted = await gateway.client.request<{ runId: string }>("chat.send", {
-      sessionKey: "global",
-      agentId: "ops",
-      message: opsPrompt,
-      idempotencyKey: "announce-owner-ops",
-      deliver: false,
-    });
+    const opsAccepted = await send("ops", opsPrompt, "announce-owner-ops");
     await model.opsStarted;
 
     model.releaseChild();
-    await expect(
-      gateway.client.request("agent.wait", { runId: child.runId, timeoutMs: 30_000 }),
-    ).resolves.toMatchObject({ status: "ok" });
+    await wait(child.runId);
     await childDeleted.promise;
 
     // The deletion event fences completion delivery before either destination is inspected.
     const researchRequests = model.requests.filter((body) => body.includes(parentPrompt));
     expect(researchRequests.some((body) => body.includes(childResult))).toBe(true);
     model.releaseOps();
-    await expect(
-      gateway.client.request("agent.wait", { runId: opsAccepted.runId, timeoutMs: 30_000 }),
-    ).resolves.toMatchObject({ status: "ok" });
+    await wait(opsAccepted.runId);
     const opsRequests = model.requests.filter((body) => body.includes(opsPrompt));
     expect(opsRequests.some((body) => body.includes(childResult))).toBe(false);
   } finally {

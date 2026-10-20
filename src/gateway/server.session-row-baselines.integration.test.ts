@@ -1,16 +1,17 @@
-import { expect, onTestFinished, test, vi } from "vitest";
+import { assert, expect, onTestFinished, test, vi } from "vitest";
 import type { EventFrame } from "../../packages/gateway-protocol/src/index.js";
 import { createDeferred } from "../../test/helpers/promise.js";
 import { GatewayChatEvents } from "../../ui/src/api/gateway-chat-events.ts";
 import type { dispatchInboundMessage } from "../auto-reply/dispatch.js";
 import { replaceSessionEntrySync } from "../config/sessions/session-accessor.js";
+import type { SessionEntry } from "../config/sessions/types.js";
 import { emitAgentEvent } from "../infra/agent-events.js";
 import { clearAgentRunContext, registerAgentRunContext } from "../infra/agent-run-registry.js";
 import {
   emitSessionsChanged,
   flushPendingSessionsChangedEvents,
 } from "./server-methods/session-change-event.js";
-import { startGatewayServerHarness, type GatewayServerHarness } from "./server.e2e-ws-harness.js";
+import { startGatewayServerHarness } from "./server.e2e-ws-harness.js";
 import { broadcastSessionActivitySummary } from "./session-activity-summary-events.js";
 import { drainSessionEventPublications } from "./session-event-prepared-row.js";
 import { observeSessionEventRowRetention } from "./session-event-row-retention.test-support.js";
@@ -19,7 +20,7 @@ import { getSessionRowProjection } from "./session-row-projection-access.js";
 import { loadGatewaySessionEntryReadOnlyAsync } from "./session-utils-store.js";
 import { dispatchInboundMessageMock, installGatewayTestHooks, rpcReq } from "./test-helpers.js";
 
-let harness: GatewayServerHarness;
+let harness: Awaited<ReturnType<typeof startGatewayServerHarness>>;
 let kernel: Awaited<ReturnType<(typeof import("./server-kernel.js"))["createGatewayKernel"]>>;
 installGatewayTestHooks({
   scope: "suite",
@@ -45,27 +46,24 @@ test("ordinary fact changes keep warm wire rows across three real sockets", asyn
   const readRetention = observeSessionEventRowRetention(({ cause, count }) =>
     resets.push({ cause, count }),
   );
-  const sockets = await Promise.all([
-    harness.openClient({ caps: ["session-scoped-events", "session-row-deltas"] }),
-    harness.openClient({ caps: ["session-scoped-events", "session-row-deltas"] }),
-    harness.openClient({ caps: ["session-scoped-events"] }),
-  ]);
+  const sockets = await Promise.all(
+    [true, true, false].map((deltas) =>
+      harness.openClient({
+        caps: ["session-scoped-events", ...(deltas ? ["session-row-deltas"] : [])],
+      }),
+    ),
+  );
   const request = async (socket: (typeof sockets)[number], method: string, params: unknown) => {
     const response = await rpcReq(socket.ws, method, params);
     expect(response.ok).toBe(true);
     return response;
   };
-  const keys = [
-    "agent:main:baseline-parent",
-    "agent:main:baseline-child",
-    "agent:main:baseline-other",
-  ];
+  const keys = ["parent", "child", "other"].map((suffix) => `agent:main:baseline-${suffix}`);
   const key = keys[1]!;
+  const target = { sessionKey: key, agentId: "main" };
   const context = kernel.gatewayRequestContext;
   const projection = getSessionRowProjection(context);
-  if (!projection) {
-    throw new Error("Expected runtime session projection");
-  }
+  assert(projection, "Expected runtime session projection");
   const drain = async () => {
     await flushPendingSessionsChangedEvents(context);
     await drainSessionEventPublications(projection);
@@ -87,25 +85,13 @@ test("ordinary fact changes keep warm wire rows across three real sockets", asyn
     await request(socket, "sessions.messages.subscribe", { key });
   }
   const streams = sockets.map(({ ws }) => collectSessionRowFrames(ws));
-  const waitForPhase = async (phase: string) => {
-    await vi.waitFor(() =>
-      expect(
-        streams[2]!.some(
-          (frame) =>
-            frame.event === "sessions.changed" &&
-            (frame.payload as { phase?: string }).phase === phase,
-        ),
-      ).toBe(true),
-    );
-  };
+  const waitForFrame = async (matches: (frame: EventFrame) => boolean) =>
+    vi.waitFor(() => expect(streams[2]!.some(matches)).toBe(true));
   const recap = async (sessionKey: string) => {
-    const target = await loadGatewaySessionEntryReadOnlyAsync(sessionKey, { agentId: "main" });
+    const loaded = await loadGatewaySessionEntryReadOnlyAsync(sessionKey, { agentId: "main" });
     await broadcastSessionActivitySummary(
-      { key: sessionKey, agentId: "main", storePath: target.storePath },
-      {
-        getSessionRowProjection: () => projection,
-        broadcast: context.broadcast,
-      },
+      { key: sessionKey, agentId: "main", storePath: loaded.storePath },
+      { getSessionRowProjection: () => projection, broadcast: context.broadcast },
     );
   };
   const clock = vi.spyOn(Date, "now").mockReturnValue(Date.now());
@@ -116,6 +102,22 @@ test("ordinary fact changes keep warm wire rows across three real sockets", asyn
   await drain();
   const warmCount = streams[0]!.length;
   const runId = "baseline-controlled-turn";
+  const lifecycle = async (phase: "start" | "end") => {
+    emitAgentEvent({
+      runId,
+      ...target,
+      stream: "lifecycle",
+      data: {
+        phase,
+        [phase === "start" ? "startedAt" : "endedAt"]: Date.now(),
+      },
+    });
+    await waitForFrame(
+      (frame) =>
+        frame.event === "sessions.changed" && (frame.payload as { phase?: string }).phase === phase,
+    );
+    await drain();
+  };
   const completed = createDeferred();
   dispatchInboundMessageMock.mockImplementationOnce(async (args: unknown) => {
     const { dispatcher, replyOptions } = args as Parameters<typeof dispatchInboundMessage>[0];
@@ -124,27 +126,11 @@ test("ordinary fact changes keep warm wire rows across three real sockets", asyn
       await drain();
       await replyOptions?.onAgentRunStart?.(runId);
       await drain();
-      emitAgentEvent({
-        runId,
-        sessionKey: key,
-        agentId: "main",
-        stream: "lifecycle",
-        data: { phase: "start", startedAt: Date.now() },
-      });
-      await waitForPhase("start");
-      await drain();
+      await lifecycle("start");
       const queuedFinal = dispatcher.sendFinalReply({ text: "Synthetic baseline reply." });
       dispatcher.markComplete();
       await dispatcher.waitForIdle();
-      emitAgentEvent({
-        runId,
-        sessionKey: key,
-        agentId: "main",
-        stream: "lifecycle",
-        data: { phase: "end", endedAt: Date.now() },
-      });
-      await waitForPhase("end");
-      await drain();
+      await lifecycle("end");
       return { queuedFinal, counts: dispatcher.getQueuedCounts() };
     } finally {
       completed.resolve();
@@ -156,68 +142,52 @@ test("ordinary fact changes keep warm wire rows across three real sockets", asyn
     idempotencyKey: runId,
   });
   await completed.promise;
-  await vi.waitFor(() =>
-    expect(
-      streams[2]!.some(
-        (frame) => (frame.payload as { reason?: string }).reason === "agent.input.settled",
-      ),
-    ).toBe(true),
+  await waitForFrame(
+    (frame) => (frame.payload as { reason?: string }).reason === "agent.input.settled",
   );
   await drain();
 
   const loaded = await loadGatewaySessionEntryReadOnlyAsync(key, { agentId: "main" });
-  if (!loaded.entry) {
-    throw new Error("Expected durable session");
-  }
+  assert(loaded.entry, "Expected durable session");
   const placement = kernel.workerEnvironmentStartup?.placementStore;
-  if (!placement) {
-    throw new Error("Expected placement owner");
-  }
-  await placement.startDispatch({
-    sessionId: loaded.entry.sessionId,
-    sessionKey: key,
-    agentId: "main",
-  });
+  assert(placement, "Expected placement owner");
+  await placement.startDispatch({ ...target, sessionId: loaded.entry.sessionId });
   emitSessionsChanged(
     context,
-    { sessionKey: key, agentId: "main", reason: "placement" },
+    { ...target, reason: "placement" },
     { accessChanged: false, rowScope: "runtime" },
   );
   await drain();
-  replaceSessionEntrySync(
-    { agentId: "main", sessionKey: key, storePath: loaded.storePath },
-    {
-      ...loaded.entry,
-      modelOverride: "synthetic-model",
-      providerOverride: "synthetic",
-    },
-  );
-  emitSessionsChanged(context, { sessionKey: key, agentId: "main", reason: "patch" });
-  await drain();
-  const current = await loadGatewaySessionEntryReadOnlyAsync(key, { agentId: "main" });
-  if (!current.entry) {
-    throw new Error("Expected current session");
-  }
-  replaceSessionEntrySync(
-    { agentId: "main", sessionKey: key, storePath: current.storePath },
-    {
-      ...current.entry,
-      activitySummary: {
-        version: 1,
-        formatRevision: 3,
-        text: "Synthetic recap after ordinary facts changed.",
-        updatedAt: Date.now(),
-        sessionId: current.entry.sessionId,
-        lifecycleRevision: current.entry.lifecycleRevision,
-        generation: null,
-        maxSeq: null,
-        leafEntryId: null,
-        coveredMessages: 0,
-        totalMessages: 0,
-        omittedContent: false,
+  const patch = async (changes: (entry: SessionEntry) => Partial<SessionEntry>) => {
+    const current = await loadGatewaySessionEntryReadOnlyAsync(key, { agentId: "main" });
+    assert(current.entry, "Expected durable session");
+    replaceSessionEntrySync(
+      { ...target, storePath: current.storePath },
+      {
+        ...current.entry,
+        ...changes(current.entry),
       },
+    );
+  };
+  await patch(() => ({ modelOverride: "synthetic-model", providerOverride: "synthetic" }));
+  emitSessionsChanged(context, { ...target, reason: "patch" });
+  await drain();
+  await patch((entry) => ({
+    activitySummary: {
+      version: 1,
+      formatRevision: 3,
+      text: "Synthetic recap after ordinary facts changed.",
+      updatedAt: Date.now(),
+      sessionId: entry.sessionId,
+      lifecycleRevision: entry.lifecycleRevision,
+      generation: null,
+      maxSeq: null,
+      leafEntryId: null,
+      coveredMessages: 0,
+      totalMessages: 0,
+      omittedContent: false,
     },
-  );
+  }));
   await recap(key);
   await drain();
 
@@ -234,7 +204,7 @@ test("ordinary fact changes keep warm wire rows across three real sockets", asyn
   await drain();
 
   const baseline = streams[2]!;
-  const measurements: Array<Record<string, unknown>> = [];
+  const reasons: string[] = [];
   for (const encoded of streams.slice(0, 2)) {
     expect(encoded).toHaveLength(baseline.length);
     const decoder = new GatewayChatEvents(() => {
@@ -247,21 +217,21 @@ test("ordinary fact changes keep warm wire rows across three real sockets", asyn
         decoded = event;
       });
       expect(decoded?.payload, `decoded frame ${index}`).toEqual(legacy.payload);
-      if (index >= warmCount && (frame.payload as { sessionKey?: string }).sessionKey === key) {
-        measurements.push({
-          reason:
-            (frame.payload as { reason?: string }).reason ??
-            (frame.payload as { phase?: string }).phase ??
-            frame.event,
-          full: Object.hasOwn((frame.payload as { session: object }).session, "full"),
-        });
+      const payload = frame.payload as {
+        sessionKey?: string;
+        reason?: string;
+        phase?: string;
+        session: object;
+      };
+      if (index >= warmCount && payload.sessionKey === key) {
+        reasons.push(payload.reason ?? payload.phase ?? frame.event);
+        expect(Object.hasOwn(payload.session, "full")).toBe(false);
       }
     }
   }
-  const retained = await readRetention();
-  expect(retained.entries).toBe(keys.length * 2);
+  expect(await readRetention()).toMatchObject({ entries: keys.length * 2 });
   expect(resets).toEqual([]);
-  expect(measurements.map(({ reason }) => reason)).toEqual(
+  expect(reasons).toEqual(
     expect.arrayContaining([
       "send",
       "agent.run.started",
@@ -274,5 +244,4 @@ test("ordinary fact changes keep warm wire rows across three real sockets", asyn
       "activity-summary",
     ]),
   );
-  expect(measurements.every((entry) => entry.full === false)).toBe(true);
 });
