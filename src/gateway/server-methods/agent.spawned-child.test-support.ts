@@ -351,15 +351,10 @@ export function registerPluginSubagentAdmissionTests() {
           },
           canonicalKey: childSessionKey,
         });
-        mocks.updateSessionStore.mockImplementation(async (_path, updater) => {
-          const store: Record<string, unknown> = {
-            [childSessionKey]: {
-              sessionId: "plugin-subagent-session",
-              updatedAt: Date.now(),
-            },
-          };
-          return await updater(store);
-        });
+        const { patchSessionEntryTarget } = await vi.importActual<
+          typeof import("../../config/sessions/session-accessor.sqlite-entry.js")
+        >("../../config/sessions/session-accessor.sqlite-entry.js");
+        mocks.patchSessionEntryTarget.mockImplementation(patchSessionEntryTarget);
         mocks.agentCommand.mockResolvedValue({
           payloads: [{ text: "ok" }],
           meta: { durationMs: 100 },

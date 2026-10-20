@@ -43,6 +43,7 @@ import { clearFollowupQueue, getExistingFollowupQueue } from "./queue/state.js";
 import { createTypingController } from "./typing.js";
 
 vi.mock("./agent-runner-execution.js", () => ({ executeAgentTurn: vi.fn() }));
+// mock-isolation: Exercise real input custody with controlled maintenance failures, without loading provider compaction.
 vi.mock("./agent-runner-memory.js", () => ({
   runMemoryFlushIfNeeded: vi.fn(),
   runSessionCompactionIfNeeded: vi.fn(),

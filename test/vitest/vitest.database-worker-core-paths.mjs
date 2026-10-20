@@ -291,6 +291,8 @@ export const databaseWorkerCoreTestFiles = [
   "src/auto-reply/reply/before-deliver.test.ts",
   "src/auto-reply/reply/route-reply.delivery-result.test.ts",
   "src/auto-reply/reply/queue.pending-inputs.test.ts",
+  "src/auto-reply/reply/get-reply-run.media-only.test.ts",
+  "src/auto-reply/reply/agent-runner.stalled-turn.test.ts",
   "src/agents/sandbox/runtime-status.session-override.test.ts",
   "src/auto-reply/reply/agent-runner-steer-adoption.worker.test.ts",
   "src/auto-reply/reply/followup-turn-execution.steering.test.ts",
