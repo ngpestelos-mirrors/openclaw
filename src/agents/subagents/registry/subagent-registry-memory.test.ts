@@ -20,14 +20,10 @@ import {
 import type { SubagentRunRecord } from "./subagent-registry.types.js";
 import { isSameSubagentRunOwner } from "./subagent-run-generation.js";
 
-function createRun(
-  runId: string,
-  childSessionKey = `agent:main:subagent:${runId}`,
-  overrides: Partial<SubagentRunRecord> = {},
-): SubagentRunRecord {
+function createRun(runId: string, overrides: Partial<SubagentRunRecord> = {}): SubagentRunRecord {
   return {
     runId,
-    childSessionKey,
+    childSessionKey: `agent:main:subagent:${runId}`,
     requesterSessionKey: "agent:main:main",
     requesterDisplayKey: "main",
     task: runId,
@@ -41,9 +37,9 @@ function createRun(
 afterEach(() => subagentRuns.clear());
 
 describe("completed subagent payload residency", () => {
-  function completedRun(): SubagentRunRecord {
+  function completedRun(overrides: Partial<SubagentRunRecord> = {}): SubagentRunRecord {
     return {
-      ...createRun("completed", "agent:main:subagent:completed"),
+      ...createRun("completed"),
       task: "Assigned task ".repeat(100),
       execution: { status: "terminal", endedAt: 2, outcome: { status: "ok" } },
       cleanupCompletedAt: 3,
@@ -56,6 +52,7 @@ describe("completed subagent payload residency", () => {
         capturedAt: 2,
         terminalReply: { disposition: "visible", text: "Final reply evidence" },
       },
+      ...overrides,
     };
   }
 
@@ -65,14 +62,10 @@ describe("completed subagent payload residency", () => {
     bindGatewayContextResolver(original, resolver);
     immutableSubagentRun(original);
     const resident = compactSubagentRunForMemory(original);
-    expect(resident.task).toHaveLength(160);
     expect(resident.task).toBe(original.task.slice(0, 160));
     expect(resident.completion?.resultText).toBeUndefined();
     expect(resident.completion?.fallbackResultText).toBeUndefined();
-    expect(resident.completion?.terminalReply).toEqual({
-      disposition: "visible",
-      text: "Final reply evidence",
-    });
+    expect(resident.completion?.terminalReply).toEqual(original.completion?.terminalReply);
     expect(isSubagentRunPayloadEvicted(resident)).toBe(true);
     expect(compactSubagentRunForMemory(resident)).toBe(resident);
 
@@ -81,8 +74,8 @@ describe("completed subagent payload residency", () => {
       cleanupCompletedAt: 0,
       delivery: { status: "pending" },
     });
-    expect(restored.task).toBe(original.task);
     expect(restored.completion).toEqual(original.completion);
+    expect(restored.task).toBe(original.task);
     expect(restored.cleanupCompletedAt).toBe(3);
     expect(restored.delivery?.status).toBe("delivered");
     expect(isSubagentRunPayloadEvicted(restored)).toBe(false);
@@ -92,14 +85,13 @@ describe("completed subagent payload residency", () => {
   });
 
   it("keeps settled collector payloads cold while retaining their spawning turn identity", () => {
-    const entry = {
-      ...completedRun(),
+    const entry = completedRun({
       collect: true,
       requesterTurnRunId: "parent-turn",
       expectsCompletionMessage: false,
       completion: { required: false, resultText: "collected result", capturedAt: 2 },
-      delivery: { status: "not_required" as const },
-    };
+      delivery: { status: "not_required" },
+    });
     const resident = compactSubagentRunForMemory(entry);
     subagentRuns.set(entry.runId, resident);
     expect(resident.requesterTurnRunId).toBe("parent-turn");
@@ -123,7 +115,7 @@ describe("completed subagent payload residency", () => {
     ["in-flight delivery", { delivery: { status: "in_progress" } }],
     ["suspended delivery", { delivery: { status: "suspended", suspendedAt: 2 } }],
   ])("keeps payloads while %s owns unfinished work", (_name, unfinished) => {
-    const entry = { ...completedRun(), ...unfinished };
+    const entry = completedRun(unfinished);
     expect(compactSubagentRunForMemory(entry)).toBe(entry);
     expect(isSubagentRunPayloadEvicted(entry)).toBe(false);
   });
@@ -131,7 +123,7 @@ describe("completed subagent payload residency", () => {
 
 describe("subagent run memory indexes", () => {
   it("tracks activation obligations across settlement, reactivation, deletion, and reset", () => {
-    const finished = createRun("history", undefined, {
+    const finished = createRun("history", {
       execution: { status: "terminal", endedAt: 2, outcome: { status: "ok" } },
       cleanupCompletedAt: 3,
     });
@@ -166,7 +158,8 @@ describe("subagent run memory indexes", () => {
     ["global", "replacement"],
     ["agent:main:subagent:shared", "replacement"],
   ])("preserves collector authorization for %s with %s rows", (childSessionKey, scenario) => {
-    const first = createRun("collector-first", childSessionKey, {
+    const first = createRun("collector-first", {
+      childSessionKey,
       childAgentId: "main",
       collect: true,
       swarmLaunchIdempotencyKey: "launch-first",
@@ -207,11 +200,10 @@ describe("subagent run memory indexes", () => {
   });
 
   it("tracks distinct scheduler slot aliases across replacement and deletion", () => {
-    const first = {
-      ...createRun("run-first", "agent:main:subagent:first"),
+    const first = createRun("run-first", {
       swarmRunId: "collector-first",
       schedulerSlotId: "slot-first",
-    };
+    });
     subagentRuns.set(first.runId, first);
     const lookup = getSubagentSessionReadLookup(subagentRuns);
     const select = (...ids: string[]) => lookup.selectRunIds(new Set(ids));
@@ -237,8 +229,7 @@ describe("subagent run memory indexes", () => {
       selected.accept(entry);
       expect(selected.assertCurrent).not.toThrow();
       expect(selected.superseded).toBe(false);
-      const replacement = createRun(entry.runId, entry.childSessionKey);
-      replacement.generation = 1;
+      const replacement = createRun(entry.runId, { generation: 1 });
       subagentRuns.set(entry.runId, replacement);
       subagentRuns.commitOwnership(replacement);
       expect(selected.assertCurrent).toThrow("owner changed");
@@ -276,7 +267,8 @@ describe("subagent run memory indexes", () => {
     (kind) => {
       const requesterSessionKey = "agent:main:requester";
       const isGroup = kind === "collector group";
-      const first = createRun("run-first", "agent:main:subagent:shared", {
+      const first = createRun("run-first", {
+        childSessionKey: "agent:main:subagent:shared",
         requesterSessionKey,
         collect: true,
         groupId: "swarm:shared",

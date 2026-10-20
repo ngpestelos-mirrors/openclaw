@@ -55,17 +55,16 @@ function policyReceipt(
 ): SubagentCompletionMutationResult {
   return {
     applied: true,
-    records: [...postimages.values()].flatMap((entry) => {
-      if (!entry) {
-        return [];
-      }
-      return [
-        {
-          subagent: rowToSubagentRunRecord(bindSubagentRunRecord(entry))!,
-          cleanupHandled: entry.cleanupHandled,
-        },
-      ];
-    }),
+    records: [...postimages.values()].flatMap((entry) =>
+      entry
+        ? [
+            {
+              subagent: rowToSubagentRunRecord(bindSubagentRunRecord(entry))!,
+              cleanupHandled: entry.cleanupHandled,
+            },
+          ]
+        : [],
+    ),
     retiredRunIds: [...postimages].flatMap(([id, entry]) => (entry ? [] : [id])),
     queueIds: [],
   };
@@ -317,7 +316,7 @@ export function registerPrivateCompletionSettlementTests({
         expectUndefinedFields(settled, ["requesterTurnRunId"]);
         expect(settled.delivery?.status).toBe(requesterYielded ? "pending" : "delivered");
         expectUndefinedFields(settled.delivery, ["lastError", "lastDropReason"]);
-        expect(readLifecycleRun(entry).requesterSettleWake?.requesterYieldBatch).toBe(
+        expect(settled.requesterSettleWake?.requesterYieldBatch).toBe(
           requesterYielded ? true : undefined,
         );
         expect(readLifecycleRun(sibling).execution.endedAt).toBeUndefined();
@@ -411,17 +410,11 @@ export function registerNativeCompletionAuthorityTest({
   it("keeps provisional cancellation when a repeated success has no producer reply evidence", async () => {
     const entry = createRunEntry({
       expectsCompletionMessage: true,
-      execution: {
-        status: "terminal",
-        endedAt: 4_000,
-        outcome: { status: "error", error: "killed" },
-      },
+      endedAt: 4_000,
+      outcome: { status: "error", error: "killed" },
       endedReason: SUBAGENT_ENDED_REASON_KILLED,
       suppressAnnounceReason: "killed",
-      killReconciliation: {
-        killedAt: 4_000,
-        suppressTaskDelivery: true,
-      },
+      killReconciliation: { killedAt: 4_000, suppressTaskDelivery: true },
       completion: { required: true, resultText: null, capturedAt: 4_000 },
     });
     const marker = entry.killReconciliation;
@@ -491,9 +484,7 @@ export function registerNativeCompletionAuthorityTest({
         } else {
           expect(result).toMatchObject({
             status: "rejected",
-            reason: expect.objectContaining({
-              message: "Subagent terminal execution changed",
-            }),
+            reason: expect.objectContaining({ message: "Subagent terminal execution changed" }),
           });
         }
         expect(runs.get(entry.runId)).toBe(successor);
