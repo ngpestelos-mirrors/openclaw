@@ -70,9 +70,11 @@ vi.mock("../state/openclaw-agent-execution.js", async (importOriginal) => {
     },
   };
 });
+// mock-isolation: The fixture supplies sandbox identity without provisioning a real container.
 vi.mock("../agents/sandbox/context.js", () => ({
   resolveSandboxContextForPersistentExecution: mocks.sandbox,
 }));
+// mock-isolation: Authority tests retain fixture skill revisions without loading installed skills.
 vi.mock("../skills/runtime/cron-snapshot.js", () => ({
   resolveCronSkillsSnapshot: async (params: { librarySelections?: unknown }) => ({
     prompt: "",

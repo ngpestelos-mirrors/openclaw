@@ -66,7 +66,7 @@ vi.mock("./persistent-exec.js", () => persistentExecMocks);
 
 // mock-isolation: Prune selection uses synthetic rows; worker predicate behavior lives in registry tests.
 vi.mock("./registry.js", () => ({
-  assertSandboxRegistryGenerationCurrent: (_kind: string, current: unknown) =>
+  assertSandboxRegistryRetirementCurrent: (_kind: string, current: unknown) =>
     registryMocks.assertSandboxBrowserRegistryEntryCurrent(current),
   readBrowserRegistry: registryMocks.readBrowserRegistry,
   readRegistry: registryMocks.readRegistry,

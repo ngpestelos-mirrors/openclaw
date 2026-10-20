@@ -4,7 +4,6 @@ import type { CronSandboxStreamSource } from "../../cron/store/stream-source-adm
 import { createSqliteWorkerWriteAdmission } from "../../infra/sqlite-worker-store.js";
 import { executeExistingOpenClawStateRead } from "../../state/openclaw-state-db-readonly.js";
 import { captureOpenClawStateWorkerContext } from "../../state/openclaw-state-worker-context.js";
-import type { DockerPersistentExecExtinctionProof } from "./docker-persistent-exec.js";
 import type {
   SandboxPersistentExecExpected,
   SandboxPersistentExecQuery,
@@ -13,6 +12,7 @@ import type {
   SandboxPersistentExecTransition,
   SandboxPersistentExecWrite,
 } from "./persistent-exec-store.types.js";
+import type { DockerPersistentExecExtinctionProof } from "./persistent-exec.types.js";
 
 /** One service retains the physical database and its own process custody token. */
 export function createSandboxPersistentExecStore(

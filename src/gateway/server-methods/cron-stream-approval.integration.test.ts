@@ -26,6 +26,7 @@ import {
 vi.mock("../../agents/node-exec-availability.js", () => ({
   loadNodeExecAvailability: async () => ({ cacheKey: "no-nodes", isAvailable: () => false }),
 }));
+// mock-isolation: Approval tests use captured sandbox facts without contacting a real Docker daemon.
 vi.mock("../../agents/sandbox/docker-persistent-target.js", () => ({
   assertDockerPersistentTargetCurrent: async () => ({ id: "docker" }),
   readDockerPersistentContainer: async () => ({

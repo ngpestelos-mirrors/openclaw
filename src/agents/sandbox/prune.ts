@@ -13,7 +13,7 @@ import { stopCachedBrowserBridgesForContainer } from "./browser-bridges.js";
 import { resolveSandboxConfigForAgent } from "./config.js";
 import { dockerSandboxBackendManager } from "./docker-backend.js";
 import {
-  assertSandboxRegistryGenerationCurrent,
+  assertSandboxRegistryRetirementCurrent,
   readBrowserRegistry,
   readRegistry,
   removeSandboxRegistryGeneration,
@@ -122,7 +122,7 @@ async function pruneSandboxBrowsers(config: OpenClawConfig, assertCurrent?: () =
           return;
         }
         try {
-          await assertSandboxRegistryGenerationCurrent("browser", entry);
+          await assertSandboxRegistryRetirementCurrent("browser", entry);
         } catch {
           return;
         }

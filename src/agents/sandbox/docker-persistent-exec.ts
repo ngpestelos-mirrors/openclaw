@@ -15,6 +15,7 @@ import {
   dockerPersistentExecContainerName,
   parseDockerPersistentExecReceipt,
   parseDockerPersistentExecTarget,
+  type DockerPersistentExecExtinctionProof,
   type DockerPersistentExecCleanupTarget,
   type DockerPersistentExecReceipt,
   type DockerPersistentExecTarget,
@@ -61,7 +62,6 @@ function assertCustodyScope(scope: string): void {
   }
 }
 
-export type DockerPersistentExecExtinctionProof = Readonly<{ kind: "docker-container-extinction" }>;
 const extinctionProofs = new WeakMap<
   DockerPersistentExecExtinctionProof,
   DockerPersistentExecCleanupTarget

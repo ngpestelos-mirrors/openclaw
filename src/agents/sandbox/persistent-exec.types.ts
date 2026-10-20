@@ -1,6 +1,7 @@
 import { isRecord } from "@openclaw/normalization-core/record-coerce";
 import type { SandboxBackendHandle } from "./backend-handle.types.js";
-import type { DockerPersistentExecExtinctionProof } from "./docker-persistent-exec.js";
+
+export type DockerPersistentExecExtinctionProof = Readonly<{ kind: "docker-container-extinction" }>;
 
 /** Transport references identify the original daemon; they carry no execution authority. */
 export type DockerPersistentExecTarget = {

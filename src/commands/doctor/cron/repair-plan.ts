@@ -1,5 +1,5 @@
 // Cron doctor repair planning helpers for previewing and merging legacy rows.
-import { decodeCronJobConfig } from "../../../cron/store/job-config-codec.js";
+import { decodeStoredCronJobConfig } from "../../../cron/store/job-config-codec.js";
 import { countLabel as pluralize } from "../../doctor-state-integrity-format.js";
 import {
   IMAGE_INSPECTION_TOOL_NAME_MIGRATION,
@@ -115,7 +115,7 @@ export function mergeRuntimeEntryIntoConfigJob(params: {
   runtimeEntry?: { updatedAtMs?: number; state?: Record<string, unknown> };
 }): Record<string, unknown> {
   return {
-    ...decodeCronJobConfig(params.job),
+    ...decodeStoredCronJobConfig(params.job),
     ...(params.runtimeEntry?.updatedAtMs !== undefined
       ? { updatedAtMs: params.runtimeEntry.updatedAtMs }
       : {}),

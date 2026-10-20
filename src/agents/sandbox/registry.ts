@@ -343,7 +343,7 @@ export async function updateBrowserRegistry(
 }
 
 /** Cleanup consumes exact generation custody, including an already-removing allocation. */
-export async function assertSandboxRegistryGenerationCurrent(
+export async function assertSandboxRegistryRetirementCurrent(
   kind: SandboxRegistryKind,
   entry: SandboxRegistryEntry | SandboxBrowserRegistryEntry,
   options: { path?: string; env?: NodeJS.ProcessEnv } = {},

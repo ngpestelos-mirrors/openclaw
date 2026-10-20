@@ -15,14 +15,16 @@ const mocks = vi.hoisted(() => ({
   custody: vi.fn(),
   custodyCurrent: vi.fn(),
 }));
+// mock-isolation: Registry generations are fixture-owned; do not read the real state database.
 vi.mock("./registry.js", () => ({
   assertSandboxRegistryEntryCurrent: mocks.liveCurrent,
   assertSandboxBrowserRegistryEntryCurrent: mocks.browserLiveCurrent,
   readRegistry: mocks.read,
   readBrowserRegistry: mocks.browsers,
-  assertSandboxRegistryGenerationCurrent: (kind: string, entry: unknown) =>
+  assertSandboxRegistryRetirementCurrent: (kind: string, entry: unknown) =>
     kind === "browser" ? mocks.browserCurrent(entry) : mocks.current(entry),
 }));
+// mock-isolation: Custody records and their currentness belong to this synthetic workspace fixture.
 vi.mock("./persistent-exec-store.js", () => ({
   createSandboxPersistentExecStore: () => ({
     databasePath: "/synthetic/state.sqlite",
@@ -37,6 +39,7 @@ vi.mock("./docker.js", () => ({
   execContainer: mocks.command,
   validateSandboxContainerEngineTarget: async () => {},
 }));
+// mock-isolation: The fixture chooses runtime visibility; mount-plan tests cover actual backing visibility.
 vi.mock("./mount-plan.js", () => ({
   // This fixture owns runtime selection; mount-plan.test.ts covers actual backing visibility.
   sandboxContainerShowsWorkspacePaths: mocks.imageBacking,

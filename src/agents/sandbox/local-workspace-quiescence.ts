@@ -16,7 +16,7 @@ import { dockerPersistentExecContainerName } from "./persistent-exec.types.js";
 import {
   readRegistry,
   readBrowserRegistry,
-  assertSandboxRegistryGenerationCurrent,
+  assertSandboxRegistryRetirementCurrent,
   assertSandboxRegistryEntryCurrent,
   assertSandboxBrowserRegistryEntryCurrent,
 } from "./registry.js";
@@ -44,7 +44,7 @@ export async function readLocalWorkspaceRuntimes(
         kind: "container" as const,
         entry,
         database,
-        assertCurrent: () => assertSandboxRegistryGenerationCurrent("container", entry, database),
+        assertCurrent: () => assertSandboxRegistryRetirementCurrent("container", entry, database),
       })),
     ...browsers.entries
       .filter((entry) => entry.workspaceDir === workspaceDir)
@@ -52,7 +52,7 @@ export async function readLocalWorkspaceRuntimes(
         kind: "browser" as const,
         entry,
         database,
-        assertCurrent: () => assertSandboxRegistryGenerationCurrent("browser", entry, database),
+        assertCurrent: () => assertSandboxRegistryRetirementCurrent("browser", entry, database),
       })),
     ...streams.flatMap((record) => {
       const receipt = record.receipt;

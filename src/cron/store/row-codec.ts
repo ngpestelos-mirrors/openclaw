@@ -25,10 +25,10 @@ import type { CronJobState, CronStoredJob, CronStoreFile } from "../types.js";
 import {
   CRON_DELIVERY_REPAIR_REQUIRED_MESSAGE,
   hasCanonicalCronDeliveryMode,
-  decodeCronJobConfig as decodeStoredCronJobConfig,
+  decodeCronJobConfig as decodeDeliveryConfig,
 } from "./delivery-codec.js";
 import {
-  decodeCronJobConfig,
+  decodeStoredCronJobConfig,
   resolveCronJobGrantDefinitionRevision,
   stripJobRuntimeFields,
 } from "./job-config-codec.js";
@@ -141,7 +141,7 @@ export function rowToCronJob(
     toolsAllowExecTarget: _rawToolsAllowExecTarget,
     toolsAllowExecTargetRequirement: _rawToolsAllowExecTargetRequirement,
     ...runtimeConfig
-  } = decodeCronJobConfig(jobJson);
+  } = decodeStoredCronJobConfig(jobJson);
   const payload = isRecord(runtimeConfig.payload) ? runtimeConfig.payload : undefined;
   const toolsAllow = Array.isArray(payload?.toolsAllow)
     ? payload.toolsAllow.filter((tool): tool is string => typeof tool === "string")
@@ -679,13 +679,13 @@ export function loadedCronStoreFromRows(
       invalidConfigRows.push({
         sourceIndex: index,
         reason: parsedJobJson ? "invalid-state" : "invalid-payload",
-        ...(parsedJobJson ? { job: decodeStoredCronJobConfig(parsedJobJson) } : {}),
+        ...(parsedJobJson ? { job: decodeDeliveryConfig(parsedJobJson) } : {}),
         raw: { jobId: row.job_id, jobJson: row.job_json, stateJson: row.state_json },
       });
       continue;
     }
     const job = rowToCronJob(row, parsedJobJson, createdAtMsFallback);
-    const configJob = decodeStoredCronJobConfig(parsedJobJson);
+    const configJob = decodeDeliveryConfig(parsedJobJson);
     const runtimeEntry = {
       updatedAtMs: normalizeNumber(row.runtime_updated_at_ms) ?? normalizeNumber(row.updated_at),
       scheduleIdentity: row.schedule_identity ?? undefined,

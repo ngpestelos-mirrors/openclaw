@@ -34,7 +34,6 @@ import {
   listDockerPersistentExecContainers,
   readDockerPersistentExecExtinctionProof,
   stopDockerPersistentExec,
-  type DockerPersistentExecExtinctionProof,
 } from "./docker-persistent-exec.js";
 import { createSandboxFsBridge } from "./fs-bridge.js";
 import { bindLocalSandboxWorkspace, prepareLocalSandboxWorkspace } from "./local-workspace.js";
@@ -51,6 +50,7 @@ import {
 import {
   bindSandboxPersistentExecCapability,
   type DockerPersistentExecCleanupTarget,
+  type DockerPersistentExecExtinctionProof,
   type DockerPersistentExecReceipt,
   type SandboxPersistentExecCapability,
   type SandboxPersistentExecPreparation,

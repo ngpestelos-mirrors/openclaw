@@ -5,7 +5,7 @@ import { stripCronPinnedExecGrant } from "../scheduled-tool-policy.js";
 import { parseCronStreamSandboxTarget } from "../stream-sandbox-target.js";
 import type { CronStoredJob, CronStoreFile } from "../types.js";
 import {
-  decodeCronJobConfig as decodeStoredCronJobConfig,
+  decodeCronJobConfig as decodeDeliveryConfig,
   deliveryToJson,
   hasCanonicalCronDeliveryMode,
 } from "./delivery-codec.js";
@@ -59,11 +59,13 @@ export function resolveCronJobGrantDefinitionRevision(job: CronStoredJob): strin
 }
 
 /** Restore supported runtime config without changing the marker retained for recovery. */
-export function decodeCronJobConfig(jobJson: Record<string, unknown>): Record<string, unknown> {
+export function decodeStoredCronJobConfig(
+  jobJson: Record<string, unknown>,
+): Record<string, unknown> {
   const schedule = isRecord(jobJson.schedule) ? jobJson.schedule : undefined;
   const streamSandbox = parseCronStreamSandboxTarget(jobJson.streamSandbox);
   return {
-    ...decodeStoredCronJobConfig(jobJson),
+    ...decodeDeliveryConfig(jobJson),
     ...(schedule?.kind === "sandbox-stream" && streamSandbox
       ? { schedule: { ...schedule, kind: "stream" }, streamSandbox }
       : {}),
