@@ -1,38 +1,34 @@
-// Kova Ci Summary tests cover kova ci summary script behavior.
 import { spawnSync } from "node:child_process";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 
+function runCli(...args: string[]) {
+  return spawnSync(process.execPath, ["--import", "tsx", "scripts/kova-ci-summary.mts", ...args], {
+    cwd: process.cwd(),
+    encoding: "utf8",
+  });
+}
+
 function runSummary(report: unknown, extraArgs: string[] = []) {
   const root = mkdtempSync(join(tmpdir(), "openclaw-kova-summary-"));
   const reportPath = join(root, "report.json");
   const outputPath = join(root, "summary.md");
   writeFileSync(reportPath, `${JSON.stringify(report, null, 2)}\n`, "utf8");
-  const result = spawnSync(
-    process.execPath,
-    [
-      "--import",
-      "tsx",
-      "scripts/kova-ci-summary.mts",
-      "--report",
-      reportPath,
-      "--output",
-      outputPath,
-      ...extraArgs,
-    ],
-    {
-      cwd: process.cwd(),
-      encoding: "utf8",
-    },
-  );
+  const result = runCli("--report", reportPath, "--output", outputPath, ...extraArgs);
   let output = "";
   try {
     output = readFileSync(outputPath, "utf8");
   } catch {}
   rmSync(root, { force: true, recursive: true });
   return { output, result };
+}
+
+function rejectsReport(report: unknown, message: string, args: string[] = [], status = 1) {
+  const { result } = runSummary(report, args);
+  expect(result.status).toBe(status);
+  expect(result.stderr).toContain(message);
 }
 
 function metric(
@@ -52,70 +48,47 @@ function metricReport(status: string, metrics: Record<string, ReturnType<typeof 
   };
 }
 
+const healthMetrics = {
+  timeToHealthReadyMs: metric("Health ready", "ms", 20, { max: 30, p95: 30 }),
+};
+
 describe("scripts/kova-ci-summary", () => {
   it("prints help without treating --help as a valued option", () => {
-    const result = spawnSync(
-      process.execPath,
-      ["--import", "tsx", "scripts/kova-ci-summary.mts", "--help"],
-      {
-        cwd: process.cwd(),
-        encoding: "utf8",
-      },
-    );
-
-    expect(result.status).toBe(0);
-    expect(result.stderr).toBe("");
+    const result = runCli("--help");
+    expect(result).toMatchObject({ status: 0, stderr: "" });
     expect(result.stdout).toContain(
       "usage: node --import tsx scripts/kova-ci-summary.mts --report",
     );
   });
 
   it("rejects flag-shaped value before help handling", () => {
-    const result = spawnSync(
-      process.execPath,
-      ["--import", "tsx", "scripts/kova-ci-summary.mts", "--report", "-h"],
-      {
-        cwd: process.cwd(),
-        encoding: "utf8",
-      },
-    );
-
-    expect(result.status).toBe(2);
-    expect(result.stdout).toBe("");
+    const result = runCli("--report", "-h");
+    expect(result).toMatchObject({ status: 2, stdout: "" });
     expect(result.stderr).toContain("error: --report requires a value");
   });
 
   it("rejects empty Kova reports instead of rendering unknown summaries", () => {
-    const empty = runSummary({});
-    expect(empty.result.status).toBe(1);
-    expect(empty.result.stderr).toContain("invalid Kova report: missing summary.statuses");
-
-    const noEvidence = runSummary({ summary: { statuses: { pass: 1 } } });
-    expect(noEvidence.result.status).toBe(1);
-    expect(noEvidence.result.stderr).toContain(
+    rejectsReport({}, "invalid Kova report: missing summary.statuses");
+    rejectsReport(
+      { summary: { statuses: { pass: 1 } } },
       "invalid Kova report: missing records or performance groups",
     );
   });
 
   it("rejects unknown flags instead of silently dropping report metadata", () => {
-    const result = runSummary(
+    rejectsReport(
       {
         records: [{ scenario: "gateway", state: "clean", status: "pass" }],
         summary: { statuses: { pass: 1 } },
       },
+      "unknown argument: --report-urlz",
       ["--report-urlz", "https://example.test/report"],
-    ).result;
-
-    expect(result.status).toBe(2);
-    expect(result.stderr).toContain("unknown argument: --report-urlz");
+      2,
+    );
   });
 
   it("renders blocked reports without resource metrics", () => {
-    const { output, result } = runSummary(
-      metricReport("BLOCKED", {
-        timeToHealthReadyMs: metric("Health ready", "ms", 20, { max: 30, p95: 30 }),
-      }),
-    );
+    const { output, result } = runSummary(metricReport("BLOCKED", healthMetrics));
 
     expect(result.status).toBe(0);
     expect(output).toContain("| gateway | clean | Health ready | 20 ms | 30 ms | 30 ms |");
@@ -123,27 +96,17 @@ describe("scripts/kova-ci-summary", () => {
   });
 
   it("rejects successful reports without resource metrics", () => {
-    const { result } = runSummary(
-      metricReport("PASS", {
-        timeToHealthReadyMs: metric("Health ready", "ms", 20, { max: 30, p95: 30 }),
-      }),
-    );
-
-    expect(result.status).toBe(1);
-    expect(result.stderr).toContain(
+    rejectsReport(
+      metricReport("PASS", healthMetrics),
       "invalid Kova report: missing sampled RSS metric in performance groups",
     );
   });
 
   it("rejects successful reports without CPU metrics", () => {
-    const { result } = runSummary(
+    rejectsReport(
       metricReport("PASS", {
         resourcePeakGatewayRssMb: metric("Gateway RSS", "MB", 256),
       }),
-    );
-
-    expect(result.status).toBe(1);
-    expect(result.stderr).toContain(
       "invalid Kova report: missing sampled CPU metric in performance groups",
     );
   });

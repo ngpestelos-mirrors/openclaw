@@ -1,4 +1,3 @@
-// K8s manifest tests cover the deployable Kubernetes bundle shape.
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import { parse } from "yaml";
@@ -6,11 +5,7 @@ import { parse } from "yaml";
 type Manifest = Record<string, unknown>;
 
 function readManifest(name: string): Manifest {
-  const parsed = parse(readFileSync(`scripts/k8s/manifests/${name}`, "utf8")) as unknown;
-  expect(parsed).toBeTypeOf("object");
-  expect(parsed).not.toBeNull();
-  expect(Array.isArray(parsed)).toBe(false);
-  return parsed as Manifest;
+  return assertRecord(parse(readFileSync(`scripts/k8s/manifests/${name}`, "utf8")), name);
 }
 
 function assertRecord(value: unknown, label: string): Record<string, unknown> {
@@ -23,14 +18,6 @@ function assertRecord(value: unknown, label: string): Record<string, unknown> {
 function asRecords(value: unknown, label: string): Record<string, unknown>[] {
   expect(Array.isArray(value), label).toBe(true);
   return value as Record<string, unknown>[];
-}
-
-function asStrings(value: unknown, label: string): string[] {
-  expect(Array.isArray(value), label).toBe(true);
-  for (const entry of value as unknown[]) {
-    expect(entry, label).toBeTypeOf("string");
-  }
-  return value as string[];
 }
 
 function findNamed(records: Record<string, unknown>[], name: string): Record<string, unknown> {
@@ -47,41 +34,34 @@ describe("k8s manifests", () => {
       apiVersion: "kustomize.config.k8s.io/v1beta1",
       kind: "Kustomization",
     });
-    expect(asStrings(kustomization.resources, "kustomization resources").toSorted()).toEqual([
-      "configmap.yaml",
-      "deployment.yaml",
-      "pvc.yaml",
-      "service.yaml",
-    ]);
+    expect(kustomization.resources).toEqual(
+      expect.arrayContaining(["configmap.yaml", "deployment.yaml", "pvc.yaml", "service.yaml"]),
+    );
+    expect(kustomization.resources).toHaveLength(4);
   });
 
   it("keeps gateway service selectors and ports aligned with deployment labels", () => {
     const deployment = readManifest("deployment.yaml");
     const service = readManifest("service.yaml");
-    const deploymentSpec = assertRecord(deployment.spec, "deployment spec");
-    const selector = assertRecord(deploymentSpec.selector, "deployment selector");
-    const matchLabels = assertRecord(selector.matchLabels, "deployment match labels");
-    const template = assertRecord(deploymentSpec.template, "deployment template");
-    const templateMetadata = assertRecord(template.metadata, "deployment template metadata");
-    const templateLabels = assertRecord(templateMetadata.labels, "deployment template labels");
-    const serviceSpec = assertRecord(service.spec, "service spec");
-    const serviceSelector = assertRecord(serviceSpec.selector, "service selector");
-    const ports = asRecords(serviceSpec.ports, "service ports");
-
     expect(deployment).toMatchObject({
       apiVersion: "apps/v1",
       kind: "Deployment",
       metadata: { name: "openclaw" },
+      spec: { template: { metadata: { labels: { app: "openclaw" } } } },
     });
-    expect(matchLabels).toEqual({ app: "openclaw" });
-    expect(templateLabels).toMatchObject(matchLabels);
-    expect(serviceSelector).toEqual(matchLabels);
-    expect(ports).toContainEqual({
-      name: "gateway",
-      port: 18789,
-      protocol: "TCP",
-      targetPort: 18789,
-    });
+    expect(deployment).toHaveProperty("spec.selector.matchLabels", { app: "openclaw" });
+    expect(service).toHaveProperty("spec.selector", { app: "openclaw" });
+    expect(service).toHaveProperty(
+      "spec.ports",
+      expect.arrayContaining([
+        {
+          name: "gateway",
+          port: 18789,
+          protocol: "TCP",
+          targetPort: 18789,
+        },
+      ]),
+    );
   });
 
   it("keeps deployment mounts, secrets, and security posture deployable", () => {
@@ -93,9 +73,14 @@ describe("k8s manifests", () => {
     const gateway = findNamed(containers, "gateway");
     const env = asRecords(gateway.env, "gateway env");
     const volumes = asRecords(podSpec.volumes, "pod volumes");
-    const securityContext = assertRecord(gateway.securityContext, "gateway security context");
-
-    expect(gateway.command).toEqual(["node", "/app/dist/index.js", "gateway", "run"]);
+    expect(gateway).toMatchObject({
+      command: ["node", "/app/dist/index.js", "gateway", "run"],
+      securityContext: {
+        allowPrivilegeEscalation: false,
+        readOnlyRootFilesystem: true,
+        runAsNonRoot: true,
+      },
+    });
     expect(findNamed(env, "HOME")).toMatchObject({ value: "/home/node" });
     expect(findNamed(env, "OPENCLAW_CONFIG_DIR")).toMatchObject({ value: "/home/node/.openclaw" });
     const mounts = asRecords(gateway.volumeMounts, "gateway volume mounts");
@@ -112,40 +97,28 @@ describe("k8s manifests", () => {
       persistentVolumeClaim: { claimName: "openclaw-home-pvc" },
     });
     expect(findNamed(volumes, "config")).toMatchObject({ configMap: { name: "openclaw-config" } });
-    expect(securityContext).toMatchObject({
-      allowPrivilegeEscalation: false,
-      readOnlyRootFilesystem: true,
-      runAsNonRoot: true,
-    });
   });
 
   it("keeps config and persistence manifests aligned with the gateway", () => {
     const configMap = readManifest("configmap.yaml");
     const pvc = readManifest("pvc.yaml");
     const data = assertRecord(configMap.data, "configmap data");
-    const config = JSON.parse(String(data["openclaw.json"])) as Record<string, unknown>;
-    const gateway = assertRecord(config.gateway, "openclaw config gateway");
-    const auth = assertRecord(gateway.auth, "openclaw config auth");
-    const agents = assertRecord(config.agents, "openclaw config agents");
-    const defaults = assertRecord(agents.defaults, "openclaw config agent defaults");
-    const pvcSpec = assertRecord(pvc.spec, "pvc spec");
-    const resources = assertRecord(pvcSpec.resources, "pvc resources");
-    const requests = assertRecord(resources.requests, "pvc resource requests");
 
     expect(configMap).toMatchObject({
       apiVersion: "v1",
       kind: "ConfigMap",
       metadata: { name: "openclaw-config" },
     });
-    expect(gateway).toMatchObject({ mode: "local", port: 18789 });
-    expect(auth).toMatchObject({ mode: "token" });
-    expect(defaults).toMatchObject({ workspace: "~/.openclaw/workspace" });
+    expect(JSON.parse(String(data["openclaw.json"]))).toMatchObject({
+      gateway: { mode: "local", port: 18789, auth: { mode: "token" } },
+      agents: { defaults: { workspace: "~/.openclaw/workspace" } },
+    });
     expect(data["AGENTS.md"]).toContain("OpenClaw Assistant");
     expect(pvc).toMatchObject({
       apiVersion: "v1",
       kind: "PersistentVolumeClaim",
       metadata: { name: "openclaw-home-pvc" },
+      spec: { resources: { requests: { storage: "10Gi" } } },
     });
-    expect(requests).toMatchObject({ storage: "10Gi" });
   });
 });
