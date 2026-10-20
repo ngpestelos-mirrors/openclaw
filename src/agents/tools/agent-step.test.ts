@@ -1,5 +1,3 @@
-// Agent step tests cover nested session handoff and
-// MCP runtime survival after completed nested turns.
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { clearRuntimeConfigSnapshot, setRuntimeConfigSnapshot } from "../../config/config.js";
 import type { SessionEntry } from "../../config/sessions/types.js";
@@ -89,24 +87,18 @@ describe("runAgentStep", () => {
       }),
     ).resolves.toBeUndefined();
 
-    expect(gatewayCalls[0]).toMatchObject({ replyExpectation: "optional" });
-    const params = gatewayCalls[0]?.params as
-      | {
-          message?: string;
-          sessionKey?: string;
-          deliver?: boolean;
-          sourceReplyDeliveryMode?: string;
-          lane?: string;
-          inputProvenance?: { kind?: string; sourceTool?: string };
-        }
-      | undefined;
-    expect(params?.message).toContain("[Inter-session message");
-    expect(params?.sessionKey).toBe("agent:main:subagent:child");
-    expect(params?.deliver).toBe(false);
-    expect(params?.sourceReplyDeliveryMode).toBe("message_tool_only");
-    expect(params?.lane).toBe("nested:agent:main:subagent:child");
-    expect(params?.inputProvenance?.kind).toBe("inter_session");
-    expect(params?.inputProvenance?.sourceTool).toBe("subagent_announce");
+    expect(gatewayCalls[0]).toMatchObject({
+      replyExpectation: "optional",
+      params: {
+        message: expect.stringContaining("[Inter-session message"),
+        sessionKey: "agent:main:subagent:child",
+        deliver: false,
+        sourceReplyDeliveryMode: "message_tool_only",
+        lane: "nested:agent:main:subagent:child",
+        inputProvenance: { kind: "inter_session", sourceTool: "subagent_announce" },
+      },
+    });
+    const params = gatewayCalls[0]?.params as { message?: string } | undefined;
     expect(params?.message).toContain("isUser=false");
     expect(params?.message).toContain("hello");
     expect(recordParticipant).toHaveBeenCalledOnce();
@@ -189,32 +181,37 @@ describe("runAgentStep", () => {
           : {}),
       };
       const rows: Record<string, SessionEntry> = { [sourceKey]: source, [targetKey]: target };
-      peer.load.mockImplementation(async ({ key }: { key: string }) => ({
+      const storeTarget = (key: string) => ({
         agentId: key === sourceKey ? peerAgentId : "main",
         canonicalKey: key,
         storePath: "/fixture/sessions",
         store: rows,
-      }));
+      });
+      peer.load.mockImplementation(async ({ key }: { key: string }) => storeTarget(key));
+      const endpoint = (agentId: string, sessionKey: string, entry: SessionEntry) => ({
+        agentId,
+        sessionKey,
+        entry,
+        storePath: "/fixture/sessions",
+      });
+      const requester = endpoint("main", targetKey, target);
+      const peerEndpoint = endpoint(peerAgentId, sourceKey, source);
+      const inputProvenance = {
+        kind: "inter_session" as const,
+        sourceTool: "sessions_send",
+        sourceSessionKey: targetKey,
+      };
+      const reply = {
+        status: "ok" as const,
+        replyText: "completed peer result",
+        terminalReply: { disposition: "visible" as const, text: "completed peer result" },
+      };
       const original = await prepareSessionsSendCommunication({
         config,
-        source: {
-          agentId: "main",
-          sessionKey: targetKey,
-          storePath: "/fixture/sessions",
-          entry: target,
-        },
-        target: {
-          agentId: peerAgentId,
-          sessionKey: sourceKey,
-          storePath: "/fixture/sessions",
-          entry: source,
-        },
+        source: requester,
+        target: peerEndpoint,
         message: "original request",
-        inputProvenance: {
-          kind: "inter_session",
-          sourceTool: "sessions_send",
-          sourceSessionKey: targetKey,
-        },
+        inputProvenance,
         callGateway: async <T>() => ({ runId: "peer-run" }) as T,
       });
       expect(() => original.captureReplyAdmission("peer-run")).toThrow(
@@ -227,11 +224,7 @@ describe("runAgentStep", () => {
           sessionKey: sourceKey,
           message: "original request",
           idempotencyKey: "peer-run",
-          inputProvenance: {
-            kind: "inter_session",
-            sourceTool: "sessions_send",
-            sourceSessionKey: targetKey,
-          },
+          inputProvenance,
         },
       });
       expect(() => original.captureReplyAdmission("another-run")).toThrow(
@@ -282,13 +275,7 @@ describe("runAgentStep", () => {
         requesterSessionKey: targetKey,
         targetSession:
           route === "cron-fallback" ? { ...source, sessionId: "expired-cron-run" } : source,
-        requesterTarget: {
-          agentId: "main",
-          canonicalKey: targetKey,
-          storeKeys: [targetKey],
-          storePath: "/fixture/sessions",
-          store: rows,
-        },
+        requesterTarget: { ...storeTarget(targetKey), storeKeys: [targetKey] },
         context: {
           callGateway,
           targetSessionKey: sourceKey,
@@ -317,11 +304,7 @@ describe("runAgentStep", () => {
           sendParams: {
             message: "request",
             agentId: "main",
-            inputProvenance: {
-              kind: "inter_session",
-              sourceTool: "sessions_send",
-              sourceSessionKey: targetKey,
-            },
+            inputProvenance,
             deliver: false,
             sourceReplyDeliveryMode: "message_tool_only",
           },
@@ -336,26 +319,13 @@ describe("runAgentStep", () => {
         });
         const followupGateway: AgentToolGatewayRequestCaller = async <T>(
           request: Parameters<AgentToolGatewayRequestCaller>[0],
-        ) =>
-          request.method === "agent.wait"
-            ? ({
-                status: "ok",
-                replyText: "completed peer result",
-                terminalReply: { disposition: "visible", text: "completed peer result" },
-              } as T)
-            : callGateway<T>(request);
+        ) => (request.method === "agent.wait" ? (reply as T) : callGateway<T>(request));
         await finishSessionsSendReply({
           start,
           registryCompletion: false,
           watchField: {},
           replyContext: { ...context, callGateway: followupGateway },
-          targetSession: {
-            agentId: "main",
-            canonicalKey: sourceKey,
-            storeKeys: [sourceKey],
-            storePath: "/fixture/sessions",
-            store: rows,
-          },
+          targetSession: { ...storeTarget(sourceKey), storeKeys: [sourceKey] },
           cfg: config,
           requesterAgentId: "main",
           promptedAt: Date.now(),
@@ -369,11 +339,7 @@ describe("runAgentStep", () => {
         await runSessionsSendA2AFlow({
           ...context,
           runId: "peer-run",
-          reply: {
-            status: "ok",
-            replyText: "completed peer result",
-            terminalReply: { disposition: "visible", text: "completed peer result" },
-          },
+          reply,
         });
       }
       expect(admitted).toHaveLength(1);
@@ -398,18 +364,8 @@ describe("runAgentStep", () => {
         await expect(
           prepareSessionsSendCommunication({
             config,
-            source: {
-              agentId: peerAgentId,
-              sessionKey: sourceKey,
-              storePath: "/fixture/sessions",
-              entry: source,
-            },
-            target: {
-              agentId: "main",
-              sessionKey: targetKey,
-              storePath: "/fixture/sessions",
-              entry: target,
-            },
+            source: peerEndpoint,
+            target: requester,
             message: "unsolicited reverse send",
             allowApproval: false,
             callGateway,

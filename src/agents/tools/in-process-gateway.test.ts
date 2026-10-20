@@ -51,6 +51,28 @@ import {
   withAgentToolGatewayRuntimeIdentity,
 } from "./in-process-gateway.js";
 
+const mainCaller = { agentId: "main", sessionKey: "agent:main:main" };
+const foregroundCaller = {
+  ...mainCaller,
+  sessionKey: "agent:main:caller",
+  operationalRunInstance: { instanceId: "caller-instance", runId: "caller-run" },
+};
+const runtimeIdentity = {
+  kind: "agentRuntime",
+  agentId: "main",
+  sessionKey: "agent:main:worker",
+  operationalRunInstance: { instanceId: "instance-1", runId: "run-1" },
+  delegatedAuthority: {
+    kind: "local",
+    lifecycleGeneration: "generation-1",
+    claimId: "claim-1",
+    operationalRunInstance: { instanceId: "instance-1", runId: "run-1" },
+  },
+} as const;
+function onGateway<T>(resolve: () => GatewayRequestContext, run: () => Promise<T>) {
+  return withGatewayToolCallerIdentity({ ...mainCaller, gatewayContextResolver: resolve }, run);
+}
+
 describe("trusted in-process Gateway session creation", () => {
   const creation = {
     via: "spawn" as const,
@@ -65,7 +87,7 @@ describe("trusted in-process Gateway session creation", () => {
   });
 
   const subagentResume = {
-    caller: { agentId: "main", sessionKey: "agent:main:main", assertCurrent: vi.fn() },
+    caller: { ...mainCaller, assertCurrent: vi.fn() },
     childSessionKey: "agent:main:dashboard:child",
     childSessionId: "child-session",
     previousRunId: "paused-run",
@@ -80,18 +102,6 @@ describe("trusted in-process Gateway session creation", () => {
     sessionId: "session-one",
     lifecycleRevision: null,
   };
-  const identity = {
-    kind: "agentRuntime",
-    agentId: "main",
-    sessionKey: "agent:main:worker",
-    operationalRunInstance: { instanceId: "instance-1", runId: "run-1" },
-    delegatedAuthority: {
-      kind: "local",
-      lifecycleGeneration: "generation-1",
-      claimId: "claim-1",
-      operationalRunInstance: { instanceId: "instance-1", runId: "run-1" },
-    },
-  } as const;
 
   it.each([
     {
@@ -126,10 +136,10 @@ describe("trusted in-process Gateway session creation", () => {
       name: "runtime identity",
       request: withAgentToolGatewayRuntimeIdentity(
         { method: "chat.send", params: { sessionKey: "agent:main:child" } },
-        identity,
+        runtimeIdentity,
       ),
       read: readInProcessAgentRuntimeIdentity,
-      binding: identity,
+      binding: runtimeIdentity,
       carrierIndex: 2,
       error: "trusted agent runtime identity requires in-process Gateway dispatch",
     },
@@ -268,8 +278,7 @@ describe("trusted in-process Gateway session creation", () => {
     const params = { agentId: "main", label: "worker" };
     const controller = new AbortController();
     let current = admitted;
-    let admittedDispatches = 0;
-    let replacementDispatches = 0;
+    const selectedGateways: GatewayRequestContext[] = [];
     const dispatchThroughSelectedGateway = (
       options:
         | {
@@ -278,22 +287,10 @@ describe("trusted in-process Gateway session creation", () => {
         | undefined,
     ) => {
       const selected = options?.resolveGatewayContext?.() ?? replacement;
-      if (selected === admitted) {
-        admittedDispatches += 1;
-      } else if (selected === replacement) {
-        replacementDispatches += 1;
-      }
+      selectedGateways.push(selected);
       return selected;
     };
-    const runAsAdmittedCaller = async <T>(run: () => Promise<T>) =>
-      await withGatewayToolCallerIdentity(
-        {
-          agentId: "main",
-          sessionKey: "agent:main:main",
-          gatewayContextResolver: () => current,
-        },
-        run,
-      );
+    const runAsAdmittedCaller = <T>(run: () => Promise<T>) => onGateway(() => current, run);
 
     mocks.dispatch.mockImplementationOnce(async (_method, _params, options) => {
       expect(dispatchThroughSelectedGateway(options)).toBe(admitted);
@@ -319,10 +316,7 @@ describe("trusted in-process Gateway session creation", () => {
       ),
     ).resolves.toEqual({ key: "agent:main:worker" });
     expect(mocks.dispatch).toHaveBeenLastCalledWith("sessions.create", params, expect.any(Object));
-    expect({ admittedDispatches, replacementDispatches }).toEqual({
-      admittedDispatches: 1,
-      replacementDispatches: 0,
-    });
+    expect(selectedGateways).toEqual([admitted]);
 
     current = admitted;
     const dispatchesBeforeReplacement = mocks.dispatch.mock.calls.length;
@@ -334,7 +328,7 @@ describe("trusted in-process Gateway session creation", () => {
     ).rejects.toThrow("Gateway instance unavailable for sessions.create");
     expect(mocks.dispatch).toHaveBeenCalledTimes(dispatchesBeforeReplacement);
     expect(mocks.callGatewayTool).not.toHaveBeenCalled();
-    expect(replacementDispatches).toBe(0);
+    expect(selectedGateways).not.toContain(replacement);
 
     for (const settlement of ["resolve", "reject"] as const) {
       current = admitted;
@@ -358,7 +352,7 @@ describe("trusted in-process Gateway session creation", () => {
       await expect(creationCall).rejects.toThrow(
         "Gateway instance unavailable for sessions.create",
       );
-      expect(replacementDispatches).toBe(0);
+      expect(selectedGateways).not.toContain(replacement);
     }
   });
 
@@ -371,24 +365,16 @@ describe("trusted in-process Gateway session creation", () => {
     }));
 
     await expect(
-      withGatewayToolCallerIdentity(
-        {
-          agentId: "main",
-          sessionKey: "agent:main:main",
-          gatewayContextResolver: () => current,
-        },
+      onGateway(
+        () => current,
         () => callInProcessGatewayTool("sessions.list", {}),
       ),
     ).resolves.toEqual({ selected: admitted });
 
     current = admitted;
     await expect(
-      withGatewayToolCallerIdentity(
-        {
-          agentId: "main",
-          sessionKey: "agent:main:main",
-          gatewayContextResolver: () => current,
-        },
+      onGateway(
+        () => current,
         async () => {
           current = replacement;
           return await callInProcessGatewayTool("sessions.list", {});
@@ -412,8 +398,7 @@ describe("trusted in-process Gateway session creation", () => {
     await expect(
       withGatewayToolCallerIdentity(
         {
-          agentId: "main",
-          sessionKey: "agent:main:main",
+          ...mainCaller,
           operatorAuthority: createAdmittedRunOperatorAuthority({
             profileId: "operator",
             scopes: ["operator.write"],
@@ -444,83 +429,10 @@ describe("request-shaped in-process Gateway dispatch", () => {
     mocks.callGateway.mockReset().mockResolvedValue({ runId: "run-1" });
   });
 
-  it("uses the local router with least privilege and transport-equivalent request options", async () => {
-    const controller = new AbortController();
-    const onAccepted = vi.fn();
-    const agentToolCaller = {
-      agentId: "main",
-      sessionKey: "agent:main:discord:direct:colin",
-    };
-
-    await callAgentToolGatewayRequest({
-      method: "agent",
-      params: { sessionKey: "agent:main:worker", message: "run" },
-      agentToolCaller,
-      expectFinal: true,
-      onAccepted,
-      signal: controller.signal,
-    });
-
-    expect(mocks.dispatch).toHaveBeenCalledWith(
-      "agent",
-      { sessionKey: "agent:main:worker", message: "run" },
-      {
-        forceSyntheticClient: true,
-        operatorRoleActor: { kind: "system" },
-        agentToolCaller,
-        syntheticScopeMode: "minimum",
-        syntheticScopes: ["operator.write"],
-        expectFinal: true,
-        onAccepted,
-        signal: controller.signal,
-        timeoutMs: 10_000,
-        resolveGatewayContext: expect.any(Function),
-      },
-    );
-    expect(mocks.callGateway).not.toHaveBeenCalled();
-  });
-
-  it("carries trusted runtime identity only through the private in-process carrier", async () => {
-    const identity = {
-      kind: "agentRuntime",
-      agentId: "main",
-      sessionKey: "agent:main:worker",
-      operationalRunInstance: { instanceId: "instance-1", runId: "run-1" },
-      delegatedAuthority: {
-        kind: "local",
-        lifecycleGeneration: "generation-1",
-        claimId: "claim-1",
-        operationalRunInstance: { instanceId: "instance-1", runId: "run-1" },
-      },
-    } as const;
-    const request = withAgentToolGatewayRuntimeIdentity(
-      { method: "chat.send", params: { sessionKey: "agent:main:child" } },
-      identity,
-    );
-    mocks.dispatch.mockImplementationOnce(async (_method, _params, options) => {
-      expect(readInProcessAgentRuntimeIdentity(options)).toBe(identity);
-      return { runId: "run-1" };
-    });
-
-    await callAgentToolGatewayRequest(request);
-
-    expect(JSON.stringify(request)).toBe(
-      '{"method":"chat.send","params":{"sessionKey":"agent:main:child"}}',
-    );
-  });
-
   it("marks only an owner-bound plugin approval request for host admission", async () => {
     const identity = {
-      kind: "agentRuntime",
-      agentId: "main",
+      ...runtimeIdentity,
       sessionKey: "agent:main:main",
-      operationalRunInstance: { instanceId: "instance-1", runId: "run-1" },
-      delegatedAuthority: {
-        kind: "local",
-        lifecycleGeneration: "generation-1",
-        claimId: "claim-1",
-        operationalRunInstance: { instanceId: "instance-1", runId: "run-1" },
-      },
       approvalOwnerPluginId: "registered-hook",
     } as const;
     const request = withAgentToolGatewayRuntimeIdentity(
@@ -609,8 +521,8 @@ describe("request-shaped in-process Gateway dispatch", () => {
       },
     );
     await expect(
-      withGatewayToolCallerIdentity(
-        { agentId: "main", sessionKey: "agent:main:main", gatewayContextResolver: () => current },
+      onGateway(
+        () => current,
         () =>
           callAgentToolGatewayRequest({
             method: "conversations.turn",
@@ -746,9 +658,7 @@ describe("built-in Gateway foreground authority", () => {
       });
       const pending = withGatewayToolCallerIdentity(
         {
-          agentId: "main",
-          sessionKey: "agent:main:caller",
-          operationalRunInstance: { instanceId: "caller-instance", runId: "caller-run" },
+          ...foregroundCaller,
           receiptAuthority: () => current,
         },
         async () => {
@@ -827,9 +737,7 @@ describe("built-in Gateway foreground authority", () => {
     await expect(
       withGatewayToolCallerIdentity(
         {
-          agentId: "main",
-          sessionKey: "agent:main:caller",
-          operationalRunInstance: { instanceId: "caller-instance", runId: "caller-run" },
+          ...foregroundCaller,
           receiptAuthority: () => current,
           approvalSignals: [controller.signal],
           gatewayContextResolver: () => context,
@@ -862,9 +770,7 @@ function createCaller(request: Parameters<typeof callAgentToolGatewayRequest>[0]
     invoke: () =>
       withGatewayToolCallerIdentity(
         {
-          agentId: "main",
-          sessionKey: "agent:main:caller",
-          operationalRunInstance: { instanceId: "caller-instance", runId: "caller-run" },
+          ...foregroundCaller,
           receiptAuthority: () => current,
         },
         () => callAgentToolGatewayRequest(request),

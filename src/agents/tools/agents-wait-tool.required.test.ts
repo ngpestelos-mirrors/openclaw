@@ -39,10 +39,22 @@ function selectRuns(ids: readonly string[]) {
     }),
   );
 }
-function preparedRuns(
-  read: () => ReadonlyMap<string, SubagentRunRecord>,
-): PreparedSubagentRunsRead {
-  return { consume: (consume) => ({ ready: true, value: consume(read()) }) };
+function preparedRuns(ids: readonly string[]): PreparedSubagentRunsRead {
+  return { consume: (consume) => ({ ready: true, value: consume(selectRuns(ids)) }) };
+}
+function observeRead() {
+  const read = createDeferred();
+  registryEvents.read.mockImplementation(async (ids) => {
+    read.resolve();
+    return preparedRuns(ids);
+  });
+  return read.promise;
+}
+function publishCompletion(entry: SubagentRunRecord) {
+  entry.collectorCompletion = { status: "failed" };
+  for (const listener of registryEvents.listeners) {
+    listener();
+  }
 }
 function createMainSessionWaitTool() {
   return createAgentsWaitTool({
@@ -56,9 +68,7 @@ describe("required collector completion", () => {
   beforeEach(() => {
     records.clear();
     registryEvents.listeners.clear();
-    registryEvents.read
-      .mockReset()
-      .mockImplementation(async (ids) => preparedRuns(() => selectRuns(ids)));
+    registryEvents.read.mockReset().mockImplementation(async (ids) => preparedRuns(ids));
   });
   it.each(["cell", "nested"])(
     "keeps sibling results owned with %s awaitResults until every completion arrives",
@@ -68,11 +78,7 @@ describe("required collector completion", () => {
       const second = collectorRun("second-required", "agent:main:main");
       records.set(first.runId, first);
       records.set(second.runId, second);
-      const read = createDeferred();
-      registryEvents.read.mockImplementation(async (ids) => {
-        read.resolve();
-        return preparedRuns(() => selectRuns(ids));
-      });
+      const read = observeRead();
       const h = createCodeModeHarness();
       applyCodeModeCatalog({ ...h.ctx, tools: [...h.tools, createMainSessionWaitTool()] });
       let settled = false;
@@ -87,16 +93,13 @@ describe("required collector completion", () => {
           return value;
         });
       try {
-        await read.promise;
+        await read;
         vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
         await vi.advanceTimersByTimeAsync(60_000);
         expect(settled).toBe(false);
         expect(registryEvents.read).toHaveBeenCalledOnce();
         second.completion = { required: false, resultText: "child failure evidence" };
-        second.collectorCompletion = { status: "failed" };
-        for (const listener of registryEvents.listeners) {
-          listener();
-        }
+        publishCompletion(second);
         vi.useRealTimers();
         await expect(result).resolves.toMatchObject({
           details: {
@@ -114,10 +117,7 @@ describe("required collector completion", () => {
         expect(registryEvents.listeners.size).toBe(0);
       } finally {
         vi.useRealTimers();
-        second.collectorCompletion = { status: "failed" };
-        for (const listener of registryEvents.listeners) {
-          listener();
-        }
+        publishCompletion(second);
         await result;
       }
     },
@@ -133,11 +133,7 @@ describe("required collector completion", () => {
       details: { success: false, errors: [{ runId: entry.runId, error: "not_owner" }] },
     });
     entry.swarmRequesterSessionKey = "agent:main:main";
-    const read = createDeferred();
-    registryEvents.read.mockImplementation(async (ids) => {
-      read.resolve();
-      return preparedRuns(() => selectRuns(ids));
-    });
+    const read = observeRead();
     const abort = new AbortController();
     const result = tool.execute(
       "required-abort",
@@ -145,7 +141,7 @@ describe("required collector completion", () => {
       abort.signal,
     );
     const rejected = expect(result).rejects.toThrow("agents_wait aborted");
-    await read.promise;
+    await read;
     abort.abort();
     await rejected;
     expect(registryEvents.listeners.size).toBe(0);

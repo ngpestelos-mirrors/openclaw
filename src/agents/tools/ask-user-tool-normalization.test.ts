@@ -2,19 +2,19 @@ import { Value } from "typebox/value";
 import { describe, expect, it } from "vitest";
 import { AskUserToolSchema, normalizeAskUserParams } from "./ask-user-tool-normalization.js";
 
-const validArgs = {
-  questions: [
-    {
-      id: "deploy_target",
-      header: "Deployment target",
-      question: "Where should this deploy?",
-      options: [
-        { label: "Staging (Recommended)", description: "Safer default" },
-        { label: "Production" },
-      ],
-    },
+const question = {
+  id: "deploy_target",
+  header: "Deployment target",
+  question: "Where should this deploy?",
+  options: [
+    { label: "Staging (Recommended)", description: "Safer default" },
+    { label: "Production" },
   ],
 };
+const validArgs = { questions: [question] };
+const withQuestion = (overrides: Partial<typeof question>) => ({
+  questions: [{ ...question, ...overrides }],
+});
 
 describe("ask_user normalization", () => {
   it("normalizes headers, forces free text, and clamps timeout", () => {
@@ -32,7 +32,7 @@ describe("ask_user normalization", () => {
     expect(Value.Check(AskUserToolSchema, validArgs)).toBe(true);
     expect(
       Value.Check(AskUserToolSchema, {
-        questions: [{ ...validArgs.questions[0], isSecret: true }],
+        questions: [{ ...question, isSecret: true }],
       }),
     ).toBe(false);
     expect(normalized.questions[0]).not.toHaveProperty("isSecret");
@@ -50,51 +50,25 @@ describe("ask_user normalization", () => {
     ["empty questions", { questions: [] }, "model-facing question contract"],
     [
       "too many questions",
-      { questions: Array.from({ length: 4 }, () => validArgs.questions[0]) },
+      { questions: Array.from({ length: 4 }, () => question) },
       "model-facing question contract",
     ],
     [
       "too few options",
-      { questions: [{ ...validArgs.questions[0], options: [{ label: "Only" }] }] },
+      withQuestion({ options: [{ label: "Only" }] }),
       "model-facing question contract",
     ],
-    [
-      "duplicate ids",
-      { questions: [validArgs.questions[0], validArgs.questions[0]] },
-      "duplicate question id 'deploy_target'",
-    ],
-    [
-      "invalid id",
-      { questions: [{ ...validArgs.questions[0], id: "Deploy Target" }] },
-      "model-facing question contract",
-    ],
-    [
-      "blank normalized header",
-      { questions: [{ ...validArgs.questions[0], header: "   " }] },
-      "model-facing display contract",
-    ],
+    ["duplicate ids", { questions: [question, question] }, "duplicate question id 'deploy_target'"],
+    ["invalid id", withQuestion({ id: "Deploy Target" }), "model-facing question contract"],
+    ["blank normalized header", withQuestion({ header: "   " }), "model-facing display contract"],
     [
       "long normalized option label",
-      {
-        questions: [
-          {
-            ...validArgs.questions[0],
-            options: [{ label: "x".repeat(65) }, { label: "Production" }],
-          },
-        ],
-      },
+      withQuestion({ options: [{ label: "x".repeat(65) }, { label: "Production" }] }),
       "model-facing display contract",
     ],
     [
       "duplicate normalized option labels",
-      {
-        questions: [
-          {
-            ...validArgs.questions[0],
-            options: [{ label: "Staging" }, { label: " staging " }],
-          },
-        ],
-      },
+      withQuestion({ options: [{ label: "Staging" }, { label: " staging " }] }),
       "duplicate option label",
     ],
   ])("rejects %s", (_name, args, error) => {
