@@ -3,6 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import type { AgentMessage } from "openclaw/plugin-sdk/agent-core";
 import { describe, expect, it, vi } from "vitest";
+import { makeTextToolResult } from "../../../../test/helpers/text-tool-result.js";
 import {
   appendTranscriptMessage,
   createSessionEntryWithTranscript,
@@ -16,8 +17,6 @@ import {
   completedStream,
   contextEngineInfo,
   createTestContextEngine,
-  expectFields,
-  findRecord,
   mockParams,
   requireRecord,
   requireRecords,
@@ -40,15 +39,23 @@ const doneMessage = { role: "assistant", content: "done", timestamp: 2 } as unkn
 
 const sessionKey = "agent:main:guildchat:channel:test-ctx-engine";
 const { hoisted, runAttempt, tempPaths } = useContextEngineAttemptHarness(sessionKey);
+const visibleAsk = { prompt: "visible ask", transcriptPrompt: "visible ask" };
+const interSession = {
+  kind: "inter_session" as const,
+  sourceSessionKey: "agent:main:discord:source",
+  sourceTool: "sessions_send",
+};
+const emptySchema = { type: "object", properties: {} };
+const clientTool = (name: string) => ({
+  type: "function" as const,
+  function: { name, parameters: emptySchema },
+});
 
 function makeTool(
   name: string,
   label: string,
   description: string,
-  parameters = {
-    type: "object",
-    properties: {},
-  },
+  parameters = emptySchema,
   result = "ok",
 ) {
   return { name, label, description, parameters, execute: async () => ({ text: result }) };
@@ -122,22 +129,15 @@ function signedAssistant(
   } as AgentMessage;
 }
 
-type TrajectoryEvent = { type?: string; data?: Record<string, unknown> };
-async function readTrajectoryEvents(paths: string[]): Promise<TrajectoryEvent[]> {
-  const workspaceDir = paths[0];
-  if (!workspaceDir) {
-    throw new Error("missing trajectory workspace path");
-  }
-  return hoisted.trajectoryEvents.filter((event) => event.workspaceDir === workspaceDir);
+function trajectoryEvent(type: string) {
+  return hoisted.trajectoryEvents.find(
+    (event) => event.workspaceDir === tempPaths[0] && event.type === type,
+  );
 }
 
 describe("runEmbeddedAttempt context engine sessionKey forwarding", () => {
   it("forwards the normalized message channel to the embedded subscription", async () => {
-    await runAttempt({
-      attemptOverrides: {
-        messageChannel: "TELEGRAM",
-      },
-    });
+    await runAttempt({ attemptOverrides: { messageChannel: "TELEGRAM" } });
 
     const subscriptionParams = requireRecord(
       hoisted.subscribeEmbeddedAgentSessionMock.mock.calls[0]?.[0],
@@ -153,20 +153,8 @@ describe("runEmbeddedAttempt context engine sessionKey forwarding", () => {
       contextEngine,
       attemptOverrides: {
         disableTools: false,
-        config: {
-          tools: {
-            toolSearch: { enabled: true, mode: "directory" },
-          },
-        } as OpenClawConfig,
-        clientTools: [
-          {
-            type: "function",
-            function: {
-              name: "memory_search",
-              parameters: { type: "object", properties: {} },
-            },
-          },
-        ],
+        config: { tools: { toolSearch: { enabled: true, mode: "directory" } } } as OpenClawConfig,
+        clientTools: [clientTool("memory_search")],
       },
     });
 
@@ -180,35 +168,18 @@ describe("runEmbeddedAttempt context engine sessionKey forwarding", () => {
     const storeDir = await fs.mkdtemp(path.join(os.tmpdir(), "openclaw-ctx-engine-sqlite-"));
     tempPaths.push(storeDir);
     const storePath = path.join(storeDir, "sessions.json");
-    const created = await createSessionEntryWithTranscript(
-      {
-        agentId: "main",
-        sessionKey,
-        storePath,
-      },
-      () => ({
-        ok: true,
-        entry: {
-          sessionId: embeddedSessionId,
-          updatedAt: Date.now(),
-        },
-      }),
-    );
+    const scope = { agentId: "main", sessionId: embeddedSessionId, sessionKey, storePath };
+    const created = await createSessionEntryWithTranscript(scope, () => ({
+      ok: true,
+      entry: { sessionId: embeddedSessionId, updatedAt: Date.now() },
+    }));
     if (!created.ok) {
       throw new Error(`failed to create SQLite session entry: ${created.error}`);
     }
-    await appendTranscriptMessage(
-      {
-        agentId: "main",
-        sessionId: embeddedSessionId,
-        sessionKey,
-        storePath,
-      },
-      {
-        message: { role: "user", content: "persisted SQLite prompt" },
-        now: Date.now(),
-      },
-    );
+    await appendTranscriptMessage(scope, {
+      message: { role: "user", content: "persisted SQLite prompt" },
+      now: Date.now(),
+    });
     const bootstrap = vi.fn(async () => ({ bootstrapped: true }));
     const assemble = vi.fn(async ({ messages }: { messages: AgentMessage[] }) => ({
       messages,
@@ -219,12 +190,7 @@ describe("runEmbeddedAttempt context engine sessionKey forwarding", () => {
       contextEngine: createTestContextEngine({ bootstrap, assemble }),
       attemptOverrides: {
         sessionFile: created.sessionFile,
-        sessionTarget: {
-          agentId: "main",
-          sessionId: embeddedSessionId,
-          sessionKey,
-          storePath,
-        },
+        sessionTarget: scope,
       },
     });
 
@@ -244,12 +210,8 @@ describe("runEmbeddedAttempt context engine sessionKey forwarding", () => {
         agentId: "ops",
         disableTools: false,
         config: {
-          tools: {
-            codeMode: { enabled: false },
-          },
-          agents: {
-            entries: { ops: { tools: { codeMode: true } } },
-          },
+          tools: { codeMode: { enabled: false } },
+          agents: { entries: { ops: { tools: { codeMode: true } } } },
         } as OpenClawConfig,
         model: {
           api: "openai-chatgpt-responses",
@@ -348,12 +310,7 @@ describe("runEmbeddedAttempt context engine sessionKey forwarding", () => {
     await runAttempt({
       attemptOverrides: {
         disableTools: false,
-        config: {
-          tools: {
-            codeMode: { enabled: false },
-            toolSearch: false,
-          },
-        } as OpenClawConfig,
+        config: { tools: { codeMode: { enabled: false }, toolSearch: false } } as OpenClawConfig,
       },
       sessionPrompt: async (session) => {
         activeToolNames.push(session.getActiveToolNames());
@@ -414,9 +371,7 @@ describe("runEmbeddedAttempt context engine sessionKey forwarding", () => {
           input: ["text"],
         } as never,
         runtimePlan: {
-          prompt: {
-            resolveSystemPromptContribution: () => undefined,
-          },
+          prompt: { resolveSystemPromptContribution: () => undefined },
           transcript: {
             resolvePolicy: () => ({
               sanitizeMode: "full",
@@ -432,25 +387,15 @@ describe("runEmbeddedAttempt context engine sessionKey forwarding", () => {
               allowSyntheticToolResults: false,
             }),
           },
-          transport: {
-            extraParams: {},
-            resolveExtraParams: () => ({}),
-          },
-          tools: {
-            normalize: (tools: unknown[]) => tools,
-            logDiagnostics: () => {},
-          },
+          transport: { extraParams: {}, resolveExtraParams: () => ({}) },
+          tools: { normalize: (tools: unknown[]) => tools, logDiagnostics: () => {} },
           auth: {
             providerForAuth: "anthropic",
             authProfileProviderForAuth: "",
             forwardedAuthProfileId: undefined,
           },
-          delivery: {
-            resolveFollowupRoute: () => undefined,
-          },
-          outcome: {
-            classifyRunResult: () => undefined,
-          },
+          delivery: { resolveFollowupRoute: () => undefined },
+          outcome: { classifyRunResult: () => undefined },
           observability: {
             resolvedRef: "anthropic/claude-sonnet-4-6",
             provider: "anthropic",
@@ -531,8 +476,7 @@ describe("runEmbeddedAttempt context engine sessionKey forwarding", () => {
         config: {
           agents: { defaults: { bootstrapMaxChars: 50, bootstrapTotalMaxChars: 50 } },
         } as OpenClawConfig,
-        prompt: "visible ask",
-        transcriptPrompt: "visible ask",
+        ...visibleAsk,
       },
       sessionPrompt,
     });
@@ -555,8 +499,7 @@ describe("runEmbeddedAttempt context engine sessionKey forwarding", () => {
 
     await runAttempt({
       attemptOverrides: {
-        prompt: "visible ask",
-        transcriptPrompt: "visible ask",
+        ...visibleAsk,
         trigger: "user",
         workspaceDir,
       },
@@ -585,8 +528,7 @@ describe("runEmbeddedAttempt context engine sessionKey forwarding", () => {
 
     await runAttempt({
       attemptOverrides: {
-        prompt: "visible ask",
-        transcriptPrompt: "visible ask",
+        ...visibleAsk,
         trigger: "user",
       },
     });
@@ -641,9 +583,8 @@ describe("runEmbeddedAttempt context engine sessionKey forwarding", () => {
     expect(mockParams(hoisted.detectAndLoadPromptImagesMock).prompt).toBe(
       "Continue the OpenClaw runtime event.",
     );
-    const trajectoryEvents = await readTrajectoryEvents(tempPaths);
-    const promptSubmitted = trajectoryEvents.find((event) => event.type === "prompt.submitted");
-    const contextCompiled = trajectoryEvents.find((event) => event.type === "context.compiled");
+    const promptSubmitted = trajectoryEvent("prompt.submitted");
+    const contextCompiled = trajectoryEvent("context.compiled");
     for (const text of ["dynamic hook context", "dynamic hook tail"]) {
       expect(JSON.stringify(seen.modelMessages)).toContain(text);
       expect(contextCompiled?.data?.prompt).toContain(text);
@@ -675,16 +616,11 @@ describe("runEmbeddedAttempt context engine sessionKey forwarding", () => {
 
       const result = await runAttempt({
         attemptOverrides: {
-          prompt: "visible ask",
+          ...visibleAsk,
           runtimeContextFragments: [
             { kind: "runtime-instruction", text: "secret runtime context" },
           ],
-          transcriptPrompt: "visible ask",
-          inputProvenance: {
-            kind: "inter_session",
-            sourceSessionKey: "agent:main:discord:source",
-            sourceTool: "sessions_send",
-          },
+          inputProvenance: interSession,
         },
         sessionPrompt,
       });
@@ -743,8 +679,7 @@ describe("runEmbeddedAttempt context engine sessionKey forwarding", () => {
     expect(seen.prompt).toContain("orphaned ask");
     expect(seen.prompt).not.toContain("internal heartbeat event");
     expect(result.finalPromptText).toBe(seen.prompt);
-    const trajectoryEvents = await readTrajectoryEvents(tempPaths);
-    const contextCompiled = trajectoryEvents.find((event) => event.type === "context.compiled");
+    const contextCompiled = trajectoryEvent("context.compiled");
     const runtimeContext = runtimeContextMessage(seen.messages);
     expect(runtimeContext.content).toContain("internal heartbeat event");
     expect(contextCompiled?.data?.systemPrompt).not.toContain("internal heartbeat event");
@@ -769,18 +704,12 @@ describe("runEmbeddedAttempt context engine sessionKey forwarding", () => {
     expect(result.finalPromptText).toBeUndefined();
     expect(projectAgentRunAttemptTerminal(result.terminal).promptError).toBeNull();
     expect(result.messagesSnapshot).toHaveLength(1);
-    expectFields(requireRecord(result.messagesSnapshot[0], "messages snapshot seed"), {
+    expect(result.messagesSnapshot[0]).toMatchObject({
       role: "user",
       content: "seed",
     });
-    const trajectoryEvents = await readTrajectoryEvents(tempPaths);
-    expect(trajectoryEvents.some((event) => event.type === "prompt.submitted")).toBe(false);
-    const skipped = findRecord(
-      trajectoryEvents as Array<Record<string, unknown>>,
-      (event) => event.type === "prompt.skipped",
-      "prompt skipped event",
-    );
-    expect(requireRecord(skipped.data, "prompt skipped data").reason).toBe("blank_user_prompt");
+    expect(trajectoryEvent("prompt.submitted")).toBeUndefined();
+    expect(trajectoryEvent("prompt.skipped")?.data?.reason).toBe("blank_user_prompt");
   });
 
   it("releases the initial session lock before before_agent_run block finalizers", async () => {
@@ -939,20 +868,8 @@ describe("runEmbeddedAttempt context engine sessionKey forwarding", () => {
       attemptOverrides: {
         promptMode: "none",
         disableTools: true,
-        clientTools: [
-          {
-            type: "function",
-            function: {
-              name: "unsafe_client_tool",
-              parameters: { type: "object", properties: {} },
-            },
-          },
-        ],
-        inputProvenance: {
-          kind: "inter_session",
-          sourceSessionKey: "agent:main:discord:source",
-          sourceTool: "sessions_send",
-        },
+        clientTools: [clientTool("unsafe_client_tool")],
+        inputProvenance: interSession,
       },
       sessionPrompt,
     });
@@ -970,7 +887,7 @@ describe("runEmbeddedAttempt context engine sessionKey forwarding", () => {
     expect(result.messagesSnapshot).toHaveLength(1);
     const sessionOptions = mockParams(hoisted.createAgentSessionMock);
     expect(sessionOptions.customTools).toStrictEqual([]);
-    expectFields(requireRecord(result.messagesSnapshot[0], "gateway model snapshot"), {
+    expect(result.messagesSnapshot[0]).toMatchObject({
       role: "assistant",
       content: "pong",
     });
@@ -1119,14 +1036,9 @@ describe("runEmbeddedAttempt tool-result guard budget wiring", () => {
         content: [{ type: "toolCall", id: toolCallId, name: "process", input: {} }],
         timestamp: 2 + index * 2,
       } as unknown as AgentMessage);
-      sessionMessages.push({
-        role: "toolResult",
-        toolCallId,
-        toolName: "process",
-        content: [{ type: "text", text: `${index}: ${toolText}` }],
-        isError: false,
-        timestamp: 3 + index * 2,
-      } as AgentMessage);
+      sessionMessages.push(
+        makeTextToolResult(toolCallId, "process", `${index}: ${toolText}`, false, 3 + index * 2),
+      );
     }
     let submittedMessages: AgentMessage[] = [];
     let promptHandlerMessages: AgentMessage[] = [];
@@ -1152,16 +1064,15 @@ describe("runEmbeddedAttempt tool-result guard budget wiring", () => {
         };
         session.prompt = async (_prompt, options) => {
           for (let index = 0; index < 8; index += 1) {
-            session.messages.push({
-              role: "toolResult",
-              toolCallId: `current_call_${index}`,
-              toolName: "process",
-              content: [
-                { type: "text", text: `current ${index}: ${"current output ".repeat(3_000)}` },
-              ],
-              isError: false,
-              timestamp: 100 + index,
-            } as AgentMessage);
+            session.messages.push(
+              makeTextToolResult(
+                `current_call_${index}`,
+                "process",
+                `current ${index}: ${"current output ".repeat(3_000)}`,
+                false,
+                100 + index,
+              ),
+            );
           }
           promptHandlerMessages = session.messages.map((message) => message as AgentMessage);
           options?.preflightResult?.(true);

@@ -98,14 +98,7 @@ describe("embedded attempt context injection", () => {
       modelId: "gpt-test",
     });
 
-    const assembleInput = assemble.mock.calls.at(0)?.[0] as
-      | { messages?: AgentMessage[] }
-      | undefined;
-    const projectedMessages = assembleInput?.messages?.map((message) => ({
-      role: message.role,
-      content: (message as { content?: unknown }).content,
-    }));
-    expect(projectedMessages).toEqual([
+    expect(assemble.mock.calls[0]?.[0].messages).toMatchObject([
       { role: "user", content: "real question" },
       { role: "assistant", content: "real answer" },
     ]);

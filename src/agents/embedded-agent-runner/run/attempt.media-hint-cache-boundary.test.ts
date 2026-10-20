@@ -3,7 +3,7 @@ import {
   SYSTEM_PROMPT_CACHE_BOUNDARY,
   splitSystemPromptCacheBoundary,
 } from "@openclaw/ai/internal/shared";
-import { afterEach, beforeEach, describe, expect, it, onTestFinished, vi } from "vitest";
+import { afterEach, beforeEach, expect, it, onTestFinished, vi } from "vitest";
 import {
   clearRuntimeConfigSnapshot,
   setRuntimeConfigSnapshot,
@@ -42,11 +42,11 @@ const HOOK = "Static plugin guidance";
 const BASE = `Stable workspace prefix${SYSTEM_PROMPT_CACHE_BOUNDARY}Dynamic channel guidance`;
 const OVERRIDE = "Custom hook system prompt without a cache boundary";
 
-async function createTurnFixture(systemPromptOverride?: string) {
+async function createTurnFixture() {
   const config = {};
   setRuntimeConfigSnapshot(config);
   const { session, sessionManager, modelRegistry } = await createTestSession();
-  const runId = `media-cache-${systemPromptOverride ? "override" : "base"}`;
+  const runId = "media-cache-override";
   const admission = prepareSystemAgentRunAdmission(config, runId, "main", "media-cache-test");
   onTestFinished(() => {
     admission.close();
@@ -81,10 +81,11 @@ async function createTurnFixture(systemPromptOverride?: string) {
         pluginId: "cache-test",
         hookName: "before_prompt_build",
         source: "test",
-        handler: async () => ({ systemPrompt: systemPromptOverride, prependSystemContext: HOOK }),
+        handler: async () => ({ systemPrompt: OVERRIDE, prependSystemContext: HOOK }),
       },
     ],
   });
+  const common = { attempt, isRawModelRun: false, sessionAgentId: "main" };
   return async (progress?: string) => {
     vi.mocked(mediaTaskStatus.buildMediaTaskRuntimeContext).mockResolvedValue(
       progress
@@ -97,14 +98,12 @@ async function createTurnFixture(systemPromptOverride?: string) {
       session.agent.state.systemPrompt = next;
     };
     const prompt = await prepareEmbeddedAttemptPromptAssembly({
-      attempt,
+      ...common,
       activeSession: session,
       sessionManager,
       hookRunner,
       hookAgentId: "main",
       diagnosticTrace: { traceId: "11111111111111111111111111111111" },
-      isRawModelRun: false,
-      sessionAgentId: "main",
       runtimeModel: testModel.id,
       systemPromptText,
       hasBaselineTools: () => true,
@@ -113,7 +112,7 @@ async function createTurnFixture(systemPromptOverride?: string) {
       setLeasedSteering: vi.fn(),
     });
     return prepareEmbeddedAttemptPromptContext({
-      attempt,
+      ...common,
       capabilityToolNames: new Set(["image_generate"]),
       messages: session.messages,
       prompt,
@@ -121,39 +120,33 @@ async function createTurnFixture(systemPromptOverride?: string) {
         session.agent.state.messages = messages;
       },
       includeBoundaryTimestamp: false,
-      isRawModelRun: false,
-      sessionAgentId: "main",
       systemPromptText,
       toolResultPromptProjectionState: createToolResultPromptProjectionState(),
     });
   };
 }
 
-describe("#85203 media facts preserve the complete assembled system prompt", () => {
-  it("keeps static hooks and model identity stable with a marker-free hook override", async () => {
-    const prepareTurn = await createTurnFixture(OVERRIDE);
-    const rendering = await prepareTurn("Rendering image");
-    const encoding = await prepareTurn("Encoding image");
-    const idle = await prepareTurn();
+it("#85203 keeps static hooks and model identity stable with a marker-free hook override", async () => {
+  const prepareTurn = await createTurnFixture();
+  const rendering = await prepareTurn("Rendering image");
+  const encoding = await prepareTurn("Encoding image");
+  const idle = await prepareTurn();
 
-    expect(encoding.systemPromptForHook).toBe(rendering.systemPromptForHook);
-    expect(idle.systemPromptForHook).toBe(rendering.systemPromptForHook);
-    expect(rendering.runtimeContextMessageForCurrentTurn?.content).toContain(
-      'progress_json="Rendering image"',
-    );
-    expect(encoding.runtimeContextMessageForCurrentTurn?.content).toContain(
-      'progress_json="Encoding image"',
-    );
-    expect(idle.runtimeContextMessageForCurrentTurn?.content).toContain(
-      "tool=image_generate; none",
-    );
-    expect(rendering.systemPromptForHook).not.toContain("task=task-1");
+  expect(encoding.systemPromptForHook).toBe(rendering.systemPromptForHook);
+  expect(idle.systemPromptForHook).toBe(rendering.systemPromptForHook);
+  expect(
+    [rendering, encoding, idle].map((turn) => turn.runtimeContextMessageForCurrentTurn?.content),
+  ).toEqual([
+    expect.stringContaining('progress_json="Rendering image"'),
+    expect.stringContaining('progress_json="Encoding image"'),
+    expect.stringContaining("tool=image_generate; none"),
+  ]);
+  expect(rendering.systemPromptForHook).not.toContain("task=task-1");
 
-    const split = splitSystemPromptCacheBoundary(idle.systemPromptForHook);
-    expect(split).toBeDefined();
-    expect(split?.stablePrefix).toContain(HOOK);
-    expect(split?.stablePrefix).toContain(OVERRIDE);
-    expect(split?.stablePrefix).not.toContain("Current model identity:");
-    expect(split?.dynamicSuffix).toContain("Current model identity:");
-  });
+  const split = splitSystemPromptCacheBoundary(idle.systemPromptForHook);
+  expect(split).toBeDefined();
+  expect(split?.stablePrefix).toContain(HOOK);
+  expect(split?.stablePrefix).toContain(OVERRIDE);
+  expect(split?.stablePrefix).not.toContain("Current model identity:");
+  expect(split?.dynamicSuffix).toContain("Current model identity:");
 });

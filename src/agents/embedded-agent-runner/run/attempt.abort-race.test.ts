@@ -1,27 +1,11 @@
-import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { createDeferred } from "../../../../test/helpers/promise.js";
 import { buildAgentRunTerminalOutcomeFromAttempt } from "../../agent-run-terminal-outcome.js";
 import { createAgentCleanupScope } from "../../run-cleanup-timeout.js";
-import {
-  cleanupTempPaths,
-  createContextEngineAttemptRunner,
-  createContextEngineBootstrapAndAssemble,
-  getHoisted,
-  preloadRunEmbeddedAttemptForTests,
-  resetEmbeddedAttemptHarness,
-} from "./attempt-spawn-workspace.test-support.js";
-
-const hoisted = getHoisted();
-const tempPaths: string[] = [];
+import { useContextEngineAttemptHarness } from "./attempt-context-engine.test-support.js";
+const { hoisted, runAttempt } = useContextEngineAttemptHarness("agent:main:triage:cleanup");
 
 describe("runEmbeddedAttempt abort races", () => {
-  beforeAll(preloadRunEmbeddedAttemptForTests);
-  beforeEach(() => resetEmbeddedAttemptHarness());
-  afterEach(async () => {
-    await cleanupTempPaths(tempPaths);
-    tempPaths.length = 0;
-  });
-
   it.each([
     { stage: "projection", cleanupFails: false },
     { stage: "construction", cleanupFails: true },
@@ -59,10 +43,8 @@ describe("runEmbeddedAttempt abort races", () => {
         ];
       });
       const attempt = cleanupScope.run(() =>
-        createContextEngineAttemptRunner({
-          contextEngine: createContextEngineBootstrapAndAssemble(),
+        runAttempt({
           sessionKey: "agent:main:triage:failed-tool-preparation",
-          tempPaths,
           attemptOverrides: {
             oneShotCliRun: true,
             disableTools: false,
@@ -92,10 +74,7 @@ describe("runEmbeddedAttempt abort races", () => {
         expect(cleanup).toHaveBeenCalledExactlyOnceWith("error");
         held.resolve();
         const outcome = await result;
-        expect(outcome.kind).toBe("rejected");
-        if (outcome.kind === "rejected") {
-          expect(outcome.error).toBe(preparationError);
-        }
+        expect(outcome.kind === "rejected" ? outcome.error : undefined).toBe(preparationError);
         expect(cleanupScope.outcome).toBe(cleanupFails ? "uncertain" : "closed");
         expect(hoisted.createAgentSessionMock).not.toHaveBeenCalled();
       } finally {
@@ -119,10 +98,7 @@ describe("runEmbeddedAttempt abort races", () => {
       return [];
     });
     const attempt = cleanupScope.run(() =>
-      createContextEngineAttemptRunner({
-        contextEngine: createContextEngineBootstrapAndAssemble(),
-        sessionKey: "agent:main:triage:cleanup",
-        tempPaths,
+      runAttempt({
         sessionPrompt: async () => {
           vi.useFakeTimers();
         },
@@ -152,10 +128,8 @@ describe("runEmbeddedAttempt abort races", () => {
       waitForPendingEvents: async () => await pendingEvents.promise,
     }));
 
-    const attempt = createContextEngineAttemptRunner({
-      contextEngine: createContextEngineBootstrapAndAssemble(),
+    const attempt = runAttempt({
       sessionKey: "agent:main:telegram:direct:timeout",
-      tempPaths,
       sessionPrompt: async () => {},
       attemptOverrides: {
         timeoutMs: 20,
@@ -163,9 +137,6 @@ describe("runEmbeddedAttempt abort races", () => {
       },
     });
 
-    // The abort-blocked prompt release no longer unwinds the attempt: the run
-    // settles so after-turn side effects still fire, and the run-budget
-    // timeout attribution survives on the resolved terminal.
     const result = await attempt;
 
     expect(result.terminal).toMatchObject({ kind: "timeout" });

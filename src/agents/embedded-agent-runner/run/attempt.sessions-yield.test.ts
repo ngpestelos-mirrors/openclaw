@@ -1,6 +1,7 @@
 import path from "node:path";
 import { expectDefined } from "@openclaw/normalization-core";
-import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterAll, describe, expect, it, vi } from "vitest";
+import { makeTextToolResult } from "../../../../test/helpers/text-tool-result.js";
 import {
   appendTranscriptMessage,
   loadTranscriptEvents,
@@ -25,15 +26,8 @@ import type { AgentMessage } from "../../runtime/index.js";
 import { SessionManager } from "../../sessions/session-manager.js";
 import { makeAgentAssistantMessage } from "../../test-helpers/agent-message-fixtures.js";
 import { createSessionsYieldTool } from "../../tools/sessions-yield-tool.js";
+import { useContextEngineAttemptHarness } from "./attempt-context-engine.test-support.js";
 import { stripSessionsYieldArtifacts } from "./attempt-sessions-yield.js";
-import {
-  cleanupTempPaths,
-  createContextEngineAttemptRunner,
-  createContextEngineBootstrapAndAssemble,
-  getHoisted,
-  preloadRunEmbeddedAttemptForTests,
-  resetEmbeddedAttemptHarness,
-} from "./attempt-spawn-workspace.test-support.js";
 
 const interruptType = "openclaw.sessions_yield_interrupt";
 const tempDirs = useSessionStoreTempDirs(afterAll, "openclaw-sessions-yield-");
@@ -59,14 +53,7 @@ async function seed(
   assistantCount: number,
   includeInterrupt = true,
 ) {
-  const toolResult: AgentMessage = {
-    role: "toolResult",
-    toolCallId: "call-1",
-    toolName: "sessions_spawn",
-    content: [{ type: "text", text: "result" }],
-    isError: false,
-    timestamp: 1,
-  };
+  const toolResult = makeTextToolResult("call-1", "sessions_spawn", "result", false, 1);
   const assistants = Array.from({ length: assistantCount }, (_, index) =>
     makeAgentAssistantMessage({
       content: [{ type: "text", text: `assistant ${index}` }],
@@ -178,16 +165,10 @@ describe("stripSessionsYieldArtifacts", () => {
 });
 
 describe("runEmbeddedAttempt sessions_yield", () => {
-  const hoisted = getHoisted();
-  const harnessPaths: string[] = [];
-  beforeAll(preloadRunEmbeddedAttemptForTests);
-  beforeEach(() => resetEmbeddedAttemptHarness());
-  afterEach(async () => {
-    await cleanupTempPaths(harnessPaths.splice(0));
-  });
+  const sessionKey = "agent:main:sessions-yield-steer";
+  const { hoisted, runAttempt } = useContextEngineAttemptHarness(sessionKey);
 
   it("records the yield and keeps a steer that captured the ending turn queued", async () => {
-    const sessionKey = "agent:main:sessions-yield-steer";
     const runId = "sessions-yield-steer-run";
     const sessionSteer = vi.fn(async () => {});
     const yieldInterrupt = vi.fn();
@@ -196,10 +177,7 @@ describe("runEmbeddedAttempt sessions_yield", () => {
     let duringYield: { phase?: string; result?: unknown } | undefined;
     let steerOutcome: Promise<SessionControllerSteerResult> | undefined;
     let yieldOutcome: Promise<unknown> | undefined;
-    await createContextEngineAttemptRunner({
-      contextEngine: createContextEngineBootstrapAndAssemble(),
-      sessionKey,
-      tempPaths: harnessPaths,
+    await runAttempt({
       attemptOverrides: { disableTools: false, runId },
       sessionPrompt: async (session) => {
         session.steer = sessionSteer;
