@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { expect, test } from "vitest";
 import { startQaMockOpenAiServer } from "../extensions/qa-lab/api.js";
+import { buildMockOpenAiResponsesProvider } from "../src/gateway/test-openai-responses-model.js";
 import {
   createOpenClawTestInstance,
   type OpenClawTestInstance,
@@ -9,6 +10,7 @@ import { runQaGatewayFixture } from "./helpers/qa-gateway-cleanup.js";
 
 test("A2A completes correlated tasks under message-tool-only source policy", async () => {
   const model = await startQaMockOpenAiServer({ modelRefs: ["a2a-proof/a2a-proof"] });
+  const provider = buildMockOpenAiResponsesProvider(`${model.baseUrl}/v1`, "a2a-proof").config;
   let instance: OpenClawTestInstance | undefined;
   await runQaGatewayFixture(
     async () => {
@@ -41,22 +43,10 @@ test("A2A completes correlated tasks under message-tool-only source policy", asy
             mode: "replace",
             providers: {
               "a2a-proof": {
-                baseUrl: `${model.baseUrl}/v1`,
+                ...provider,
                 apiKey: "a2a-model-test-token",
-                api: "openai-responses",
                 request: { allowPrivateNetwork: true },
-                models: [
-                  {
-                    id: "a2a-proof",
-                    name: "A2A proof",
-                    api: "openai-responses",
-                    reasoning: false,
-                    input: ["text"],
-                    cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-                    contextWindow: 128_000,
-                    maxTokens: 4096,
-                  },
-                ],
+                models: [{ ...provider.models[0], name: "A2A proof" }],
               },
             },
           },

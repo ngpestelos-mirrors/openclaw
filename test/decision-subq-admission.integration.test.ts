@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import fs from "node:fs";
+import { json } from "node:stream/consumers";
 import { fileURLToPath } from "node:url";
 import * as ssrfRuntime from "openclaw/plugin-sdk/ssrf-runtime";
 import { expect, it, vi, type MockInstance } from "vitest";
@@ -74,39 +75,35 @@ it.each(changes)(
     fs.mkdirSync(emptyBundled);
     try {
       await withServer(
-        (request, response) => {
+        async (request, response) => {
           const incoming = {
             method: request.method,
             authorization: request.headers.authorization,
             body: undefined as unknown,
           };
           received.push(incoming);
-          const chunks: Buffer[] = [];
-          request.on("data", (chunk: Buffer) => chunks.push(chunk));
-          request.on("end", () => {
-            incoming.body = JSON.parse(Buffer.concat(chunks).toString("utf8"));
-            response.setHeader("content-type", "application/json");
-            response.end(
-              JSON.stringify({
-                model: "subq-snap-preview",
-                answers: {
-                  urgent: { type: "noul", noul: 0.9 },
-                  route: {
-                    type: "choice",
-                    choice: "support",
-                    probabilities: { support: 0.8, sales: 0.2 },
-                  },
-                  impact: {
-                    type: "score",
-                    score: 0.6,
-                    probabilities: { "0": 0.4, "1": 0.6 },
-                    legend: { "0": "Low", "1": "High" },
-                  },
+          incoming.body = await json(request);
+          response.setHeader("content-type", "application/json");
+          response.end(
+            JSON.stringify({
+              model: "subq-snap-preview",
+              answers: {
+                urgent: { type: "noul", noul: 0.9 },
+                route: {
+                  type: "choice",
+                  choice: "support",
+                  probabilities: { support: 0.8, sales: 0.2 },
                 },
-                usage: { input_tokens: 10, output_tokens: 0 },
-              }),
-            );
-          });
+                impact: {
+                  type: "score",
+                  score: 0.6,
+                  probabilities: { "0": 0.4, "1": 0.6 },
+                  legend: { "0": "Low", "1": "High" },
+                },
+              },
+              usage: { input_tokens: 10, output_tokens: 0 },
+            }),
+          );
         },
         async (baseUrl) => {
           const cfg: OpenClawConfig = {
@@ -162,17 +159,18 @@ it.each(changes)(
                 });
                 const manifest = metadata.byPluginId.get("subq");
                 assert(manifest);
-                const snapshot = await prepareSecretsRuntimeSnapshot({
-                  config: cfg,
-                  env: process.env,
-                  includeConfigRefs: true,
-                  includeAuthStoreRefs: false,
-                  manifestRegistry: resolveConfigWidePluginManifestRegistry({
+                const prepareSnapshot = (env: NodeJS.ProcessEnv) =>
+                  prepareSecretsRuntimeSnapshot({
                     config: cfg,
-                    env: process.env,
-                  }),
-                });
-                activateSecretsRuntimeSnapshot(snapshot);
+                    env,
+                    includeConfigRefs: true,
+                    includeAuthStoreRefs: false,
+                    manifestRegistry: resolveConfigWidePluginManifestRegistry({
+                      config: cfg,
+                      env: process.env,
+                    }),
+                  });
+                activateSecretsRuntimeSnapshot(await prepareSnapshot(process.env));
                 const secretRevision = getActiveSecretsRuntimeSnapshotRevision();
                 const runtimeConfig = getRuntimeConfigSnapshot();
                 assert(runtimeConfig);
@@ -294,12 +292,7 @@ it.each(changes)(
                     );
                   }
                   return change === "consumer-revoked"
-                    ? consumerApi.runtime.decisions.evaluate(batch, {
-                        purpose: "owner-proof",
-                        rubricVersion: "1",
-                        timeoutMs: 5000,
-                        signal: controller.signal,
-                      })
+                    ? consumerApi.runtime.decisions.evaluate(batch, options)
                     : tool.execute("owner-proof", batch, controller.signal);
                 };
                 pending = withGatewayToolCallerIdentity(
@@ -342,15 +335,9 @@ it.each(changes)(
                     expect(instance.owner?.revoked).toBe(true);
                   } else if (change === "secret-replaced") {
                     activateSecretsRuntimeSnapshot(
-                      await prepareSecretsRuntimeSnapshot({
-                        config: cfg,
-                        env: { ...process.env, SUBQ_API_KEY: "synthetic-subq-replacement" },
-                        includeConfigRefs: true,
-                        includeAuthStoreRefs: false,
-                        manifestRegistry: resolveConfigWidePluginManifestRegistry({
-                          config: cfg,
-                          env: process.env,
-                        }),
+                      await prepareSnapshot({
+                        ...process.env,
+                        SUBQ_API_KEY: "synthetic-subq-replacement",
                       }),
                     );
                     expect(getActiveSecretsRuntimeSnapshotRevision()).toBeGreaterThan(
@@ -365,12 +352,9 @@ it.each(changes)(
                   expect(controller.signal.aborted).toBe(false);
                   release.resolve();
                   const outcome = await settled;
-                  expect(received).toHaveLength(
-                    change === "allowed" || change === "core-allowed" ? 1 : 0,
-                  );
-                  expect(finalAdmission).toBe(
-                    change === "allowed" || change === "core-allowed" ? "allowed" : "rejected",
-                  );
+                  const allowed = change === "allowed" || change === "core-allowed";
+                  expect(received).toHaveLength(allowed ? 1 : 0);
+                  expect(finalAdmission).toBe(allowed ? "allowed" : "rejected");
                   if (change === "allowed") {
                     assert("result" in outcome);
                     const result = outcome.result as Awaited<ReturnType<typeof tool.execute>>;
@@ -385,10 +369,10 @@ it.each(changes)(
                     expect(received[0]).toMatchObject({
                       method: "POST",
                       authorization: "Bearer synthetic-subq-key",
-                    });
-                    expect(received[0]?.body).toMatchObject({
-                      model: "subq-snap-preview",
-                      questions: { urgent: { type: "noul" } },
+                      body: {
+                        model: "subq-snap-preview",
+                        questions: { urgent: { type: "noul" } },
+                      },
                     });
                   } else if (change === "core-allowed") {
                     expect(outcome).toMatchObject({
@@ -412,7 +396,6 @@ it.each(changes)(
                   credentialReady: change !== "secret-removed",
                   activeRequests: 0,
                 });
-                console.info(JSON.stringify({ change, finalAdmission, requests: received.length }));
               } finally {
                 release.resolve();
                 controller.abort();

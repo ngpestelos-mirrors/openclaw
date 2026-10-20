@@ -15,10 +15,6 @@ afterEach(async () => {
   await Promise.allSettled(instances.splice(0).map((instance) => instance.cleanup()));
 });
 
-function parseJson<T>(stdout: string): T {
-  return JSON.parse(stdout) as T;
-}
-
 describe("cron edit trigger preservation", () => {
   it(
     "validates locally and preserves trigger.once through the real Gateway after restart",
@@ -30,6 +26,12 @@ describe("cron edit trigger preservation", () => {
         env: { OPENCLAW_SKIP_CRON: "0" },
       });
       instances.push(instance);
+      const cron = (...args: string[]) => instance.cli(["cron", ...args]);
+      const cronJson = async <T = unknown>(...args: string[]): Promise<T> => {
+        const result = await cron(...args);
+        expect(result.code, result.stderr).toBe(0);
+        return JSON.parse(result.stdout) as T;
+      };
       const initialScriptPath = path.join(instance.homeDir, "initial-trigger.js");
       const replacementScriptPath = path.join(instance.homeDir, "replacement-trigger.js");
       const oversizedScriptPath = path.join(instance.homeDir, "oversized-trigger.js");
@@ -39,30 +41,24 @@ describe("cron edit trigger preservation", () => {
         fs.writeFile(oversizedScriptPath, "x".repeat(65_537), "utf8"),
       ]);
 
-      const invalid = await instance.cli([
-        "cron",
+      const invalid = await cron(
         "edit",
         "not-yet-created",
         "--trigger-script",
         oversizedScriptPath,
-      ]);
+      );
       expect(invalid.code).toBe(1);
       expect(invalid.stderr).toContain("Trigger script exceeds 65536 bytes");
       expect(invalid.stderr).not.toContain("ECONNREFUSED");
 
       await instance.startGateway();
-      const status = await instance.cli(["cron", "status", "--json"]);
-      expect(status.code, status.stderr).toBe(0);
-      const statusJson = parseJson<{
-        enabled: boolean;
-        storage: string;
-        sqlitePath: string;
-      }>(status.stdout);
-      expect(statusJson).toMatchObject({ enabled: true, storage: "sqlite" });
-      expect(statusJson.sqlitePath).toBe(path.join(instance.stateDir, "state", "openclaw.sqlite"));
+      expect(await cronJson("status", "--json")).toMatchObject({
+        enabled: true,
+        storage: "sqlite",
+        sqlitePath: path.join(instance.stateDir, "state", "openclaw.sqlite"),
+      });
 
-      const added = await instance.cli([
-        "cron",
+      const addedJob: CronJob = await cronJson(
         "add",
         "trigger-preservation",
         "--every",
@@ -75,24 +71,14 @@ describe("cron edit trigger preservation", () => {
         initialScriptPath,
         "--trigger-once",
         "--json",
-      ]);
-      expect(added.code, added.stderr).toBe(0);
-      const addedJob = parseJson<CronJob>(added.stdout);
+      );
 
-      const edited = await instance.cli([
-        "cron",
-        "edit",
-        addedJob.id,
-        "--trigger-script",
-        replacementScriptPath,
-      ]);
+      const edited = await cron("edit", addedJob.id, "--trigger-script", replacementScriptPath);
       expect(edited.code, edited.stderr).toBe(0);
 
       await instance.stopGateway();
       await instance.startGateway();
-      const readback = await instance.cli(["cron", "get", addedJob.id, "--json"]);
-      expect(readback.code, readback.stderr).toBe(0);
-      expect(parseJson<CronJob>(readback.stdout).trigger).toEqual({
+      expect((await cronJson<CronJob>("get", addedJob.id, "--json")).trigger).toEqual({
         script: "return { fire: true };",
         once: true,
       });

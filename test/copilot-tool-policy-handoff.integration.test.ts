@@ -131,27 +131,20 @@ describe("Copilot tool policy handoff", () => {
       { sessionId, updatedAt: 1 },
     );
 
-    const created = await runCopilotHarnessTurn({
-      policy: testCase.policy,
-      runId: `${sessionId}-create`,
-      sessionId,
-      workspaceDir,
-    });
-    const resumed = await runCopilotHarnessTurn({
-      policy: testCase.policy,
-      runId: `${sessionId}-resume`,
-      sessionId,
-      workspaceDir,
-    });
-
-    expect(created.terminal).toEqual({ kind: "ok" });
-    expect(resumed.terminal).toEqual({ kind: "ok" });
+    for (const phase of ["create", "resume"]) {
+      const result = await runCopilotHarnessTurn({
+        policy: testCase.policy,
+        runId: `${sessionId}-${phase}`,
+        sessionId,
+        workspaceDir,
+      });
+      expect(result.terminal).toEqual({ kind: "ok" });
+    }
     expect(fixture.createConfigs).toHaveLength(1);
     expect(fixture.resumeConfigs).toHaveLength(1);
     for (const config of [...fixture.createConfigs, ...fixture.resumeConfigs]) {
       if (testCase.restricted) {
-        expect(config.toolNames).toEqual([]);
-        expect(config.availableTools).toEqual([]);
+        expect(config).toMatchObject({ toolNames: [], availableTools: [] });
       } else {
         expect(config.toolNames).toContain("write");
         expect(config.writeHandler).toBe(true);

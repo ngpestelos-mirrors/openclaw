@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import dns from "node:dns/promises";
 import fs from "node:fs";
+import { json } from "node:stream/consumers";
 import { fileURLToPath } from "node:url";
 import * as ssrfRuntime from "openclaw/plugin-sdk/ssrf-runtime";
 import { expect, it, vi } from "vitest";
@@ -59,27 +60,23 @@ it.each(["allowed", "revoked", "replaced", "image-allowed", "box-unsupported"] a
         agentId,
       );
       await withServer(
-        (request, response) => {
+        async (request, response) => {
           const incoming = {
             url: request.url,
             authorization: request.headers.authorization,
             body: undefined as unknown,
           };
           received.push(incoming);
-          const chunks: Buffer[] = [];
-          request.on("data", (chunk: Buffer) => chunks.push(chunk));
-          request.on("end", () => {
-            incoming.body = JSON.parse(Buffer.concat(chunks).toString("utf8"));
-            response.setHeader("content-type", "application/json");
-            response.end(
-              JSON.stringify({
-                id: "q",
-                kind: "yesno",
-                result: { answer: "yes", probability: 0.9 },
-                meta: { model: "levanto-sage", usage: { input_tokens: 5, output_tokens: 1 } },
-              }),
-            );
-          });
+          incoming.body = await json(request);
+          response.setHeader("content-type", "application/json");
+          response.end(
+            JSON.stringify({
+              id: "q",
+              kind: "yesno",
+              result: { answer: "yes", probability: 0.9 },
+              meta: { model: "levanto-sage", usage: { input_tokens: 5, output_tokens: 1 } },
+            }),
+          );
         },
         async (baseUrl) => {
           const cfg: OpenClawConfig = {
@@ -250,10 +247,9 @@ it.each(["allowed", "revoked", "replaced", "image-allowed", "box-unsupported"] a
                       status: "unavailable",
                       reason: "unsupported-input",
                     });
-                    expect(auth).not.toHaveBeenCalled();
-                    expect(adapter).not.toHaveBeenCalled();
-                    expect(probe).not.toHaveBeenCalled();
-                    expect(forwarding).not.toHaveBeenCalled();
+                    for (const spy of [auth, adapter, probe, forwarding]) {
+                      expect(spy).not.toHaveBeenCalled();
+                    }
                     expect(received).toHaveLength(0);
                     return;
                   }
@@ -313,22 +309,13 @@ it.each(["allowed", "revoked", "replaced", "image-allowed", "box-unsupported"] a
                   } else {
                     expect(outcome).toMatchObject({ error: new DecisionContractError() });
                   }
-                  console.info(
-                    JSON.stringify({
-                      change,
-                      generationCurrent: prepared.snapshot.isCurrent(),
-                      finalAdmission,
-                      requests: received.length,
-                    }),
-                  );
                 } finally {
                   release.resolve();
                   controller.abort();
                   await settled;
-                  forwarding.mockRestore();
-                  adapter.mockRestore();
-                  probe.mockRestore();
-                  auth.mockRestore();
+                  for (const spy of [forwarding, adapter, probe, auth]) {
+                    spy.mockRestore();
+                  }
                 }
               } finally {
                 prepareDecisionProviderReload(builder.registry, new Set([record.id]));

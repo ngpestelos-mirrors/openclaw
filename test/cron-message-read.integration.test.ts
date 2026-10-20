@@ -66,6 +66,25 @@ const originalCreatorId = "100000000000000008";
 const channelManagementRole = "100000000000000006";
 const acceptedTopic = "Topic authorized for the recorded requester";
 const deniedTopic = "Topic requiring a fresh permission check";
+const channelPath = `/api/v10/channels/${channelId}`;
+const channelInfo = { id: channelId, guild_id: guildId, type: 0, name: "scheduled-read" };
+const discordMessage = {
+  id: messageId,
+  channel_id: channelId,
+  content: providerMessage,
+  author: { id: nativeRequesterId, username: "synthetic", discriminator: "0" },
+  timestamp: "2026-09-16T09:00:00.000Z",
+  type: 0,
+  attachments: [],
+  embeds: [],
+};
+const discordRequest = (method: string, suffix = "") => ({
+  method,
+  path: `${channelPath}${suffix}`,
+  authorizationMatches: true,
+});
+const contentText = (response: McpResponse) =>
+  response.result?.content?.find((item) => item.type === "text")?.text;
 type ScheduledMessageScenario = {
   title: string;
   runtime: "claude-cli" | "openclaw";
@@ -410,7 +429,7 @@ describe("scheduled message actions", () => {
               req.headers.authorization === `Bot ${expectedProviderToken}`;
             requests.push({ method: req.method ?? "", path: url.pathname, authorizationMatches });
             expect(authorizationMatches, "Discord fixture authorization matches").toBe(true);
-            if (req.method === "PATCH" && url.pathname === `/api/v10/channels/${channelId}`) {
+            if (req.method === "PATCH" && url.pathname === channelPath) {
               const edit: unknown = await readJson(req);
               edits.push(edit);
               expect(edit).toEqual({ topic: expectedTopic });
@@ -431,38 +450,17 @@ describe("scheduled message actions", () => {
                 // Each edit must use B's current permissions, independent of attribution A.
                 requesterPermissions = 0n;
               }
-              res.writeHead(200, { "content-type": "application/json" }).end(
-                JSON.stringify({
-                  id: channelId,
-                  type: 0,
-                  guild_id: guildId,
-                  name: "scheduled-read",
-                  topic: expectedTopic,
-                }),
-              );
+              res
+                .writeHead(200, { "content-type": "application/json" })
+                .end(JSON.stringify({ ...channelInfo, topic: expectedTopic }));
               return;
             }
             expect(req.method).toBe("GET");
             let body: unknown =
-              url.pathname === `/api/v10/channels/${channelId}`
-                ? { id: channelId, type: 0, guild_id: guildId, name: "scheduled-read" }
-                : url.pathname === `/api/v10/channels/${channelId}/messages`
-                  ? [
-                      {
-                        id: messageId,
-                        channel_id: channelId,
-                        content: providerMessage,
-                        author: {
-                          id: "100000000000000009",
-                          username: "synthetic",
-                          discriminator: "0",
-                        },
-                        timestamp: "2026-09-16T09:00:00.000Z",
-                        type: 0,
-                        attachments: [],
-                        embeds: [],
-                      },
-                    ]
+              url.pathname === channelPath
+                ? channelInfo
+                : url.pathname === `${channelPath}/messages`
+                  ? [discordMessage]
                   : undefined;
             if (nativeCreator && url.pathname === `/api/v10/guilds/${guildId}`) {
               body = {
@@ -758,9 +756,7 @@ describe("scheduled message actions", () => {
           );
           expect(creation.reply.error, diagnostics(creation.reply)).toBeUndefined();
           expect(creation.reply.result?.isError, diagnostics(creation.reply)).toBe(false);
-          const response: unknown = JSON.parse(
-            creation.reply.result?.content?.find((item) => item.type === "text")?.text ?? "null",
-          );
+          const response: unknown = JSON.parse(contentText(creation.reply) ?? "null");
           if (!isRecord(response) || typeof response.id !== "string") {
             throw new Error(
               diagnostics({ creation, reason: "automation creation returned no job id" }),
@@ -818,7 +814,6 @@ describe("scheduled message actions", () => {
             },
             createdActor: { id: originalCreatorId },
           });
-          expect(job.payload.toolsAllow).toEqual(["message"]);
           expect(job.payload.toolsAllowIsDefault).toBeUndefined();
         } else if (creator === "trusted") {
           expect(job.scheduledToolPolicy).toEqual({ version: 1, mode: "trusted" });
@@ -845,7 +840,7 @@ describe("scheduled message actions", () => {
             accountId: "other",
           });
         }
-        expect(job).toMatchObject({ payload: { toolsAllow: ["message"] } });
+        expect(job.payload.toolsAllow).toEqual(["message"]);
         expect(
           await gateway.client.request("cron.run", { id: job.id, mode: "force" }),
         ).toMatchObject({ ok: true, enqueued: true });
@@ -932,13 +927,9 @@ describe("scheduled message actions", () => {
           expect(observation.reply.result?.isError, diagnostics(observation.reply)).toBe(
             disableBeforeResponse === 429,
           );
-          text = observation.reply.result?.content?.find((item) => item.type === "text")?.text;
+          text = contentText(observation.reply);
           if (nativeCreator) {
-            expect(requests).toContainEqual({
-              method: "GET",
-              path: `/api/v10/channels/${channelId}`,
-              authorizationMatches: true,
-            });
+            expect(requests).toContainEqual(discordRequest("GET"));
             expect(requests).toContainEqual({
               method: "GET",
               path: `/api/v10/guilds/${guildId}/members/${nativeRequesterId}`,
@@ -968,25 +959,13 @@ describe("scheduled message actions", () => {
         }
         if (action === "channel-edit") {
           expect(requests.filter((request) => request.method === "PATCH")).toEqual([
-            {
-              method: "PATCH",
-              path: `/api/v10/channels/${channelId}`,
-              authorizationMatches: true,
-            },
+            discordRequest("PATCH"),
           ]);
           expect(edits).toEqual([{ topic: expectedTopic }]);
         } else {
-          expect(requests).toContainEqual({
-            method: "GET",
-            path: `/api/v10/channels/${channelId}`,
-            authorizationMatches: true,
-          });
+          expect(requests).toContainEqual(discordRequest("GET"));
           if (action === "read") {
-            expect(requests).toContainEqual({
-              method: "GET",
-              path: `/api/v10/channels/${channelId}/messages`,
-              authorizationMatches: true,
-            });
+            expect(requests).toContainEqual(discordRequest("GET", "/messages"));
           }
           expect(edits).toEqual([]);
         }
