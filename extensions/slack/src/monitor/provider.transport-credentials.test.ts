@@ -22,6 +22,30 @@ import { monitorSlackProvider } from "./provider.js";
 const inactiveSecret = { source: "env", provider: "default", id: "SLACK_UNUSED_SECRET" } as const;
 const signingSecret = "loopback-signing-secret";
 
+async function withMonitor(config: OpenClawConfig, use: () => Promise<void>, accountId?: string) {
+  const connected = createDeferred<void>();
+  const controller = new AbortController();
+  const run = monitorSlackProvider({
+    scheduler: createTestPluginServiceScheduler(),
+    config,
+    accountId,
+    abortSignal: controller.signal,
+    runtime: { log: vi.fn(), error: vi.fn(), exit: vi.fn() },
+    setStatus: (next) => {
+      if (next.connected === true) {
+        connected.resolve();
+      }
+    },
+  });
+  try {
+    await Promise.race([connected.promise, run]);
+    await use();
+  } finally {
+    controller.abort();
+    await run;
+  }
+}
+
 async function startSlackLoopback() {
   const registry = installSlackHttpTestRegistry();
   const handleSlackHttpRequest = createSlackHttpTestDispatcher(registry);
@@ -122,21 +146,7 @@ describe("Slack transport credential activation", () => {
               },
             },
           } satisfies OpenClawConfig;
-          const connected = createDeferred<void>();
-          const controller = new AbortController();
-          const run = monitorSlackProvider({
-            scheduler: createTestPluginServiceScheduler(),
-            config,
-            abortSignal: controller.signal,
-            runtime: { log: vi.fn(), error: vi.fn(), exit: vi.fn() },
-            setStatus: (next) => {
-              if (next.connected === true) {
-                connected.resolve();
-              }
-            },
-          });
-          try {
-            await Promise.race([connected.promise, run]);
+          await withMonitor(config, async () => {
             expect(loopback.registry.httpRoutes).toHaveLength(mode === "http" ? 1 : 0);
             expect(loopback.requests).toContain("/api/auth.test");
             if (mode === "socket") {
@@ -171,38 +181,21 @@ describe("Slack transport credential activation", () => {
               expect(await valid.text()).toContain("connected");
               expect((await postChallenge("v0=invalid")).status).toBe(401);
               expect((await postChallenge(`v0=${signature}`, "/slack/%65vents")).status).toBe(404);
-              const duplicateController = new AbortController();
-              const duplicateConnected = createDeferred<void>();
-              const duplicateRun = monitorSlackProvider({
-                scheduler: createTestPluginServiceScheduler(),
+              await withMonitor(
                 config,
-                accountId: "duplicate",
-                abortSignal: duplicateController.signal,
-                runtime: { log: vi.fn(), error: vi.fn(), exit: vi.fn() },
-                setStatus: (next) => {
-                  if (next.connected === true) {
-                    duplicateConnected.resolve();
-                  }
+                async () => {
+                  expect((await postChallenge(`v0=${signature}`)).status).toBe(200);
+                  const duplicateSignature = createHmac("sha256", "duplicate-signing-secret")
+                    .update(`v0:${timestamp}:${body}`)
+                    .digest("hex");
+                  expect((await postChallenge(`v0=${duplicateSignature}`)).status).toBe(401);
                 },
-              });
-              try {
-                await Promise.race([duplicateConnected.promise, duplicateRun]);
-                expect((await postChallenge(`v0=${signature}`)).status).toBe(200);
-                const duplicateSignature = createHmac("sha256", "duplicate-signing-secret")
-                  .update(`v0:${timestamp}:${body}`)
-                  .digest("hex");
-                expect((await postChallenge(`v0=${duplicateSignature}`)).status).toBe(401);
-              } finally {
-                duplicateController.abort();
-                await duplicateRun;
-              }
+                "duplicate",
+              );
               expect((await postChallenge(`v0=${signature}`)).status).toBe(200);
             }
-          } finally {
-            controller.abort();
-            await run;
-            expect(loopback.registry.httpRoutes).toHaveLength(0);
-          }
+          });
+          expect(loopback.registry.httpRoutes).toHaveLength(0);
         });
       } finally {
         await loopback.close();

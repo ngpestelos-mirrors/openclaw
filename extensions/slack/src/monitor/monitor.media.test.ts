@@ -1,4 +1,3 @@
-// Slack tests cover monitor.media plugin behavior.
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { resolveSlackThreadStarter } from "./thread.js";
 
@@ -9,13 +8,15 @@ let testWorkspaceSequence = 0;
 let testWorkspaceScope = { accountId: "test-0", teamId: "T0" };
 
 function resolveTestSlackThreadStarter(
-  params: Omit<ResolveSlackThreadStarterParams, "workspaceScope"> & {
-    workspaceScope?: ResolveSlackThreadStarterParams["workspaceScope"];
-  },
+  client: ThreadStarterClient,
+  overrides: Partial<Omit<ResolveSlackThreadStarterParams, "client">> = {},
 ) {
   return resolveSlackThreadStarter({
-    ...params,
-    workspaceScope: params.workspaceScope ?? testWorkspaceScope,
+    channelId: "C1",
+    threadTs: "1000.1",
+    workspaceScope: testWorkspaceScope,
+    client,
+    ...overrides,
   });
 }
 
@@ -47,16 +48,8 @@ describe("resolveSlackThreadStarter cache", () => {
   it("returns cached thread starter without refetching within ttl", async () => {
     const { replies, client } = createThreadStarterRepliesClient();
 
-    const first = await resolveTestSlackThreadStarter({
-      channelId: "C1",
-      threadTs: "1000.1",
-      client,
-    });
-    const second = await resolveTestSlackThreadStarter({
-      channelId: "C1",
-      threadTs: "1000.1",
-      client,
-    });
+    const first = await resolveTestSlackThreadStarter(client);
+    const second = await resolveTestSlackThreadStarter(client);
 
     expect(first).toEqual(second);
     expect(replies).toHaveBeenCalledTimes(1);
@@ -70,24 +63,11 @@ describe("resolveSlackThreadStarter cache", () => {
       messages: [{ text: "team two root", user: "U2", ts: "1000.1" }],
     });
 
-    const first = await resolveTestSlackThreadStarter({
-      channelId: "C1",
-      threadTs: "1000.1",
-      client: teamOne.client,
-      workspaceScope: { accountId: "account-one", teamId: "T1" },
-    });
-    const second = await resolveTestSlackThreadStarter({
-      channelId: "C1",
-      threadTs: "1000.1",
-      client: teamTwo.client,
-      workspaceScope: { accountId: "account-two", teamId: "T2" },
-    });
-    const cachedFirst = await resolveTestSlackThreadStarter({
-      channelId: "C1",
-      threadTs: "1000.1",
-      client: teamOne.client,
-      workspaceScope: { accountId: "account-one", teamId: "T1" },
-    });
+    const scopeOne = { workspaceScope: { accountId: "account-one", teamId: "T1" } };
+    const scopeTwo = { workspaceScope: { accountId: "account-two", teamId: "T2" } };
+    const first = await resolveTestSlackThreadStarter(teamOne.client, scopeOne);
+    const second = await resolveTestSlackThreadStarter(teamTwo.client, scopeTwo);
+    const cachedFirst = await resolveTestSlackThreadStarter(teamOne.client, scopeOne);
 
     expect(first?.text).toBe("team one root");
     expect(second?.text).toBe("team two root");
@@ -102,18 +82,10 @@ describe("resolveSlackThreadStarter cache", () => {
 
     const { replies, client } = createThreadStarterRepliesClient();
 
-    await resolveTestSlackThreadStarter({
-      channelId: "C1",
-      threadTs: "1000.1",
-      client,
-    });
+    await resolveTestSlackThreadStarter(client);
 
     vi.setSystemTime(new Date("2026-01-01T07:00:00.000Z"));
-    await resolveTestSlackThreadStarter({
-      channelId: "C1",
-      threadTs: "1000.1",
-      client,
-    });
+    await resolveTestSlackThreadStarter(client);
 
     expect(replies).toHaveBeenCalledTimes(2);
   });
@@ -123,16 +95,8 @@ describe("resolveSlackThreadStarter cache", () => {
       messages: [{ text: "   ", user: "U1", ts: "1000.1" }],
     });
 
-    const first = await resolveTestSlackThreadStarter({
-      channelId: "C1",
-      threadTs: "1000.1",
-      client,
-    });
-    const second = await resolveTestSlackThreadStarter({
-      channelId: "C1",
-      threadTs: "1000.1",
-      client,
-    });
+    const first = await resolveTestSlackThreadStarter(client);
+    const second = await resolveTestSlackThreadStarter(client);
 
     expect(first).toBeNull();
     expect(second).toBeNull();
@@ -143,19 +107,11 @@ describe("resolveSlackThreadStarter cache", () => {
     const { replies, client } = createThreadStarterRepliesClient();
 
     for (let i = 0; i <= 2000; i += 1) {
-      await resolveTestSlackThreadStarter({
-        channelId: "C1",
-        threadTs: `1000.${i}`,
-        client,
-      });
+      await resolveTestSlackThreadStarter(client, { threadTs: `1000.${i}` });
     }
     const callsAfterFill = replies.mock.calls.length;
 
-    await resolveTestSlackThreadStarter({
-      channelId: "C1",
-      threadTs: "1000.0",
-      client,
-    });
+    await resolveTestSlackThreadStarter(client, { threadTs: "1000.0" });
 
     expect(replies.mock.calls.length).toBe(callsAfterFill + 1);
   });
