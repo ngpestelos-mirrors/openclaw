@@ -11,7 +11,6 @@ const sandbox = (overrides: Partial<SandboxContext> = {}) =>
   createSandboxTestContext({
     overrides: {
       workspaceDir: "/tmp/openclaw-sandbox",
-      agentWorkspaceDir: "/tmp/openclaw-workspace",
       workspaceAccess: "none",
       browserAllowHostControl: true,
       browser: {
@@ -58,20 +57,11 @@ it("omits missing sandbox information", () => {
 it("maps sandbox context into prompt information", () => {
   expect(buildEmbeddedSandboxInfo(sandbox())).toEqual(promptInfo);
 });
-it.each([
-  [
-    "required sandbox",
-    true,
-    { fullAccessAvailable: true },
-    { ...blocked, allowed: false, defaultLevel: "off" },
-  ],
-  [
-    "unavailable runtime",
-    false,
-    { fullAccessAvailable: false, fullAccessBlockedReason: "runtime" },
-    { ...blocked, fullAccessBlockedReason: "runtime" },
-  ],
-] as const)("blocks full access for %s", (_name, required, runtime, expected) => {
+it.each([true, false])("blocks full access with required sandbox=%s", (required) => {
+  const runtime = { fullAccessAvailable: required, fullAccessBlockedReason: "runtime" } as const;
+  const expected = required
+    ? { ...blocked, allowed: false, defaultLevel: "off" }
+    : { ...blocked, fullAccessBlockedReason: "runtime" };
   expect(
     buildEmbeddedSandboxInfo(sandbox({ required }), { ...elevation, ...runtime })?.elevated,
   ).toEqual(expected);

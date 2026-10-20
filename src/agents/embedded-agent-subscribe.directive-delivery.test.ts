@@ -172,10 +172,8 @@ function runDeliveryLoop(
       model,
       convertToLlm: (messages) =>
         messages.filter(
-          (message): message is Message =>
-            message.role === "user" ||
-            message.role === "assistant" ||
-            message.role === "toolResult",
+          (m): m is Message =>
+            m.role === "user" || m.role === "assistant" || m.role === "toolResult",
         ),
     },
     async (event) => {
@@ -223,8 +221,6 @@ function emitText(
   });
 }
 
-const cases = [...blockDirectiveCases, ...inlineDirectiveCases] as const;
-
 const replacementChunks = [
   "The current value is one for this item. Continue. ",
   "Keep this sentence unchanged. Retain each result. ",
@@ -238,20 +234,18 @@ const prefixCorrection = {
   marker: "Keep this sentence unchanged.",
   unchangedLeadSentences: leadChunks.map((text) => text.trimEnd()),
   literal: true,
-  prefixCorrection: true,
-  prepared: true,
   terminalText: leadChunks.join("") + correctedText + "\n",
   correctedText,
 };
 
-it.each([...cases, prefixCorrection])(
+it.each([...blockDirectiveCases, ...inlineDirectiveCases, prefixCorrection])(
   "preserves $name through the delivery handler",
   async (scenario) => {
-    const { delivered, pipeline, emit, subscription } = createDeliveryHarness();
+    const { delivered, pipeline, emit, subscription, flush } = createDeliveryHarness();
     const hasAudio = "audioAsVoice" in scenario;
     const chunks = [
       ...scenario.chunks,
-      ...("prefixCorrection" in scenario ? [] : [nextParagraph]),
+      ...("terminalText" in scenario ? [] : [nextParagraph]),
       ...(hasAudio ? [`MEDIA:${audioUrl}`] : []),
     ];
     const beforeEnd = createDeferred();
@@ -263,23 +257,19 @@ it.each([...cases, prefixCorrection])(
       await releaseTerminal.promise;
       yield googleChunk(undefined, "STOP");
     }
-    const prepared = "prepared" in scenario;
+    const prepared = "terminalText" in scenario;
+    const model = prepared ? responsesModel : googleModel;
     const { response, producing } = prepared
       ? responsesResponse(chunks, scenario.terminalText, releaseTerminal.promise)
       : googleResponse(googleEvents(), "managed");
     let receivedText = "";
-    const running = runDeliveryLoop(
-      { emit, subscription },
-      prepared ? responsesModel : googleModel,
-      response,
-      async (delta) => {
-        receivedText += delta;
-        if (receivedText === chunks.join("")) {
-          await pipeline.flush({ force: true });
-          beforeEnd.resolve();
-        }
-      },
-    );
+    const running = runDeliveryLoop({ emit, subscription }, model, response, async (delta) => {
+      receivedText += delta;
+      if (receivedText === chunks.join("")) {
+        await pipeline.flush({ force: true });
+        beforeEnd.resolve();
+      }
+    });
     const settled = Promise.all([producing, running]);
     try {
       await Promise.race([
@@ -290,7 +280,7 @@ it.each([...cases, prefixCorrection])(
       ]);
       expect(delivered.length).toBeGreaterThan(0);
       const beforeTerminalCount = delivered.length;
-      if ("prefixCorrection" in scenario) {
+      if ("terminalText" in scenario) {
         expect(texts(delivered).join("\n")).toBe(
           scenario.chunks.map((text) => text.trimEnd()).join("\n"),
         );
@@ -327,9 +317,8 @@ it.each([...cases, prefixCorrection])(
       }
       releaseTerminal.resolve();
       await settled;
-      await subscription.waitForPendingEvents();
-      await pipeline.flush({ force: true });
-      if ("prefixCorrection" in scenario) {
+      await flush();
+      if ("terminalText" in scenario) {
         const recipientText = texts(delivered);
         const additional = recipientText.slice(beforeTerminalCount);
         expect(additional.join(" ")).toBe(scenario.correctedText);
@@ -354,7 +343,7 @@ it.each([...cases, prefixCorrection])(
 );
 
 it("does not replay signed Google text when a later part shares its signature", async () => {
-  const { delivered, pipeline, emit, subscription } = createDeliveryHarness();
+  const { delivered, pipeline, emit, subscription, flush } = createDeliveryHarness();
   const first = "Alpha  beta.\n";
   const signature = "c2lnXzE=";
   const firstDelivered = createDeferred();
@@ -375,9 +364,7 @@ it("does not replay signed Google text when a later part shares its signature", 
   });
   try {
     await Promise.all([producing, running]);
-    await subscription.waitForPendingEvents();
-    await pipeline.flush({ force: true });
-
+    await flush();
     expect(firstCheckpoint).toBe("Alpha  beta.");
     const text = texts(delivered).join(" ").replace(/\s+/g, " ").trim();
     expect(text).toBe("Alpha beta. Second.");
@@ -465,32 +452,27 @@ it.each([
     name: "literal reclassification and restored authoritative text",
     expectedReplies: ["First reply."],
     updates: [
-      { type: "text_delta", text: first, item: 0, edges: 1 },
-      { type: "text_end", text: "```text\n" + corrected + "```\n\n", item: 0, edges: 1 },
-      { type: "text_end", text: corrected + nextParagraph, item: 0, edges: 2 },
+      ["text_delta", first, 0, 1],
+      ["text_end", "```text\n" + corrected + "```\n\n", 0, 1],
+      ["text_end", corrected + nextParagraph, 0, 2],
     ],
   },
   {
     name: "a new item owns its own genuine voice intent",
     expectedReplies: ["First reply.", "Second reply."],
     updates: [
-      { type: "text_delta", text: first, item: 0, edges: 1 },
-      {
-        type: "text_delta",
-        text: "[[audio_as_voice]]Second reply.\n\n" + nextParagraph,
-        item: 1,
-        edges: 2,
-      },
+      ["text_delta", first, 0, 1],
+      ["text_delta", "[[audio_as_voice]]Second reply.\n\n" + nextParagraph, 1, 2],
     ],
   },
 ] as const)("preserves $name", async ({ updates, expectedReplies }) => {
   const { delivered, blocks, handler, emit, flush } = createDeliveryHarness();
   await handler({ mediaUrls: [audioUrl] });
   emit({ type: "message_start", message: textMessage("", 0) });
-  for (const update of updates) {
-    emitText(emit, update.type, update.text, { item: update.item });
+  for (const [type, text, item, edges] of updates) {
+    emitText(emit, type, text, { item });
     await flush();
-    expect.soft(blocks.filter((payload) => payload.audioAsVoice)).toHaveLength(update.edges);
+    expect.soft(blocks.filter((payload) => payload.audioAsVoice)).toHaveLength(edges);
   }
   for (const text of expectedReplies) {
     expect(delivered.filter((payload) => payload.text === text)).toHaveLength(1);

@@ -32,18 +32,19 @@ vi.mock(
 let sanitizeSessionHistory: history.SanitizeSessionHistoryHarness["sanitizeSessionHistory"];
 
 beforeAll(async () => {
-  const harness = await history.loadSanitizeSessionHistoryWithCleanMocks();
-  sanitizeSessionHistory = harness.sanitizeSessionHistory;
+  ({ sanitizeSessionHistory } = await history.loadSanitizeSessionHistoryWithCleanMocks());
 });
 
 const model = { provider: "openai", modelApi: "openai-responses", modelId: "gpt-5.4" };
 
-const callId = (message: AgentMessage | undefined) => {
+const assistant = (message: AgentMessage | undefined) => {
   if (message?.role !== "assistant") {
     throw new Error("Expected an assistant tool call");
   }
-  return extractToolCallsFromAssistant(message)[0]?.id;
+  return message;
 };
+const callId = (message: AgentMessage | undefined) =>
+  extractToolCallsFromAssistant(assistant(message))[0]?.id;
 const call = (id: string, prefix: unknown[] = []) =>
   castAgentMessage({
     role: "assistant",
@@ -100,16 +101,7 @@ it("keeps repeated Kimi calls distinct while repairing the incomplete later turn
 it("preserves paired tool IDs for an unowned Azure Responses provider", async () => {
   const id = "call_gateway_0|fc_gateway_0";
   const result = await sanitize(
-    [
-      call(id, [
-        {
-          type: "thinking",
-          thinking: "reasoning",
-          thinkingSignature: { id: "rs_1", type: "reasoning" },
-        },
-      ]),
-      output(id, ""),
-    ],
+    [call(id, assistant(history.makeReasoningAssistantMessages()[0]).content), output(id, "")],
     {
       modelApi: "azure-openai-responses",
       provider: "custom-compatible",

@@ -12,6 +12,7 @@ import {
   emitAssistantTextDelta,
   emitToolRun,
 } from "./embedded-agent-subscribe.e2e-harness.js";
+import { taskCompletionEvents } from "./subagent-test-fixtures.test-helpers.js";
 import { makeAgentAssistantMessage } from "./test-helpers/agent-message-fixtures.js";
 import { makeEmbeddedRunnerAttempt } from "./test-helpers/embedded-agent-runner-e2e-fixtures.js";
 import { textAssistant, textToolResult } from "./test-helpers/sparse-transcript.test-support.js";
@@ -158,21 +159,11 @@ function payloads(subscription: ReturnType<typeof setup>["subscription"]) {
 }
 
 const attachment = { path: "/tmp/generated.opus", mimeType: "audio/ogg", name: "generated.opus" };
-const internalEvents: Options["internalEvents"] = [
-  {
-    type: "task_completion",
-    source: "music_generation",
-    childSessionKey: "music_generate:track",
-    announceType: "music generation task",
-    taskLabel: "generated track",
-    status: "ok",
-    statusLabel: "completed successfully",
-    result: "Generated a track.",
-    mediaUrls: ["/tmp/generated.opus"],
-    attachments: [attachment],
-    replyInstruction: "Reply normally.",
-  },
-];
+const internalEvents = taskCompletionEvents({
+  source: "music_generation",
+  mediaUrls: [attachment.path],
+  attachments: [attachment],
+});
 const generatedMedia = {
   mediaUrls: ["/tmp/generated.opus"],
   attachments: [{ ...attachment, trustedLocalMedia: true }],
@@ -205,12 +196,10 @@ it.each(["suppress", "reject"] as const)(
         willRetry: false,
       }),
     );
-    let drained = false;
-    const draining = h.drain().then(() => {
-      drained = true;
-    });
+    const drained = vi.fn();
+    const draining = h.drain().then(drained);
     await Promise.resolve();
-    expect(drained).toBe(false);
+    expect(drained).not.toHaveBeenCalled();
     if (decision === "reject") {
       gate.reject(new Error("hook failed"));
     } else {
@@ -221,16 +210,13 @@ it.each(["suppress", "reject"] as const)(
     if (decision === "suppress") {
       expectNoReplies(h);
     } else {
+      const delta = expect.objectContaining({ text: "Visible stream.", delta: "Visible stream." });
       expect(h.onBlockReply).toHaveBeenCalledExactlyOnceWith(
         expect.objectContaining({ text: "Visible stream." }),
         { assistantMessageIndex: 1 },
       );
-      expect(h.onPartialReply).toHaveBeenCalledWith(
-        expect.objectContaining({ text: "Visible stream.", delta: "Visible stream." }),
-      );
-      expect(h.assistantEvents()).toEqual([
-        expect.objectContaining({ text: "Visible stream.", delta: "Visible stream." }),
-      ]);
+      expect(h.onPartialReply).toHaveBeenCalledWith(delta);
+      expect(h.assistantEvents()).toEqual([delta]);
     }
   },
 );
@@ -353,15 +339,10 @@ it.each(["immediate", "rejected"] as const)(
     h.message(toolCall);
     h.tool("read", result);
     h.emit({ type: "message_end", message: result });
-    for (const [message, toolResults] of [
-      [toolCall, [result]],
-      [final, []],
-      [silent, []],
-    ] as const) {
-      if (message !== toolCall) {
-        h.message(message);
-      }
-      h.turn(message, toolResults);
+    h.turn(toolCall, [result]);
+    for (const message of [final, silent]) {
+      h.message(message);
+      h.turn(message);
     }
     const messages = [prompt, toolCall, result, final, silent];
     h.emit({ type: "agent_end", messages, willRetry: false });
@@ -533,21 +514,20 @@ it("keeps buffered checkpoint delivery nonterminal", async () => {
     .mockResolvedValueOnce({ continueCurrentTurn: true })
     .mockResolvedValueOnce(undefined);
   const h = setup({ onBeforeTerminalDelivery: decide, deferTerminalDelivery: true });
-  h.message(answer("Checkpoint: a repair remains."));
-  await h.drain();
-  expect(h.hasAssistantText("Checkpoint: a repair remains.")).toBe(false);
-  await h.finish();
-  expect(h.lifecycleEnded()).toBe(false);
-  expect(h.hasAssistantText("Checkpoint: a repair remains.")).toBe(true);
-  h.emit({ type: "agent_start" });
-  h.message(answer("All repairs verified."));
-  await h.drain();
-  expect(h.hasAssistantText("All repairs verified.")).toBe(false);
-  await h.finish();
-  expect(h.lifecycleEnded()).toBe(true);
-  expect(payloads(h.subscription).map((payload) => payload.text)).toEqual([
-    "All repairs verified.",
-  ]);
+  const checkpoint = "Checkpoint: a repair remains.",
+    final = "All repairs verified.";
+  for (const text of [checkpoint, final]) {
+    h.message(answer(text));
+    await h.drain();
+    expect(h.hasAssistantText(text)).toBe(false);
+    await h.finish();
+    expect(h.lifecycleEnded()).toBe(text === final);
+    if (text === checkpoint) {
+      expect(h.hasAssistantText(text)).toBe(true);
+      h.emit({ type: "agent_start" });
+    }
+  }
+  expect(payloads(h.subscription).map((payload) => payload.text)).toEqual([final]);
 });
 
 it("exposes accepted child completion custody to the natural-stop decision", async () => {

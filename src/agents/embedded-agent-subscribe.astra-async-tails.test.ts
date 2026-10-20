@@ -26,8 +26,8 @@ import { prepareEmbeddedRunTerminal } from "./embedded-agent-runner/run/terminal
 import { resolveSettledTurnFinalizationRequest } from "./embedded-agent-runner/run/terminal-resolution.js";
 import { createUsageAccumulator } from "./embedded-agent-runner/usage-accumulator.js";
 import { createSubscribedSessionHarness } from "./embedded-agent-subscribe.e2e-harness.js";
+import { createSubagentRunRecord } from "./subagent-test-fixtures.test-helpers.js";
 import { readSubagentRunAnnounceResultUsing } from "./subagents/announce/subagent-announce-result.js";
-import type { SubagentRunRecord } from "./subagents/registry/subagent-registry.types.js";
 import { makeEmbeddedRunnerAttempt } from "./test-helpers/embedded-agent-runner-e2e-fixtures.js";
 
 const model: Model<"openai-responses"> = {
@@ -431,13 +431,9 @@ it.each([
       id: `entry-${index}`,
       message: attachSessionTranscriptRunId(message, "run"),
     }));
-    const child: SubagentRunRecord = {
+    const child = createSubagentRunRecord({
       runId: "run",
       childSessionKey: "agent:main:subagent:astra",
-      requesterSessionKey: "agent:main:main",
-      requesterDisplayKey: "main",
-      task: "Where do I store my bag?",
-      cleanup: "keep",
       createdAt: 1,
       execution: {
         status: "terminal",
@@ -453,7 +449,7 @@ it.each([
         required: true,
         terminalReply: prepared.preparedTerminalReply.terminalReply,
       },
-    };
+    });
     const unexpected = () => {
       throw new Error("unexpected session fallback");
     };
