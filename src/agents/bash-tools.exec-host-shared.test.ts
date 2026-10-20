@@ -42,7 +42,10 @@ const mocks = vi.hoisted(() => {
   };
 });
 
-vi.mock("../logger.js", () => ({ logWarn: mocks.logWarn }));
+vi.mock("../logger.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../logger.js")>()),
+  logWarn: mocks.logWarn,
+}));
 vi.mock("./bash-tools.exec-approval-followup.js", () => {
   mocks.followupImports += 1;
   return { sendExecApprovalFollowup: mocks.sendExecApprovalFollowup };

@@ -127,6 +127,7 @@ function enqueueSystemEventWithReceipt(text: string, opts?: unknown) {
   return systemEventReceiptRemoveMock;
 }
 
+// mock-isolation: Keep system events in the fixture; real enqueueing persists and wakes session work.
 vi.mock("../infra/system-events.js", () => ({
   enqueueSystemEvent,
   enqueueSystemEventWithReceipt,
@@ -143,6 +144,7 @@ vi.mock("../infra/heartbeat-wake.js", async () => {
   };
 });
 
+// mock-isolation: Keep heartbeat enrollment inert while testing cron lifecycle wiring.
 vi.mock("../infra/heartbeat-runner.js", () => ({
   // Heartbeat monitor convergence enumerates agents at cron start; keep it
   // inert so these tests exercise cron wiring, not heartbeat enrollment.
@@ -176,6 +178,7 @@ vi.mock("../config/io.js", async () => {
   };
 });
 
+// mock-isolation: Webhook effects use the fixture transport and never open real network requests.
 vi.mock("../infra/net/fetch-guard.js", () => ({
   fetchWithSsrFGuard: fetchWithSsrFGuardMock,
 }));
@@ -188,32 +191,39 @@ vi.mock("../cron/delivery.js", async () => {
   };
 });
 
+// mock-isolation: Model execution belongs to the fixture; loading the runner starts unrelated runtime owners.
 vi.mock("../cron/isolated-agent.js", () => ({
   runCronIsolatedAgentTurn: runCronIsolatedAgentTurnMock,
 }));
 
+// mock-isolation: Hooks are fixture-owned so registered host plugins cannot run during cron tests.
 vi.mock("../plugins/hook-runner-global.js", () => ({
   getGlobalHookRunner: getGlobalHookRunnerMock,
 }));
 
+// mock-isolation: Cancellation targets the fixture run, never the process-global agent registry.
 vi.mock("../agents/embedded-agent.js", () => ({
   abortAndDrainEmbeddedAgentRun: abortAndDrainEmbeddedAgentRunMock,
 }));
 
+// mock-isolation: MCP retirement must not touch process-global plugin sessions.
 vi.mock("../agents/agent-bundle-mcp-tools.js", () => ({
   retireSessionMcpRuntime: retireSessionMcpRuntimeMock,
 }));
 
+// mock-isolation: Deletion authority is fixture-controlled, independent of the process-global registry.
 vi.mock("../agents/agent-lifecycle-registry.js", () => ({
   AgentDeletionAuthorityRollbackError: class extends AggregateError {},
   AgentDeletionCommitUncertainError: class extends Error {},
   isAgentDeletionBlocked: isAgentDeletionBlockedMock,
 }));
 
+// mock-isolation: Stream process custody uses the fixture supervisor, never real process spawning.
 vi.mock("../process/supervisor/index.js", () => ({
   getProcessSupervisor: getProcessSupervisorMock,
 }));
 
+// mock-isolation: Trigger scripts use fixture evaluators without creating a real script runtime.
 vi.mock("../cron/trigger-script.js", () => ({
   createCronScriptRuntime: createCronScriptRuntimeMock,
 }));
