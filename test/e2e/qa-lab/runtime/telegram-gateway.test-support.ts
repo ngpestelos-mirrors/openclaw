@@ -1,7 +1,6 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
 import path from "node:path";
 import type { OpenClawConfig } from "openclaw/plugin-sdk/config-contracts";
-import type { TestContext } from "vitest";
 import { createQaGatewayChild, writeJson } from "../../../../extensions/qa-lab/api.js";
 
 type GatewayOptions = Parameters<ReturnType<typeof createQaGatewayChild>["start"]>[0];
@@ -130,43 +129,4 @@ export async function settleTelegramCleanup(...cleanups: Array<() => Promise<voi
   if (failures.length > 0) {
     throw new AggregateError(failures, "Telegram Gateway cleanup failed");
   }
-}
-
-export function telegramPhaseReporter(
-  facts: () => Record<string, unknown>,
-  initialStart = performance.now(),
-) {
-  let started = initialStart;
-  let phase = "test-enter";
-  let reported = false;
-  const emit = (event: "enter" | "failure") => {
-    process.stderr.write(
-      `[qa-phase] ${JSON.stringify({ event, phase, elapsedMs: Math.round(performance.now() - started), ...facts() })}\n`,
-    );
-  };
-  const report = () => {
-    if (!reported) {
-      reported = true;
-      emit("failure");
-    }
-  };
-  return {
-    get phase() {
-      return phase;
-    },
-    start() {
-      started = performance.now();
-      emit("enter");
-    },
-    enterPhase(next: string) {
-      phase = next;
-      emit("enter");
-    },
-    report,
-    attach({ signal, onTestFailed, onTestFinished }: TestContext) {
-      signal.addEventListener("abort", report, { once: true });
-      onTestFailed(report);
-      onTestFinished(() => signal.removeEventListener("abort", report));
-    },
-  };
 }

@@ -2,7 +2,6 @@ import { spawn } from "node:child_process";
 import { once } from "node:events";
 import fs from "node:fs/promises";
 import type { IncomingMessage, ServerResponse } from "node:http";
-import net from "node:net";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { withServer, withTempDir } from "openclaw/plugin-sdk/test-env";
@@ -14,6 +13,7 @@ import type { OpenClawConfig } from "../../../../src/config/types.openclaw.js";
 import { executeSqliteQuerySync, getNodeSqliteKysely } from "../../../../src/infra/kysely-sync.js";
 import type { DB } from "../../../../src/state/openclaw-state-db.generated.js";
 import { openExistingOpenClawStateDatabaseReadOnly } from "../../../../src/state/openclaw-state-db.js";
+import { getFreePort } from "../../../../src/test-utils/ports.js";
 import { withinTest, withTestTimeout } from "../../../helpers/promise.js";
 import { stopQaGatewayFixture } from "../../../helpers/qa-gateway-cleanup.js";
 import {
@@ -134,6 +134,23 @@ function configuredModel(id: string): ModelDefinitionConfig {
   };
 }
 
+function pickerTelegram(apiRoot: string) {
+  return {
+    enabled: true,
+    defaultAccount: "picker",
+    accounts: {
+      picker: {
+        enabled: true,
+        botToken: BOT_TOKEN,
+        apiRoot,
+        dmPolicy: "open" as const,
+        allowFrom: ["*"],
+        commands: { native: true },
+      },
+    },
+  };
+}
+
 function pickerConfig(apiRoot: string, modelId: string): OpenClawConfig {
   const modelRef = `${REPLACEMENT_PROVIDER}/${modelId}`;
   return {
@@ -143,22 +160,7 @@ function pickerConfig(apiRoot: string, modelId: string): OpenClawConfig {
       allow: ["telegram"],
       entries: { telegram: { enabled: true } },
     },
-    channels: {
-      telegram: {
-        enabled: true,
-        defaultAccount: "picker",
-        accounts: {
-          picker: {
-            enabled: true,
-            botToken: BOT_TOKEN,
-            apiRoot,
-            dmPolicy: "open",
-            allowFrom: ["*"],
-            commands: { native: true },
-          },
-        },
-      },
-    },
+    channels: { telegram: pickerTelegram(apiRoot) },
     agents: {
       defaults: {
         model: modelRef,
@@ -213,44 +215,21 @@ async function readTelegramIngressStatuses(stateDir: string, eventIds: string[])
   }
 }
 
-async function reservePort(): Promise<number> {
-  const server = net.createServer();
-  await new Promise<void>((resolve, reject) => {
-    server.once("error", reject);
-    server.listen(0, "127.0.0.1", resolve);
-  });
-  const address = server.address();
-  if (!address || typeof address === "string") {
-    server.close();
-    throw new Error("Could not reserve a source Gateway port");
-  }
-  await new Promise<void>((resolve, reject) => {
-    server.close((error) => {
-      if (error) {
-        reject(error);
-      } else {
-        resolve();
-      }
-    });
-  });
-  return address.port;
-}
-
-async function resolveBuiltModule(params: {
-  distDir: string;
-  prefix: string;
-  exportMarker: string;
-}): Promise<string> {
-  for (const name of await fs.readdir(params.distDir)) {
-    if (!name.startsWith(params.prefix) || !/\.m?js$/u.test(name)) {
+async function resolveBuiltModule(
+  distDir: string,
+  prefix: string,
+  exportMarker: string,
+): Promise<string> {
+  for (const name of await fs.readdir(distDir)) {
+    if (!name.startsWith(prefix) || !/\.m?js$/u.test(name)) {
       continue;
     }
-    const filePath = path.join(params.distDir, name);
-    if ((await fs.readFile(filePath, "utf8")).includes(params.exportMarker)) {
+    const filePath = path.join(distDir, name);
+    if ((await fs.readFile(filePath, "utf8")).includes(exportMarker)) {
       return pathToFileURL(filePath).href;
     }
   }
-  throw new Error(`Could not resolve built ${params.prefix} module`);
+  throw new Error(`Could not resolve built ${prefix} module`);
 }
 
 async function startControlledSourceGateway(params: {
@@ -262,19 +241,15 @@ async function startControlledSourceGateway(params: {
   onTestFinished: (cleanup: () => Promise<void>) => void;
 }) {
   const bootstrapPath = path.join(params.fixtureRoot, "source-gateway-control.mjs");
-  const port = await reservePort();
+  const port = await getFreePort();
   const distDir = path.join(params.repoRoot, "dist");
   const [serverUrl, runtimeUrl] = await Promise.all([
-    resolveBuiltModule({
+    resolveBuiltModule(distDir, "server-", "startGatewayServer, truncateCloseReason"),
+    resolveBuiltModule(
       distDir,
-      prefix: "server-",
-      exportMarker: "startGatewayServer, truncateCloseReason",
-    }),
-    resolveBuiltModule({
-      distDir,
-      prefix: "prepared-model-runtime-",
-      exportMarker: "export { PreparedModelRuntimeOwnerNotPublishedError",
-    }),
+      "prepared-model-runtime-",
+      "export { PreparedModelRuntimeOwnerNotPublishedError",
+    ),
   ]);
   await fs.writeFile(
     bootstrapPath,
@@ -352,12 +327,11 @@ process.on("message", async (message) => {
   const exited = once(child, "exit");
   void exited.catch(() => {});
   let output = "";
-  child.stdout?.on("data", (chunk) => {
-    output += String(chunk);
-  });
-  child.stderr?.on("data", (chunk) => {
-    output += String(chunk);
-  });
+  for (const stream of [child.stdout, child.stderr]) {
+    stream?.on("data", (chunk) => {
+      output += String(chunk);
+    });
+  }
   const pending = new Map<number, { resolve: () => void; reject: (error: Error) => void }>();
   let nextId = 1;
   let isReady = false;
@@ -440,13 +414,8 @@ test("initializes unrestricted Telegram model browsing and reuses its prepared c
   const telegramCalls: TelegramCall[] = [];
   const pendingUpdates: unknown[] = [];
   let nextUpdateId = 2;
-  let pickerStage:
-    | "initial"
-    | "providers"
-    | "models"
-    | "repeated-providers"
-    | "repeated-providers-second"
-    | "done" = "initial";
+  // Initial send, provider list, model list, then two repeated provider lists.
+  let pickerStage = 0;
   let discoveryFrozen = false;
   let discoveryRequests = 0;
   let postWarmDiscoveryAttempts = 0;
@@ -460,37 +429,32 @@ test("initializes unrestricted Telegram model browsing and reuses its prepared c
   const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
     const pathname = new URL(req.url ?? "/", "http://127.0.0.1").pathname;
 
-    if (pathname === "/ollama/api/tags") {
+    if (pathname === "/ollama/api/tags" || pathname === "/ollama/api/show") {
       discoveryRequests += 1;
       if (discoveryFrozen) {
         postWarmDiscoveryAttempts += 1;
         writeJson(res, 503, { ok: false, error: "provider discovery frozen after warmup" });
         return;
       }
-      writeJson(res, 200, {
-        models: [
-          {
-            name: DISCOVERED_MODEL,
-            modified_at: "2026-08-16T00:00:00Z",
-            digest: "prepared-model-digest",
-            size: 1,
-          },
-        ],
-      });
-      return;
-    }
-
-    if (pathname === "/ollama/api/show") {
-      discoveryRequests += 1;
-      if (discoveryFrozen) {
-        postWarmDiscoveryAttempts += 1;
-        writeJson(res, 503, { ok: false, error: "provider discovery frozen after warmup" });
-        return;
-      }
-      writeJson(res, 200, {
-        model_info: { "general.context_length": 8192 },
-        capabilities: ["completion", "tools"],
-      });
+      writeJson(
+        res,
+        200,
+        pathname.endsWith("/tags")
+          ? {
+              models: [
+                {
+                  name: DISCOVERED_MODEL,
+                  modified_at: "2026-08-16T00:00:00Z",
+                  digest: "prepared-model-digest",
+                  size: 1,
+                },
+              ],
+            }
+          : {
+              model_info: { "general.context_length": 8192 },
+              capabilities: ["completion", "tools"],
+            },
+      );
       return;
     }
 
@@ -506,42 +470,28 @@ test("initializes unrestricted Telegram model browsing and reuses its prepared c
     }
 
     telegramCalls.push({ method, body });
-    if (method === "sendMessage" && pickerStage === "initial") {
+    if (method === "sendMessage" && pickerStage === 0) {
       expect(typeof body.text).toBe("string");
-      pickerStage = "providers";
+      pickerStage = 1;
     } else if (
       method === "editMessageText" &&
-      pickerStage === "providers" &&
+      [1, 3, 4].includes(pickerStage) &&
       typeof body.text === "string" &&
       body.text.includes("Select a provider:")
     ) {
       expect(hasCallback({ method, body }, "mdl_list_ollama_1")).toBe(true);
-      pickerStage = "models";
-      queueCallback("mdl_list_ollama_1");
+      const next = pickerStage === 1 ? "mdl_list_ollama_1" : "mdl_prov";
+      if (pickerStage !== 4) {
+        queueCallback(next);
+      }
+      pickerStage += 1;
     } else if (
       method === "editMessageText" &&
-      pickerStage === "models" &&
+      pickerStage === 2 &&
       hasCallback({ method, body }, `mdl_sel_ollama/${DISCOVERED_MODEL}`)
     ) {
-      pickerStage = "repeated-providers";
+      pickerStage = 3;
       queueCallback("mdl_prov");
-    } else if (
-      method === "editMessageText" &&
-      pickerStage === "repeated-providers" &&
-      typeof body.text === "string" &&
-      body.text.includes("Select a provider:")
-    ) {
-      expect(hasCallback({ method, body }, "mdl_list_ollama_1")).toBe(true);
-      pickerStage = "repeated-providers-second";
-      queueCallback("mdl_prov");
-    } else if (
-      method === "editMessageText" &&
-      pickerStage === "repeated-providers-second" &&
-      typeof body.text === "string" &&
-      body.text.includes("Select a provider:")
-    ) {
-      expect(hasCallback({ method, body }, "mdl_list_ollama_1")).toBe(true);
-      pickerStage = "done";
     }
 
     if (method === "answerCallbackQuery") {
@@ -562,20 +512,7 @@ test("initializes unrestricted Telegram model browsing and reuses its prepared c
             telegramGatewayOptions({
               apiRoot,
               mockAuthAgentIds: [],
-              telegram: {
-                enabled: true,
-                defaultAccount: "picker",
-                accounts: {
-                  picker: {
-                    enabled: true,
-                    botToken: BOT_TOKEN,
-                    apiRoot,
-                    dmPolicy: "open",
-                    allowFrom: ["*"],
-                    commands: { native: true },
-                  },
-                },
-              },
+              telegram: pickerTelegram(apiRoot),
               enabledPluginIds: ["ollama"],
               primaryModel: `ollama/${PREPARED_MODEL}`,
               alternateModel: `ollama/${PREPARED_MODEL}`,
@@ -615,15 +552,16 @@ test("initializes unrestricted Telegram model browsing and reuses its prepared c
               interval: 50,
               timeout: 30_000,
             })
-            .toBe("providers");
-          // Startup publishes a static owner; one explicit refresh owns live discovery.
-          await expect(
-            gateway.call("models.list", { view: "default", refresh: true }),
-          ).resolves.toMatchObject({
+            .toBe(1);
+          const discovered = {
             models: expect.arrayContaining([
               expect.objectContaining({ provider: "ollama", id: DISCOVERED_MODEL }),
             ]),
-          });
+          };
+          // Startup publishes a static owner; one explicit refresh owns live discovery.
+          await expect(
+            gateway.call("models.list", { view: "default", refresh: true }),
+          ).resolves.toMatchObject(discovered);
           expect(discoveryRequests).toBeGreaterThan(0);
           const warmDiscoveryRequests = discoveryRequests;
           discoveryFrozen = true;
@@ -638,57 +576,32 @@ test("initializes unrestricted Telegram model browsing and reuses its prepared c
               }),
               { interval: 50, timeout: 30_000 },
             )
-            .toMatchObject({ stage: "done", answers: 4 });
+            .toMatchObject({ stage: 5, answers: 4 });
 
           const sendMessage = telegramCalls.find((call) => call.method === "sendMessage");
-          expect(sendMessage).toBeDefined();
           expect(hasCallback(sendMessage!, "mdl_list_ollama_1")).toBe(true);
 
           const pickerEdits = telegramCalls.filter(
             (call) => call.method === "editMessageText" && inlineKeyboard(call).length > 0,
           );
           expect(pickerEdits).toHaveLength(4);
-          expect(hasCallback(pickerEdits[0]!, "mdl_list_ollama_1")).toBe(true);
-          expect(hasCallback(pickerEdits[2]!, "mdl_list_ollama_1")).toBe(true);
-          expect(
-            pickerEdits[1] &&
-              keyboardCallbackData(pickerEdits[1]).includes(`mdl_sel_ollama/${DISCOVERED_MODEL}`),
-          ).toBe(true);
-          expect(pickerEdits[3] && hasCallback(pickerEdits[3], "mdl_list_ollama_1")).toBe(true);
-
-          expect(
-            telegramCalls.filter((call) => call.method === "answerCallbackQuery"),
-          ).toHaveLength(4);
-          const preparedModels = await gateway.call("models.list", { view: "default" });
-          expect(preparedModels).toMatchObject({
-            models: expect.arrayContaining([
-              expect.objectContaining({ provider: "ollama", id: DISCOVERED_MODEL }),
-            ]),
-          });
+          for (const [index, callback] of [
+            "mdl_list_ollama_1",
+            `mdl_sel_ollama/${DISCOVERED_MODEL}`,
+            "mdl_list_ollama_1",
+            "mdl_list_ollama_1",
+          ].entries()) {
+            expect(hasCallback(pickerEdits[index]!, callback)).toBe(true);
+          }
+          expect(await gateway.call("models.list", { view: "default" })).toMatchObject(discovered);
           expect(discoveryRequests).toBe(warmDiscoveryRequests);
           expect(postWarmDiscoveryAttempts).toBe(0);
 
           discoveryFrozen = false;
-          const refreshedModels = await gateway.call("models.list", {
-            view: "default",
-            refresh: true,
-          });
-          expect(refreshedModels).toMatchObject({
-            models: expect.arrayContaining([
-              expect.objectContaining({ provider: "ollama", id: DISCOVERED_MODEL }),
-            ]),
-          });
+          expect(
+            await gateway.call("models.list", { view: "default", refresh: true }),
+          ).toMatchObject(discovered);
           expect(discoveryRequests).toBeGreaterThan(warmDiscoveryRequests);
-          console.info(
-            "MODEL_INVENTORY_PROOF",
-            JSON.stringify({
-              scenario: "unrestricted-inventory",
-              callbacks: keyboardCallbackData(pickerEdits[1]!),
-              warmDiscoveryRequests,
-              postWarmDiscoveryAttempts,
-              refreshedDiscoveryRequests: discoveryRequests,
-            }),
-          );
         } finally {
           await settleCleanup(async () => await stopQaGatewayFixture(gatewayOwner));
         }
@@ -736,14 +649,7 @@ test("lists native CLI-bound models through Telegram polling and provider callba
           const gateway = await gatewayOwner.start(
             telegramGatewayOptions({
               apiRoot,
-              telegram: {
-                enabled: true,
-                botToken: BOT_TOKEN,
-                apiRoot,
-                dmPolicy: "open",
-                allowFrom: ["*"],
-                commands: { native: true },
-              },
+              telegram: pickerTelegram(apiRoot).accounts.picker,
               enabledPluginIds: ["anthropic"],
               mockAuthAgentIds: [],
               primaryModel: primaryRef,
@@ -800,34 +706,11 @@ test("lists native CLI-bound models through Telegram polling and provider callba
           const providerButton = inlineKeyboard(providerMenu!)
             .flat()
             .find((button) => button.callback_data === "mdl_list_anthropic_1");
-          const gatewayModels = (await gateway.call("models.list", { view: "default" })) as {
-            models: Array<{
-              provider: string;
-              id: string;
-              available?: boolean;
-              unavailableReason?: string;
-            }>;
-          };
-          console.info(
-            "MODEL_INVENTORY_PROOF",
-            JSON.stringify({
-              scenario: "native-cli-models",
-              providerButtonText: providerButton?.text,
-              callbacks: keyboardCallbackData(modelList!),
-              models: gatewayModels.models.filter(
-                (entry) =>
-                  `${entry.provider}/${entry.id}` === primaryRef ||
-                  `${entry.provider}/${entry.id}` === boundRef,
-              ),
-              fixtureProviderRequests: providerRequests,
-            }),
-          );
+          const gatewayModels = await gateway.call("models.list", { view: "default" });
           const cliCalls = (await fs.readFile(authCallsPath, "utf8"))
             .trim()
             .split("\n")
             .map((line) => JSON.parse(line));
-          console.info("MODEL_INVENTORY_AUTH_PROOF", JSON.stringify(cliCalls));
-          expect(cliCalls.length).toBeGreaterThan(0);
           expect(providerButton?.text).toBe("anthropic (2)");
           expect(modelList?.body.text).toContain("Models (anthropic");
           expect(keyboardCallbackData(modelList!)).toContain(`mdl_sel_${boundRef}`);
@@ -841,14 +724,9 @@ test("lists native CLI-bound models through Telegram polling and provider callba
               }),
             ]),
           });
-          expect(cliCalls).toEqual(expect.arrayContaining([authArgs, discoveryArgs]));
-          expect(
-            cliCalls.every(
-              (args) =>
-                JSON.stringify(args) === JSON.stringify(authArgs) ||
-                JSON.stringify(args) === JSON.stringify(discoveryArgs),
-            ),
-          ).toBe(true);
+          expect(new Set(cliCalls.map((args) => JSON.stringify(args)))).toEqual(
+            new Set([authArgs, discoveryArgs].map((args) => JSON.stringify(args))),
+          );
           const nativeRequests = (await fs.readFile(nativeRequestsPath, "utf8"))
             .trim()
             .split("\n")

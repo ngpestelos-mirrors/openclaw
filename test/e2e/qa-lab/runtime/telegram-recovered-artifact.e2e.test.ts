@@ -3,7 +3,6 @@ import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import type { Socket } from "node:net";
 import path from "node:path";
-import { isRecord } from "@openclaw/normalization-core/record-coerce";
 import { redactSensitiveText } from "openclaw/plugin-sdk/logging-core";
 import { createFixtureLifetime } from "openclaw/plugin-sdk/test-env";
 import { sliceUtf16Safe } from "openclaw/plugin-sdk/text-utility-runtime";
@@ -20,9 +19,9 @@ import { writeOpenAiResponsesSse } from "../../../helpers/openai-responses-sse.j
 import { runQaGatewayFixture, stopQaGatewayFixture } from "../../../helpers/qa-gateway-cleanup.js";
 import { createQaPreparedRepoCliCommand } from "../../../helpers/qa-prepared-repo-cli.js";
 import {
+  createTelegramApi,
   succeedTelegram as succeed,
   telegramGatewayOptions,
-  telegramPhaseReporter,
 } from "./telegram-gateway.test-support.js";
 
 type JsonObject = Record<string, unknown>;
@@ -49,11 +48,24 @@ let owner: ReturnType<typeof createQaGatewayChild>;
 let gateway: QaGatewayChild;
 let workspace: string;
 
-let providerRequests = 0;
-let updateDelivered = false;
-const sends: JsonObject[] = [];
+let sendCount = 0;
+const api = createTelegramApi({
+  token: BOT_TOKEN,
+  bot: { id: 424242, is_bot: true, first_name: "QA", username: "qa_artifact_bot" },
+  chat: { id: CHAT_ID, type: "supergroup" },
+  messageId: () => 10_000 + ++sendCount,
+});
+api.updates.enqueue({
+  update_id: 1,
+  message: {
+    message_id: 456,
+    date: 1_754_000_000,
+    chat: { id: CHAT_ID, type: "supergroup", title: "QA" },
+    from: { id: 777, is_bot: false, first_name: "QA" },
+    text: "Reply with exactly `TELEGRAM-ROUTE-READY`.",
+  },
+});
 const documents: Array<{ chatId: string; name: string; content: string }> = [];
-const pendingPolls = new Set<ServerResponse>();
 const writeCalls: JsonObject[] = [];
 const toolCalls: JsonObject[] = [];
 const completedWrites: JsonObject[] = [];
@@ -61,29 +73,17 @@ const finalizers: JsonObject[] = [];
 const markerResponses: boolean[] = [];
 let overloads = 0;
 const marker = `QA-RECOVERED-ARTIFACT-${randomUUID()}`;
-const phases = telegramPhaseReporter(
-  () => ({
-    providerRequests,
-    updateDelivered,
-    sends: sends.length,
-    documents: documents.length,
-    writes: writeCalls.length,
-    finalizers: finalizers.length,
-    overloads,
-  }),
-  0,
-);
-const { enterPhase, report } = phases;
 const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
   const pathname = new URL(req.url ?? "/", "http://127.0.0.1").pathname;
+  if (!pathname.startsWith("/v1/") && !pathname.endsWith("/sendDocument")) {
+    await api.handle(req, res);
+    return;
+  }
   const raw = await readRequest(req);
   if (pathname.startsWith("/v1/")) {
     const body = raw.length ? (JSON.parse(raw.toString()) as JsonObject) : {};
     const input = (body.input ?? []) as JsonObject[];
     const modelRequest = pathname === "/v1/responses";
-    if (modelRequest) {
-      providerRequests += 1;
-    }
     // A finalizer carries historical tool output too. Its current instruction
     // must take precedence over the original failed continuation.
     const finalizer =
@@ -198,48 +198,10 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
       chat: { id: CHAT_ID, type: "supergroup" },
       document: { file_id: "qa-file", file_unique_id: "qa-file", file_name: file.name },
     });
-    return;
-  }
-  const body = raw.length ? (JSON.parse(raw.toString()) as JsonObject) : {};
-  if (method === "getMe") {
-    succeed(res, { id: 424242, is_bot: true, first_name: "QA", username: "qa_artifact_bot" });
-  } else if (method === "getUpdates") {
-    if (!updateDelivered) {
-      updateDelivered = true;
-      succeed(res, [
-        {
-          update_id: 1,
-          message: {
-            message_id: 456,
-            date: 1_754_000_000,
-            chat: { id: CHAT_ID, type: "supergroup", title: "QA" },
-            from: { id: 777, is_bot: false, first_name: "QA" },
-            text: "Reply with exactly `TELEGRAM-ROUTE-READY`.",
-          },
-        },
-      ]);
-    } else {
-      pendingPolls.add(res);
-      req.on("close", () => pendingPolls.delete(res));
-    }
-  } else if (method === "sendMessage") {
-    sends.push(body);
-    succeed(res, {
-      message_id: 10_000 + sends.length,
-      date: 1_754_000_000,
-      chat: { id: CHAT_ID, type: "supergroup" },
-      text: body.text,
-    });
-  } else {
-    succeed(res);
   }
 };
 
 afterAll(async () => {
-  if (phases.phase !== "cleanup") {
-    report();
-  }
-  enterPhase("cleanup");
   // Close setup admission before joining it; a timed-out acquisition can still resolve.
   setupAbort.abort();
   await runQaGatewayFixture(
@@ -252,8 +214,7 @@ afterAll(async () => {
   );
 });
 
-// Bootstrap owns the existing hook budget; the unchanged test deadline starts
-// after Gateway readiness and still covers routing, recovery, delivery and shutdown.
+// The test deadline starts after Gateway readiness; bootstrap keeps its existing hook budget.
 beforeAll(async () => {
   await fixture.acquire(async (rejectAfterCleanup) => {
     const cleanups: Array<() => Promise<void>> = [];
@@ -261,12 +222,9 @@ beforeAll(async () => {
     const cleanup = () => runQaGatewayFixture(async () => {}, ...cleanups.toReversed());
     try {
       setupAbort.signal.throwIfAborted();
-      phases.start();
-      enterPhase("mock-start");
       mock = await startQaMockOpenAiServer();
       cleanups.push(() => mock.stop());
       setupAbort.signal.throwIfAborted();
-      enterPhase("http-start");
       const server = createServer((req, res) => {
         void handleRequest(req, res).catch((error: unknown) => {
           const message = error instanceof Error ? error.message : String(error);
@@ -287,7 +245,7 @@ beforeAll(async () => {
         socket.once("close", () => sockets.delete(socket));
       });
       cleanups.push(async () => {
-        for (const poll of pendingPolls) {
+        for (const poll of api.updates.pendingPolls) {
           poll.destroy();
         }
         if (!server.listening) {
@@ -311,10 +269,8 @@ beforeAll(async () => {
         throw new Error("artifact fixture did not bind a loopback port");
       }
       const apiRoot = `http://127.0.0.1:${address.port}`;
-      enterPhase("temp-dir-start");
       workspace = fixture.createTempDir("openclaw-recovered-artifact-");
-      // Exercise terminal recovery after one failed provider attempt, without
-      // changing default retry behavior or replaying the completed write.
+      // Force terminal recovery after one attempt without replaying the completed write.
       await mkdir(path.join(workspace, ".openclaw"), { recursive: true });
       setupAbort.signal.throwIfAborted();
       await writeFile(
@@ -325,12 +281,10 @@ beforeAll(async () => {
       owner = createQaGatewayChild();
       // Register the synchronous owner before startup can reject or time out.
       cleanups.push(() => stopQaGatewayFixture(owner));
-      enterPhase("gateway-start");
       gateway = await owner.start(
         telegramGatewayOptions({
           workspace,
           apiRoot,
-          onListening: () => enterPhase("gateway-listening"),
           command: createQaPreparedRepoCliCommand(repoRoot),
           forcedRuntime: "codex",
           providerMode: "mock-openai",
@@ -367,7 +321,6 @@ beforeAll(async () => {
         }),
       );
       setupAbort.signal.throwIfAborted();
-      enterPhase("gateway-ready");
       return { cleanup };
     } catch (error) {
       return await rejectAfterCleanup(error, cleanup);
@@ -375,23 +328,21 @@ beforeAll(async () => {
   });
 });
 
-test("delivers a recovered artifact once while preserving its inter-session transcript", async (context) => {
-  const { signal } = context;
-  phases.attach(context);
+test("delivers a recovered artifact once while preserving its inter-session transcript", async ({
+  signal,
+}) => {
   return fixture.run(async () => {
     signal.throwIfAborted();
-    enterPhase("route-seed");
     const sessions = async () =>
-      (await gateway.call("sessions.list", {
-        agentId: "qa",
-        limit: 100,
-      })) as SessionsListResult;
+      (await gateway.call("sessions.list", { agentId: "qa", limit: 100 })) as SessionsListResult;
     await expect
       .poll(
         () =>
-          sends.some(
-            (send) =>
-              String(send.chat_id) === String(CHAT_ID) && send.text === "TELEGRAM-ROUTE-READY",
+          api.calls.some(
+            ({ method, body }) =>
+              method === "sendMessage" &&
+              String(body.chat_id) === String(CHAT_ID) &&
+              body.text === "TELEGRAM-ROUTE-READY",
           ),
         { timeout: 30_000 },
       )
@@ -402,25 +353,15 @@ test("delivers a recovered artifact once while preserving its inter-session tran
         row.lastTo === `telegram:${CHAT_ID}` &&
         row.lastAccountId === "proof",
     );
-    expect(matchingSessions).toHaveLength(1);
-    const session = matchingSessions[0];
-    expect(session?.key).toBeTypeOf("string");
-    const sessionKey = session!.key;
-    const expectSettled = () =>
-      expect
-        .poll(
-          async () =>
-            (await sessions()).sessions.find((row) => row.key === sessionKey)?.hasActiveRun,
-          { timeout: 30_000 },
-        )
-        .toBe(false);
+    expect(matchingSessions.map(({ key }) => typeof key)).toEqual(["string"]);
+    const sessionKey = matchingSessions[0]!.key;
+    const activeRun = async () =>
+      (await sessions()).sessions.find((row) => row.key === sessionKey)?.hasActiveRun;
+    const expectSettled = () => expect.poll(activeRun, { timeout: 30_000 }).toBe(false);
     await expectSettled();
     expect(documents).toHaveLength(0);
-    // Route setup can read workspace context. Count every tool in the recovery
-    // turn only after that seed run has settled, so extra recovery calls still fail.
+    // Exclude seed-run context reads, but count every recovery tool call.
     const recoveryToolStart = toolCalls.length;
-    enterPhase("turn");
-    const turnLogMark = gateway.markLogs();
     const receipt = (await gateway.call("chat.send", {
       sessionKey,
       message: `Empty response after write recovery QA check: write ${FILE_NAME}, then reply with exact marker: \`${marker}\nMEDIA:./${FILE_NAME}\`.`,
@@ -438,66 +379,15 @@ test("delivers a recovered artifact once while preserving its inter-session tran
       { runId: receipt.runId, timeoutMs: 30_000 },
       { timeoutMs: 35_000 },
     );
-    if (isRecord(waited) && waited.status !== "ok") {
-      const terminal = isRecord(waited.terminalReceipt) ? waited.terminalReceipt : {};
-      const delivery = isRecord(waited.terminalDelivery) ? waited.terminalDelivery : {};
-      const reply = isRecord(waited.terminalReply) ? waited.terminalReply : {};
-      const sanitize = (text: string) =>
-        redactSensitiveText(
-          text
-            .replaceAll(BOT_TOKEN, "<bot-token>")
-            .replaceAll(gateway.token, "<gateway-token>")
-            .replaceAll(workspace, "<workspace>")
-            .replaceAll(gateway.tempRoot, "<gateway-temp>")
-            .replaceAll(repoRoot, "<repo>"),
-          { mode: "tools" },
-        );
-      // Capture producer-owned terminal facts before fixture cleanup replaces the phase.
-      // A finalizer request proves admission only; marker responses prove generated output.
-      process.stderr.write(
-        `[qa-turn-failure] ${sanitize(
-          JSON.stringify({
-            phase: phases.phase,
-            status: waited.status,
-            error:
-              typeof waited.error === "string"
-                ? sliceUtf16Safe(sanitize(waited.error), 0, 2_048)
-                : undefined,
-            stopReason: waited.stopReason,
-            timeoutPhase: waited.timeoutPhase,
-            providerStarted: waited.providerStarted,
-            terminalReceipt: {
-              present: isRecord(waited.terminalReceipt),
-              terminalDisposition: terminal.terminalDisposition,
-              sourceReplyDelivered: terminal.sourceReplyDelivered,
-              rerouted: terminal.rerouted,
-            },
-            terminalDelivery: {
-              status: delivery.status,
-              resultCount: delivery.resultCount,
-            },
-            terminalReply: { disposition: reply.disposition },
-            markerResponses: markerResponses.slice(-20),
-            completedWrites: completedWrites.length,
-            finalizerRequests: finalizers.length,
-            documents: documents.length,
-          }),
-        )}\n[qa-turn-logs] ${JSON.stringify(
-          sliceUtf16Safe(sanitize(gateway.readLogsSince(turnLogMark)), -8_192),
-        )}\n`,
-      );
-    }
     expect(waited).toMatchObject({ status: "ok" });
     await expect.poll(() => documents.length, { timeout: 30_000 }).toBe(1);
-    enterPhase("delivery-observed");
     const history = (await gateway.call("chat.history", { sessionKey, limit: 30 })) as {
       messages: Array<{ role: string; content: unknown }>;
     };
     const markerMessages = history.messages.filter(
       (message) => message.role === "assistant" && JSON.stringify(message.content).includes(marker),
     );
-    // History displays forwarded requests as assistants. Preserve that input's
-    // provenance while counting authored recovery independently.
+    // Forwarded requests display as assistants; distinguish them from authored recovery.
     const forwardedMessages = markerMessages.filter(isProjectedForwardedMessage);
     expect(forwardedMessages).toHaveLength(1);
     expect(forwardedMessages[0]).toMatchObject({
@@ -513,16 +403,14 @@ test("delivers a recovered artifact once while preserving its inter-session tran
     );
     await expectSettled();
     expect(await readFile(path.join(workspace, FILE_NAME), "utf8")).toBe(FILE_CONTENT);
-    enterPhase("cleanup");
-    // Freeze delivery evidence only after the admitted run settles and its
-    // Gateway exits; the provider and Telegram endpoint remain available.
+    // Freeze delivery counts after Gateway exit, keeping both endpoints alive until then.
     await stopQaGatewayFixture(owner);
-    expect(toolCalls.slice(recoveryToolStart)).toHaveLength(1);
-    expect(writeCalls).toHaveLength(1);
+    for (const calls of [toolCalls.slice(recoveryToolStart), writeCalls, finalizers]) {
+      expect(calls).toHaveLength(1);
+    }
     expect(completedWrites).toHaveLength(1);
     expect(completedWrites[0]?.call_id).toBe(writeCalls[0]?.call_id);
     expect(overloads).toBe(1);
-    expect(finalizers).toHaveLength(1);
     expect(finalizers[0]?.tools ?? []).toEqual([]);
     expect(JSON.stringify(finalizers[0]?.input)).toContain(
       "Tools are unavailable in this step: it is a text-only pass",

@@ -10,14 +10,12 @@ import {
 import { stopQaGatewayFixture } from "../../../helpers/qa-gateway-cleanup.js";
 import {
   readTelegramRequest as readRequest,
-  succeedTelegram as succeed,
+  createTelegramApi,
   settleTelegramCleanup as settleCleanup,
   telegramGatewayOptions,
-  telegramPhaseReporter,
 } from "./telegram-gateway.test-support.js";
 
 type JsonObject = Record<string, unknown>;
-type TelegramCall = { pathname: string; method: string; body: JsonObject };
 
 const BOT_TOKEN = `424242:${"A".repeat(35)}`;
 const CURRENT_CHAT_ID = 2468;
@@ -97,32 +95,23 @@ function scriptMessageToolCall(payload: string, args: JsonObject) {
   return { payload: scriptedPayload, scripted };
 }
 
-test("binds Telegram emoji discovery to the current conversation before Bot API I/O", async (context) => {
-  const telegramCalls: TelegramCall[] = [];
-  const pendingUpdates: unknown[] = [];
-  const pendingPolls = new Set<ServerResponse>();
+test("binds Telegram emoji discovery to the current conversation before Bot API I/O", async () => {
+  const api = createTelegramApi({
+    token: BOT_TOKEN,
+    bot: { id: 424242, is_bot: true, first_name: "QA Emoji", username: "qa_emoji_bot" },
+    chat: { id: CURRENT_CHAT_ID, type: "private" },
+    messageId: (callCount) => 10_000 + callCount,
+    chatDetails: {
+      first_name: "QA",
+      available_reactions: [
+        { type: "emoji", emoji: "👍" },
+        { type: "custom_emoji", custom_emoji_id: CUSTOM_EMOJI_ID },
+      ],
+    },
+  });
+  const telegramCalls = api.calls;
   const scriptedCalls: Array<{ scenario: string; arguments: JsonObject }> = [];
   let mock: Awaited<ReturnType<typeof startQaMockOpenAiServer>> | undefined;
-  let providerRequests = 0;
-  const phases = telegramPhaseReporter(() => ({
-    providerRequests,
-    pendingUpdates: pendingUpdates.length,
-    scriptedCalls: scriptedCalls.length,
-    sends: telegramCalls.filter((call) => call.method === "sendMessage").length,
-  }));
-  const { enterPhase } = phases;
-  phases.attach(context);
-  enterPhase("test-enter");
-
-  const queueUpdate = (update: unknown) => {
-    const poll = pendingPolls.values().next().value;
-    if (poll) {
-      pendingPolls.delete(poll);
-      succeed(poll, [update]);
-      return;
-    }
-    pendingUpdates.push(update);
-  };
 
   const proxyProviderRequest = async (
     req: IncomingMessage,
@@ -133,7 +122,6 @@ test("binds Telegram emoji discovery to the current conversation before Bot API 
       writeJson(res, 503, { error: "mock provider is not ready" });
       return;
     }
-    providerRequests += 1;
     const raw = await readRequest(req);
     const upstream = await fetch(`${mock.baseUrl}${pathname}`, {
       method: req.method,
@@ -183,59 +171,9 @@ test("binds Telegram emoji discovery to the current conversation before Bot API 
       return;
     }
 
-    const [, token = "", method = ""] = pathname.match(/^\/bot([^/]+)\/([^/]+)$/) ?? [];
-    const raw = await readRequest(req);
-    const body = raw ? (JSON.parse(raw) as JsonObject) : {};
-    telegramCalls.push({ pathname, method, body });
-
-    if (token !== BOT_TOKEN) {
-      writeJson(res, 401, { ok: false, error_code: 401, description: "Unexpected bot token" });
-      return;
-    }
-    if (method === "getMe") {
-      succeed(res, {
-        id: 424242,
-        is_bot: true,
-        first_name: "QA Emoji",
-        username: "qa_emoji_bot",
-      });
-      return;
-    }
-    if (method === "getUpdates") {
-      const update = pendingUpdates.shift();
-      if (update) {
-        succeed(res, [update]);
-      } else {
-        pendingPolls.add(res);
-        req.on("close", () => pendingPolls.delete(res));
-      }
-      return;
-    }
-    if (method === "getChat") {
-      succeed(res, {
-        id: Number(body.chat_id),
-        type: "private",
-        first_name: "QA",
-        available_reactions: [
-          { type: "emoji", emoji: "👍" },
-          { type: "custom_emoji", custom_emoji_id: CUSTOM_EMOJI_ID },
-        ],
-      });
-      return;
-    }
-    if (method === "sendMessage") {
-      succeed(res, {
-        message_id: 10_000 + telegramCalls.length,
-        date: 1_754_000_000,
-        chat: { id: Number(body.chat_id), type: "private" },
-        text: body.text,
-      });
-      return;
-    }
-    succeed(res);
+    await api.handle(req, res);
   };
 
-  enterPhase("http-start");
   await withServer(
     (req, res) => {
       void handleRequest(req, res).catch((error: unknown) => {
@@ -245,18 +183,14 @@ test("binds Telegram emoji discovery to the current conversation before Bot API 
       });
     },
     async (apiRoot) => {
-      enterPhase("temp-dir-start");
       return await withTempDir("openclaw-telegram-emoji-list-", async (workspace) => {
         const gatewayOwner = createQaGatewayChild();
         try {
-          enterPhase("mock-start");
           mock = await startQaMockOpenAiServer();
-          enterPhase("gateway-start");
           await gatewayOwner.start(
             telegramGatewayOptions({
               workspace,
               apiRoot,
-              onListening: () => enterPhase("gateway-listening"),
               providerBaseUrl: `${apiRoot}/v1`,
               mockSessionObserverUrl: mock.sessionObserverUrl,
               telegram: {
@@ -289,7 +223,6 @@ test("binds Telegram emoji discovery to the current conversation before Bot API 
             }),
           );
 
-          enterPhase("gateway-ready");
           const findToolResult = async (scenario: string) => {
             const response = await fetch(`${mock!.baseUrl}/debug/requests`);
             expect(response.ok).toBe(true);
@@ -299,14 +232,12 @@ test("binds Telegram emoji discovery to the current conversation before Bot API 
             );
           };
 
-          enterPhase("turn");
-          queueUpdate(inboundUpdate(1, CURRENT_CHAT_SCENARIO));
+          api.updates.enqueue(inboundUpdate(1, CURRENT_CHAT_SCENARIO));
           await expect
             .poll(
               async () => ({
                 request: await findToolResult(CURRENT_CHAT_SCENARIO),
                 scriptedCalls,
-                telegramMethods: telegramCalls.map((call) => call.method),
               }),
               {
                 interval: 50,
@@ -335,7 +266,7 @@ test("binds Telegram emoji discovery to the current conversation before Bot API 
             ),
           ).toHaveLength(1);
 
-          queueUpdate(inboundUpdate(2, FOREIGN_CHAT_SCENARIO));
+          api.updates.enqueue(inboundUpdate(2, FOREIGN_CHAT_SCENARIO));
           await expect
             .poll(() => findToolResult(FOREIGN_CHAT_SCENARIO), {
               interval: 50,
@@ -343,8 +274,6 @@ test("binds Telegram emoji discovery to the current conversation before Bot API 
             })
             .toMatchObject({ toolOutput: expect.stringContaining(CONVERSATION_BINDING_ERROR) });
 
-          const foreignChatResult = await findToolResult(FOREIGN_CHAT_SCENARIO);
-          expect(foreignChatResult!.toolOutput).toContain(CONVERSATION_BINDING_ERROR);
           expect(
             telegramCalls.filter((call) => JSON.stringify(call).includes(String(FOREIGN_CHAT_ID))),
           ).toEqual([]);
@@ -356,7 +285,6 @@ test("binds Telegram emoji discovery to the current conversation before Bot API 
             },
           ]);
         } finally {
-          enterPhase("cleanup");
           await settleCleanup(
             async () => await stopQaGatewayFixture(gatewayOwner),
             async () => await mock?.stop(),
