@@ -207,18 +207,16 @@ describe("subagent run memory indexes", () => {
     subagentRuns.set(first.runId, first);
     const lookup = getSubagentSessionReadLookup(subagentRuns);
     const select = (...ids: string[]) => lookup.selectRunIds(new Set(ids));
-    expect(select(first.schedulerSlotId)).toEqual([first.runId]);
-    expect(select(first.runId, first.swarmRunId, first.schedulerSlotId)).toEqual([first.runId]);
+    expect(select("slot-first")).toEqual([first.runId]);
+    expect(select(first.runId, "collector-first", "slot-first")).toEqual([first.runId]);
 
     const replacement = { ...first, schedulerSlotId: "slot-replacement" };
     subagentRuns.set(replacement.runId, replacement);
-    expect(select(first.schedulerSlotId)).toEqual([]);
+    expect(select("slot-first")).toEqual([]);
     expect(select(replacement.schedulerSlotId)).toEqual([replacement.runId]);
 
     subagentRuns.delete(replacement.runId);
-    expect(select(replacement.runId, replacement.swarmRunId, replacement.schedulerSlotId)).toEqual(
-      [],
-    );
+    expect(select(replacement.runId, "collector-first", replacement.schedulerSlotId)).toEqual([]);
   });
 
   it("retains a selected registration through its own ACK but rejects a current replacement", () => {

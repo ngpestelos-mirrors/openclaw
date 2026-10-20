@@ -63,7 +63,10 @@ it.each([true, false])("blocks full access with required sandbox=%s", (required)
     ? { ...blocked, allowed: false, defaultLevel: "off" }
     : { ...blocked, fullAccessBlockedReason: "runtime" };
   expect(
-    buildEmbeddedSandboxInfo(sandbox({ required }), { ...elevation, ...runtime })?.elevated,
+    buildEmbeddedSandboxInfo(sandbox(required ? { required: true } : {}), {
+      ...elevation,
+      ...runtime,
+    })?.elevated,
   ).toEqual(expected);
 });
 it("uses the effective configured exec policy", async () => {

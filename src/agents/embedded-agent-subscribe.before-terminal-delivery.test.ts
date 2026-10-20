@@ -45,6 +45,7 @@ const readCall = () => ({ type: "toolCall", id: "read", name: "read", arguments:
 const user = (content: string) => ({ role: "user" as const, content, timestamp: 0 });
 const readResult = (text: string, isError = false, timestamp = 0) => ({
   ...textToolResult("read", "read", text, { isError }),
+  isError,
   timestamp,
 });
 const assistantMessage = (
@@ -438,7 +439,12 @@ it("preserves the undelivered prefix when a deferred answer extends it", async (
   await h.finish(messages);
   expect(visibleTexts(h.replies())).toEqual(["Result:complete"]);
   expect(visibleTexts(h.partials())).toEqual(["Result:complete"]);
-  expect(visibleTexts(h.assistantEvents())).toEqual(["Result:complete"]);
+  expect(
+    h
+      .assistantEvents()
+      .map((event) => event.text)
+      .filter(Boolean),
+  ).toEqual(["Result:complete"]);
   expect(h.lifecycleEnded()).toBe(true);
 });
 

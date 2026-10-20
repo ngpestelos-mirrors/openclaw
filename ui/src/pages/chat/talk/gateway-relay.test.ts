@@ -36,8 +36,8 @@ import {
 
 function consultReply(method: string, reply: () => Promise<unknown>) {
   const client = createConsultClient();
-  const request = vi.mocked(client.request).getMockImplementation()!;
-  vi.mocked(client.request).mockImplementation((name, params, options) =>
+  const request = vi.spyOn(client, "request").getMockImplementation()!;
+  vi.spyOn(client, "request").mockImplementation((name, params, options) =>
     name === method ? reply() : request(name, params, options),
   );
   return client;

@@ -2,7 +2,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { expectDefined } from "@openclaw/normalization-core";
 import { expect, it } from "vitest";
-import { createSolidPngBuffer } from "../../plugin-sdk/test-helpers/image-fixtures.js";
+import { encodePngRgba, fillPixel } from "../../media/png-encode.js";
 import type { Agent, AgentMessage } from "../runtime/index.js";
 import { castAgentMessage } from "../test-helpers/agent-message-fixtures.js";
 import { createImageTool } from "../tools/image-tool.js";
@@ -15,8 +15,14 @@ import { installToolResultContextGuard } from "./tool-result-context-guard.js";
 type ContentBlock = { type: string; text?: string; data?: string; mimeType?: string };
 
 function makeDistinctImageRef(index: number): string {
-  const image = createSolidPngBuffer(64, 64, { r: (index + 1) * 17, g: 0, b: 0 });
-  return `data:image/png;base64,${image.toString("base64")}`;
+  const width = 64;
+  const pixels = Buffer.alloc(width * width * 4);
+  for (let y = 0; y < width; y += 1) {
+    for (let x = 0; x < width; x += 1) {
+      fillPixel(pixels, x, y, width, (index + 1) * 17, x * 3, y * 3);
+    }
+  }
+  return `data:image/png;base64,${encodePngRgba(pixels, width, width).toString("base64")}`;
 }
 
 async function executeNativeImageTool(imageCount: number): Promise<AgentMessage> {

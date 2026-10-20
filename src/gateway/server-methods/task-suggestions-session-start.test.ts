@@ -2,6 +2,7 @@ import { execFile } from "node:child_process";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { promisify } from "node:util";
+import { expectDefined } from "@openclaw/normalization-core";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { setRuntimeConfigSnapshot } from "../../config/runtime-snapshot.js";
 import {
@@ -121,7 +122,8 @@ it.each(["plain folder", "unavailable Git metadata"])("starts a local task: %s",
     expect(entry).not.toHaveProperty("pendingWorktree");
     expect(entry).not.toHaveProperty("worktree");
     expect(handleChatSend).toHaveBeenCalledTimes(1);
-    const { sessionKey, message } = handleChatSend.mock.calls[0][0].params;
+    const { sessionKey, message } = expectDefined(handleChatSend.mock.calls[0], "chat send")[0]
+      .params;
     expect(sessionKey).toBe(key);
     expect(message).toContain("ask the user before creating or switching to it");
     expect(message.endsWith(`\n\n${prompt}`)).toBe(true);

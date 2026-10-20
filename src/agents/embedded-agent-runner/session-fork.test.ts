@@ -120,7 +120,7 @@ function expectText(text: string, included: string[], excluded: string[] = []) {
   }
 }
 
-function toolCall(id: string, name: string, args: Record<string, unknown> = {}, async?: boolean) {
+function toolCall(id: string, name: string, args: Record<string, unknown> = {}, async?: true) {
   return {
     type: "toolCall" as const,
     id,
@@ -344,7 +344,7 @@ function guardedTransport(
   );
   return {
     physicalFetch,
-    request(index = -1) {
+    request: (index = -1) => {
       const [url, init] = physicalFetch.mock.calls.at(index)!;
       return new Request(url, init);
     },

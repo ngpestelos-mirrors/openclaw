@@ -402,7 +402,7 @@ async function verifyQueuedCollectorAdmission(signal: AbortSignal) {
     async () => {
       blockerResult = parent.result;
       if (blockerResult?.status !== "accepted") {
-        return;
+        return undefined;
       }
       await blockerStarted.promise;
       return proofSpawn(queuedPrompt, { collect: true, groupId: marker });

@@ -183,7 +183,7 @@ export async function settleProofScenario(
 ) {
   scenario.releaseIncumbent.resolve();
   scenario.releaseTarget.resolve();
-  await Promise.allSettled(work);
+  await Promise.allSettled(work.filter((pending) => pending !== undefined));
   await waitForGatewayActiveWork(30_000);
 }
 

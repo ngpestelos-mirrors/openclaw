@@ -21,7 +21,7 @@ vi.mock("node:fs/promises", async (original) => {
 const actualFs = await vi.importActual<typeof import("node:fs/promises")>("node:fs/promises");
 const dirs = useAutoCleanupTempDirTracker(afterEach);
 const upload = expectDefined(terminalUploadHandlers["terminal.upload"], "terminal.upload");
-const clientInfo = { id: "test", version: "1", platform: "test", mode: "test" };
+const clientInfo = { id: "test", version: "1", platform: "test", mode: "test" } as const;
 const connect = { minProtocol: 1, maxProtocol: 1, client: clientInfo };
 const isClientFile = (target: unknown) =>
   typeof target === "string" && path.basename(target) === "client.bin";
