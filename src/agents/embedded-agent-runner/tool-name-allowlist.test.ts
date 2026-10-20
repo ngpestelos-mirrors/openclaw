@@ -26,8 +26,10 @@ const compact = (
   tools: ReturnType<typeof createStubTool>[],
   catalogRef = createToolSearchCatalogRef(),
 ) => applyToolSearchCatalog({ tools, config, catalogRef });
-const allowlist = (tools: ReturnType<typeof createStubTool>[], clients?: ClientToolDefinition[]) =>
-  toSessionToolAllowlist(collectAllowedToolNames({ tools, clientTools: clients }));
+const sessionAllowlist = (
+  tools: ReturnType<typeof createStubTool>[],
+  clients?: ClientToolDefinition[],
+) => toSessionToolAllowlist(collectAllowedToolNames({ tools, clientTools: clients }));
 
 describe("tool name allowlists", () => {
   it("collects exact registered custom-tool names for the agent session allowlist", () => {
@@ -113,7 +115,7 @@ describe("tool name allowlists", () => {
     expect(compacted.catalogRegistered).toBe(true);
     expect(clientToolSearch.tools).toEqual([]);
     expect(
-      allowlist(compacted.tools, compacted.catalogRegistered ? undefined : clientTools),
+      sessionAllowlist(compacted.tools, compacted.catalogRegistered ? undefined : clientTools),
     ).toEqual([TOOL_CALL_RAW_TOOL_NAME]);
   });
 
@@ -125,9 +127,9 @@ describe("tool name allowlists", () => {
     ];
     const compacted = compact(uncompactedTools);
     expect(
-      allowlist(compacted.tools, compacted.catalogRegistered ? undefined : clientTools),
+      sessionAllowlist(compacted.tools, compacted.catalogRegistered ? undefined : clientTools),
     ).toEqual([TOOL_CALL_RAW_TOOL_NAME, "exec"]);
-    expect(allowlist(uncompactedTools, clientTools)).toEqual([
+    expect(sessionAllowlist(uncompactedTools, clientTools)).toEqual([
       "client_pick_file",
       TOOL_CALL_RAW_TOOL_NAME,
       "exec",
