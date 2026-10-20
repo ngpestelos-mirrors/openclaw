@@ -7,6 +7,8 @@ import {
 } from "../infra/diagnostic-events.js";
 import { markTrustedOtelDiagnosticListener } from "../infra/diagnostic-otel-listener-provenance.js";
 
+export const unavailable = (reason: string) => ({ status: "unavailable", reason });
+
 export function decisionOptions(
   overrides: Partial<DecisionEvaluateOptionsV2> = {},
 ): DecisionEvaluateOptionsV2 {

@@ -38,6 +38,9 @@ function readOpenRouterManifest() {
 }
 
 const traceKey = Symbol.for("openclaw.test.openrouter-decision-path");
+const modelId = "typesafe/jev-1.13";
+const modelRef = `openrouter/${modelId}`;
+const resolvedModel = "typesafe/jev-1.13-20260917";
 afterEach(async () => {
   await resetPreparedModelRuntimeSnapshotsForTest();
   clearRuntimeConfigSnapshot();
@@ -84,7 +87,7 @@ it.each([
     let upstreamProvider: string | undefined = "TypeSafe";
     let status = 200;
     const responseBody = () => ({
-      model: "typesafe/jev-1.13-20260917",
+      model: resolvedModel,
       provider: upstreamProvider,
       answers: {
         q: { type: "noul", noul: 0.37 },
@@ -109,7 +112,7 @@ it.each([
           response.writeHead(200, { "content-type": "application/json" });
           response.end(
             JSON.stringify({
-              data: [{ id: "typesafe/jev-1.13", architecture: { modality: "text->decisions" } }],
+              data: [{ id: modelId, architecture: { modality: "text->decisions" } }],
             }),
           );
           return;
@@ -138,8 +141,7 @@ it.each([
               fs.copyFileSync(path.join(pluginRoot, file.name), path.join(fixtureRoot, file.name));
             }
           }
-          // This is an owning-plugin declaration for the synthetic served route, not a
-          // config grant or an inference made from upstream modalities. Runtime is unchanged.
+          // The owning plugin, not config or upstream modalities, declares this route.
           const declared = readOpenRouterManifest();
           const models = declared.modelCatalog?.providers?.openrouter?.models;
           if (!models) {
@@ -181,17 +183,17 @@ it.each([
             }),
           );
         }
+        const credential =
+          auth === "oauth-key" ? "synthetic-oauth-issued-key" : "synthetic-openrouter-credential";
         const cfg: OpenClawConfig = {
           diagnostics: { enabled: true },
           agents: {
             defaults: {
               model: "unrelated/not-configured",
-              decisionModel:
-                "openrouter/typesafe/jev-1.13" +
-                (auth === "oauth-key" ? "@openrouter:oauth-fixture" : ""),
+              decisionModel: modelRef + (auth === "oauth-key" ? "@openrouter:oauth-fixture" : ""),
               workspace: path.join(root, "workspace"),
               models: {
-                "openrouter/typesafe/jev-1.13": {
+                [modelRef]: {
                   params: { provider: { order: ["typesafe"], require_parameters: true } },
                 },
               },
@@ -201,10 +203,7 @@ it.each([
             providers: {
               openrouter: {
                 baseUrl,
-                apiKey:
-                  auth === "oauth-key"
-                    ? "synthetic-not-selected"
-                    : "synthetic-openrouter-credential",
+                apiKey: auth === "oauth-key" ? "synthetic-not-selected" : credential,
                 models: [],
                 headers: {
                   "X-Fixture-Tenant": "synthetic-replaced-tenant",
@@ -232,16 +231,14 @@ it.each([
             },
           },
           plugins: {
-            load: {
-              paths: [pluginRoot, consumerRoot],
-            },
+            load: { paths: [pluginRoot, consumerRoot] },
             slots: { memory: "none" },
             entries: {
               openrouter: { enabled: true },
               [consumerId]: {
                 enabled: true,
                 llm: {
-                  allowedCompletionModels: ["openrouter/typesafe/jev-1.13"],
+                  allowedCompletionModels: [modelRef],
                   allowAgentIdOverride: false,
                   allowModelOverride: false,
                   allowAuthProfileOverride: false,
@@ -271,15 +268,14 @@ it.each([
           },
           async () => {
             if (auth === "oauth-key") {
-              // OpenRouter PKCE issues an API key. Persist the same credential
-              // shape as its login owner, then select it through the normal profile owner.
+              // PKCE persists an API key selected through the normal profile owner.
               await state.writeAuthProfiles({
                 version: 1,
                 profiles: {
                   "openrouter:oauth-fixture": {
                     type: "api_key",
                     provider: "openrouter",
-                    key: "synthetic-oauth-issued-key",
+                    key: credential,
                     metadata: { authFlow: "oauth-pkce" },
                   },
                 },
@@ -291,19 +287,19 @@ it.each([
               workspaceDir: path.join(root, "workspace"),
             });
             expect(registry.diagnostics.filter((item) => item.level === "error")).toEqual([]);
-            expect(
-              registry.providers.filter((entry) => entry.provider.id === "openrouter"),
-            ).toHaveLength(1);
-            expect(
-              registry.decisionProviders.filter((entry) => entry.host.provider.id === "openrouter"),
-            ).toHaveLength(1);
+            expect({
+              providers: registry.providers.filter((entry) => entry.provider.id === "openrouter")
+                .length,
+              decisions: registry.decisionProviders.filter(
+                (entry) => entry.host.provider.id === "openrouter",
+              ).length,
+            }).toEqual({ providers: 1, decisions: 1 });
             const events = trackDecisionUsage();
             const runtime = trace.runtime;
             if (!runtime) {
               throw new Error("Missing registered decision SDK");
             }
-            // ProviderHost starts the operation deadline before its lazy prepared-runtime import.
-            // Compile that source-only dependency as fixture setup, outside the measured operation.
+            // Warm the lazy import before ProviderHost starts its operation deadline.
             await import("./decision-inference.js");
             const options = () =>
               decisionOptions({
@@ -327,22 +323,29 @@ it.each([
                 },
               },
             };
+            const evaluate = (overrides: Parameters<typeof decisionOptions>[0] = {}) =>
+              runtime.evaluateV2(batch, { ...options(), ...overrides });
+            const selectModel = (decisionModel: string) =>
+              setRuntimeConfigSnapshot({
+                ...cfg,
+                agents: { defaults: { ...cfg.agents?.defaults, decisionModel } },
+              });
             const denied = structuredClone(cfg);
             denied.plugins!.entries![consumerId]!.llm!.allowedCompletionModels = [
               "openrouter/unrelated-fixture",
             ];
             setRuntimeConfigSnapshot(denied);
-            await expect(runtime.evaluateV2(batch, options())).rejects.toMatchObject({
+            await expect(evaluate()).rejects.toMatchObject({
               code: "LLM_COMPLETION_NOT_AUTHORIZED",
             });
             expect(received).toHaveLength(0);
             expect(events).toHaveLength(0);
             setRuntimeConfigSnapshot(cfg, sourceConfig);
-            const outcome = await runtime.evaluateV2(batch, options());
+            const outcome = await evaluate();
             expect(outcome, JSON.stringify({ outcome, received })).toMatchObject({
               status: "ok",
               result: {
-                model: "typesafe/jev-1.13-20260917",
+                model: resolvedModel,
                 metadata: { provider: "TypeSafe" },
                 answers: {
                   q: { type: "boolean", probabilityTrue: 0.37 },
@@ -355,16 +358,11 @@ it.each([
             });
             expect(received[0]).toEqual({
               url: new URL(baseUrl).pathname + "/systemone",
-              authorization:
-                route === "canonical"
-                  ? auth === "oauth-key"
-                    ? "Bearer synthetic-oauth-issued-key"
-                    : "Bearer synthetic-openrouter-credential"
-                  : undefined,
+              authorization: route === "canonical" ? `Bearer ${credential}` : undefined,
               ...(route === "declared-proxy" ? { customAuth: "synthetic-prepared-custom" } : {}),
               tenant: "fixture-tenant",
               body: {
-                model: "typesafe/jev-1.13",
+                model: modelId,
                 state: "Synthetic evidence",
                 questions: {
                   ...batch.questions,
@@ -382,7 +380,7 @@ it.each([
             expect(events).toHaveLength(1);
             expect(events[0]).toMatchObject({
               provider: "openrouter",
-              model: "typesafe/jev-1.13",
+              model: modelId,
               usage: { input: 476, output: 70 },
               costUsd: cost,
             });
@@ -391,7 +389,7 @@ it.each([
               return;
             }
             cost = 0;
-            expect(await runtime.evaluateV2(batch, options())).toMatchObject({
+            expect(await evaluate()).toMatchObject({
               result: { usage: { costUsd: 0 } },
             });
             expect(events).toHaveLength(2);
@@ -408,29 +406,19 @@ it.each([
               result: { answers: { q: { probabilityTrue: 0.37 } } },
             });
             const calls = received.length;
-            expect(
-              await runtime.evaluateV2(batch, { ...options(), reasoning: "on" }),
-            ).toMatchObject({
+            expect(await evaluate({ reasoning: "on" })).toMatchObject({
               reason: "unsupported-input",
             });
             expect(received).toHaveLength(calls);
             const foreign = structuredClone(cfg);
             foreign.models!.providers!.openrouter!.baseUrl = origin + "/undeclared";
             setRuntimeConfigSnapshot(foreign);
-            expect(await runtime.evaluateV2(batch, options())).toMatchObject({
+            expect(await evaluate()).toMatchObject({
               reason: "unsupported-input",
             });
             expect(received).toHaveLength(calls);
-            setRuntimeConfigSnapshot({
-              ...cfg,
-              agents: {
-                defaults: {
-                  ...cfg.agents?.defaults,
-                  decisionModel: "openrouter/typesafe/jev-1.13@missing-fixture-profile",
-                },
-              },
-            });
-            expect(await runtime.evaluateV2(batch, options())).toMatchObject({
+            selectModel(`${modelRef}@missing-fixture-profile`);
+            expect(await evaluate()).toMatchObject({
               reason: "credentials-unavailable",
             });
             expect(received).toHaveLength(calls);
@@ -442,21 +430,17 @@ it.each([
               if (provider?.contractVersion !== 2) {
                 throw new Error("Missing registered OpenRouter V2 provider");
               }
-              const evaluate = provider.evaluate.bind(provider);
+              const providerEvaluate = provider.evaluate.bind(provider);
               let closedDuringPreparation = false;
               vi.spyOn(provider, "evaluate").mockImplementationOnce((offered, context) => {
-                // The real adapter runs synchronously until guarded fetch preparation
-                // yields. Close its live authority before the physical dispatch check.
+                // Revoke authority after preparation yields, before physical dispatch.
                 queueMicrotask(() => {
                   closedDuringPreparation = true;
-                  setRuntimeConfigSnapshot({
-                    ...cfg,
-                    agents: { defaults: { ...cfg.agents?.defaults, decisionModel: "" } },
-                  });
+                  selectModel("");
                 });
-                return evaluate(offered, context);
+                return providerEvaluate(offered, context);
               });
-              const interrupted = await runtime.evaluateV2(batch, options());
+              const interrupted = await evaluate();
               expect(closedDuringPreparation).toBe(true);
               expect(interrupted).toMatchObject({
                 status: "unavailable",
@@ -465,11 +449,10 @@ it.each([
               expect(received).toHaveLength(calls);
               setRuntimeConfigSnapshot(cfg, sourceConfig);
             }
-            // Authentication failure latches the host generation, so exercise it
-            // last: unsupported input and admission loss must not poison later requests.
+            // Authentication latches the generation; test it last so other errors prove recovery.
             for (const code of [413, 401]) {
               status = code;
-              expect(await runtime.evaluateV2(batch, options())).toMatchObject({
+              expect(await evaluate()).toMatchObject({
                 reason: code === 401 ? "authentication" : "unsupported-input",
               });
             }
@@ -506,12 +489,16 @@ it("projects the declared Jev routes as decision-only without fabricated chat fi
     "typesafe/jev-1.14",
   ]);
   for (const row of rows) {
-    expect(row.maxTokens).toBeUndefined();
-    expect(row.cost).toBeUndefined();
-    expect(row.inference?.decision?.input).toEqual(["text", "image"]);
-    expect(row.inference?.decision?.limits).toMatchObject({
-      maxStateAndQuestionTokens: 262144,
-      image: { maxBytes: 4194304, mimeTypes: ["image/png", "image/jpeg"], remoteUrls: false },
+    expect({ maxTokens: row.maxTokens, cost: row.cost }).toEqual({
+      maxTokens: undefined,
+      cost: undefined,
+    });
+    expect(row.inference?.decision).toMatchObject({
+      input: ["text", "image"],
+      limits: {
+        maxStateAndQuestionTokens: 262144,
+        image: { maxBytes: 4194304, mimeTypes: ["image/png", "image/jpeg"], remoteUrls: false },
+      },
     });
     expect(Boolean(row.inference?.decision?.questions?.box)).toBe(row.id !== "typesafe/jev-1.13");
   }

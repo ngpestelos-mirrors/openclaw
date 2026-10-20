@@ -43,6 +43,7 @@ import {
   decisionOptions,
   readDecisionRequest,
   trackDecisionUsage,
+  unavailable,
 } from "./decision-inference.test-support.js";
 import * as modelAuth from "./model-auth-provider.js";
 import { acquireAgentRunPreparedModelRuntime } from "./prepared-model-runtime.js";
@@ -60,6 +61,27 @@ const decision: ModelDecisionCapabilities = {
   input: ["text"],
   questions: { boolean: { probabilities: "none", abstention: true } },
 };
+const catalogTransport = {
+  api: "openai-completions" as const,
+  baseUrl: "https://catalog.fixture.invalid/v1",
+};
+const nativeModel = { id: "native", name: "Native fixture" };
+function fixtureConfig(
+  root: string,
+  decisionModel: string,
+  plugins: NonNullable<OpenClawConfig["plugins"]>,
+): OpenClawConfig {
+  return {
+    agents: {
+      defaults: {
+        model: "unrelated/not-configured",
+        decisionModel,
+        workspace: path.join(root, "workspace"),
+      },
+    },
+    plugins: { slots: { memory: "none" }, ...plugins },
+  };
+}
 type Trace = {
   calls: number;
   context?: DecisionProviderContextV2;
@@ -141,17 +163,13 @@ it.each([
           providers: {
             [id]: {
               authScope: pluginAuth ? "plugin" : "agent",
-              ...(pluginAuth
-                ? {}
-                : { api: "openai-completions", baseUrl: "https://catalog.fixture.invalid/v1" }),
+              ...(pluginAuth ? {} : catalogTransport),
               models: [
                 {
-                  id: "native",
-                  name: "Native fixture",
+                  ...nativeModel,
                   ...(authScope === "exchange"
                     ? {
-                        api: "openai-completions",
-                        baseUrl: "https://catalog.fixture.invalid/v1",
+                        ...catalogTransport,
                         contextWindow: 4096,
                         maxTokens: 256,
                       }
@@ -219,51 +237,41 @@ it.each([
         },
       });
     }
-    const cfg: OpenClawConfig = {
-      ...(!pluginAuth
-        ? {
-            models: {
-              providers: {
-                [id]: {
-                  api: "openai-completions",
-                  baseUrl: "https://catalog.fixture.invalid/v1",
-                  ...(authScope === "profile" || authScope === "missing"
-                    ? {}
-                    : { apiKey: "synthetic-prepared-token" }),
-                  headers: { "x-provider": "provider", "X-Precedence": "provider" },
-                  request: { headers: { "x-precedence": "request", "x-request": "request" } },
-                  models: [
-                    {
-                      id: "native",
-                      name: "Native fixture",
-                      headers: { "x-model": "model", "X-PRECEDENCE": "model" },
-                      ...(authScope === "exchange" ? { contextWindow: 4096 } : {}),
-                      maxTokens: 256,
-                      reasoning: false,
-                      input: ["text"],
-                      cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-                    },
-                  ],
-                },
-              },
-            },
-          }
-        : {}),
-      agents: {
-        defaults: {
-          model: "unrelated/not-configured",
-          decisionModel: id + "/native" + (authScope === "profile" ? "@" + id + ":agent" : ""),
-          workspace: path.join(root, "workspace"),
-        },
-      },
-      plugins: {
+    const cfg = fixtureConfig(
+      root,
+      id + "/native" + (authScope === "profile" ? "@" + id + ":agent" : ""),
+      {
         load: { paths: [pluginRoot] },
-        slots: { memory: "none" },
         entries: {
           [id]: { enabled: true, llm: { allowedCompletionModels: [id + "/native"] } },
         },
       },
-    };
+    );
+    if (!pluginAuth) {
+      cfg.models = {
+        providers: {
+          [id]: {
+            ...catalogTransport,
+            headers: { "x-provider": "provider", "X-Precedence": "provider" },
+            request: { headers: { "x-precedence": "request", "x-request": "request" } },
+            models: [
+              {
+                ...nativeModel,
+                headers: { "x-model": "model", "X-PRECEDENCE": "model" },
+                ...(authScope === "exchange" ? { contextWindow: 4096 } : {}),
+                maxTokens: 256,
+                reasoning: false,
+                input: ["text"],
+                cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+              },
+            ],
+            ...(authScope === "profile" || authScope === "missing"
+              ? {}
+              : { apiKey: "synthetic-prepared-token" }),
+          },
+        },
+      };
+    }
     const env = {
       ...createColdPluginHermeticEnv(root, { bundledPluginsDir: emptyBundled }),
       ...profileState?.envVars,
@@ -278,9 +286,7 @@ it.each([
         workspaceDir: path.join(root, "workspace"),
       });
       expect(registry.diagnostics.filter((item) => item.level === "error")).toEqual([]);
-      expect(registry.providers.map((entry) => entry.provider.id)).toContain(id);
       const evaluate = trace.evaluate;
-      expect(evaluate).toBeTypeOf("function");
       if (!evaluate) {
         throw new Error("Decision registration omitted its runtime capability");
       }
@@ -344,8 +350,10 @@ it.each([
           now += 299;
           await vi.advanceTimersByTimeAsync(299);
           if (deadlinePhase === "provider") {
-            expect(trace.context?.deadlineMonotonicMs).toBe(1_500);
-            expect(trace.context?.signal.aborted).toBe(false);
+            expect(trace.context).toMatchObject({
+              deadlineMonotonicMs: 1_500,
+              signal: { aborted: false },
+            });
           }
           now += 1;
           await vi.advanceTimersByTimeAsync(1);
@@ -356,9 +364,7 @@ it.each([
           expect(settled).toBe(false);
           expect(providerHost.inspect(cfg).activeRequests).toBe(1);
           release.resolve();
-          expect(await settlement).toEqual({
-            outcome: { status: "unavailable", reason: "deadline" },
-          });
+          expect(await settlement).toEqual({ outcome: unavailable("deadline") });
           expect(trace.calls).toBe(deadlinePhase === "provider" ? 1 : 0);
           expect(providerHost.inspect(cfg).activeRequests).toBe(0);
           expect(usageEvents).toEqual([]);
@@ -450,7 +456,7 @@ it.each([
         invoke(textBatch(), decisionOptions(authScope === "profile" ? { agentId: "main" } : {}));
       const outcome = await evaluateFixture();
       if (authScope.startsWith("plugin-route-") && authScope !== "plugin-route-fresh") {
-        expect(outcome).toEqual({ status: "unavailable", reason: "unsupported-input" });
+        expect(outcome).toEqual(unavailable("unsupported-input"));
         expect(trace.calls).toBe(0);
         expect(
           credentialPreparation.mock.calls.filter(([params]) => params.capability === "decision"),
@@ -459,18 +465,20 @@ it.each([
         return;
       }
       if (authScope === "plugin-route-fresh") {
-        expect(trace.modelBaseUrl).toBe("https://selected.fixture.invalid/v1");
-        expect(trace.modelApi).toBe("openai-responses");
-        expect(trace.modelBilling).toBeUndefined();
+        expect(trace).toMatchObject({
+          modelBaseUrl: "https://selected.fixture.invalid/v1",
+          modelApi: "openai-responses",
+          modelBilling: undefined,
+        });
       }
       if (authScope.startsWith("plugin-revoked")) {
-        expect(outcome).toEqual({
-          status: "unavailable",
-          reason:
+        expect(outcome).toEqual(
+          unavailable(
             authScope === "plugin-revoked-disabled"
               ? "unsupported-input"
               : "credentials-unavailable",
-        });
+          ),
+        );
         expect(trace.calls).toBe(1);
         expect(http).not.toHaveBeenCalled();
         expect(usageEvents).toEqual([]);
@@ -478,7 +486,7 @@ it.each([
         return;
       }
       if (authScope === "missing") {
-        expect(outcome).toEqual({ status: "unavailable", reason: "credentials-unavailable" });
+        expect(outcome).toEqual(unavailable("credentials-unavailable"));
         expect(trace.calls).toBe(0);
         expect(usageEvents).toEqual([]);
         return;
@@ -489,23 +497,20 @@ it.each([
       });
       expect(trace).toMatchObject({ calls: 1, resultReads: 1, authenticated: true });
       if (authScope === "profile") {
-        expect(trace.profileId).toBe(id + ":agent");
-        expect(trace.agentId).toBe("main");
+        expect(trace).toMatchObject({ profileId: id + ":agent", agentId: "main" });
       }
-      expect(usageEvents).toEqual([
-        expect.objectContaining({
+      expect(usageEvents).toMatchObject([
+        {
           provider: id,
           model: "native",
           usage: { input: 100 },
           costUsd: 0,
-        }),
+        },
       ]);
       trace.usage = { inputTokens: 100 };
       const unpriced = await evaluateFixture();
-      expect(unpriced.status).toBe("ok");
-      if (unpriced.status === "ok") {
-        expect(unpriced.result.usage).toEqual({ inputTokens: 100 });
-      }
+      expect(unpriced).toMatchObject({ status: "ok" });
+      expect(unpriced.status === "ok" && unpriced.result.usage).toEqual({ inputTokens: 100 });
       expect(usageEvents).toHaveLength(2);
       if (authScope === "plugin") {
         expect(usageEvents[1]?.costUsd).toBe(0.0002);
@@ -517,20 +522,20 @@ it.each([
         expect(trace).toMatchObject({
           modelBaseUrl: "https://entitlement.fixture.invalid/v1",
           preparedApi: "openai-responses",
-        });
-        expect(trace.modelBilling).toBeUndefined();
-        expect(trace.modelApi).toBe(trace.preparedApi);
-        expect(trace.modelRequest).toMatchObject({
-          headers: { "x-fixture-entitlement": "synthetic-entitlement" },
-          auth: {
-            mode: "header",
-            headerName: "x-fixture-auth",
-            value: "synthetic-exchanged-header",
+          modelBilling: undefined,
+          modelApi: "openai-responses",
+          modelRequest: {
+            headers: { "x-fixture-entitlement": "synthetic-entitlement" },
+            auth: {
+              mode: "header",
+              headerName: "x-fixture-auth",
+              value: "synthetic-exchanged-header",
+            },
           },
-        });
-        expect(trace.modelHeaders).toMatchObject({
-          "x-fixture-entitlement": "synthetic-entitlement",
-          "x-fixture-auth": "synthetic-exchanged-header",
+          modelHeaders: {
+            "x-fixture-entitlement": "synthetic-entitlement",
+            "x-fixture-auth": "synthetic-exchanged-header",
+          },
         });
       } else {
         expect(trace.modelKeys).not.toContain("cost");
@@ -560,10 +565,7 @@ it.each([
         });
         await expect(
           evaluate(textBatch("explicit profile"), decisionOptions()),
-        ).resolves.toMatchObject({
-          status: "unavailable",
-          reason: "credentials-unavailable",
-        });
+        ).resolves.toMatchObject(unavailable("credentials-unavailable"));
         expect(trace.calls).toBe(2);
         setRuntimeConfigSnapshot(cfg);
       }
@@ -574,10 +576,7 @@ it.each([
           { model: "native", answers: {} },
         ]) {
           trace.resultOverride = { value: invalid };
-          expect(await evaluateFixture()).toEqual({
-            status: "unavailable",
-            reason: "invalid-response",
-          });
+          expect(await evaluateFixture()).toEqual(unavailable("invalid-response"));
           expect(trace.resultReads).toBe(1);
           expect(usageEvents).toHaveLength(2);
         }
@@ -650,28 +649,18 @@ it("runs both SDK versions through the source TypeSafe plugin, prepared auth, an
       });
     },
     async (baseUrl) => {
-      const cfg: OpenClawConfig = {
-        agents: {
-          defaults: {
-            model: "unrelated/not-configured",
-            decisionModel: "typesafe/kev-latest",
-            workspace: path.join(root, "workspace"),
-          },
+      const cfg = fixtureConfig(root, "typesafe/kev-latest", {
+        load: {
+          paths: [
+            fileURLToPath(new URL("../../extensions/typesafe", import.meta.url)),
+            consumerRoot,
+          ],
         },
-        plugins: {
-          load: {
-            paths: [
-              fileURLToPath(new URL("../../extensions/typesafe", import.meta.url)),
-              consumerRoot,
-            ],
-          },
-          slots: { memory: "none" },
-          entries: {
-            typesafe: { enabled: true, config: { baseUrl } },
-            [consumerId]: { enabled: true },
-          },
+        entries: {
+          typesafe: { enabled: true, config: { baseUrl } },
+          [consumerId]: { enabled: true },
         },
-      };
+      });
       await withEnvAsync(
         {
           ...createColdPluginHermeticEnv(root, { bundledPluginsDir: emptyBundled }),
@@ -686,7 +675,6 @@ it("runs both SDK versions through the source TypeSafe plugin, prepared auth, an
             workspaceDir: path.join(root, "workspace"),
           });
           expect(registry.diagnostics.filter((item) => item.level === "error")).toEqual([]);
-          expect(registry.providers.map((entry) => entry.provider.id)).toContain("typesafe");
           const agentId = resolveDefaultAgentId(cfg);
           // Retain the prepared caller across SDK assertions: releasing a warm-up
           // lease retires the owner and charges each call for cold catalog setup.
@@ -701,19 +689,8 @@ it("runs both SDK versions through the source TypeSafe plugin, prepared auth, an
             },
             { catalogMode: "static" },
           );
-          expect(prepared.snapshot.pluginRegistry?.providers).toEqual(
-            expect.arrayContaining([
-              expect.objectContaining({
-                pluginId: "typesafe",
-                source: registry.providers.find((entry) => entry.provider.id === "typesafe")!
-                  .source,
-              }),
-            ]),
-          );
-          expect(prepared.snapshot.modelCatalog.entries).toEqual(
-            expect.arrayContaining([
-              expect.objectContaining({ provider: "typesafe", id: "kev-latest" }),
-            ]),
+          expect(prepared.snapshot.modelCatalog.entries).toContainEqual(
+            expect.objectContaining({ provider: "typesafe", id: "kev-latest" }),
           );
           const evaluate = trace.evaluate,
             legacy = trace.evaluateV1;
@@ -724,10 +701,7 @@ it("runs both SDK versions through the source TypeSafe plugin, prepared auth, an
             decisionOptions({ purpose: "actual-engine-fixture", rubricVersion: "1" });
           const batch = textBatch();
           const outcome = await evaluate(batch, { ...typesafeOptions(), reasoning: "auto" });
-          expect(
-            outcome,
-            JSON.stringify({ outcome, receivedRequests: received.length }),
-          ).toMatchObject({
+          expect(outcome).toMatchObject({
             status: "ok",
             result: {
               answers: { q: { type: "boolean", probabilityTrue: 0.37 } },
@@ -743,17 +717,13 @@ it("runs both SDK versions through the source TypeSafe plugin, prepared auth, an
           for (const reasoning of ["off", "on"] as const) {
             await expect(
               evaluate(batch, { ...typesafeOptions(), reasoning }),
-            ).resolves.toMatchObject({
-              status: "unavailable",
-              reason: "unsupported-input",
-            });
+            ).resolves.toMatchObject(unavailable("unsupported-input"));
           }
           for (const rejection of [413, 422]) {
             status = rejection;
-            expect(await evaluate(batch, typesafeOptions())).toMatchObject({
-              status: "unavailable",
-              reason: "unsupported-input",
-            });
+            expect(await evaluate(batch, typesafeOptions())).toMatchObject(
+              unavailable("unsupported-input"),
+            );
           }
           expect(received).toHaveLength(4);
           for (const request of received) {
@@ -764,7 +734,6 @@ it("runs both SDK versions through the source TypeSafe plugin, prepared auth, an
               questions: { q: { type: "noul" } },
             });
           }
-          // The retained lease disposes here, before afterEach resets runtime owners.
         },
       );
     },

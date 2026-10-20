@@ -10,11 +10,7 @@ const model = { api: "test-custom-api", provider: "custom", id: "m" };
 
 function register(streamFn: Parameters<typeof ensureCustomApiRegistered>[2]) {
   expect(ensureCustomApiRegistered(registry, model.api, streamFn)).toBe(true);
-  const provider = registry.getApiProvider("test-custom-api");
-  if (!provider) {
-    throw new Error("expected test-custom-api provider to be registered");
-  }
-  return provider;
+  return registry.getApiProvider(model.api)!;
 }
 
 describe("ensureCustomApiRegistered", () => {
@@ -32,11 +28,8 @@ describe("ensureCustomApiRegistered", () => {
     const stream = createAssistantMessageEventStream();
     const streamFn = vi.fn(() => stream);
     const provider = register(streamFn);
-    const context = { messages: [] };
-    const options = { maxTokens: 32 };
-
-    expect(provider.stream(model as never, context as never, options as never)).toBe(stream);
-    expect(provider.streamSimple(model as never, context as never, options as never)).toBe(stream);
+    expect(provider.stream(model as never, { messages: [] }, { maxTokens: 32 })).toBe(stream);
+    expect(provider.streamSimple(model as never, { messages: [] }, { maxTokens: 32 })).toBe(stream);
     expect(streamFn).toHaveBeenCalledTimes(2);
   });
 
@@ -47,12 +40,12 @@ describe("ensureCustomApiRegistered", () => {
       stopReason: "stop",
       usage: buildUsageWithNoCost({}),
     });
-    const streamFn = vi.fn(async () => {
+    const streamFn = async () => {
       await Promise.resolve();
       const stream = createAssistantMessageEventStream();
       stream.push({ type: "done", reason: "stop", message });
       return stream;
-    });
+    };
     const stream = register(streamFn).stream(model as never, { messages: [] }, {});
 
     expect(stream).not.toBeInstanceOf(Promise);
@@ -60,9 +53,9 @@ describe("ensureCustomApiRegistered", () => {
   });
 
   it("converts async stream factory failures into terminal stream errors", async () => {
-    const streamFn = vi.fn(async () => {
+    const streamFn = async () => {
       throw new Error("factory failed");
-    });
+    };
     const stream = register(streamFn).stream(model as never, { messages: [] }, {});
 
     await expect(stream.result()).resolves.toMatchObject({

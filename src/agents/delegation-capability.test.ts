@@ -95,33 +95,28 @@ describe("delegation capability", () => {
     );
   });
 
-  it("enters report-only mode for fallback completion reports", () => {
-    expect(resolveReport({ fallbackActive: true })).toBe("report_only");
-    expect(
-      resolveReport({
+  it.each([
+    [{ fallbackActive: true }, "report_only"],
+    [
+      {
         fallbackActive: true,
         inputProvenance: { kind: "inter_session", sourceTool: "agent_harness_task" },
-      }),
-    ).toBe("report_only");
-    expect(resolveReport()).toBe("full");
-    expect(
-      resolveReport({ fallbackActive: true, inputProvenance: { kind: "external_user" } }),
-    ).toBe("full");
-  });
-
-  it.each([{ disableTools: true }, { toolsAllow: [] }, { toolsAllow: ["message"] }])(
-    "blocks new delegation for restricted completion reports: %j",
-    (restriction) => {
-      expect(resolveReport(restriction)).toBe("report_only");
+      },
+      "report_only",
+    ],
+    [{}, "full"],
+    [{ fallbackActive: true, inputProvenance: { kind: "external_user" } }, "full"],
+    [{ disableTools: true }, "report_only"],
+    [{ toolsAllow: [] }, "report_only"],
+    [{ toolsAllow: ["message"] }, "report_only"],
+    [{ toolsAllow: ["message", "*"] }, "full"],
+    [{ toolsAllow: ["sessions_*"] }, "full"],
+  ] satisfies [Parameters<typeof resolveReport>[0], string][])(
+    "resolves completion capability for %j",
+    (params, expected) => {
+      expect(resolveReport(params)).toBe(expected);
     },
   );
-
-  it.each([
-    { label: "wildcard with another tool", toolsAllow: ["message", "*"] },
-    { label: "session glob", toolsAllow: ["sessions_*"] },
-  ])("preserves $label delegation for completion reports", ({ toolsAllow }) => {
-    expect(resolveReport({ toolsAllow })).toBe("full");
-  });
 
   it("preserves independent allowlist intersections for completion reports", () => {
     const toolsAllow = attachToolAllowlistIntersection(
@@ -154,12 +149,8 @@ describe("delegation capability", () => {
   });
 
   it("keeps status and cleanup actions while rejecting new background work", async () => {
-    const cronExecute = vi.fn(async () => ({ content: [], details: {} }));
-    const imageExecute = vi.fn(async () => ({ content: [], details: {} }));
-    const [cron, image] = applyDelegationCapability(
-      [createTool("cron", cronExecute), createTool("image_generate", imageExecute)],
-      "report_only",
-    );
+    const tools = [createTool("cron"), createTool("image_generate")];
+    const [cron, image] = applyDelegationCapability(tools, "report_only");
 
     const result = { content: [], details: {} };
     await expect(cron?.execute("cron-status", { action: "status" })).resolves.toEqual(result);
@@ -171,8 +162,8 @@ describe("delegation capability", () => {
     await expect(image?.execute("image-generate", {})).rejects.toThrow(
       "New delegation is unavailable",
     );
-    expect(cronExecute).toHaveBeenCalledTimes(2);
-    expect(imageExecute).toHaveBeenCalledTimes(1);
+    expect(tools[0].execute).toHaveBeenCalledTimes(2);
+    expect(tools[1].execute).toHaveBeenCalledTimes(1);
   });
 
   it("preserves plugin ownership metadata through the report-only wrapper", () => {
@@ -181,8 +172,6 @@ describe("delegation capability", () => {
 
     const [wrapped] = applyDelegationCapability([cron], "report_only");
 
-    // The effective cron-creator allowlist reads meta off the returned tool, so
-    // a wrapper that drops it would silently unown the plugin's tool.
     expect(wrapped).not.toBe(cron);
     expect(getPluginToolMeta(wrapped as AnyAgentTool)).toEqual({ pluginId: "scheduler" });
   });

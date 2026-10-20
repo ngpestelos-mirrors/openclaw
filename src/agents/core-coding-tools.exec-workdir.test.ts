@@ -60,11 +60,7 @@ describe("coding-tool exec working directory", () => {
       },
       processDefaults: {},
     });
-    const exec = tools.find((tool) => tool.name === "exec");
-    if (!exec) {
-      throw new Error("Expected the coding exec tool");
-    }
-    return exec;
+    return tools.find((tool) => tool.name === "exec")!;
   }
 
   it.each([
@@ -76,9 +72,8 @@ describe("coding-tool exec working directory", () => {
     { workdir: "absolute", directory: "sibling", pty: false },
   ])("executes in $directory for workdir=$workdir (PTY=$pty)", async (testCase) => {
     expect(fs.realpathSync(process.cwd())).not.toBe(codingRoot);
-    const exec = createExecTool();
     const workdir = testCase.workdir === "absolute" ? path.join(root, "sibling") : testCase.workdir;
-    const result = await exec.execute("coding-workdir", {
+    const result = await createExecTool().execute("coding-workdir", {
       command: process.platform === "win32" ? "(Get-Location).Path" : "pwd -P",
       workdir,
       pty: testCase.pty,
@@ -105,11 +100,7 @@ describe("coding-tool exec working directory", () => {
         };
       },
       buildExecSpec: async ({ env }) => ({
-        argv: [
-          process.execPath,
-          "-e",
-          "process.stdout.write(process.env.CODEX_SANDBOX_EXEC_ID ?? 'missing')",
-        ],
+        argv: [process.execPath, "-p", "process.env.CODEX_SANDBOX_EXEC_ID ?? 'missing'"],
         env,
         cwd: codingRoot,
         stdinMode: "pipe-closed",
@@ -125,8 +116,7 @@ describe("coding-tool exec working directory", () => {
         fsBridge: createHostSandboxFsBridge(codingRoot),
       },
     });
-    const exec = createExecTool(sandbox);
-    const result = await exec.execute("coding-cleanup", { command: "fixture" });
+    const result = await createExecTool(sandbox).execute("coding-cleanup", { command: "fixture" });
     expect(result.details).toMatchObject({ status: "completed", exitCode: 0 });
     expect(result.content.find((entry) => entry.type === "text")?.text.trim()).toBe(
       "coding-cleanup",

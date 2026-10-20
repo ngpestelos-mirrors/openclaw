@@ -9,9 +9,15 @@ import { createSandboxTestContext } from "./sandbox/test-fixtures.js";
 
 const tempDirs = useAutoCleanupTempDirTracker(afterEach);
 
-async function makePackageRoot(prefix: string): Promise<string> {
-  const root = tempDirs.make(prefix);
+async function makePackageRoot(hasDocs = false, git = false): Promise<string> {
+  const root = tempDirs.make("openclaw-reference-");
   await fs.writeFile(path.join(root, "package.json"), '{"name":"openclaw"}\n');
+  if (hasDocs) {
+    await writeDocsJson(root);
+  }
+  if (git) {
+    await fs.mkdir(path.join(root, ".git"));
+  }
   return root;
 }
 
@@ -20,18 +26,16 @@ async function writeDocsJson(root: string): Promise<void> {
   await fs.writeFile(path.join(root, "docs", "docs.json"), "{}\n");
 }
 
+async function rejectShell() {
+  throw new Error("Reference discovery must not execute shell commands");
+}
+
 describe("resolveOpenClawReferencePaths", () => {
   it.each(["workspace", "nested", "incomplete", "npm", "git"])(
     "resolves local references for %s roots",
     async (scenario) => {
-      const root = await makePackageRoot("openclaw-reference-");
       const hasDocs = ["workspace", "nested", "git"].includes(scenario);
-      if (hasDocs) {
-        await writeDocsJson(root);
-      }
-      if (scenario === "git") {
-        await fs.mkdir(path.join(root, ".git"));
-      }
+      const root = await makePackageRoot(hasDocs, scenario === "git");
       const cwd = scenario === "nested" ? path.join(root, "dist", "agents") : root;
       await fs.mkdir(cwd, { recursive: true });
       if (scenario === "incomplete") {
@@ -64,9 +68,7 @@ describe("resolveOpenClawReferencePaths", () => {
     ["symlink", null, null],
     ["no-bridge", null, null],
   ])("advertises only readable sandbox references: %s", async (scenario, docsPath, sourcePath) => {
-    const root = await makePackageRoot("openclaw-reference-sandbox-");
-    await writeDocsJson(root);
-    await fs.mkdir(path.join(root, ".git"));
+    const root = await makePackageRoot(true, true);
     const workspace = tempDirs.make("openclaw-reference-workspace-");
     if (scenario === "symlink") {
       await fs.symlink(path.join(root, "docs"), path.join(workspace, "docs"), "dir");
@@ -105,20 +107,14 @@ describe("resolveOpenClawReferencePaths", () => {
         runtime: {
           remoteWorkspaceDir: "/remote/workspace",
           remoteAgentWorkspaceDir: "/remote/agent",
-          async runRemoteShellScript() {
-            throw new Error("Reference discovery must not execute remote commands");
-          },
+          runRemoteShellScript: rejectShell,
         },
       });
     } else if (scenario !== "no-bridge") {
       sandbox.fsBridge = createSandboxFsBridge({
         sandbox: {
           ...sandbox,
-          backend: {
-            async runShellCommand() {
-              throw new Error("Reference discovery must not execute sandbox commands");
-            },
-          },
+          backend: { runShellCommand: rejectShell },
         },
       });
     }
