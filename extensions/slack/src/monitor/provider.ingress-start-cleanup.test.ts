@@ -1,5 +1,6 @@
 import { request, type IncomingMessage, type ServerResponse } from "node:http";
 import { text } from "node:stream/consumers";
+import { setImmediate } from "node:timers/promises";
 import { createDeferred } from "openclaw/plugin-sdk/extension-shared";
 import { createTestPluginServiceScheduler } from "openclaw/plugin-sdk/plugin-test-api";
 import { withServer } from "openclaw/plugin-sdk/test-env";
@@ -91,9 +92,7 @@ describe("Slack ingress startup cleanup", () => {
           clientRequest.flushHeaders();
 
           await accepted.promise;
-          await new Promise<void>((resolve) => {
-            setImmediate(resolve);
-          });
+          await setImmediate();
           clientRequest.write(Buffer.alloc(768 * 1024, 0x61));
           clientRequest.end(Buffer.alloc(768 * 1024, 0x62));
 

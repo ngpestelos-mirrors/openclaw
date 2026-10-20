@@ -5,6 +5,7 @@ import net, { type AddressInfo } from "node:net";
 import path from "node:path";
 import type { Duplex } from "node:stream";
 import tls from "node:tls";
+import { createDeferred as deferred } from "openclaw/plugin-sdk/extension-shared";
 import { useAutoCleanupTempDirTracker } from "openclaw/plugin-sdk/test-env";
 import { rawDataToString } from "openclaw/plugin-sdk/webhook-ingress";
 import { type WebSocket, WebSocketServer } from "openclaw/plugin-sdk/websocket-runtime";
@@ -18,14 +19,6 @@ import {
   SlackRelayMalformedFrameError,
   SLACK_RELAY_MAX_PAYLOAD_BYTES,
 } from "./relay-source.js";
-
-function deferred<T>() {
-  let resolve!: (value: T) => void;
-  const promise = new Promise<T>((nextResolve) => {
-    resolve = nextResolve;
-  });
-  return { promise, resolve };
-}
 
 function closeServer(server: http.Server | https.Server | WebSocketServer) {
   return new Promise<void>((resolve, reject) => {

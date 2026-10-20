@@ -124,25 +124,22 @@ describe("Slack transport credential activation", () => {
                 createChannelIngressQueueForTests({ ...options, channelId: "slack", stateDir }),
             },
           } as PluginRuntime);
-          const config = {
-            channels: {
-              slack: {
-                mode,
-                botToken: "xoxb-loopback",
-                appToken: mode === "socket" ? "xapp-1-ATEST-loopback" : inactiveSecret,
-                signingSecret: mode === "http" ? signingSecret : inactiveSecret,
-                accounts: {
-                  default: {},
-                  duplicate: { signingSecret: "duplicate-signing-secret" },
-                },
-                relay: {
-                  url: `${loopback.url}/relay`,
-                  authToken: mode === "relay" ? "loopback-relay-token" : inactiveSecret,
-                  gatewayId: "loopback",
-                },
-              },
+          const slack = {
+            mode,
+            botToken: "xoxb-loopback",
+            appToken: mode === "socket" ? "xapp-1-ATEST-loopback" : inactiveSecret,
+            signingSecret: mode === "http" ? signingSecret : inactiveSecret,
+            accounts: {
+              default: {},
+              duplicate: { signingSecret: "duplicate-signing-secret" },
             },
-          } satisfies OpenClawConfig;
+            relay: {
+              url: `${loopback.url}/relay`,
+              authToken: mode === "relay" ? "loopback-relay-token" : inactiveSecret,
+              gatewayId: "loopback",
+            },
+          };
+          const config = { channels: { slack } } satisfies OpenClawConfig;
           await withMonitor(config, async () => {
             expect(loopback.registry.httpRoutes).toHaveLength(mode === "http" ? 1 : 0);
             expect(loopback.requests).toContain("/api/auth.test");

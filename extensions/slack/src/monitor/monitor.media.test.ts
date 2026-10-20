@@ -53,7 +53,6 @@ describe("resolveSlackThreadStarter cache", () => {
 
     expect(first?.text).toBe("team one root");
     expect(second?.text).toBe("team two root");
-    expect(cachedFirst?.text).toBe("team one root");
     expect(cachedFirst).toEqual(first);
     expect(teamOne.replies).toHaveBeenCalledTimes(1);
     expect(teamTwo.replies).toHaveBeenCalledTimes(1);
@@ -79,8 +78,7 @@ describe("resolveSlackThreadStarter cache", () => {
     const first = await resolveTestSlackThreadStarter(client);
     const second = await resolveTestSlackThreadStarter(client);
 
-    expect(first).toBeNull();
-    expect(second).toBeNull();
+    expect([first, second]).toEqual([null, null]);
     expect(replies).toHaveBeenCalledTimes(2);
   });
 
