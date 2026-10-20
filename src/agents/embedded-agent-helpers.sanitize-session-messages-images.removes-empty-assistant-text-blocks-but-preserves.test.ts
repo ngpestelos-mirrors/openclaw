@@ -77,19 +77,16 @@ describe("sanitizeSessionMessagesImages", () => {
     ).toEqual([user]);
   });
 
-  it.each([{ visible: "", expected: "[empty content omitted]" }])(
-    "keeps user and tool-result content nonempty: $visible",
-    async ({ visible, expected }) => {
-      const input = castAgentMessages([
-        { role: "user", content: [text(""), text(visible)] },
-        { role: "toolResult", toolCallId: "tool-1", content: [text("   "), text(visible)] },
-      ]);
-      expect(await sanitizeSessionMessagesImages(input, "test")).toEqual([
-        { ...input[0], content: [text(expected)] },
-        { ...input[1], content: [text(expected)] },
-      ]);
-    },
-  );
+  it("keeps user and tool-result content nonempty", async () => {
+    const input = castAgentMessages([
+      { role: "user", content: [text(""), text("")] },
+      { role: "toolResult", toolCallId: "tool-1", content: [text("   "), text("")] },
+    ]);
+    expect(await sanitizeSessionMessagesImages(input, "test")).toEqual([
+      { ...input[0], content: [text("[empty content omitted]")] },
+      { ...input[1], content: [text("[empty content omitted]")] },
+    ]);
+  });
 
   it("strips message-id signatures but retains provider signatures", async () => {
     const input = castAgentMessages([
@@ -132,51 +129,49 @@ describe("sanitizeSessionMessagesImages", () => {
       { role: "assistant", content: [{ type: "thinking", thinking: "internal" }, text("visible")] },
     ]);
   });
-  it.each(["error"] as const)(
-    "keeps corrupt history images omitted after %s and a recovered reply",
-    async (stopReason) => {
-      const png = createNoisyPngBuffer(64, 64);
-      const truncated = png.subarray(0, Math.floor(png.length / 2)).toString("base64");
-      const valid = png.toString("base64");
-      const image = (data: string) => ({ type: "image" as const, data, mimeType: "image/png" });
-      const omitted = {
-        type: "text",
-        text: expect.stringMatching(/^\[session:history\] omitted image payload: .*decode/i),
-      };
-      const stored = castAgentMessages([
-        {
-          role: "user",
-          content: [text("inspect these"), image(truncated), image(valid)],
-          timestamp: 1,
-        },
-        assistant([call("t1")], { stopReason: "toolUse" }),
-        {
-          role: "toolResult",
-          toolCallId: "t1",
-          toolName: "read",
-          content: [text("permission denied"), image(truncated)],
-          isError: true,
-          timestamp: 3,
-        },
-        assistant([text("interrupted")], { stopReason }),
-      ]);
-      const original = structuredClone(stored);
-      const expected = castAgentMessages([
-        { ...stored[0], content: [text("inspect these"), omitted, image(valid)] },
-        stored[1],
-        { ...stored[2], content: [text("permission denied"), omitted] },
-        stored[3],
-      ]);
-      expect(await sanitizeSessionMessagesImages(stored, "session:history")).toEqual(expected);
-      expect(stored).toEqual(original);
+  it("keeps corrupt history images omitted after error and a recovered reply", async () => {
+    const png = createNoisyPngBuffer(64, 64);
+    const truncated = png.subarray(0, Math.floor(png.length / 2)).toString("base64");
+    const valid = png.toString("base64");
+    const image = (data: string) => ({ type: "image" as const, data, mimeType: "image/png" });
+    const omitted = {
+      type: "text",
+      text: expect.stringMatching(/^\[session:history\] omitted image payload: .*decode/i),
+    };
+    const stored = castAgentMessages([
+      {
+        role: "user",
+        content: [text("inspect these"), image(truncated), image(valid)],
+        timestamp: 1,
+      },
+      assistant([call("t1")], { stopReason: "toolUse" }),
+      {
+        role: "toolResult",
+        toolCallId: "t1",
+        toolName: "read",
+        content: [text("permission denied"), image(truncated)],
+        isError: true,
+        timestamp: 3,
+      },
+      assistant([text("interrupted")], { stopReason: "error" }),
+    ]);
+    const original = structuredClone(stored);
+    const expected = castAgentMessages([
+      { ...stored[0], content: [text("inspect these"), omitted, image(valid)] },
+      stored[1],
+      { ...stored[2], content: [text("permission denied"), omitted] },
+      stored[3],
+    ]);
+    expect(await sanitizeSessionMessagesImages(stored, "session:history")).toEqual(expected);
+    expect(stored).toEqual(original);
 
-      // Reload starts with the original stored bytes plus the recovered reply.
-      const recovered = assistant([text("recovered")]);
-      expect(
-        await sanitizeSessionMessagesImages([...stored, recovered], "session:history"),
-      ).toEqual([...expected, recovered]);
-    },
-  );
+    // Reload starts with the original stored bytes plus the recovered reply.
+    const recovered = assistant([text("recovered")]);
+    expect(await sanitizeSessionMessagesImages([...stored, recovered], "session:history")).toEqual([
+      ...expected,
+      recovered,
+    ]);
+  });
 });
 
 describe("sanitizeGoogleTurnOrdering", () => {

@@ -37,39 +37,25 @@ describe("turn validation", () => {
     ]);
   });
 
-  it.each([false])(
-    "preserves signed tool-result pairing across an injected assistant (merging=%s)",
-    (mergeConsecutiveTurns) => {
-      const result = {
-        role: "toolResult",
-        toolUseId: "tool-1",
-        toolName: "gateway",
-        content: [text("done")],
-        isError: false,
-      };
-      const source = { ...assistant(signed()), stopReason: "toolUse" };
-      const injected = {
-        ...assistant([text("Subagent completion delivered.")]),
-        stopReason: "stop",
-      };
-      expect(
-        validateAnthropicTurns(asMessages([user("Use tool"), source, injected, result]), {
-          mergeConsecutiveTurns,
-        }),
-      ).toEqual([
-        user("Use tool"),
-        ...(mergeConsecutiveTurns
-          ? [
-              {
-                ...assistant([...signed(), text("Subagent completion delivered.")]),
-                stopReason: "stop",
-              },
-            ]
-          : [source, injected]),
-        result,
-      ]);
-    },
-  );
+  it("preserves signed tool-result pairing across an injected assistant without merging", () => {
+    const result = {
+      role: "toolResult",
+      toolUseId: "tool-1",
+      toolName: "gateway",
+      content: [text("done")],
+      isError: false,
+    };
+    const source = { ...assistant(signed()), stopReason: "toolUse" };
+    const injected = {
+      ...assistant([text("Subagent completion delivered.")]),
+      stopReason: "stop",
+    };
+    expect(
+      validateAnthropicTurns(asMessages([user("Use tool"), source, injected, result]), {
+        mergeConsecutiveTurns: false,
+      }),
+    ).toEqual([user("Use tool"), source, injected, result]);
+  });
 
   it("normalizes string user content while merging", () => {
     expect(
@@ -88,16 +74,14 @@ describe("turn validation", () => {
     ).toEqual([{ role: "user", content: [text("before"), text("after")], timestamp: 1000 }]);
   });
 
-  it.each([{ stopReason: "aborted", expected: [] }])(
-    "repairs dangling tool-only turns after $stopReason",
-    ({ stopReason, expected }) => {
-      expect(validateToolTurn([call("toolUse")], [user("Hello")], { stopReason })).toEqual([
-        user("Use tool"),
-        { role: "assistant", content: expected, stopReason },
-        user("Hello"),
-      ]);
-    },
-  );
+  it("repairs dangling tool-only turns after abort", () => {
+    const stopReason = "aborted";
+    expect(validateToolTurn([call("toolUse")], [user("Hello")], { stopReason })).toEqual([
+      user("Use tool"),
+      { role: "assistant", content: [], stopReason },
+      user("Hello"),
+    ]);
+  });
 
   it("prunes only unmatched sibling calls with user-embedded results", () => {
     const following = {

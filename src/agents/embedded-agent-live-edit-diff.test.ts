@@ -4,32 +4,26 @@ import {
   updateLiveEditDiffProgressFromInput,
 } from "./embedded-agent-live-edit-diff.js";
 
-function toolCallEvent(params: {
-  type?: "toolcall_delta" | "toolcall_end";
-  id: string;
-  name: string;
-  partialJson: string;
-}) {
-  const block = {
-    type: "toolCall",
-    id: params.id,
-    name: params.name,
-    arguments: {},
-    partialJson: params.partialJson,
-  };
-  return {
-    type: params.type ?? "toolcall_delta",
-    contentIndex: 0,
-    partial: { role: "assistant", content: [block] },
-    ...(params.type === "toolcall_end" ? { toolCall: block } : { delta: params.partialJson }),
-  };
+function progressHarness() {
+  vi.useFakeTimers();
+  vi.setSystemTime(1_000);
+  const state = new Map();
+  const update = (id: string, name: string, partialJson: string) =>
+    updateLiveEditDiffProgress(state, {
+      type: "toolcall_delta",
+      contentIndex: 0,
+      partial: {
+        role: "assistant",
+        content: [{ type: "toolCall", id, name, arguments: {}, partialJson }],
+      },
+      delta: partialJson,
+    });
+  return { state, update };
 }
 
 describe("updateLiveEditDiffProgress", () => {
   it("bounds cumulative argument assembly before parsing across CLI and embedded callers", () => {
-    vi.useFakeTimers();
-    vi.setSystemTime(1_000);
-    const state = new Map();
+    const { state } = progressHarness();
     const readPartialJson = vi.fn(() => '{"content":"one\\n');
     const input = { toolCallId: "write-1", name: "Write", partialJsonLength: 20, readPartialJson };
     updateLiveEditDiffProgressFromInput(state, input);
@@ -61,87 +55,43 @@ describe("updateLiveEditDiffProgress", () => {
   });
 
   it("keeps streamed edit counts monotonic, throttled, and scoped to tool completion", () => {
-    vi.useFakeTimers();
-    vi.setSystemTime(1_000);
-    const state = new Map();
-
-    const first = updateLiveEditDiffProgress(
-      state,
-      toolCallEvent({
-        id: "edit-1",
-        name: "edit",
-        partialJson: '{"edits":[{"oldText":"old\\n',
-      }),
-    );
+    const { state, update } = progressHarness();
+    const edit = (partialJson: string) => update("edit-1", "edit", partialJson);
+    const first = edit('{"edits":[{"oldText":"old\\n');
     expect(first?.diff).toEqual({ added: 0, removed: 1 });
 
     vi.setSystemTime(1_100);
-    expect(
-      updateLiveEditDiffProgress(
-        state,
-        toolCallEvent({
-          id: "edit-1",
-          name: "edit",
-          partialJson: '{"edits":[{"oldText":"old\\nline","newText":"new\\n',
-        }),
-      ),
-    ).toBeUndefined();
+    expect(edit('{"edits":[{"oldText":"old\\nline","newText":"new\\n')).toBeUndefined();
     expect(state.get("edit-1")).toMatchObject({ added: 0, removed: 1 });
 
     vi.setSystemTime(1_250);
-    const second = updateLiveEditDiffProgress(
-      state,
-      toolCallEvent({
-        id: "edit-1",
-        name: "edit",
-        partialJson: '{"edits":[{"oldText":"old\\nline","newText":"new\\nline\\nnext\\n',
-      }),
-    );
+    const second = edit('{"edits":[{"oldText":"old\\nline","newText":"new\\nline\\nnext\\n');
     expect(second?.diff).toEqual({ added: 3, removed: 1 });
 
-    updateLiveEditDiffProgress(
-      state,
-      toolCallEvent({ type: "toolcall_end", id: "edit-1", name: "edit", partialJson: "" }),
-    );
+    updateLiveEditDiffProgress(state, { type: "toolcall_end", toolCall: { id: "edit-1" } });
     expect(state.size).toBe(0);
   });
 
   it("counts canonical write and patch arguments but ignores non-edit tools", () => {
-    vi.useFakeTimers();
+    const { state, update } = progressHarness();
     vi.setSystemTime(2_000);
-    const state = new Map();
 
-    expect(
-      updateLiveEditDiffProgress(
-        state,
-        toolCallEvent({
-          id: "write-1",
-          name: "write",
-          partialJson: '{"path":"a","content":"one\\ntwo\\n',
-        }),
-      )?.diff,
-    ).toEqual({ added: 2, removed: 0 });
+    expect(update("write-1", "write", '{"path":"a","content":"one\\ntwo\\n')?.diff).toEqual({
+      added: 2,
+      removed: 0,
+    });
 
     vi.setSystemTime(2_300);
     expect(
-      updateLiveEditDiffProgress(
-        state,
-        toolCallEvent({
-          id: "patch-1",
-          name: "apply_patch",
-          partialJson:
-            '{"input":"*** Begin Patch\\n*** Update File: a\\n@@\\n-old\\n+new\\n+next\\n',
-        }),
+      update(
+        "patch-1",
+        "apply_patch",
+        '{"input":"*** Begin Patch\\n*** Update File: a\\n@@\\n-old\\n+new\\n+next\\n',
       )?.diff,
     ).toEqual({ added: 2, removed: 1 });
 
     vi.setSystemTime(2_600);
-    expect(
-      updateLiveEditDiffProgress(
-        state,
-        toolCallEvent({ id: "read-1", name: "read", partialJson: '{"path":"a\\n' }),
-      ),
-    ).toBeUndefined();
+    expect(update("read-1", "read", '{"path":"a\\n')).toBeUndefined();
     expect(state.has("read-1")).toBe(false);
   });
 });

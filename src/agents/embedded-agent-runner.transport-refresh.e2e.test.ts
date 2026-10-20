@@ -81,8 +81,7 @@ function config(
               reasoning: false,
               input: ["text"],
               cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-              contextWindow: limits.contextWindow,
-              maxTokens: limits.maxTokens,
+              ...limits,
             },
           ],
         },
@@ -110,6 +109,32 @@ function success(sessionId: string) {
       content: [{ type: "text", text: "recovered" }],
     }),
   });
+}
+
+function failure(sessionId: string, serverError = false) {
+  return makeEmbeddedRunnerAttempt({
+    sessionIdUsed: sessionId,
+    terminal: {
+      kind: "failed",
+      source: "prompt",
+      error: serverError
+        ? Object.assign(new Error("500 Internal Server Error"), { status: 500 })
+        : Object.assign(new Error("connect ECONNREFUSED"), { code: "ECONNREFUSED" }),
+    },
+  });
+}
+
+function transportCase(
+  label: string,
+  options: {
+    credentialWithdrawn?: boolean;
+    assistantFailure?: boolean;
+    localNoAuth?: boolean;
+    initialNoAuth?: boolean;
+    remote?: boolean;
+  } = {},
+) {
+  return { label, ...options };
 }
 
 async function run(cfg: OpenClawConfig, runId: string) {
@@ -180,14 +205,7 @@ describe("connection retry transport refresh", () => {
         await publish(initial);
         attempt.mockImplementationOnce(async (params) => {
           await publish(current);
-          return makeEmbeddedRunnerAttempt({
-            sessionIdUsed: params.sessionId,
-            terminal: {
-              kind: "failed",
-              source: "prompt",
-              error: Object.assign(new Error("connect ECONNREFUSED"), { code: "ECONNREFUSED" }),
-            },
-          });
+          return failure(params.sessionId);
         });
         attempt.mockImplementationOnce(async (params) => {
           expect(params.model.baseUrl).toBe(
@@ -231,62 +249,31 @@ describe("connection retry transport refresh", () => {
   );
 
   it.each([
-    [
-      "changed origin",
-      "http://127.0.0.1:21431/v1",
-      "http://127.0.0.1:21432/v1",
-      false,
-      false,
-      false,
-      false,
-    ],
-    [
-      "unchanged origin",
-      "http://127.0.0.1:21431/v1",
-      "http://127.0.0.1:21431/v1",
-      false,
-      true,
-      false,
-      false,
-    ],
-    [
-      "local no-auth transport",
-      "http://127.0.0.1:21431/v1",
-      "http://127.0.0.1:21432/v1",
-      true,
-      false,
-      true,
-      false,
-    ],
-    [
-      "initial local no-auth transport",
-      "http://127.0.0.1:21431/v1",
-      "http://127.0.0.1:21432/v1",
-      true,
-      false,
-      true,
-      true,
-    ],
-    [
-      "unavailable remote credential",
-      "http://127.0.0.1:21431/v1",
-      "https://model.example/v1",
-      true,
-      false,
-      false,
-      false,
-    ],
-  ] as const)(
-    "keeps credentials and endpoint coherent after a %s publication",
-    async (
-      _label,
-      before,
-      after,
-      credentialWithdrawn,
-      assistantFailure,
-      localNoAuth,
-      initialNoAuth,
-    ) => {
+    transportCase("changed origin"),
+    transportCase("unchanged origin", { assistantFailure: true }),
+    transportCase("local no-auth transport", { credentialWithdrawn: true, localNoAuth: true }),
+    transportCase("initial local no-auth transport", {
+      credentialWithdrawn: true,
+      localNoAuth: true,
+      initialNoAuth: true,
+    }),
+    transportCase("unavailable remote credential", { credentialWithdrawn: true, remote: true }),
+  ])(
+    "keeps credentials and endpoint coherent after a $label publication",
+    async ({
+      label,
+      credentialWithdrawn = false,
+      assistantFailure = false,
+      localNoAuth = false,
+      initialNoAuth = false,
+      remote = false,
+    }) => {
+      const before = "http://127.0.0.1:21431/v1";
+      const after = remote
+        ? "https://model.example/v1"
+        : assistantFailure
+          ? before
+          : "http://127.0.0.1:21432/v1";
       const initial = config(before, initialNoAuth ? undefined : "synthetic-old-key", "old-route");
       const current = config(
         after,
@@ -336,13 +323,7 @@ describe("connection retry transport refresh", () => {
           return makeEmbeddedRunnerAttempt({
             sessionIdUsed: params.sessionId,
             messagesSnapshot: history,
-            terminal: assistantFailure
-              ? { kind: "ok" }
-              : {
-                  kind: "failed",
-                  source: "prompt",
-                  error: Object.assign(new Error("connect ECONNREFUSED"), { code: "ECONNREFUSED" }),
-                },
+            terminal: assistantFailure ? { kind: "ok" } : failure(params.sessionId).terminal,
             // The SDK can retain the connection class only in a diagnostic, without an error code.
             lastAssistant: assistantFailure
               ? buildEmbeddedRunnerAssistant({
@@ -366,7 +347,7 @@ describe("connection retry transport refresh", () => {
         return success(params.sessionId);
       });
 
-      const runId = `connection-${_label.replaceAll(" ", "-")}`;
+      const runId = `connection-${label.replaceAll(" ", "-")}`;
       const result = await run(initial, runId);
 
       expect(result.payloads?.[0]?.text).toBe("recovered");
@@ -408,14 +389,7 @@ describe("connection retry transport refresh", () => {
     await publish(initial);
     attempt.mockImplementationOnce(async (params) => {
       await publish(config("http://127.0.0.1:21432/v1", "synthetic-current-key", "current-route"));
-      return makeEmbeddedRunnerAttempt({
-        sessionIdUsed: params.sessionId,
-        terminal: {
-          kind: "failed",
-          source: "prompt",
-          error: Object.assign(new Error("500 Internal Server Error"), { status: 500 }),
-        },
-      });
+      return failure(params.sessionId, true);
     });
     attempt.mockImplementationOnce(async (params) => {
       expect(params).toMatchObject({

@@ -22,6 +22,7 @@ import {
   createEmbeddedAgentRunnerTestWorkspace,
   createResolvedEmbeddedRunnerModel,
   makeEmbeddedRunnerAttempt,
+  immediateEnqueue,
 } from "./test-helpers/embedded-agent-runner-e2e-fixtures.js";
 import {
   installEmbeddedRunnerBackoffE2eMocks,
@@ -74,6 +75,42 @@ afterAll(async () => await cleanupEmbeddedAgentRunnerTestWorkspace(workspace));
 beforeEach(() => {
   runAttempt.mockReset();
 });
+
+function completedAttempt(sessionId: string, text?: string) {
+  const assistant = buildEmbeddedRunnerAssistant({
+    content: text === undefined ? [] : [{ type: "text", text }],
+    stopReason: "stop",
+  });
+  return makeEmbeddedRunnerAttempt({
+    sessionIdUsed: sessionId,
+    assistantTexts: text === undefined ? [] : [text],
+    lastAssistant: assistant,
+    currentAttemptCompletedAssistant: assistant,
+    ...(text === undefined ? { sourceReplyDeliveryState: "missing" as const } : {}),
+  });
+}
+
+function run(
+  id: string,
+  config: Parameters<typeof runEmbeddedAgent>[0]["config"],
+  options: Pick<Parameters<typeof runEmbeddedAgent>[0], "sessionKey" | "preparedRunAdmission"> &
+    Partial<Parameters<typeof runEmbeddedAgent>[0]>,
+) {
+  return runEmbeddedAgent({
+    agentId: "test",
+    sessionId: id,
+    workspaceDir: workspace.workspaceDir,
+    agentDir: workspace.agentDir,
+    config,
+    provider: "openai",
+    model: "mock-1",
+    runId: id,
+    timeoutMs: 10_000,
+    prompt: "Finish the work and reply.",
+    enqueue: immediateEnqueue,
+    ...options,
+  });
+}
 
 describe("source reply settlement across provider retries", () => {
   it.each([
@@ -201,32 +238,15 @@ describe("source reply settlement across provider retries", () => {
         if (mode === "steered") {
           operation.markSteeredInputAccepted({ inboundAudio: false });
         }
-        const empty = buildEmbeddedRunnerAssistant({ content: [] });
-        return makeEmbeddedRunnerAttempt({
-          sessionIdUsed: params.sessionId,
-          lastAssistant: empty,
-          currentAttemptCompletedAssistant: empty,
-          sourceReplyDeliveryState: "missing",
-        });
+        return completedAttempt(params.sessionId);
       });
       try {
-        const result = await runEmbeddedAgent({
-          agentId: "test",
-          sessionId,
+        const result = await run(id, config, {
           sessionKey,
           replyOperation: operation,
           preparedRunAdmission: admission,
           messageActionTurnCapability: capability,
-          workspaceDir: workspace.workspaceDir,
-          agentDir: workspace.agentDir,
-          config,
-          prompt: "Finish the work and reply.",
           terminalReplyExpectation: "required",
-          provider: "openai",
-          model: "mock-1",
-          runId: id,
-          timeoutMs: 10_000,
-          enqueue: async (task) => await task(),
         });
         expect(result.sourceReplyDeliveryState).toBe(delivered ? "delivered" : "missing");
         expect(attempts).toBe(failures + (delivered ? 1 : 2));
@@ -263,82 +283,45 @@ describe("source reply settlement across provider retries", () => {
   );
 
   it.each(
-    (
-      [
-        {
-          name: "subagent",
-          sessionKey: "agent:test:subagent:required",
-          messageChannel: "telegram",
-          opts: { lane: "subagent" },
-        },
-        {
-          name: "private",
-          sessionKey: "agent:test:private",
-          messageChannel: "telegram",
-          opts: { privateCompletion: true },
-        },
-        {
-          name: "webchat",
-          sessionKey: "agent:test:webchat:required",
-          messageChannel: "webchat",
-          opts: {},
-        },
-      ] as const
-    ).flatMap((scenario) =>
-      ["NO_REPLY", "", "NO_REPLY\n<final></final>"].map((raw) => Object.assign({ raw }, scenario)),
+    (["subagent", "private", "webchat"] as const).flatMap((name) =>
+      ["NO_REPLY", "", "NO_REPLY\n<final></final>"].map((raw) => ({ raw, name })),
     ),
-  )(
-    "recovers a $name result after '$raw'",
-    async ({ name, sessionKey, messageChannel, opts, raw }) => {
-      const config = createEmbeddedAgentRunnerOpenAiConfig(["mock-1"]);
-      const id = `internal-${name}-${raw === "NO_REPLY" ? "silent" : raw ? "rendered-empty" : "empty"}`;
-      const admission = prepareAdmission(config, id, "test", "internal-result-recovery");
-      const answer = `Recovered ${name} result`;
-      let attempt = 0;
-      runAttempt.mockImplementation(async (params) => {
-        const text = attempt++ === 0 ? raw : answer;
-        const assistant = buildEmbeddedRunnerAssistant({
-          content: [{ type: "text", text }],
-          stopReason: "stop",
-        });
-        return makeEmbeddedRunnerAttempt({
-          sessionIdUsed: params.sessionId,
-          assistantTexts: [text],
-          lastAssistant: assistant,
-          currentAttemptCompletedAssistant: assistant,
-        });
-      });
-      setRegistry(createTestRegistry([]));
-      setConfig(config);
-      try {
-        const result = await runEmbeddedAgent({
-          agentId: "test",
-          sessionId: id,
+  )("recovers a $name result after '$raw'", async ({ name, raw }) => {
+    const sessionKey = name === "private" ? "agent:test:private" : `agent:test:${name}:required`;
+    const config = createEmbeddedAgentRunnerOpenAiConfig(["mock-1"]);
+    const id = `internal-${name}-${raw === "NO_REPLY" ? "silent" : raw ? "rendered-empty" : "empty"}`;
+    const admission = prepareAdmission(config, id, "test", "internal-result-recovery");
+    const answer = `Recovered ${name} result`;
+    let attempt = 0;
+    runAttempt.mockImplementation(async (params) => {
+      const text = attempt++ === 0 ? raw : answer;
+      return completedAttempt(params.sessionId, text);
+    });
+    setRegistry(createTestRegistry([]));
+    setConfig(config);
+    try {
+      const result = await run(id, config, {
+        sessionKey,
+        preparedRunAdmission: admission,
+        prompt: "Return a result.",
+        terminalReplyExpectation: resolveCommandReplyExpectation({
+          cfg: config,
           sessionKey,
-          preparedRunAdmission: admission,
-          workspaceDir: workspace.workspaceDir,
-          agentDir: workspace.agentDir,
-          config,
-          prompt: "Return a result.",
-          provider: "openai",
-          model: "mock-1",
-          runId: id,
-          timeoutMs: 10_000,
-          enqueue: async (task) => await task(),
-          terminalReplyExpectation: resolveCommandReplyExpectation({
-            cfg: config,
-            sessionKey,
-            messageChannel,
-            opts,
-          }),
-        });
-        expect(result.payloads).toEqual([expect.objectContaining({ text: answer })]);
-        expect(result.meta.error).toBeUndefined();
-      } finally {
-        admission.close();
-        clearConfig();
-        resetRegistry();
-      }
-    },
-  );
+          messageChannel: name === "webchat" ? "webchat" : "telegram",
+          opts:
+            name === "subagent"
+              ? { lane: "subagent" }
+              : name === "private"
+                ? { privateCompletion: true }
+                : {},
+        }),
+      });
+      expect(result.payloads).toEqual([expect.objectContaining({ text: answer })]);
+      expect(result.meta.error).toBeUndefined();
+    } finally {
+      admission.close();
+      clearConfig();
+      resetRegistry();
+    }
+  });
 });
