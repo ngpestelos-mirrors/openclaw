@@ -3,75 +3,37 @@ import { beforeAll, describe, expect, it } from "vitest";
 import noForcedProcessExit from "../../scripts/lib/no-forced-process-exit.mjs";
 
 const FIXTURES = "test/fixtures/oxlint-boundary-guards";
+function fixture(rule: string, file: string, violations: number, lines?: number[]) {
+  return {
+    rule: `openclaw-boundaries/${rule}`,
+    violation: `${FIXTURES}/${file}`,
+    violations,
+    lines,
+  };
+}
 const cases = [
-  {
-    rule: "openclaw-boundaries/no-forced-process-exit",
-    violation: `${FIXTURES}/forced-process-exit-violation.ts`,
-    violations: 25,
-    lines: [
-      2, 2, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 21, 23, 24, 24, 25, 26, 27, 28, 30, 32,
-    ],
-  },
-  {
-    rule: "openclaw-boundaries/no-forced-process-exit",
-    violation: `${FIXTURES}/forced-process-exit-violation.cjs`,
-    violations: 6,
-    lines: [3, 4, 5, 6, 7, 9],
-  },
-  {
-    rule: "openclaw-boundaries/no-forced-process-exit",
-    violation: `${FIXTURES}/forced-process-exit-violation.mjs`,
-    violations: 2,
-    lines: [2, 4],
-  },
+  fixture(
+    "no-forced-process-exit",
+    "forced-process-exit-violation.ts",
+    25,
+    [2, 2, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 21, 23, 24, 24, 25, 26, 27, 28, 30, 32],
+  ),
+  fixture("no-forced-process-exit", "forced-process-exit-violation.cjs", 6, [3, 4, 5, 6, 7, 9]),
+  fixture("no-forced-process-exit", "forced-process-exit-violation.mjs", 2, [2, 4]),
   {
     rule: "openclaw-boundaries/no-forced-process-exit",
     violation: "test/fixtures/forced-process-exit.test-support.cjs",
     violations: 0,
+    lines: undefined,
   },
-  {
-    rule: "openclaw-boundaries/no-register-http-handler-call",
-    violation: `${FIXTURES}/register-http-handler-violation.ts`,
-    violations: 3,
-  },
-  {
-    rule: "openclaw-boundaries/no-raw-window-open-call",
-    violation: `${FIXTURES}/raw-window-open-violation.ts`,
-    violations: 5,
-  },
-  {
-    rule: "openclaw-boundaries/no-raw-window-open-call",
-    violation: `${FIXTURES}/boundary-calls.tsx`,
-    violations: 2,
-    lines: [3, 4],
-  },
-  {
-    rule: "openclaw-boundaries/no-register-http-handler-call",
-    violation: `${FIXTURES}/boundary-calls.tsx`,
-    violations: 1,
-    lines: [5],
-  },
-  {
-    rule: "openclaw-boundaries/no-raw-window-open-call",
-    violation: `${FIXTURES}/boundary-calls.test-harness.tsx`,
-    violations: 0,
-  },
-  {
-    rule: "openclaw-boundaries/no-register-http-handler-call",
-    violation: `${FIXTURES}/boundary-calls.test-harness.tsx`,
-    violations: 0,
-  },
-  {
-    rule: "openclaw-boundaries/no-widen-then-assert",
-    violation: `${FIXTURES}/widen-then-assert-violation.test.ts`,
-    violations: 3,
-    lines: [3, 7, 13],
-  },
-  {
-    rule: "openclaw-boundaries/no-chained-type-assertions",
-    violation: `${FIXTURES}/chained-type-assertions-violation.ts`,
-    violations: 3,
-  },
+  fixture("no-register-http-handler-call", "register-http-handler-violation.ts", 3),
+  fixture("no-raw-window-open-call", "raw-window-open-violation.ts", 5),
+  fixture("no-raw-window-open-call", "boundary-calls.tsx", 2, [3, 4]),
+  fixture("no-register-http-handler-call", "boundary-calls.tsx", 1, [5]),
+  fixture("no-raw-window-open-call", "boundary-calls.test-harness.tsx", 0),
+  fixture("no-register-http-handler-call", "boundary-calls.test-harness.tsx", 0),
+  fixture("no-widen-then-assert", "widen-then-assert-violation.test.ts", 3, [3, 7, 13]),
+  fixture("no-chained-type-assertions", "chained-type-assertions-violation.ts", 3),
 ];
 
 describe("forced process exit runtime scope", () => {

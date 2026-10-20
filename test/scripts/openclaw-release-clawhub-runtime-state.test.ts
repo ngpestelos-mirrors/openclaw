@@ -1,4 +1,3 @@
-// OpenClaw release ClawHub runtime-state script tests cover its CLI-only parser.
 import { spawnSync } from "node:child_process";
 import { resolve } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -15,6 +14,16 @@ function runRuntimeStateScript(args: string[], cwd = process.cwd()) {
   });
 }
 
+function runtimeArgs(overrides: Record<string, string> = {}) {
+  return Object.entries({
+    repository: "openclaw/openclaw",
+    "wait-for-clawhub": "true",
+    "force-skip-clawhub": "false",
+    "bootstrap-completed": "true",
+    ...overrides,
+  }).flatMap(([key, value]) => [`--${key}`, value]);
+}
+
 describe("scripts/openclaw-release-clawhub-runtime-state.ts", () => {
   it.each(["repository", "outside repository"])(
     "emits awaited-run proof from %s without build artifacts",
@@ -22,20 +31,7 @@ describe("scripts/openclaw-release-clawhub-runtime-state.ts", () => {
       const cwd =
         location === "repository" ? process.cwd() : tempDirs.make("clawhub-runtime-state-");
       const result = runRuntimeStateScript(
-        [
-          "--repository",
-          "openclaw/openclaw",
-          "--wait-for-clawhub",
-          "true",
-          "--force-skip-clawhub",
-          "false",
-          "--normal-run-id",
-          "123",
-          "--bootstrap-run-id",
-          "456",
-          "--bootstrap-completed",
-          "true",
-        ],
+        runtimeArgs({ "normal-run-id": "123", "bootstrap-run-id": "456" }),
         cwd,
       );
 
@@ -59,22 +55,14 @@ describe("scripts/openclaw-release-clawhub-runtime-state.ts", () => {
   ])(
     "keeps parent publication proof consistent (staged=$staged, failed=$failed)",
     ({ staged, failed }) => {
-      const result = runRuntimeStateScript([
-        "--repository",
-        "openclaw/openclaw",
-        "--wait-for-clawhub",
-        "true",
-        "--force-skip-clawhub",
-        String(failed),
-        "--normal-publication-staged",
-        String(staged),
-        "--normal-run-id",
-        "123",
-        "--bootstrap-run-id",
-        "456",
-        "--bootstrap-completed",
-        "true",
-      ]);
+      const result = runRuntimeStateScript(
+        runtimeArgs({
+          "force-skip-clawhub": String(failed),
+          "normal-publication-staged": String(staged),
+          "normal-run-id": "123",
+          "bootstrap-run-id": "456",
+        }),
+      );
       expect(result.status).toBe(0);
       const state = JSON.parse(result.stdout);
       expect(state.verifierArgs).toEqual(
@@ -105,16 +93,9 @@ describe("scripts/openclaw-release-clawhub-runtime-state.ts", () => {
   );
 
   it("rejects invalid boolean flag values before emitting runtime state", () => {
-    const result = runRuntimeStateScript([
-      "--repository",
-      "openclaw/openclaw",
-      "--wait-for-clawhub",
-      "yes",
-      "--force-skip-clawhub",
-      "false",
-      "--bootstrap-completed",
-      "false",
-    ]);
+    const result = runRuntimeStateScript(
+      runtimeArgs({ "wait-for-clawhub": "yes", "bootstrap-completed": "false" }),
+    );
 
     expect(result.status).toBe(1);
     expect(result.stderr).toContain("--wait-for-clawhub must be true or false.");
@@ -122,14 +103,7 @@ describe("scripts/openclaw-release-clawhub-runtime-state.ts", () => {
   });
 
   it("requires the workflow repository argument", () => {
-    const result = runRuntimeStateScript([
-      "--wait-for-clawhub",
-      "true",
-      "--force-skip-clawhub",
-      "false",
-      "--bootstrap-completed",
-      "false",
-    ]);
+    const result = runRuntimeStateScript(runtimeArgs({ "bootstrap-completed": "false" }).slice(2));
 
     expect(result.status).toBe(1);
     expect(result.stderr).toContain("--repository is required.");

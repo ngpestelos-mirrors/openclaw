@@ -49,15 +49,12 @@ function runReleaseChecksTrustedRefGuard(workflowRef: string): ReturnType<typeof
 
 describe("extended-stable Full Release Validation workflow", () => {
   it("passes frozen target context to both plugin prerelease phases", () => {
-    const phases = [
-      {
-        job: "plugin_prerelease_independent",
-        step: "Dispatch plugin prerelease independent phase",
-      },
-      { job: "plugin_prerelease_candidate", step: "Dispatch plugin prerelease candidate phase" },
-    ];
-    for (const phase of phases) {
-      const dispatch = workflowStep(fullValidationPath, phase.job, phase.step);
+    for (const phase of ["independent", "candidate"]) {
+      const dispatch = workflowStep(
+        fullValidationPath,
+        `plugin_prerelease_${phase}`,
+        `Dispatch plugin prerelease ${phase} phase`,
+      );
       expect(dispatch.env?.TARGET_CONTEXT_REF).toBe("${{ inputs.target_context_ref }}");
       expect(dispatch.run).toContain('args+=(-f target_context_ref="$TARGET_CONTEXT_REF")');
     }
@@ -65,52 +62,32 @@ describe("extended-stable Full Release Validation workflow", () => {
 
   it("lets the exact extended-stable branch reach every child at the target SHA", () => {
     const fullValidation = readFileSync(fullValidationPath, "utf8");
-    const childDispatches = [
-      {
-        job: "normal_ci",
-        step: "Dispatch CI",
-        workflow: "ci.yml",
-        target: '-f target_ref="$TARGET_SHA"',
-      },
-      {
-        job: "plugin_prerelease_independent",
-        step: "Dispatch plugin prerelease independent phase",
-        workflow: "plugin-prerelease.yml",
-        target: '-f target_ref="$TARGET_SHA" -f expected_sha="$TARGET_SHA"',
-      },
-      {
-        job: "plugin_prerelease_candidate",
-        step: "Dispatch plugin prerelease candidate phase",
-        workflow: "plugin-prerelease.yml",
-        target: '-f target_ref="$TARGET_SHA" -f expected_sha="$TARGET_SHA"',
-      },
-      {
-        job: "release_checks_independent",
-        step: "Dispatch release checks independent phase",
-        workflow: "openclaw-release-checks.yml",
-        target: '-f expected_sha="$TARGET_SHA"',
-      },
-      {
-        job: "release_checks_candidate",
-        step: "Dispatch release checks candidate phase",
-        workflow: "openclaw-release-checks.yml",
-        target: '-f expected_sha="$TARGET_SHA"',
-      },
-      {
-        job: "performance",
-        step: "Dispatch OpenClaw Performance",
-        workflow: "openclaw-performance.yml",
-        target: '-f target_ref="$TARGET_SHA"',
-      },
-    ];
-
-    for (const child of childDispatches) {
-      const run = stepRun(fullValidationPath, child.job, child.step);
-      expect(run).toContain(child.workflow);
-      expect(run).toContain('--ref "$CHILD_WORKFLOW_REF"');
-      expect(run).toContain(child.target);
-      if (child.job.includes("plugin_prerelease") || child.job.includes("release_checks")) {
-        expect(run).toContain('-f phase="$PHASE"');
+    const targetRef = '-f target_ref="$TARGET_SHA"';
+    const expectedSha = '-f expected_sha="$TARGET_SHA"';
+    for (const [job, step, childWorkflow, target, phased] of [
+      ["normal_ci", "CI", "ci", targetRef, false],
+      [
+        "plugin_prerelease",
+        "plugin prerelease",
+        "plugin-prerelease",
+        `${targetRef} ${expectedSha}`,
+        true,
+      ],
+      ["release_checks", "release checks", "openclaw-release-checks", expectedSha, true],
+      ["performance", "OpenClaw Performance", "openclaw-performance", targetRef, false],
+    ] as const) {
+      for (const phase of phased ? ["independent", "candidate"] : [""]) {
+        const run = stepRun(
+          fullValidationPath,
+          phase ? `${job}_${phase}` : job,
+          `Dispatch ${step}${phase ? ` ${phase} phase` : ""}`,
+        );
+        expect(run).toContain(`${childWorkflow}.yml`);
+        expect(run).toContain('--ref "$CHILD_WORKFLOW_REF"');
+        expect(run).toContain(target);
+        if (phased) {
+          expect(run).toContain('-f phase="$PHASE"');
+        }
       }
     }
 
