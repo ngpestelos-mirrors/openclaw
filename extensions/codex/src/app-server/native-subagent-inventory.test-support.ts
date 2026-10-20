@@ -16,13 +16,12 @@ import type { CodexNativeSubagentHistoryOwner } from "./native-subagent-history-
 import { defaultNativeSubagentMonitorRuntime } from "./native-subagent-monitor-runtime.js";
 import { codexNativeSubagentMonitorRuntime } from "./native-subagent-monitor.js";
 import {
-  childTurnCompletedNotification,
+  agentMessage,
+  collabItem,
   createClient,
   createNativeModelSourceFixture,
   directSpawnItem,
   nativeHistoryOwner,
-  successfulSendInputOutput,
-  turnStartedNotification,
 } from "./native-subagent-monitor.test-support.js";
 import type { CodexNativeSubagentSubmissionStore } from "./native-subagent-submission.js";
 import { seedRunSessionOwnerForTest } from "./run-attempt-session-owners.test-support.js";
@@ -179,14 +178,7 @@ export async function fixture() {
     };
   };
   const spawn = async (client: ReturnType<typeof createClient>, observeTurn = true) => {
-    await client.notify({
-      method: "item/completed",
-      params: {
-        threadId: "parent-thread",
-        turnId: "parent-turn",
-        item: { id: "spawn", ...directSpawnItem("v1", "parent-thread", "child-thread") },
-      },
-    });
+    await client.item({ id: "spawn", ...directSpawnItem("v1", "parent-thread", "child-thread") });
     await client.notify({
       method: "rawResponseItem/completed",
       params: {
@@ -200,7 +192,7 @@ export async function fixture() {
       },
     });
     if (observeTurn) {
-      await client.notify(turnStartedNotification("child-turn"));
+      await client.startTurn("child-turn");
     }
   };
   return {
@@ -217,47 +209,19 @@ export async function fixture() {
 }
 
 export async function completeInForeground(client: ReturnType<typeof createClient>) {
-  await client.notify(
-    childTurnCompletedNotification({
-      status: "completed",
-      items: [{ id: "final", type: "agentMessage", phase: "final_answer", text: "Native result" }],
+  await client.completeTurn({
+    status: "completed",
+    items: [agentMessage("final", "Native result", "final_answer")],
+  });
+  await client.item(
+    collabItem("wait", ["child-thread"], {
+      id: "wait",
+      agentsStates: { "child-thread": { status: "completed", message: "Native result" } },
     }),
   );
-  await client.notify({
-    method: "item/completed",
-    params: {
-      threadId: "parent-thread",
-      turnId: "parent-turn",
-      item: {
-        id: "wait",
-        type: "collabAgentToolCall",
-        tool: "wait",
-        status: "completed",
-        senderThreadId: "parent-thread",
-        receiverThreadIds: ["child-thread"],
-        agentsStates: { "child-thread": { status: "completed", message: "Native result" } },
-      },
-    },
-  });
 }
 
 export async function submitFollowup(client: ReturnType<typeof createClient>) {
-  await client.notify({
-    method: "item/completed",
-    params: {
-      threadId: "parent-thread",
-      turnId: "parent-turn",
-      item: {
-        id: "followup",
-        type: "collabAgentToolCall",
-        tool: "sendInput",
-        status: "completed",
-        senderThreadId: "parent-thread",
-        receiverThreadIds: ["child-thread"],
-      },
-    },
-  });
-  await client.notify(
-    successfulSendInputOutput({ callId: "followup", submissionId: "followup-turn" }),
-  );
+  await client.item(collabItem("sendInput", ["child-thread"], { id: "followup" }));
+  await client.sendInputOutput({ callId: "followup", submissionId: "followup-turn" });
 }

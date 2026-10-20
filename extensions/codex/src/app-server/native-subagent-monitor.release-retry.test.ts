@@ -8,15 +8,14 @@ import {
   retainCodexAppServerLiveThread,
 } from "./client-runtime.js";
 import {
-  childTurnCompletedNotification,
+  agentMessage,
+  collabItem,
   createClient,
   createCompletionScope,
   createRuntime,
   notifyChildStarted,
   registerCodexNativeSubagentMonitor,
-  successfulSendInputOutput,
   threadRead,
-  turnStartedNotification,
 } from "./native-subagent-monitor.test-support.js";
 import { isJsonObject } from "./protocol.js";
 
@@ -70,32 +69,20 @@ async function createTerminalChild(
   });
   parent.bindTurn("parent-turn");
   await notifyChildStarted(client);
-  await client.notify(turnStartedNotification("turn-a"));
+  await client.startTurn("turn-a");
   await vi.advanceTimersByTimeAsync(0);
   expect(isCodexAppServerLiveThreadClaimed(client.client, "child-thread")).toBe(true);
   expect(unsubscribeChild).not.toHaveBeenCalled();
-  await client.notify(
-    childTurnCompletedNotification({
-      turnId: "turn-a",
-      status: "completed",
-      items: [{ id: "result", type: "agentMessage", text: "done" }],
+  await client.completeTurn({
+    turnId: "turn-a",
+    status: "completed",
+    items: [agentMessage("result", "done")],
+  });
+  await client.item(
+    collabItem("wait", ["child-thread"], {
+      agentsStates: { "child-thread": { status: "completed", message: "done" } },
     }),
   );
-  await client.notify({
-    method: "item/completed",
-    params: {
-      threadId: "parent-thread",
-      turnId: "parent-turn",
-      item: {
-        type: "collabAgentToolCall",
-        tool: "wait",
-        status: "completed",
-        senderThreadId: "parent-thread",
-        receiverThreadIds: ["child-thread"],
-        agentsStates: { "child-thread": { status: "completed", message: "done" } },
-      },
-    },
-  });
   await vi.advanceTimersByTimeAsync(0);
   return { client, parent, unsubscribeChild };
 }
@@ -160,30 +147,19 @@ it.each([false, true])(
     }
     parent.bindTurn("parent-turn-b");
     client.setThreadRead("child-thread", threadRead({ turnId: "turn-b", status: "inProgress" }));
-    await client.notify({
-      method: "item/completed",
-      params: {
-        threadId: "parent-thread",
-        turnId: "parent-turn-b",
-        item: {
-          id: "send-b",
-          type: "collabAgentToolCall",
-          tool: "sendInput",
-          status: "completed",
-          senderThreadId: "parent-thread",
-          receiverThreadIds: ["child-thread"],
-          agentsStates: { "child-thread": { status: "running" } },
-        },
-      },
-    });
-    await client.notify(
-      successfulSendInputOutput({
-        turnId: "parent-turn-b",
-        callId: "send-b",
-        submissionId: "turn-b",
+    await client.item(
+      collabItem("sendInput", ["child-thread"], {
+        id: "send-b",
+        agentsStates: { "child-thread": { status: "running" } },
       }),
+      "parent-turn-b",
     );
-    await client.notify(turnStartedNotification("turn-b"));
+    await client.sendInputOutput({
+      turnId: "parent-turn-b",
+      callId: "send-b",
+      submissionId: "turn-b",
+    });
+    await client.startTurn("turn-b");
     await vi.advanceTimersByTimeAsync(0);
     releaseProtection?.();
     await vi.advanceTimersByTimeAsync(90_000);

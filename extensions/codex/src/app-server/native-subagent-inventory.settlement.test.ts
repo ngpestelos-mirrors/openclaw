@@ -7,7 +7,7 @@ import {
 import { afterEach, beforeEach, expect, it, onTestFinished, vi } from "vitest";
 import { fixture } from "./native-subagent-inventory.test-support.js";
 import {
-  childTurnCompletedNotification,
+  agentMessage,
   closeAgentNotification,
   createClient,
   threadRead,
@@ -45,7 +45,7 @@ it("settles delayed close writes without consuming a replacement monitor's resum
   });
   await f.spawn(firstClient);
   await initialRecorded.promise;
-  await firstClient.notify(childTurnCompletedNotification({ status: "interrupted" }));
+  await firstClient.completeTurn({ status: "interrupted" });
 
   const closeEntered = createDeferred<void>();
   const closeResponse = createDeferred<{ data: string[]; nextCursor: null }>();
@@ -149,13 +149,11 @@ it("settles delayed close writes without consuming a replacement monitor's resum
         nativeTurnId: "resumed-turn",
       }),
     ]);
-  await nextClient.notify(
-    childTurnCompletedNotification({
-      turnId: "resumed-turn",
-      status: "completed",
-      items: [{ id: "final", type: "agentMessage", phase: "final_answer", text: "Resumed result" }],
-    }),
-  );
+  await nextClient.completeTurn({
+    turnId: "resumed-turn",
+    status: "completed",
+    items: [agentMessage("final", "Resumed result", "final_answer")],
+  });
   await next.unregister();
   next.closeCaller();
   expect(f.deliver).toHaveBeenCalledExactlyOnceWith(

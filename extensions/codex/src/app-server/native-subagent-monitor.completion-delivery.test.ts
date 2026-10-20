@@ -18,18 +18,20 @@ import {
 import { createCodexNativeSubagentMonitorRuntime } from "./native-subagent-monitor-runtime.js";
 import { codexNativeSubagentMonitorRuntime } from "./native-subagent-monitor.js";
 import {
+  collabItem,
+  itemNotification,
+  createMonitorFixture,
+  agentMessage,
   CodexNativeSubagentMonitor,
   createClient,
   createRuntime,
   createCompletionScope,
   registerParent,
   notifyChildStarted,
-  successfulSendInputOutput,
   nativeCompletionNotification,
   nativeHistoryOwner,
   deliveredNativeCompletion,
   childTurnCompletedNotification,
-  turnStartedNotification,
   threadRead,
   closeAgentNotification,
   directSpawnItem,
@@ -37,16 +39,7 @@ import {
 } from "./native-subagent-monitor.test-support.js";
 import type { CodexNativeSubagentAssignmentStore } from "./native-subagent-pending-assignments.js";
 import { prepareCodexServerNotification } from "./protocol-validators.js";
-import type { CodexServerNotification, JsonObject } from "./protocol.js";
 import { createClientHarness } from "./test-support.js";
-
-function itemNotification(
-  item: JsonObject,
-  turnId = "parent-turn",
-  threadId = "parent-thread",
-): CodexServerNotification {
-  return { method: "item/completed", params: { threadId, turnId, item } };
-}
 
 async function registerRuntimeOwner(
   client: ReturnType<typeof createClient>,
@@ -76,20 +69,13 @@ describe("CodexNativeSubagentMonitor", () => {
     registerCodexEventProjectorTestLifecycle();
 
     it("does not repeat a shutdown result returned by native wait", async () => {
-      const client = createClient();
-      const runtime = createRuntime();
-      const monitor = new CodexNativeSubagentMonitor(client.client, runtime);
+      const { client, runtime, monitor } = createMonitorFixture();
       const parent = await registerParent(monitor);
       parent.bindTurn("parent-turn");
       await notifyChildStarted(client);
-      await client.notify(
-        itemNotification({
-          type: "collabAgentToolCall",
+      await client.item(
+        collabItem("wait", ["child-thread"], {
           id: "wait-call",
-          tool: "wait",
-          status: "completed",
-          senderThreadId: "parent-thread",
-          receiverThreadIds: ["child-thread"],
           agentsStates: { "child-thread": { status: "shutdown", message: null } },
         }),
       );
@@ -163,7 +149,7 @@ describe("CodexNativeSubagentMonitor", () => {
                 turn: {
                   id: "parent-turn",
                   status: "completed",
-                  items: [{ type: "agentMessage", id: "last-answer", text: lastAnswer }],
+                  items: [agentMessage("last-answer", lastAnswer)],
                   error: null,
                 },
               },
@@ -216,12 +202,10 @@ describe("CodexNativeSubagentMonitor", () => {
     });
 
     it("defers completion when turn/started races ahead of the turn/start response", async () => {
-      const client = createClient();
-      const runtime = createRuntime();
-      const monitor = new CodexNativeSubagentMonitor(client as never, runtime);
+      const { client, runtime, monitor } = createMonitorFixture();
       const owner = await registerParent(monitor);
       try {
-        await client.notify(turnStartedNotification("parent-turn", { threadId: "parent-thread" }));
+        await client.startTurn("parent-turn", { threadId: "parent-thread" });
         await notifyChildStarted(client, "parent-thread", "child-thread", "/root/worker");
         await client.notify(completedChild());
         expect(runtime.deliverAgentHarnessCompletion).not.toHaveBeenCalled();
@@ -281,17 +265,12 @@ describe("CodexNativeSubagentMonitor", () => {
         parent.bindTurn("parent-turn");
         observer.bindTurn("observer-turn");
         await notifyChildStarted(client);
-        await client.notify(turnStartedNotification("child-turn"));
+        await client.startTurn("child-turn");
         await client.notify(completedChild());
         expect(claimChildThread).toHaveBeenCalledExactlyOnceWith("child-thread");
-        receipt = client.notify(
-          itemNotification({
+        receipt = client.item(
+          collabItem("wait", ["child-thread"], {
             id: "rotated-wait-receipt",
-            type: "collabAgentToolCall",
-            tool: "wait",
-            status: "completed",
-            senderThreadId: "parent-thread",
-            receiverThreadIds: ["child-thread"],
             agentsStates: {
               "child-thread": { status: "completed", message: "The build passed." },
             },
@@ -363,20 +342,9 @@ describe("CodexNativeSubagentMonitor", () => {
       owner.bindTurn("parent-turn");
       await notifyChildStarted(client);
       await client.notify(completedChild());
-      await client.notify(turnStartedNotification("next-turn", { error: null }));
-      await client.notify(
-        itemNotification({
-          type: "collabAgentToolCall",
-          id: "followup",
-          tool: "sendInput",
-          status: "completed",
-          senderThreadId: "parent-thread",
-          receiverThreadIds: ["child-thread"],
-        }),
-      );
-      await client.notify(
-        successfulSendInputOutput({ callId: "followup", submissionId: "next-turn" }),
-      );
+      await client.startTurn("next-turn", { error: null });
+      await client.item(collabItem("sendInput", ["child-thread"], { id: "followup" }));
+      await client.sendInputOutput({ callId: "followup", submissionId: "next-turn" });
       await client.notify(deliveredNativeCompletion());
       const history = threadRead({
         agentPath: "/root/worker",
@@ -393,9 +361,7 @@ describe("CodexNativeSubagentMonitor", () => {
     });
 
     it("does not carry an unmatched receipt into a later parent run", async () => {
-      const client = createClient();
-      const runtime = createRuntime();
-      const monitor = new CodexNativeSubagentMonitor(client as never, runtime);
+      const { client, runtime, monitor } = createMonitorFixture();
       const first = await registerParent(monitor);
       first.bindTurn("parent-turn");
       await notifyChildStarted(client, "parent-thread", "waiting-child");
@@ -463,24 +429,13 @@ describe("native follow-up receipt custody", () => {
     });
     owner.bindTurn("parent-turn");
     await notifyChildStarted(client, "parent-thread", "child-thread", "/root/worker");
-    await client.notify(turnStartedNotification("child-turn", { error: null }));
+    await client.startTurn("child-turn", { error: null });
     await client.notify(completedChild("child-turn", "The build passed.", "first-result"));
     await client.notify(deliveredNativeCompletion());
-    await client.notify(
-      itemNotification({
-        type: "collabAgentToolCall",
-        id: "followup",
-        tool: "sendInput",
-        status: "completed",
-        senderThreadId: "parent-thread",
-        receiverThreadIds: ["child-thread"],
-      }),
-    );
-    await client.notify(
-      successfulSendInputOutput({ callId: "followup", submissionId: "next-turn" }),
-    );
+    await client.item(collabItem("sendInput", ["child-thread"], { id: "followup" }));
+    await client.sendInputOutput({ callId: "followup", submissionId: "next-turn" });
     await recorded.promise;
-    await client.notify(turnStartedNotification("next-turn", { error: null }));
+    await client.startTurn("next-turn", { error: null });
     expect(store.consume).not.toHaveBeenCalled();
     await client.notify(completedChild("next-turn", "Follow-up complete.", "next-result"));
     expect(store.consume).not.toHaveBeenCalled();
@@ -538,22 +493,13 @@ describe("Codex native close admission", () => {
     parent.bindTurn("parent-turn");
     try {
       await notifyChildStarted(client);
-      await client.notify(itemNotification(directSpawnItem("v1", "parent-thread", "child-thread")));
-      await client.notify(turnStartedNotification("child-turn"));
+      await client.item(directSpawnItem("v1", "parent-thread", "child-thread"));
+      await client.startTurn("child-turn");
       await client.notify(closeAgentNotification({ method: "item/started" }));
-      await client.notify(
-        childTurnCompletedNotification({
-          status: "completed",
-          items: [
-            {
-              type: "agentMessage",
-              id: "final",
-              phase: "final_answer",
-              text: "Accepted result",
-            },
-          ],
-        }),
-      );
+      await client.completeTurn({
+        status: "completed",
+        items: [agentMessage("final", "Accepted result", "final_answer")],
+      });
       await completions.settle();
       expect(runtime.deliverAgentHarnessCompletion).not.toHaveBeenCalled();
       // Native close reports the child's previous status, not the close outcome.
@@ -607,17 +553,13 @@ describe("Codex native close admission", () => {
     });
     first.bindTurn("parent-a");
     await notifyChildStarted(client);
-    await client.notify(
-      itemNotification(directSpawnItem("v1", "parent-thread", "child-thread"), "parent-a"),
-    );
-    await client.notify(turnStartedNotification("child-a"));
-    await client.notify(
-      childTurnCompletedNotification({
-        turnId: "child-a",
-        status: "completed",
-        items: [{ type: "agentMessage", id: "a-final", text: "A finished" }],
-      }),
-    );
+    await client.item(directSpawnItem("v1", "parent-thread", "child-thread"), "parent-a");
+    await client.startTurn("child-a");
+    await client.completeTurn({
+      turnId: "child-a",
+      status: "completed",
+      items: [agentMessage("a-final", "A finished")],
+    });
     await settleOwnership("child-thread");
     const second = await factory.register({
       client: client.client,
@@ -637,17 +579,15 @@ describe("Codex native close admission", () => {
           readQualification: () => qualification,
           assertCurrent: () => {},
         });
-        await client.notify(
-          successfulSendInputOutput({
-            turnId: "parent-b",
-            callId: submissionId,
-            submissionId,
-          }),
-        );
+        await client.sendInputOutput({
+          turnId: "parent-b",
+          callId: submissionId,
+          submissionId,
+        });
       }
       await first.unregister();
       await second.unregister();
-      await client.notify(turnStartedNotification("child-b"));
+      await client.startTurn("child-b");
       await settleOwnership("child-thread");
       const next = await factory.captureModelSource({
         client: client.client,
@@ -662,21 +602,17 @@ describe("Codex native close admission", () => {
       }
       expect(next.source).toBe(b);
       next.release();
-      await client.notify(
-        childTurnCompletedNotification({
-          turnId: "child-b",
-          status: "completed",
-          items: [{ type: "agentMessage", id: "b-final", text: "B finished" }],
-        }),
-      );
-      await client.notify(turnStartedNotification("child-c"));
-      await client.notify(
-        childTurnCompletedNotification({
-          turnId: "child-c",
-          status: "completed",
-          items: [{ type: "agentMessage", id: "c-final", text: "C finished" }],
-        }),
-      );
+      await client.completeTurn({
+        turnId: "child-b",
+        status: "completed",
+        items: [agentMessage("b-final", "B finished")],
+      });
+      await client.startTurn("child-c");
+      await client.completeTurn({
+        turnId: "child-c",
+        status: "completed",
+        items: [agentMessage("c-final", "C finished")],
+      });
       await settleOwnership("child-thread");
       expect(b.release).not.toHaveBeenCalled();
       await releaseCodexAppServerLiveThread(client.client, "child-thread");
