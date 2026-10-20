@@ -47,33 +47,27 @@ function event(stream: string, data: AgentEventPayload["data"], seq: number): Ag
 
 const count = (history: ChatHistoryResult) =>
   subagentToolCallCount(readSubagentActivitySnapshot(history));
+const live = (events: AgentEventPayload[], messages: unknown[] = []) =>
+  complete(messages, { inFlightRun: { runId: "run-1", events } });
 
 describe("subagent panel call counts", () => {
-  it.each([
-    {
-      name: "complete ordinary history",
-      history: complete([toolCall()]),
-      expected: { count: 1, exact: true },
-    },
-    {
-      name: "older pages remain",
-      history: complete([toolCall()], { hasMore: true, nextOffset: 1, totalMessages: 20 }),
-      expected: { count: 1, exact: false },
-    },
-    {
-      name: "empty incomplete history",
-      history: { messages: [], hasMore: true },
-      expected: undefined,
-    },
-    { name: "unkeyed legacy call", history: complete([toolCall("")]), expected: undefined },
-    {
-      name: "call without a recorded run owner",
-      history: complete([{ ...toolCall(), runId: undefined }]),
-      expected: undefined,
-    },
-    {
-      name: "prepared item without an invocation ID",
-      history: complete([
+  it.each<[string, ChatHistoryResult, ReturnType<typeof count>]>([
+    ["complete ordinary history", complete([toolCall()]), { count: 1, exact: true }],
+    [
+      "older pages remain",
+      complete([toolCall()], { hasMore: true, nextOffset: 1, totalMessages: 20 }),
+      { count: 1, exact: false },
+    ],
+    ["empty incomplete history", { messages: [], hasMore: true }, undefined],
+    ["unkeyed legacy call", complete([toolCall("")]), undefined],
+    [
+      "call without a recorded run owner",
+      complete([{ ...toolCall(), runId: undefined }]),
+      undefined,
+    ],
+    [
+      "prepared item without an invocation ID",
+      complete([
         {
           role: "assistant",
           runId: "run-1",
@@ -81,29 +75,24 @@ describe("subagent panel call counts", () => {
           activity: [activity({ toolCallId: undefined })],
         },
       ]),
-      expected: undefined,
-    },
-    { name: "unknown history", history: {}, expected: undefined },
-  ])("reports count certainty for $name", ({ history, expected }) => {
+      undefined,
+    ],
+    ["unknown history", {}, undefined],
+  ])("reports count certainty for %s", (_name, history, expected) => {
     expect(count(history)).toEqual(expected);
   });
 
   it("counts paired transcript calls, results and replayed live items once", () => {
-    expect(
-      count(
-        complete([toolCall(), toolResult()], {
-          inFlightRun: {
-            runId: "run-1",
-            events: [
-              event("tool", { toolCallId: "read-1", name: "read", phase: "start" }, 1),
-              event("item", activity({ phase: "start", status: "running" }), 2),
-              event("tool", { toolCallId: "read-1", name: "read", phase: "result" }, 3),
-              event("item", activity(), 4),
-            ],
-          },
-        }),
-      ),
-    ).toEqual({ count: 1, exact: true });
+    const history = live(
+      [
+        event("tool", { toolCallId: "read-1", name: "read", phase: "start" }, 1),
+        event("item", activity({ phase: "start", status: "running" }), 2),
+        event("tool", { toolCallId: "read-1", name: "read", phase: "result" }, 3),
+        event("item", activity(), 4),
+      ],
+      [toolCall(), toolResult()],
+    );
+    expect(count(history)).toEqual({ count: 1, exact: true });
   });
 
   it("keeps reused call IDs in distinct recorded runs separate while deduplicating each result", () => {
@@ -127,33 +116,24 @@ describe("subagent panel call counts", () => {
     ).toEqual({ count: 2, exact: true });
   });
 
-  it.each(["omitted"])(
-    "keeps a lower bound when an invocation ID is %s across item frames",
-    (change) => {
-      const known = activity({
-        phase: "update",
-        status: "running",
-        progressText: "Reading source",
-      });
-      const itemOnly = activity({
-        toolCallId: undefined,
-        phase: "start",
-        status: "running",
-        progressText: "Reading source",
-      });
-      const frames = change === "promoted" ? [itemOnly, known] : [known, itemOnly];
-      const snapshot = readSubagentActivitySnapshot(
-        complete([], {
-          inFlightRun: {
-            runId: "run-1",
-            events: frames.map((item, index) => event("item", item, index + 1)),
-          },
-        }),
-      );
-      expect(subagentToolCallCount(snapshot)).toEqual({ count: 1, exact: false });
-      expect(snapshot.tool).toMatchObject({ name: "read", text: "Reading source" });
-    },
-  );
+  it("keeps a lower bound when an invocation ID is omitted across item frames", () => {
+    const known = activity({
+      phase: "update",
+      status: "running",
+      progressText: "Reading source",
+    });
+    const itemOnly = activity({
+      toolCallId: undefined,
+      phase: "start",
+      status: "running",
+      progressText: "Reading source",
+    });
+    const snapshot = readSubagentActivitySnapshot(
+      live([known, itemOnly].map((item, index) => event("item", item, index + 1))),
+    );
+    expect(subagentToolCallCount(snapshot)).toEqual({ count: 1, exact: false });
+    expect(snapshot.tool).toMatchObject({ name: "read", text: "Reading source" });
+  });
 
   it.each([
     {
@@ -173,6 +153,6 @@ describe("subagent panel call counts", () => {
       expected: { count: 1, exact: true },
     },
   ])("preserves prepared visibility when $name", ({ events, expected }) => {
-    expect(count(complete([], { inFlightRun: { runId: "run-1", events } }))).toEqual(expected);
+    expect(count(live(events))).toEqual(expected);
   });
 });
