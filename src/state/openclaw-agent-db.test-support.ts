@@ -10,7 +10,6 @@ import { persistAgentSchemaMetadata } from "./openclaw-agent-db-metadata-write.j
 import { OPENCLAW_AGENT_SCHEMA_V21_SQL } from "./openclaw-agent-schema-v21.test-support.js";
 import { OPENCLAW_AGENT_SCHEMA_SQL } from "./openclaw-agent-schema.js";
 
-/** Materialize databases without runtime handles, leases, or registrations. */
 export function createCurrentOpenClawAgentDatabaseFixtures(
   templatePath: string,
   fixtures: ReadonlyArray<{ path: string; agentId: string }>,
@@ -31,15 +30,12 @@ export function createCurrentOpenClawAgentDatabaseFixtures(
   }
 }
 
-/** Remove the future validation projection before carving a historical database. */
 export function removeCanonicalValidationFromHistoricalAgentFixture(database: DatabaseSync): void {
-  const definitions = Array.from(
-    canonicalSessionValidationSchemaSql(OPENCLAW_AGENT_SCHEMA_V21_SQL).matchAll(
-      /^CREATE (?:TABLE|TRIGGER) IF NOT EXISTS [a-z_]+\b/gm,
-    ),
+  const definitions = canonicalSessionValidationSchemaSql(OPENCLAW_AGENT_SCHEMA_V21_SQL).matchAll(
+    /^CREATE (?:TABLE|TRIGGER) IF NOT EXISTS [a-z_]+\b/gm,
   );
   // Drop triggers before their pending table.
-  for (const [definition] of definitions.toReversed()) {
+  for (const [definition] of [...definitions].toReversed()) {
     database.exec(definition.replace("CREATE", "DROP").replace("IF NOT EXISTS", "IF EXISTS"));
   }
 }
@@ -64,20 +60,23 @@ export function seedSchema19SessionKeyRepairFixture(database: DatabaseSync): voi
   `);
 }
 
-/** List process-held agent databases without opening or inspecting fixture state. */
 export function listOpenClawAgentDatabasesForTest(): Array<{ agentId: string; path: string }> {
   return [...cache.databases.values()]
     .filter((database) => database.db.isOpen)
     .map((database) => ({ agentId: database.agentId, path: database.path }))
-    .toSorted(
-      (left, right) =>
-        left.agentId.localeCompare(right.agentId) || left.path.localeCompare(right.path),
-    );
+    .toSorted((a, b) => a.agentId.localeCompare(b.agentId) || a.path.localeCompare(b.path));
 }
 
-/** Model missing restart metadata without invoking the runtime invalidation owner. */
 export function removeAgentIntegrityMetadataForTest(pathname: string): void {
   fs.rmSync(`${pathname}.seal`, { force: true });
+}
+
+export function seedLegacyAgentFixture(database: DatabaseSync, agentId = "keeper"): void {
+  const source = new URL(
+    "../../test/fixtures/sqlite/openclaw-agent-v2026.9.9.sql",
+    import.meta.url,
+  );
+  database.exec(fs.readFileSync(source, "utf8").replaceAll("keeper", agentId));
 }
 
 export function fixtureVolumeHasFileAlias(
@@ -85,12 +84,11 @@ export function fixtureVolumeHasFileAlias(
   filename: string,
   alias: string,
 ): boolean {
-  const probeDir = fs.realpathSync(directory);
-  const probePath = path.join(probeDir, filename);
+  const probePath = path.join(fs.realpathSync(directory), filename);
   fs.writeFileSync(probePath, "probe");
   try {
     const probe = fs.lstatSync(probePath, { bigint: true });
-    const alternate = fs.lstatSync(path.join(probeDir, alias), { bigint: true });
+    const alternate = fs.lstatSync(path.join(path.dirname(probePath), alias), { bigint: true });
     return probe.dev === alternate.dev && probe.ino === alternate.ino;
   } catch {
     return false;

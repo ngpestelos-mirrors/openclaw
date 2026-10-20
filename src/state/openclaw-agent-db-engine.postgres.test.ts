@@ -22,15 +22,15 @@ import {
 const configured = getEnvironmentData("openclaw.test.workboard.connection");
 const connection = typeof configured === "string" ? configured : undefined;
 const dirs = useAutoCleanupTempDirTracker(afterAll);
-const text: SearchSchema = {
-  text: {
-    body: {
-      table: "memory_index_chunks",
-      fields: ["text"],
-      postgres: { identity: "chunk_rowid" },
-    },
-  },
-};
+const textSchema = (
+  name: string,
+  table: string,
+  field: string,
+  identity: string,
+): SearchSchema => ({
+  text: { [name]: { table, fields: [field], postgres: { identity } } },
+});
+const text = textSchema("body", "memory_index_chunks", "text", "chunk_rowid");
 const vector: SearchSchema = {
   vector: {
     chunks: {
@@ -75,6 +75,8 @@ describe.skipIf(!connection)("PostgreSQL agent-owned memory search admission", (
   let databasePath: string;
   let db: PostgresSqlConnection;
   const get = (sql: string, ...values: SQLInputValue[]) => db.prepare(sql).get(...values);
+  const extensions = () =>
+    String(get("SELECT search_extensions FROM openclaw_schema_meta")?.search_extensions);
   const opened: PostgresSqlConnection[] = [];
   const open = () =>
     withDatabaseEngineSelection(
@@ -110,7 +112,7 @@ describe.skipIf(!connection)("PostgreSQL agent-owned memory search admission", (
     });
   });
 
-  it("admits enabled memory definitions with model dimensions and re-admits them on restart", () => {
+  it("re-admits persisted memory extensions without DDL", () => {
     withEngineStoreAdmission(() => {
       expect(
         get(
@@ -118,13 +120,8 @@ describe.skipIf(!connection)("PostgreSQL agent-owned memory search admission", (
         ),
       ).toEqual({ search_extensions: null });
       const stages: string[] = [];
-      admitAgentEngineSearchExtensions(
-        db,
-        { "memory.text": text, "memory.vector": vector },
-        (stage) => {
-          stages.push(stage);
-        },
-      );
+      const definitions = { "memory.text": text, "memory.vector": vector };
+      admitAgentEngineSearchExtensions(db, definitions, (stage) => stages.push(stage));
       expect(stages).toEqual(["transaction", "commit"]);
       expect(
         get(
@@ -151,30 +148,16 @@ describe.skipIf(!connection)("PostgreSQL agent-owned memory search admission", (
           /\bCREATE\s+(?:SCHEMA|TABLE|INDEX|FUNCTION|TEXT\s+SEARCH)\b/i.test(sql),
         ),
       ).toEqual([]);
-      expect(
-        JSON.parse(
-          String(get("SELECT search_extensions FROM openclaw_schema_meta")?.search_extensions),
-        ),
-      ).toEqual({ "memory.text": text, "memory.vector": vector });
+      expect(JSON.parse(extensions())).toEqual(definitions);
     });
   });
 
-  it("rolls back derived DDL and metadata when live commit authority expires", () => {
+  it("rolls back DDL and metadata after commit authority expires", () => {
     withEngineStoreAdmission(() => {
       expect(() =>
         admitAgentEngineSearchExtensions(
           db,
-          {
-            "memory.paths": {
-              text: {
-                paths: {
-                  table: "memory_index_sources",
-                  fields: ["path"],
-                  postgres: { identity: "id" },
-                },
-              },
-            },
-          },
+          { "memory.paths": textSchema("paths", "memory_index_sources", "path", "id") },
           (stage) => {
             if (stage === "commit") {
               throw new Error("Memory owner retired before commit");
@@ -182,15 +165,12 @@ describe.skipIf(!connection)("PostgreSQL agent-owned memory search admission", (
           },
         ),
       ).toThrow("Memory owner retired before commit");
+      expect(extensions()).not.toContain("memory.paths");
       expect(
-        String(get("SELECT search_extensions FROM openclaw_schema_meta")?.search_extensions),
-      ).not.toContain("memory.paths");
-      expect(
-        db
-          .prepare(
-            "SELECT 1 FROM information_schema.columns WHERE table_schema = ? AND table_name = 'memory_index_sources' AND column_name = 'openclaw_search'",
-          )
-          .get(getPostgresPhysicalFacts(db)!.namespace),
+        get(
+          "SELECT 1 FROM information_schema.columns WHERE table_schema = ? AND table_name = 'memory_index_sources' AND column_name = 'openclaw_search'",
+          getPostgresPhysicalFacts(db)!.namespace,
+        ),
       ).toBeUndefined();
     });
   });

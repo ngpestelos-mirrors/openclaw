@@ -1,50 +1,33 @@
-import fs from "node:fs";
 import path from "node:path";
-import { afterAll, afterEach, beforeAll, expect, it } from "vitest";
+import { afterEach, expect, it } from "vitest";
 import { useAutoCleanupTempDirTracker } from "../../test/helpers/temp-dir.js";
 import { requireNodeSqlite } from "../infra/node-sqlite.js";
 import { closeStateDatabaseForTest } from "../test-utils/database-cleanup.js";
 import "../test-utils/prepare-compiled-subprocesses.js";
 import { recordOpenClawAgentDatabaseOpenFailure } from "./openclaw-agent-db-lifecycle.js";
 import { openOpenClawAgentDatabaseReadOnly } from "./openclaw-agent-db-readonly.js";
-import {
-  closeOpenClawAgentDatabasesAsync,
-  closeOpenClawAgentDatabasesForTest,
-  openOpenClawAgentDatabase,
-  resolveOpenClawAgentSqlitePath,
-  withOpenClawAgentDatabaseAsync,
-} from "./openclaw-agent-db.js";
+import * as agentDb from "./openclaw-agent-db.js";
+import { createCurrentOpenClawAgentDatabaseFixtures } from "./openclaw-agent-db.test-support.js";
 
-const templates = useAutoCleanupTempDirTracker(afterAll);
 const tempDirs = useAutoCleanupTempDirTracker((cleanup) => {
   afterEach(async () => {
-    await closeDatabases();
+    await agentDb.closeOpenClawAgentDatabasesAsync();
+    agentDb.closeOpenClawAgentDatabasesForTest();
+    await closeStateDatabaseForTest();
     cleanup();
   });
-});
-let templatePath: string;
-
-async function closeDatabases() {
-  await closeOpenClawAgentDatabasesAsync();
-  closeOpenClawAgentDatabasesForTest();
-  await closeStateDatabaseForTest();
-}
-
-beforeAll(async () => {
-  const env = { OPENCLAW_STATE_DIR: templates.make("agent-integrity-recovery-template-") };
-  templatePath = openOpenClawAgentDatabase({ agentId: "worker-1", env }).path;
-  await closeDatabases();
 });
 
 it.each(["writable", "readonly", "async"] as const)(
   "refuses orphan rows and recovers %s admission after external repair",
   async (admission) => {
-    const stateDir = tempDirs.make("agent-integrity-recovery-");
-    const env = { OPENCLAW_STATE_DIR: stateDir };
+    const env = { OPENCLAW_STATE_DIR: tempDirs.make("agent-integrity-recovery-") };
     const options = { agentId: "worker-1", env };
-    const databasePath = resolveOpenClawAgentSqlitePath(options);
-    fs.mkdirSync(path.dirname(databasePath), { recursive: true });
-    fs.copyFileSync(templatePath, databasePath, fs.constants.COPYFILE_EXCL);
+    const databasePath = agentDb.resolveOpenClawAgentSqlitePath(options);
+    createCurrentOpenClawAgentDatabaseFixtures(
+      path.join(env.OPENCLAW_STATE_DIR, "template.sqlite"),
+      [{ path: databasePath, agentId: options.agentId }],
+    );
 
     const { DatabaseSync } = requireNodeSqlite();
     {
@@ -52,18 +35,18 @@ it.each(["writable", "readonly", "async"] as const)(
       corrupted.exec(`PRAGMA foreign_keys = OFF;
         INSERT INTO session_windows (session_id, session_key, created_at, updated_at)
           VALUES ('orphan-window', 'missing-node', 1, 1);`);
-      expect({
-        quick: corrupted.prepare("PRAGMA quick_check").get(),
-        integrity: corrupted.prepare("PRAGMA integrity_check").get(),
-        foreignKey: corrupted.prepare("PRAGMA foreign_key_check").get(),
-      }).toEqual({
-        quick: { quick_check: "ok" },
-        integrity: { integrity_check: "ok" },
-        foreignKey: { table: "session_windows", rowid: 1, parent: "session_nodes", fkid: 1 },
-      });
+      expect(
+        ["quick_check", "integrity_check", "foreign_key_check"].map((check) =>
+          corrupted.prepare(`PRAGMA ${check}`).get(),
+        ),
+      ).toEqual([
+        { quick_check: "ok" },
+        { integrity_check: "ok" },
+        { table: "session_windows", rowid: 1, parent: "session_nodes", fkid: 1 },
+      ]);
     }
 
-    expect(() => openOpenClawAgentDatabase(options)).toThrow(
+    expect(() => agentDb.openOpenClawAgentDatabase(options)).toThrow(
       /foreign_key_check failed.*session_windows row 1 references session_nodes \(foreign key 1\)/iu,
     );
     if (admission === "readonly") {
@@ -81,13 +64,12 @@ it.each(["writable", "readonly", "async"] as const)(
           result.database.close();
         }
       } else if (admission === "async") {
-        await withOpenClawAgentDatabaseAsync(options, () => undefined);
+        await agentDb.withOpenClawAgentDatabaseAsync(options, () => undefined);
       } else {
-        openOpenClawAgentDatabase(options);
+        agentDb.openOpenClawAgentDatabase(options);
       }
     };
     await expect(open()).rejects.toThrow("foreign_key_check failed");
-    // External repair changes persisted rows without clearing this process's latch.
     {
       using repaired = new DatabaseSync(databasePath);
       repaired.prepare("DELETE FROM session_windows WHERE session_id = ?").run("orphan-window");

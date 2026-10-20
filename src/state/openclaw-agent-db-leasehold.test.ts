@@ -7,9 +7,10 @@ import { openNodeSqliteDatabase } from "../infra/node-sqlite.js";
 import { runSqliteIntegrityOperationInWorker } from "../infra/sqlite-integrity-operation.js";
 import { withOpenClawTestState } from "../test-utils/openclaw-test-state.js";
 import { OPENCLAW_AGENT_SCHEMA_VERSION } from "./openclaw-agent-db-contract.js";
-import { AGENT_DATABASE_MAINTENANCE_LEASE } from "./openclaw-agent-db-lease.js";
+import { AGENT_DATABASE_MAINTENANCE_LEASE as lease } from "./openclaw-agent-db-lease.js";
 import { withAgentDatabaseMaintenanceLease } from "./openclaw-agent-db-maintenance-lease.js";
 import { ensureOpenClawAgentDatabaseSchemaSteps } from "./openclaw-agent-db-schema.js";
+import { seedLegacyAgentFixture } from "./openclaw-agent-db.test-support.js";
 import { openOpenClawStateDatabase } from "./openclaw-state-db.js";
 import { leaseHeartbeatState } from "./openclaw-state-lease-heartbeat-shared.js";
 
@@ -78,24 +79,18 @@ function advanceDuringCommit() {
 
 it.for(["commit", "owner replaced", "grant replaced", "rollback"] as const)(
   "agent maintenance %s after the state fence outlasts the lease",
-  async (outcome, { signal }) => {
-    await withOpenClawTestState({ label: "agent-leasehold" }, async (state) => {
+  (outcome, { signal }) =>
+    withOpenClawTestState({ label: "agent-leasehold" }, async (state) => {
       const shared = openOpenClawStateDatabase({ env: state.env });
       const pathname = path.join(state.agentDir("keeper"), "openclaw-agent.sqlite");
       fs.mkdirSync(path.dirname(pathname), { recursive: true });
       using database = openNodeSqliteDatabase(pathname);
-      database.exec(
-        fs.readFileSync(
-          new URL("../../test/fixtures/sqlite/openclaw-agent-v2026.9.9.sql", import.meta.url),
-          "utf8",
-        ),
-      );
+      seedLegacyAgentFixture(database);
       heartbeat.now = Date.now();
       vi.spyOn(Date, "now").mockImplementation(() => heartbeat.now);
       const warnings: string[] = [];
       let intercepted = false;
-      let refusal: unknown;
-      let rollbackSettled = false;
+      let migrationSettled = false;
       const syntheticFailure = new Error("synthetic native commit failure");
       const nativeExec = database.exec.bind(database);
       vi.spyOn(database, "exec").mockImplementation((sql) => {
@@ -119,7 +114,7 @@ it.for(["commit", "owner replaced", "grant replaced", "rollback"] as const)(
                 ? "UPDATE state_leases SET owner = 'replacement' WHERE scope = ? AND lease_key = ?"
                 : "UPDATE state_leases SET created_at = created_at + 1 WHERE scope = ? AND lease_key = ?",
             )
-            .run(AGENT_DATABASE_MAINTENANCE_LEASE.scope, AGENT_DATABASE_MAINTENANCE_LEASE.key);
+            .run(lease.scope, lease.key);
         }
       });
       const operation = withAgentDatabaseMaintenanceLease(
@@ -128,36 +123,34 @@ it.for(["commit", "owner replaced", "grant replaced", "rollback"] as const)(
           const lost = new Promise<void>((resolve) => {
             maintenance.signal.addEventListener("abort", () => resolve(), { once: true });
           });
-          const migrate = () =>
-            runSqliteIntegrityOperationInWorker(
-              ensureOpenClawAgentDatabaseSchemaSteps(database, {
-                agentId: "keeper",
-                path: pathname,
-                env: state.env,
-                register: true,
-                versionMigrationOnly: true,
-                onMigrationWarning: (warning) => warnings.push(warning),
-              }),
-              {
-                busyTimeoutMs: 0,
-                signal: maintenance.signal,
-                beforeResume: () => maintenance.assertOwned(),
-              },
-            );
-          if (outcome === "rollback") {
-            await expect(migrate()).rejects.toBe(syntheticFailure);
-            expect(Atomics.load(heartbeat.shared!, leaseHeartbeatState.ownerFence)).toBe(0n);
-            await withinTest(lost, signal);
-            expect(() => maintenance.assertOwned()).toThrow();
-            rollbackSettled = true;
+          const failure: unknown = await runSqliteIntegrityOperationInWorker(
+            ensureOpenClawAgentDatabaseSchemaSteps(database, {
+              agentId: "keeper",
+              path: pathname,
+              env: state.env,
+              register: true,
+              versionMigrationOnly: true,
+              onMigrationWarning: (warning) => warnings.push(warning),
+            }),
+            {
+              busyTimeoutMs: 0,
+              signal: maintenance.signal,
+              beforeResume: () => maintenance.assertOwned(),
+            },
+          ).catch((error: unknown) => error);
+          if (outcome !== "commit") {
+            if (outcome === "rollback") {
+              expect(failure).toBe(syntheticFailure);
+              expect(Atomics.load(heartbeat.shared!, leaseHeartbeatState.ownerFence)).toBe(0n);
+              await withinTest(lost, signal);
+              expect(() => maintenance.assertOwned()).toThrow();
+            } else {
+              expect(failure).toMatchObject({ code: "OPENCLAW_STATE_LEASE_LOST" });
+            }
+            migrationSettled = true;
             return;
           }
-          try {
-            await migrate();
-          } catch (error) {
-            refusal = error;
-            throw error;
-          }
+          expect(failure).toBeUndefined();
           expect(Atomics.load(heartbeat.shared!, leaseHeartbeatState.ownerFence)).toBe(0n);
           expect(Atomics.load(heartbeat.shared!, leaseHeartbeatState.status)).toBe(
             leaseHeartbeatState.ready,
@@ -168,11 +161,12 @@ it.for(["commit", "owner replaced", "grant replaced", "rollback"] as const)(
             .prepare(
               "SELECT expires_at, heartbeat_at FROM state_leases WHERE scope = ? AND lease_key = ?",
             )
-            .get(AGENT_DATABASE_MAINTENANCE_LEASE.scope, AGENT_DATABASE_MAINTENANCE_LEASE.key);
+            .get(lease.scope, lease.key);
           expect(row).toEqual({
             expires_at: heartbeat.now + leaseMs,
             heartbeat_at: heartbeat.now,
           });
+          migrationSettled = true;
         },
       );
       if (outcome === "commit") {
@@ -185,12 +179,9 @@ it.for(["commit", "owner replaced", "grant replaced", "rollback"] as const)(
         await expect(operation).rejects.toThrow();
       }
       expect(intercepted).toBe(true);
+      expect(migrationSettled).toBe(true);
       if (outcome === "rollback") {
-        expect(rollbackSettled).toBe(true);
         expect(database.prepare("PRAGMA user_version").get()?.user_version).toBe(24);
-      } else if (outcome !== "commit") {
-        expect(refusal).toMatchObject({ code: "OPENCLAW_STATE_LEASE_LOST" });
       }
-    });
-  },
+    }),
 );
