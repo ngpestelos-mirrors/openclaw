@@ -191,54 +191,30 @@ export function registerLifecycleDeliveryReceiptCases({
     expect(readLifecycleRun(entry).delivery?.lastDropReason).toBeUndefined();
   });
 
-  it.each([
-    {
-      name: "persists phase-only completion failure and steer-drop diagnostics",
-      delivery: {
-        delivered: false as const,
-        path: "none" as const,
+  it.each<[string, Partial<SubagentAnnounceDeliveryResult>, string, string]>([
+    [
+      "phase-only failure and steer-drop diagnostics",
+      {
         phases: [
+          { phase: "direct-primary", delivered: false, path: "direct", error: "primary refused" },
           {
-            phase: "direct-primary" as const,
+            phase: "steer-fallback",
             delivered: false,
-            path: "direct" as const,
-            error: "primary refused",
-          },
-          {
-            phase: "steer-fallback" as const,
-            delivered: false,
-            path: "none" as const,
-            reason: "steer_dropped" as const,
+            path: "none",
+            reason: "steer_dropped",
             error: "steer refused",
           },
         ],
       },
-      lastDropReason: "steer_dropped",
-      lastError: "direct-primary: primary refused; steer-fallback: steer refused",
-    },
-    {
-      name: "persists a direct steer-drop reason without rewriting it as sink_unavailable",
-      delivery: {
-        delivered: false as const,
-        path: "none" as const,
-        reason: "steer_dropped" as const,
-      },
-      lastDropReason: "steer_dropped",
-      lastError: "steer_dropped",
-    },
-    {
-      name: "persists sink_unavailable when announce mapping reports no viable requester",
-      delivery: {
-        delivered: false as const,
-        path: "none" as const,
-      },
-      lastDropReason: "sink_unavailable",
-      lastError: "delivery path none did not complete",
-    },
-  ])("$name", async ({ delivery, lastDropReason, lastError }) => {
+      "steer_dropped",
+      "direct-primary: primary refused; steer-fallback: steer refused",
+    ],
+    ["direct steer-drop reason", { reason: "steer_dropped" }, "steer_dropped", "steer_dropped"],
+    ["no viable requester", {}, "sink_unavailable", "delivery path none did not complete"],
+  ])("persists %s", async (_name, details, lastDropReason, lastError) => {
     const persist = vi.fn();
     const { entry, controller } = createReceiptFixture(
-      delivery,
+      { delivered: false, path: "none", ...details },
       "retryable",
       { endedAt: 4_000, retainAttachmentsOnKeep: true },
       persist,
@@ -257,83 +233,71 @@ export function registerLifecycleDeliveryReceiptCases({
   });
 
   it.each([
-    {
-      name: "persists a newly failed completion",
-      reusePreviousError: false,
-      previousDisposition: undefined,
-      persistCalls: 1,
-    },
-    {
-      name: "persists a changed disposition when completion diagnostics are otherwise unchanged",
-      reusePreviousError: true,
-      previousDisposition: undefined,
-      persistCalls: 1,
-    },
-    {
-      name: "does not persist unchanged completion diagnostics",
-      reusePreviousError: true,
-      previousDisposition: "retryable" as const,
-      persistCalls: 0,
-    },
-  ])("$name before stalled announce bookkeeping settles", async (scenario) => {
-    const lastError = "failed; visible_reply_missing";
-    const persist = vi.fn();
-    const entry = createRunEntry({
-      endedAt: 4_000,
-      expectsCompletionMessage: true,
-      retainAttachmentsOnKeep: true,
-      delivery: {
-        status: "pending",
-        disposition: scenario.previousDisposition,
-        ...(scenario.reusePreviousError ? { lastError } : {}),
-      },
-    });
-    const receiptObserved = createDeferredCore();
-    const announcePending = createDeferredCore();
-    const runSubagentAnnounceFlow: LifecycleControllerParams["runSubagentAnnounceFlow"] = vi.fn(
-      async (announceParams) => {
-        const delivery: SubagentAnnounceDeliveryResult = {
-          delivered: false,
-          path: "direct",
-          error: "failed",
-          reason: "visible_reply_missing",
-        };
-        persist.mockClear();
-        try {
-          await announceParams.onDeliveryResult?.(delivery);
-          receiptObserved.resolve();
-        } catch (error) {
-          receiptObserved.reject(error);
-          throw error;
-        }
-        await announcePending.promise;
-        return "retryable" as const;
-      },
-    );
-    const controller = createLifecycleController({
-      entry,
-      beforeWrite: persist,
-      runSubagentAnnounceFlow,
-    });
+    ["new failure", false, undefined, 1],
+    ["changed disposition", true, undefined, 1],
+    ["unchanged diagnostics", true, "retryable", 0],
+  ] as const)(
+    "persists %s before stalled announce bookkeeping settles",
+    async (_name, reusePreviousError, previousDisposition, persistCalls) => {
+      const lastError = "failed; visible_reply_missing";
+      const persist = vi.fn();
+      const entry = createRunEntry({
+        endedAt: 4_000,
+        expectsCompletionMessage: true,
+        retainAttachmentsOnKeep: true,
+        delivery: {
+          status: "pending",
+          disposition: previousDisposition,
+          ...(reusePreviousError ? { lastError } : {}),
+        },
+      });
+      const receiptObserved = createDeferredCore();
+      const announcePending = createDeferredCore();
+      const runSubagentAnnounceFlow: LifecycleControllerParams["runSubagentAnnounceFlow"] = vi.fn(
+        async (announceParams) => {
+          const delivery: SubagentAnnounceDeliveryResult = {
+            delivered: false,
+            path: "direct",
+            error: "failed",
+            reason: "visible_reply_missing",
+          };
+          persist.mockClear();
+          try {
+            await announceParams.onDeliveryResult?.(delivery);
+            receiptObserved.resolve();
+          } catch (error) {
+            receiptObserved.reject(error);
+            throw error;
+          }
+          await announcePending.promise;
+          return "retryable" as const;
+        },
+      );
+      const controller = createLifecycleController({
+        entry,
+        beforeWrite: persist,
+        runSubagentAnnounceFlow,
+      });
 
-    const join = observeRootWork();
-    try {
-      await expect(completeRun(controller, entry, visibleCompletion)).resolves.toBeUndefined();
-      await receiptObserved.promise;
-      expect(readLifecycleRun(entry).delivery?.disposition).toBe("retryable");
-      expect(readLifecycleRun(entry).delivery?.lastDropReason).toBeUndefined();
-      expect(readLifecycleRun(entry).delivery?.lastError).toBe(lastError);
-      expect(readLifecycleRun(entry).cleanupCompletedAt).toBeUndefined();
-      expect(persist).toHaveBeenCalledTimes(scenario.persistCalls);
-      if (scenario.persistCalls > 0) {
-        expect(persist).toHaveBeenCalledWith(expect.objectContaining({ runIds: [entry.runId] }));
+      const join = observeRootWork();
+      try {
+        await expect(completeRun(controller, entry, visibleCompletion)).resolves.toBeUndefined();
+        await receiptObserved.promise;
+        expect(readLifecycleRun(entry).delivery?.disposition).toBe("retryable");
+        expect(readLifecycleRun(entry).delivery?.lastDropReason).toBeUndefined();
+        expect(readLifecycleRun(entry).delivery?.lastError).toBe(lastError);
+        expect(readLifecycleRun(entry).cleanupCompletedAt).toBeUndefined();
+        expect(persist).toHaveBeenCalledTimes(persistCalls);
+        if (persistCalls > 0) {
+          expect(persist).toHaveBeenCalledWith(expect.objectContaining({ runIds: [entry.runId] }));
+        }
+      } finally {
+        announcePending.resolve();
+        await join();
       }
-    } finally {
-      announcePending.resolve();
-      await join();
-    }
-    expect(readLifecycleRun(entry).delivery?.status).toBe("suspended");
-  });
+      expect(readLifecycleRun(entry).delivery?.status).toBe("suspended");
+    },
+  );
 
   it("persists identified completion delivery while completing the active multipart send", async () => {
     const cleanupSnapshots: SubagentRunRecord[] = [];

@@ -20,7 +20,10 @@ import {
 import type { SubagentRunRecord } from "./subagent-registry.types.js";
 import { isSameSubagentRunOwner } from "./subagent-run-generation.js";
 
-function createRun(runId: string, childSessionKey: string): SubagentRunRecord {
+function createRun(
+  runId: string,
+  childSessionKey = `agent:main:subagent:${runId}`,
+): SubagentRunRecord {
   return {
     runId,
     childSessionKey,
@@ -129,11 +132,11 @@ describe("completed subagent payload residency", () => {
 describe("subagent run memory indexes", () => {
   it("tracks activation obligations across settlement, reactivation, deletion, and reset", () => {
     const finished: SubagentRunRecord = {
-      ...createRun("history", "agent:main:subagent:history"),
+      ...createRun("history"),
       execution: { status: "terminal", endedAt: 2, outcome: { status: "ok" } },
       cleanupCompletedAt: 3,
     };
-    const running = createRun("running", "agent:main:subagent:running");
+    const running = createRun("running");
     const cleanup = { ...finished, runId: "cleanup", cleanupCompletedAt: undefined };
     const wake: SubagentRunRecord = {
       ...finished,
@@ -234,28 +237,23 @@ describe("subagent run memory indexes", () => {
     };
     subagentRuns.set(first.runId, first);
     const lookup = getSubagentSessionReadLookup(subagentRuns);
-    expect(lookup.selectRunIds(new Set([first.schedulerSlotId]))).toEqual([first.runId]);
-    expect(
-      lookup.selectRunIds(new Set([first.runId, first.swarmRunId, first.schedulerSlotId])),
-    ).toEqual([first.runId]);
+    const select = (...ids: string[]) => lookup.selectRunIds(new Set(ids));
+    expect(select(first.schedulerSlotId)).toEqual([first.runId]);
+    expect(select(first.runId, first.swarmRunId, first.schedulerSlotId)).toEqual([first.runId]);
 
     const replacement = { ...first, schedulerSlotId: "slot-replacement" };
     subagentRuns.set(replacement.runId, replacement);
-    expect(lookup.selectRunIds(new Set([first.schedulerSlotId]))).toEqual([]);
-    expect(lookup.selectRunIds(new Set([replacement.schedulerSlotId]))).toEqual([
-      replacement.runId,
-    ]);
+    expect(select(first.schedulerSlotId)).toEqual([]);
+    expect(select(replacement.schedulerSlotId)).toEqual([replacement.runId]);
 
     subagentRuns.delete(replacement.runId);
-    expect(
-      lookup.selectRunIds(
-        new Set([replacement.runId, replacement.swarmRunId, replacement.schedulerSlotId]),
-      ),
-    ).toEqual([]);
+    expect(select(replacement.runId, replacement.swarmRunId, replacement.schedulerSlotId)).toEqual(
+      [],
+    );
   });
 
   it("retains a selected registration through its own ACK but rejects a current replacement", () => {
-    const entry = createRun("selected", "agent:main:subagent:selected");
+    const entry = createRun("selected");
     subagentRuns.set(entry.runId, entry);
     const selected = subagentRuns.captureRegistrationOwnership(entry.childSessionKey, entry);
     try {
@@ -276,21 +274,18 @@ describe("subagent run memory indexes", () => {
   it("publishes accepted ownership and retirement without exposing provisional map writes", () => {
     const changed = vi.fn();
     const stop = sessionChanges.subscribe(changed);
-    const entry = createRun("accepted", "agent:main:subagent:accepted");
+    const entry = createRun("accepted");
+    const notice = { sessionKey: entry.childSessionKey, scope: "runtime" };
     try {
       subagentRuns.set(entry.runId, entry);
       expect(changed).not.toHaveBeenCalled();
       subagentRuns.commitOwnership(entry);
-      expect(changed.mock.calls).toEqual([
-        [{ sessionKey: entry.childSessionKey, scope: "runtime" }],
-      ]);
+      expect(changed.mock.calls).toEqual([[notice]]);
       changed.mockClear();
       subagentRuns.delete(entry.runId);
       expect(changed).not.toHaveBeenCalled();
       subagentRuns.confirmRetirement(entry);
-      expect(changed.mock.calls).toEqual([
-        [{ sessionKey: entry.childSessionKey, scope: "runtime" }],
-      ]);
+      expect(changed.mock.calls).toEqual([[notice]]);
       changed.mockClear();
       subagentRuns.clear();
       expect(changed.mock.calls).toEqual([[{ all: true, scope: "subagent-runs" }]]);
@@ -300,27 +295,29 @@ describe("subagent run memory indexes", () => {
   });
 
   it("tracks child-session generations across replacement, deletion, and clear", () => {
+    const children = (key: string) => [...getSubagentRunsForChildSession(key)];
     const first = createRun("run-first", "agent:main:subagent:shared");
     const second = createRun("run-second", "agent:main:subagent:shared");
     subagentRuns.set(first.runId, first);
     subagentRuns.set(second.runId, second);
 
-    expect([...getSubagentRunsForChildSession(first.childSessionKey)]).toEqual([first, second]);
+    expect(children(first.childSessionKey)).toEqual([first, second]);
 
     const replacement = createRun("run-first", "agent:main:subagent:replacement");
     subagentRuns.set(replacement.runId, replacement);
-    expect([...getSubagentRunsForChildSession(first.childSessionKey)]).toEqual([second]);
-    expect([...getSubagentRunsForChildSession(replacement.childSessionKey)]).toEqual([replacement]);
+    expect(children(first.childSessionKey)).toEqual([second]);
+    expect(children(replacement.childSessionKey)).toEqual([replacement]);
 
     subagentRuns.delete(second.runId);
-    expect([...getSubagentRunsForChildSession(first.childSessionKey)]).toEqual([]);
+    expect(children(first.childSessionKey)).toEqual([]);
 
     subagentRuns.clear();
-    expect([...getSubagentRunsForChildSession(replacement.childSessionKey)]).toEqual([]);
+    expect(children(replacement.childSessionKey)).toEqual([]);
   });
 
   it("tracks every collector group member across replacement, deletion, and clear", () => {
     const requesterSessionKey = "agent:main:requester";
+    const group = (id: string) => [...getSubagentRunsForCollectorGroup(requesterSessionKey, id)];
     const first = {
       ...createRun("run-first", "agent:main:subagent:first"),
       requesterSessionKey,
@@ -337,26 +334,20 @@ describe("subagent run memory indexes", () => {
     subagentRuns.set(first.runId, first);
     subagentRuns.set(incomplete.runId, incomplete);
 
-    expect([...getSubagentRunsForCollectorGroup(requesterSessionKey, "swarm:shared")]).toEqual([
+    expect(group("swarm:shared")).toEqual([
       [first.runId, first],
       [incomplete.runId, incomplete],
     ]);
 
     const replacement = { ...first, groupId: "swarm:replacement" };
     subagentRuns.set(replacement.runId, replacement);
-    expect([...getSubagentRunsForCollectorGroup(requesterSessionKey, "swarm:shared")]).toEqual([
-      [incomplete.runId, incomplete],
-    ]);
-    expect([...getSubagentRunsForCollectorGroup(requesterSessionKey, "swarm:replacement")]).toEqual(
-      [[replacement.runId, replacement]],
-    );
+    expect(group("swarm:shared")).toEqual([[incomplete.runId, incomplete]]);
+    expect(group("swarm:replacement")).toEqual([[replacement.runId, replacement]]);
 
     subagentRuns.delete(incomplete.runId);
-    expect([...getSubagentRunsForCollectorGroup(requesterSessionKey, "swarm:shared")]).toEqual([]);
+    expect(group("swarm:shared")).toEqual([]);
 
     subagentRuns.clear();
-    expect([...getSubagentRunsForCollectorGroup(requesterSessionKey, "swarm:replacement")]).toEqual(
-      [],
-    );
+    expect(group("swarm:replacement")).toEqual([]);
   });
 });

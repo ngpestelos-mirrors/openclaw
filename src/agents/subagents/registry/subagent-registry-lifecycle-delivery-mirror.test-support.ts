@@ -16,8 +16,6 @@ import type {
 } from "./subagent-registry-lifecycle.js";
 import type { SubagentRunRecord } from "./subagent-registry.types.js";
 
-type LifecycleControllerParams = SubagentLifecycleOptions;
-
 export function buildExpectedAnnounceIdempotencyKey(entry: SubagentRunRecord): string {
   return buildAnnounceIdempotencyKey(
     buildAnnounceIdFromChildRun({
@@ -43,15 +41,20 @@ export function registerDeliveryMirrorCases({
   blockSubagentCompletionDelivery: Mock;
   logAnnounceGiveUp: Mock;
 }) {
+  const failure = "completion agent did not produce a visible reply";
+  function expectHistory(sessionKey: string, agentId?: string) {
+    expect(callGateway).toHaveBeenCalledWith({
+      method: "chat.history",
+      params: { sessionKey, ...(agentId ? { agentId } : {}), limit: 25, maxChars: 128 * 1024 },
+      timeoutMs: 5_000,
+    });
+  }
   async function runNoReplyMirrorScenario(params: {
     timestamp: number;
     text?: string;
-    idempotencyKey?: string;
     idempotencyKeyForEntry?: (entry: SubagentRunRecord) => string;
     requester?: Pick<SubagentRunRecord, "requesterSessionKey" | "requesterAgentId">;
   }): Promise<SubagentRunRecord> {
-    // A failed direct announce can still be mirrored from the requester history;
-    // the idempotency key prevents stale or unrelated assistant text from winning.
     const entry = createLifecycleRunEntry({
       endedAt: 4_000,
       expectsCompletionMessage: true,
@@ -61,14 +64,13 @@ export function registerDeliveryMirrorCases({
     const text = params.text ?? "final completion reply";
     const idempotencyKey =
       params.idempotencyKeyForEntry?.(entry) ??
-      params.idempotencyKey ??
       `${buildExpectedAnnounceIdempotencyKey(entry)}:internal-source-reply:0`;
-    const runSubagentAnnounceFlow = vi.fn<LifecycleControllerParams["runSubagentAnnounceFlow"]>(
+    const runSubagentAnnounceFlow = vi.fn<SubagentLifecycleOptions["runSubagentAnnounceFlow"]>(
       async (announceParams) => {
         await announceParams.onDeliveryResult?.({
           delivered: false,
           path: "direct",
-          error: "completion agent did not produce a visible reply",
+          error: failure,
         });
         return "retryable" as const;
       },
@@ -107,74 +109,66 @@ export function registerDeliveryMirrorCases({
     return entry;
   }
 
-  it.each([
-    { source: "current" },
-    { source: "long reply" },
-    { source: "message tool" },
-    { source: "child run" },
-    { source: "stale" },
-    { source: "sibling" },
-  ])("credits only current-run requester delivery mirrors ($source)", async ({ source }) => {
-    const delivered = source !== "stale" && source !== "sibling";
-    const entry = await runNoReplyMirrorScenario({
-      timestamp: source === "stale" ? 1_999 : 12_345,
-      text: source === "long reply" ? "long completion reply ".repeat(500) : undefined,
-      idempotencyKeyForEntry: (candidate) => {
-        if (source === "child run") {
-          return `${candidate.runId}:message-tool:1`;
-        }
-        if (source === "sibling") {
-          return `${buildAnnounceIdempotencyKey(
-            buildAnnounceIdFromChildRun({
-              childSessionKey: "agent:main:subagent:sibling",
-              childRunId: "run-sibling",
-            }),
-          )}:internal-source-reply:0`;
-        }
-        return `${buildExpectedAnnounceIdempotencyKey(candidate)}:${source === "message tool" ? "message-tool:" : ""}internal-source-reply:0`;
-      },
-    });
-    await waitForLifecycleState(() =>
-      expect(
-        delivered
-          ? readLifecycleRun(entry).cleanupCompletedAt
-          : readLifecycleRun(entry).delivery?.suspendedAt,
-      ).toBeTypeOf("number"),
-    );
-    expect(callGateway).toHaveBeenCalledWith({
-      method: "chat.history",
-      params: { sessionKey: entry.requesterSessionKey, limit: 25, maxChars: 128 * 1024 },
-      timeoutMs: 5_000,
-    });
-    expect(readLifecycleRun(entry).delivery).toMatchObject({
-      status: delivered ? "delivered" : "suspended",
-      deliveredAt: delivered ? 12_345 : undefined,
-      announcedAt: delivered ? 12_345 : undefined,
-      lastError: delivered ? undefined : "completion agent did not produce a visible reply",
-    });
-    if (delivered) {
-      expect(readLifecycleRun(entry).delivery?.payload).toBeUndefined();
-      expect(readLifecycleRun(entry).delivery?.attemptCount).toBeUndefined();
-      expect(logAnnounceGiveUp).not.toHaveBeenCalled();
-    } else {
-      expect(blockSubagentCompletionDelivery).toHaveBeenCalledWith({
-        subagent: expect.objectContaining({
-          runId: entry.runId,
-          childSessionKey: entry.childSessionKey,
-          completion: expect.objectContaining({ resultText: "final completion reply" }),
-        }),
-        reason: "completion agent did not produce a visible reply",
-        suspendedReason: "expiry",
+  it.each(["current", "long reply", "message tool", "child run", "stale", "sibling"])(
+    "credits only current-run requester delivery mirrors (%s)",
+    async (source) => {
+      const delivered = source !== "stale" && source !== "sibling";
+      const entry = await runNoReplyMirrorScenario({
+        timestamp: source === "stale" ? 1_999 : 12_345,
+        text: source === "long reply" ? "long completion reply ".repeat(500) : undefined,
+        idempotencyKeyForEntry: (candidate) => {
+          if (source === "child run") {
+            return `${candidate.runId}:message-tool:1`;
+          }
+          if (source === "sibling") {
+            return `${buildAnnounceIdempotencyKey(
+              buildAnnounceIdFromChildRun({
+                childSessionKey: "agent:main:subagent:sibling",
+                childRunId: "run-sibling",
+              }),
+            )}:internal-source-reply:0`;
+          }
+          return `${buildExpectedAnnounceIdempotencyKey(candidate)}:${source === "message tool" ? "message-tool:" : ""}internal-source-reply:0`;
+        },
       });
-      expect(logAnnounceGiveUp).toHaveBeenCalledWith(
-        expect.objectContaining({
-          runId: entry.runId,
-          requesterSessionKey: entry.requesterSessionKey,
-        }),
-        "expiry",
+      await waitForLifecycleState(() =>
+        expect(
+          delivered
+            ? readLifecycleRun(entry).cleanupCompletedAt
+            : readLifecycleRun(entry).delivery?.suspendedAt,
+        ).toBeTypeOf("number"),
       );
-    }
-  });
+      expectHistory(entry.requesterSessionKey);
+      expect(readLifecycleRun(entry).delivery).toMatchObject({
+        status: delivered ? "delivered" : "suspended",
+        deliveredAt: delivered ? 12_345 : undefined,
+        announcedAt: delivered ? 12_345 : undefined,
+        lastError: delivered ? undefined : failure,
+      });
+      if (delivered) {
+        expect(readLifecycleRun(entry).delivery?.payload).toBeUndefined();
+        expect(readLifecycleRun(entry).delivery?.attemptCount).toBeUndefined();
+        expect(logAnnounceGiveUp).not.toHaveBeenCalled();
+      } else {
+        expect(blockSubagentCompletionDelivery).toHaveBeenCalledWith({
+          subagent: expect.objectContaining({
+            runId: entry.runId,
+            childSessionKey: entry.childSessionKey,
+            completion: expect.objectContaining({ resultText: "final completion reply" }),
+          }),
+          reason: failure,
+          suspendedReason: "expiry",
+        });
+        expect(logAnnounceGiveUp).toHaveBeenCalledWith(
+          expect.objectContaining({
+            runId: entry.runId,
+            requesterSessionKey: entry.requesterSessionKey,
+          }),
+          "expiry",
+        );
+      }
+    },
+  );
 
   it("credits a delivery mirror for an unqualified requester in a multi-agent Gateway", async () => {
     const entry = await runNoReplyMirrorScenario({
@@ -184,11 +178,7 @@ export function registerDeliveryMirrorCases({
     await waitForLifecycleState(() =>
       expect(readLifecycleRun(entry).cleanupCompletedAt).toBeTypeOf("number"),
     );
-    expect(callGateway).toHaveBeenCalledWith({
-      method: "chat.history",
-      params: { sessionKey: "global", agentId: "ops", limit: 25, maxChars: 128 * 1024 },
-      timeoutMs: 5_000,
-    });
+    expectHistory("global", "ops");
     expect(readLifecycleRun(entry).delivery).toMatchObject({
       status: "delivered",
       deliveredAt: 12_345,
