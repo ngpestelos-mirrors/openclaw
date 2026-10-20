@@ -20,13 +20,12 @@ import {
 } from "./task-suggestions.test-support.js";
 import type { RespondFn } from "./types.js";
 
-const mocks = vi.hoisted(() => ({ handleChatSend: vi.fn() }));
-vi.mock("./chat-send-handler.js", () => ({ handleChatSend: mocks.handleChatSend }));
+const { handleChatSend } = vi.hoisted(() => ({ handleChatSend: vi.fn() }));
+vi.mock("./chat-send-handler.js", () => ({ handleChatSend }));
 
 beforeEach(async () => {
   await dismissPendingTaskSuggestions();
-  mocks.handleChatSend.mockReset();
-  mocks.handleChatSend.mockImplementation(async ({ respond }: { respond: RespondFn }) => {
+  handleChatSend.mockReset().mockImplementation(async ({ respond }: { respond: RespondFn }) => {
     respond(true, { runId: "suggested-task-run", status: "started" }, undefined);
   });
 });
@@ -52,24 +51,20 @@ async function sourceSuggestion(cwd: string, prompt: string, operator = false) {
     },
   };
   const request = (method: Parameters<typeof call>[0], params: Record<string, unknown>) =>
-    call(
-      method,
-      params,
-      vi.fn(),
-      method === "taskSuggestions.create" && !operator ? { config } : options,
-    );
-  const { taskId } = requirePayload(
-    await request("taskSuggestions.create", {
-      title: operator ? "Investigate shutdown" : "Investigate a local service",
+    call(method, params, vi.fn(), options);
+  const created = await call(
+    "taskSuggestions.create",
+    {
+      title: "Investigate service",
       prompt,
-      tldr: operator
-        ? "A service stopped unexpectedly."
-        : "A local service is restarting repeatedly.",
+      tldr: "A service stopped unexpectedly.",
       cwd,
       sessionKey: SOURCE_SESSION_KEY,
-    }),
-  ) as { taskId: string };
-  return { request, taskId };
+    },
+    vi.fn(),
+    operator ? options : { config },
+  );
+  return { request, taskId: (requirePayload(created) as { taskId: string }).taskId };
 }
 
 it("keeps an unborn-repository suggestion retryable and starts it once from the corrected repository", async () => {
@@ -88,7 +83,7 @@ it("keeps an unborn-repository suggestion retryable and starts it once from the 
         details: { code: "TASK_WORKTREE_SOURCE_REQUIRED", cwd },
       },
     ]);
-    expect(mocks.handleChatSend).not.toHaveBeenCalled();
+    expect(handleChatSend).not.toHaveBeenCalled();
     expect(requirePayload(await request("taskSuggestions.list", {}))).toMatchObject({
       suggestions: [expect.objectContaining({ id: taskId, cwd, prompt })],
     });
@@ -101,15 +96,15 @@ it("keeps an unborn-repository suggestion retryable and starts it once from the 
       pendingWorktree: { workspace: repository },
       parentSessionKey: SOURCE_SESSION_KEY,
     });
-    expect(mocks.handleChatSend).toHaveBeenCalledTimes(1);
-    expect(mocks.handleChatSend.mock.calls[0]?.[0]).toMatchObject({
+    expect(handleChatSend).toHaveBeenCalledTimes(1);
+    expect(handleChatSend.mock.calls[0]?.[0]).toMatchObject({
       params: { sessionKey: key, message: prompt },
     });
     expect(requirePayload(await request("taskSuggestions.accept", correction))).toEqual({
       taskId,
       key,
     });
-    expect(mocks.handleChatSend).toHaveBeenCalledTimes(1);
+    expect(handleChatSend).toHaveBeenCalledTimes(1);
     await expect(
       promisify(execFile)("git", ["-C", cwd, "rev-parse", "--verify", "HEAD"]),
     ).rejects.toBeDefined();
@@ -117,7 +112,7 @@ it("keeps an unborn-repository suggestion retryable and starts it once from the 
 });
 
 it.each(["plain folder", "unavailable Git metadata"])(
-  "starts a follow-up without worktree setup: %s",
+  "starts a local task: %s",
   async (scenario) => {
     await withOpenClawTestState({ scenario: "minimal" }, async ({ workspaceDir }) => {
       const cwd = await fs.realpath(workspaceDir);
@@ -136,8 +131,8 @@ it.each(["plain folder", "unavailable Git metadata"])(
       expect(entry).toMatchObject({ spawnedCwd: cwd, parentSessionKey: SOURCE_SESSION_KEY });
       expect(entry).not.toHaveProperty("pendingWorktree");
       expect(entry).not.toHaveProperty("worktree");
-      expect(mocks.handleChatSend).toHaveBeenCalledTimes(1);
-      const dispatch = mocks.handleChatSend.mock.calls[0];
+      expect(handleChatSend).toHaveBeenCalledTimes(1);
+      const dispatch = handleChatSend.mock.calls[0];
       expect(dispatch?.[0]).toMatchObject({
         params: { sessionKey: key, message: expect.stringContaining(prompt) },
       });

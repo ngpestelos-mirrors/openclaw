@@ -107,24 +107,39 @@ function chatSession(engine = makeVerifiedEngine()) {
   };
 }
 
-function mockChat(text = "Everything is healthy.") {
-  const engine = makeVerifiedEngine();
-  return {
-    ...chatSession(engine),
-    handle: vi.spyOn(engine, "handle").mockResolvedValue({ text, action: "none" }),
-  };
+function makeEngine(
+  options: Omit<
+    ConstructorParameters<typeof SystemAgentChatEngine>[0],
+    "verifiedInference" | "deps"
+  >,
+) {
+  return new SystemAgentChatEngine({
+    verifiedInference: requireVerifiedInferenceFixture(),
+    deps: requireVerifiedInferenceDeps(),
+    ...options,
+  });
 }
+
+const activationResult = (modelRef = "openai/gpt-5.6-luna", latencyMs = 1, lines: string[] = []) =>
+  ({ ok: true, modelRef, latencyMs, lines }) as const;
+const examplePlugin = { id: "example", name: "Example" };
+const accountSetting = { path: ["accounts", "name.with.dots"], label: "Account" };
 
 const waitOneTask = () =>
   new Promise<void>((resolve) => {
     setTimeout(resolve, 0);
   });
 
-async function makeVerificationContext() {
-  const stateDir = systemAgentTempDirs.make("openclaw-setup-verification-");
+function configLocation() {
+  const stateDir = systemAgentTempDirs.make("openclaw-setup-");
   const configPath = path.join(stateDir, "openclaw.json");
   vi.stubEnv("OPENCLAW_STATE_DIR", stateDir);
   vi.stubEnv("OPENCLAW_CONFIG_PATH", configPath);
+  return { stateDir, configPath };
+}
+
+async function makeVerificationContext() {
+  const { configPath } = configLocation();
   fs.writeFileSync(configPath, "{}\n");
   const snapshot = await readConfigFileSnapshot();
   setRuntimeConfigAppliedHash(hashRuntimeConfigValue(snapshot.sourceConfig));
@@ -199,18 +214,9 @@ describe("openclaw.setup", () => {
       await admissionSettled.promise;
       return result;
     });
-    const result = { ok: true, modelRef: "openai/fixture", latencyMs: 1, lines: [] };
+    const result = activationResult("openai/fixture");
     setupInferenceMocks.activateSetupInference.mockResolvedValue(result);
-    const { calls, pending } = request(
-      "openclaw.setup.activate",
-      { kind: "claude-cli" },
-      {
-        req: { type: "req", id: "setup-completion", method: "openclaw.setup.activate" },
-        client: null,
-        isWebchatConnect: () => false,
-        context: makeContext(new Map()),
-      },
-    );
+    const { calls, pending } = request("openclaw.setup.activate", { kind: "claude-cli" });
     try {
       await taskFinished.promise;
       expect(calls).toEqual([]);
@@ -222,15 +228,8 @@ describe("openclaw.setup", () => {
     expect(calls).toEqual([reply(result)]);
   });
 
-  it("returns a retryable busy error while another activation is running", async () => {
-    await whileSetupBusy(async () => {
-      const { calls, pending } = request("openclaw.setup.activate", { kind: "claude-cli" });
-      await pending;
-      expect(calls).toEqual([busyReply]);
-    });
-  });
-
   it.each([
+    ["openclaw.setup.activate" as const, { kind: "claude-cli" }],
     ["openclaw.setup.activate.start" as const, { sessionId: "busy-activation", kind: "codex-cli" }],
     [
       "openclaw.setup.auth.start" as const,
@@ -319,10 +318,7 @@ describe("openclaw.chat", () => {
     "returns unchecked discovery through selected-agent detection after %s metadata",
     (metadataCommand) => {
       pendingDiscovery = (async () => {
-        const stateDir = systemAgentTempDirs.make("openclaw-native-catalog-consent-");
-        const configPath = path.join(stateDir, "openclaw.json");
-        vi.stubEnv("OPENCLAW_STATE_DIR", stateDir);
-        vi.stubEnv("OPENCLAW_CONFIG_PATH", configPath);
+        const { stateDir, configPath } = configLocation();
         const io = createConfigIO({
           env: { ...process.env, OPENCLAW_CONFIG_PATH: configPath, OPENCLAW_STATE_DIR: stateDir },
           homedir: () => stateDir,
@@ -487,12 +483,7 @@ describe("openclaw.chat", () => {
           await finishApplication.promise;
           return false;
         });
-        return {
-          ok: true,
-          modelRef: "meta/muse-spark-1.3",
-          latencyMs: 1,
-          lines: [],
-        };
+        return activationResult("meta/muse-spark-1.3");
       },
     );
     const pending = activateGatewaySetupInference({
@@ -526,12 +517,7 @@ describe("openclaw.chat", () => {
     async (outcome) => {
       const release = createDeferred();
       const failure = new Error("activation completion failed");
-      const result = {
-        ok: true as const,
-        modelRef: "openai/gpt-5.6-luna",
-        latencyMs: 1,
-        lines: [],
-      };
+      const result = activationResult();
       setupInferenceMocks.activateSetupInference.mockImplementation(
         async (params: ActivateSetupInferenceParams) => {
           params.onActivationCompletion?.(async () => {
@@ -597,19 +583,14 @@ describe("openclaw.chat", () => {
       const failure = new Error("admitted operation failed");
       const started = createDeferred();
       const release = createDeferred();
-      const activationResult = {
-        ok: true as const,
-        modelRef: "openai/gpt-5.5",
-        latencyMs: 250,
-        lines: ["Default model: openai/gpt-5.5"],
-      };
+      const result = activationResult("openai/gpt-5.5", 250, ["Default model: openai/gpt-5.5"]);
       setupInferenceMocks.activateSetupInference.mockImplementation(async () => {
         started.resolve();
         await release.promise;
         if (outcome === "task error") {
           throw failure;
         }
-        return activationResult;
+        return result;
       });
       const { calls, respond } = makeRespond();
       const activeAtResponse: number[] = [];
@@ -649,7 +630,7 @@ describe("openclaw.chat", () => {
         onActivationStarted: expect.any(Function),
         onActivationCompletion: expect.any(Function),
       });
-      expect(calls).toEqual(outcome === "success" ? [reply(activationResult)] : []);
+      expect(calls).toEqual(outcome === "success" ? [reply(result)] : []);
       expect(activeAtResponse).toEqual(outcome === "task error" ? [] : [0]);
       expect(systemAgentLane().activeCount).toBe(0);
     },
@@ -660,93 +641,68 @@ describe("openclaw.chat", () => {
     expect(call.ok).toBe(false);
   });
 
-  it("trims, canonicalizes, and forwards valid UI context for a user turn", async () => {
-    const { handle, chat } = mockChat();
-    const call = await chat({
-      message: "What about this page?",
+  it.each([
+    {
+      name: "trims and canonicalizes valid context without forwarding secrets",
       context: {
         page: "  /settings/channels  ",
         source: "client",
         plugin: {
-          id: "example",
-          name: "Example",
+          ...examplePlugin,
           config: { apiKey: "never forwarded" },
-          setting: {
-            path: ["accounts", "name.with.dots"],
-            label: "Account",
-            value: "never forwarded",
-          },
+          setting: { ...accountSetting, value: "never forwarded" },
         },
       },
-    });
-
-    expect(call.ok).toBe(true);
-    expect(handle).toHaveBeenCalledWith("What about this page?", {
-      uiContext: {
+      expected: {
         page: "/settings/channels",
-        plugin: {
-          id: "example",
-          name: "Example",
-          setting: { path: ["accounts", "name.with.dots"], label: "Account" },
-        },
+        plugin: { ...examplePlugin, setting: accountSetting },
       },
-    });
-  });
-
-  it("drops UI context with a Unicode case-folding character without rejecting the turn", async () => {
-    const { handle, chat } = mockChat();
-    const call = await chat({
-      message: "Status please.",
+    },
+    {
+      name: "drops Unicode case-folding context without rejecting the turn",
       context: { page: "\u212A" },
-    });
-
-    expect(call.ok).toBe(true);
-    expect(handle).toHaveBeenCalledWith("Status please.");
-  });
-
-  it.each([
-    { id: "bad?id", name: "Example" },
-    { id: "example", name: "n".repeat(97) },
-  ])("drops an invalid plugin reference while keeping the human turn", async (plugin) => {
-    const { handle, chat } = mockChat("Ready.");
-    const call = await chat({
-      message: "Help with this",
-      context: { page: "plugin-settings", plugin },
-    });
-    expect(call.ok).toBe(true);
-    expect(handle).toHaveBeenCalledWith("Help with this", {
-      uiContext: { page: "plugin-settings" },
-    });
-  });
-
-  it("bounds escaped plugin reference data before forwarding it", async () => {
-    const { handle, chat } = mockChat("Ready.");
-    await chat({
-      message: "Help with this",
+      expected: undefined,
+    },
+    {
+      name: "drops an invalid plugin id",
+      context: { page: "plugin-settings", plugin: { ...examplePlugin, id: "bad?id" } },
+      expected: { page: "plugin-settings" },
+    },
+    {
+      name: "drops an overlong plugin name",
+      context: { page: "plugin-settings", plugin: { ...examplePlugin, name: "n".repeat(97) } },
+      expected: { page: "plugin-settings" },
+    },
+    {
+      name: "bounds escaped plugin reference data before forwarding it",
       context: {
         page: "plugin-settings",
         plugin: {
-          id: "example",
-          name: "Example",
+          ...examplePlugin,
           setting: { path: Array(16).fill("\u0000".repeat(64)), label: "Large" },
         },
       },
-    });
-    expect(handle).toHaveBeenCalledWith("Help with this", {
-      uiContext: { page: "plugin-settings", plugin: { id: "example", name: "Example" } },
-    });
+      expected: { page: "plugin-settings", plugin: examplePlugin },
+    },
+  ])("$name", async ({ context, expected }) => {
+    const engine = makeVerifiedEngine();
+    const handle = vi.spyOn(engine, "handle").mockResolvedValue({ text: "Ready.", action: "none" });
+    const call = await chatSession(engine).chat({ message: "Help with this", context });
+    expect(call.ok).toBe(true);
+    expect(handle).toHaveBeenCalledWith(
+      "Help with this",
+      ...(expected ? [{ uiContext: expected }] : []),
+    );
   });
 
   it("persists completed turns from the engine's sanitized history", async () => {
-    const engine = new SystemAgentChatEngine({
-      verifiedInference: requireVerifiedInferenceFixture(),
-      deps: requireVerifiedInferenceDeps(),
+    const engine = makeEngine({
       runAgentTurn: async () => ({ text: "Everything is healthy." }),
     });
     const { chat } = chatSession(engine);
     const call = await chat({
       message: "How is this machine doing?",
-      context: { page: "dashboard", plugin: { id: "example", name: "Example", installed: false } },
+      context: { page: "dashboard", plugin: { ...examplePlugin, installed: false } },
     });
 
     expect(call.payload).toMatchObject({ reply: "Everything is healthy." });
@@ -761,10 +717,8 @@ describe("openclaw.chat", () => {
 
   it("persists only the mask marker for a sensitive hosted-wizard answer", async () => {
     vi.spyOn(hostedSetup, "runHostedChannelSetup").mockImplementationOnce(runSensitiveChannelSetup);
-    const engine = new SystemAgentChatEngine({
+    const engine = makeEngine({
       surface: "gateway",
-      verifiedInference: requireVerifiedInferenceFixture(),
-      deps: requireVerifiedInferenceDeps(),
       runAgentTurn: async () => null,
     });
     const { chat } = chatSession(engine);
@@ -832,14 +786,12 @@ describe("openclaw.chat", () => {
 
   it("reuses a live session, then requires fresh fallback verification after failure", async () => {
     stubEngineOverview();
-    const engine = new SystemAgentChatEngine({
-      verifiedInference: requireVerifiedInferenceFixture(),
+    const engine = makeEngine({
       runAgentTurn: async () => {
         throw new SystemAgentInferenceUnavailableError("agent-turn", [
           new Error("workspace owner openclaw is missing from the roster"),
         ]);
       },
-      deps: requireVerifiedInferenceDeps(),
     });
     const dispose = vi.spyOn(engine, "dispose").mockResolvedValue();
     const { sessions, chat } = chatSession(engine);
