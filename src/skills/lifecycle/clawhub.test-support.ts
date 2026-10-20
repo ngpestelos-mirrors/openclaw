@@ -15,6 +15,7 @@ import { registerAgentWorkspaceAccess } from "../../agents/workspace-access.js";
 import type {
   ClawHubSkillSecurityVerdictItem,
   ClawHubSkillVerificationResponse,
+  ClawHubSkillInstallResolutionResponse,
 } from "../../infra/clawhub-skills.js";
 import { createTrackedTempDirs } from "../../test-utils/tracked-temp-dirs.js";
 
@@ -192,14 +193,12 @@ export function mockArchiveInstallResolution(slug: string, version: string, down
   });
 }
 
-export function mockGitHubInstallResolution(params: {
-  slug: string;
-  repo: string;
-  path: string;
-  commit: string;
-  contentHash: string;
-  sourceUrl: string;
-}) {
+export function mockGitHubInstallResolution(
+  params: { slug: string } & Extract<
+    ClawHubSkillInstallResolutionResponse,
+    { installKind: "github" }
+  >["github"],
+) {
   const { slug, ...github } = params;
   fetchClawHubSkillInstallResolutionMock.mockResolvedValueOnce({
     ok: true,
@@ -255,6 +254,8 @@ export async function writeTrackedSkill(
     skillMd?: string;
     skillFile?: { path: string; sha256: string };
     fileTreeSha256?: string;
+    originFields?: Record<string, unknown>;
+    lockFields?: Record<string, unknown>;
   } = {},
 ) {
   const skillDir = path.join(workspaceDir, "skills", slug);
@@ -289,12 +290,13 @@ export async function writeTrackedSkill(
     slug: params.originSlug ?? slug,
     installedVersion,
     ...shared,
+    ...params.originFields,
   });
   if (params.writeLock !== false) {
     await fs.mkdir(path.join(workspaceDir, ".clawhub"), { recursive: true });
     await writeJson(path.join(workspaceDir, ".clawhub", "lock.json"), {
       version: 1,
-      skills: { [slug]: { version: installedVersion, ...shared } },
+      skills: { [slug]: { version: installedVersion, ...shared, ...params.lockFields } },
     });
   }
   return skillDir;
