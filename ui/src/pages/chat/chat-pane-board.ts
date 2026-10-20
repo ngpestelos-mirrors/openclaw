@@ -36,12 +36,14 @@ import {
   resolveUiConversationIdentity,
 } from "../../lib/sessions/session-key.ts";
 import { showToast } from "../../lib/toast.ts";
+import { chatHistoryRequests } from "./chat-history-state.ts";
 import { ChatPaneHistory } from "./chat-pane-history.ts";
 import type { ResolvedBoardView } from "./chat-pane-shared.ts";
 import { ensureLazySidebarElement } from "./chat-pane-sidebar-layout.ts";
 import type { ChatBoardPanel } from "./chat-pane-surfaces.tsx";
 import type { ChatPageHost } from "./chat-state-host.ts";
 import { selectedChatSessionRow } from "./chat-state-route.ts";
+import { cacheChatBoardSnapshot, readChatSessionSnapshot } from "./session-message-cache.ts";
 import {
   SIDEBAR_NARROW_BREAKPOINT_PX,
   fitSidebarLayout,
@@ -289,6 +291,8 @@ export abstract class ChatPaneBoard extends ChatPaneHistory {
       const key = JSON.stringify([presentationScope?.key, boardProviderCacheKey(session)]);
       if (this.boardProviderLease?.cacheKey !== key) {
         this.releaseBoardProviderLease();
+        const state = this.state;
+        const context = this.context;
         this.boardProviderLease = {
           ...acquireBoardProviderForSession(
             session,
@@ -299,9 +303,36 @@ export abstract class ChatPaneBoard extends ChatPaneHistory {
             canMutate,
             canGrant,
             presentationScope,
+            state
+              ? (snapshot, receivedAtMs) => {
+                  const persist = () => {
+                    if (gatewayPresentationScope(context.gateway) === presentationScope) {
+                      cacheChatBoardSnapshot(
+                        state.chatMessagesBySession,
+                        state,
+                        session,
+                        snapshot,
+                        receivedAtMs,
+                      );
+                    }
+                  };
+                  // A board write must not invalidate the transcript read sharing this record.
+                  const hydration = chatHistoryRequests(state).initialSnapshotHydration;
+                  if (hydration) {
+                    void hydration.promise.then(persist);
+                  } else {
+                    persist();
+                  }
+                }
+              : undefined,
           ),
           cacheKey: key,
         };
+        const cached =
+          state && readChatSessionSnapshot(state.chatMessagesBySession, state, session);
+        if (cached?.board) {
+          this.boardProviderLease.restoreSnapshot(cached.board.snapshot, cached.board.receivedAtMs);
+        }
       } else {
         this.boardProviderLease.update(client, gateway.phase === "connected", {
           canPinWidgets,

@@ -2,6 +2,7 @@
 import { describe, expect, it } from "vitest";
 import {
   appendChatMessageToCache,
+  cacheChatBoardSnapshot,
   cacheChatSessionSnapshot,
   clearChatMessagesFromCache,
   createChatWidgetLayout,
@@ -47,6 +48,30 @@ const widgetSnapshot = (
 ): ChatSessionSnapshot => ({ messages, pagination: { hasMore: false }, sessionId, ...extras });
 
 describe("session message cache", () => {
+  it("retains a scoped board through transcript replacement and clears it authoritatively", () => {
+    const cache: ChatMessageCache = new Map();
+    const host = {
+      assistantAgentId: "ops",
+      settings: { gatewayUrl: "wss://cache.example" },
+      client: { recoveryScope: "account-a" },
+    };
+    const target = { sessionKey: "dashboard" };
+    const board = { sessionKey: "agent:ops:dashboard", revision: 1, tabs: [], widgets: [] };
+    cacheChatBoardSnapshot(cache, host, target, board, 100);
+    expect(readChatSessionSnapshot(cache, host, target)?.board).toEqual({
+      snapshot: board,
+      receivedAtMs: 100,
+    });
+    cacheChatSessionSnapshot(cache, host, target, widgetSnapshot(["new transcript"], "session-2"));
+    expect(readChatSessionSnapshot(cache, host, target)?.board?.snapshot).toEqual(board);
+    const foreign = { ...host, client: { recoveryScope: "account-b" } };
+    expect(readChatSessionSnapshot(cache, foreign, target)).toBeNull();
+    cacheChatBoardSnapshot(cache, host, target, null);
+    expect(readChatSessionSnapshot(cache, host, target)?.board).toBeNull();
+    cacheChatSessionSnapshot(cache, host, target, widgetSnapshot(["refreshed"], "session-2"));
+    expect(readChatSessionSnapshot(cache, host, target)?.board).toBeNull();
+  });
+
   it.each([
     {
       name: "Matrix room and thread IDs",

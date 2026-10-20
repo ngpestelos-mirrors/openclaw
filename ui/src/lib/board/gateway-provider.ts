@@ -57,11 +57,13 @@ export class GatewayBoardProvider implements BoardProvider {
   private readonly appViews = new BoardMcpAppViewCache();
   private disposed = false;
   private snapshotLoaded = false;
+  private snapshotRevalidated = false;
 
   constructor(
     private readonly session: BoardGetParams,
     private client: BoardGatewayClient,
     private connected = true,
+    private readonly cacheSnapshot?: (snapshot: BoardSnapshot | null, receivedAtMs: number) => void,
   ) {
     this.snapshotSignal = new ValueSignal(emptyBoardSnapshot(this.sessionKey));
     this.snapshot$ = this.snapshotSignal;
@@ -108,6 +110,7 @@ export class GatewayBoardProvider implements BoardProvider {
     this.changedWidgets.clear();
     this.appViews.clear();
     this.snapshotLoaded = false;
+    this.snapshotRevalidated = false;
     this.setLoadError(null);
     this.snapshotSignal.set(emptyBoardSnapshot(this.sessionKey));
     this.attachGatewayEvents(client);
@@ -122,6 +125,36 @@ export class GatewayBoardProvider implements BoardProvider {
 
   get hasLoadedSnapshot(): boolean {
     return this.snapshotLoaded;
+  }
+
+  restoreSnapshot(snapshot: BoardSnapshot, receivedAtMs: number): void {
+    if (
+      this.disposed ||
+      this.snapshotLoaded ||
+      this.snapshotRevalidated ||
+      !this.matchesSession(snapshot.sessionKey)
+    ) {
+      return;
+    }
+    const now = Date.now();
+    const widgets = snapshot.widgets
+      .filter(
+        (widget) =>
+          widget.contentKind !== "mcp-app" ||
+          (widget.grantState !== "pending" && widget.grantState !== "rejected"),
+      )
+      .map((widget) => {
+        const restored = {
+          ...widget,
+          ...(widget.viewTicketTtlMs !== undefined
+            ? { viewTicketTtlMs: Math.max(0, widget.viewTicketTtlMs - (now - receivedAtMs)) }
+            : {}),
+        };
+        recordBoardWidgetTicketReceipt(restored, now);
+        return restored;
+      });
+    this.snapshotLoaded = true;
+    this.snapshotSignal.set({ ...snapshot, widgets });
   }
 
   get appViewGeneration(): number {
@@ -408,6 +441,12 @@ export class GatewayBoardProvider implements BoardProvider {
           (error.gatewayCode === "FORBIDDEN" ||
             (error.gatewayCode === "UNAVAILABLE" && !error.retryable))
         ) {
+          if (!this.snapshotRevalidated || error.gatewayCode === "FORBIDDEN") {
+            this.snapshotLoaded = false;
+            this.snapshotSignal.set(emptyBoardSnapshot(this.sessionKey));
+          }
+          this.snapshotRevalidated = true;
+          this.cacheSnapshot?.(null, Date.now());
           // A definitive rejection consumes this refresh. Only a newer event,
           // connection generation, or explicit refresh can request another one.
           this.refreshRequested =
@@ -507,7 +546,10 @@ export class GatewayBoardProvider implements BoardProvider {
     });
     this.appViews.prune(widgets);
     this.snapshotLoaded = true;
-    this.snapshotSignal.set({ ...snapshot, widgets });
+    this.snapshotRevalidated = true;
+    const next = { ...snapshot, widgets };
+    this.snapshotSignal.set(next);
+    this.cacheSnapshot?.(next, receivedAtMs);
     this.setLoadError(null);
   }
 

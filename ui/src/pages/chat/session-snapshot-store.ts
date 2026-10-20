@@ -73,6 +73,9 @@ const paginationSchema = {
 };
 const snapshotSchema = json.object(
   {
+    board: json.optional(
+      json.nullable(json.object({ snapshot: json.unknown, receivedAtMs: nonnegative }, true)),
+    ),
     widgetHeights: json.optional(
       json.refine(
         json.record(json.refine(json.number, (height) => height >= 48 && height <= 8000)),
@@ -150,15 +153,36 @@ async function parseSnapshotRecord(
   if (!parsed || (sessionKey && parsed.sessionKey !== sessionKey)) {
     return null;
   }
-  const historyState = parsed.snapshot.historyState;
-  if (historyState !== undefined) {
-    const { isChatHistoryState } =
-      await import("../../lib/protocol-validators.generated/history-state.js");
-    if (!isChatHistoryState(historyState)) {
+  const { board, ...snapshot } = parsed.snapshot;
+  const historyState = snapshot.historyState;
+  const [boardValidator, historyValidator] = await Promise.all([
+    board ? import("../../lib/protocol-validators.generated/board.js") : undefined,
+    historyState !== undefined
+      ? import("../../lib/protocol-validators.generated/history-state.js")
+      : undefined,
+  ]);
+  let restoredBoard: ChatSessionSnapshot["board"] = board === null ? null : undefined;
+  if (board) {
+    if (!boardValidator?.isBoardSnapshot(board.snapshot)) {
       return null;
     }
+    restoredBoard = { snapshot: board.snapshot, receivedAtMs: board.receivedAtMs };
   }
-  return { ...parsed, snapshot: { ...parsed.snapshot, historyState } };
+  let restoredHistoryState: ChatSessionSnapshot["historyState"];
+  if (historyState !== undefined) {
+    if (!historyValidator?.isChatHistoryState(historyState)) {
+      return null;
+    }
+    restoredHistoryState = historyState;
+  }
+  return {
+    ...parsed,
+    snapshot: {
+      ...snapshot,
+      ...(restoredBoard !== undefined ? { board: restoredBoard } : {}),
+      historyState: restoredHistoryState,
+    },
+  };
 }
 
 function createSnapshotRecord(

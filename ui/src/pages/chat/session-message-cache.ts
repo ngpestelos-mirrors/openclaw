@@ -3,7 +3,7 @@ import {
   readSessionMessageSequence,
   reduceSessionProjection,
 } from "@openclaw/gateway-client/browser";
-import type { ProgressCard } from "@openclaw/gateway-protocol";
+import type { BoardSnapshot, ProgressCard } from "@openclaw/gateway-protocol";
 import type { GatewaySessionRow } from "../../api/types.ts";
 import { readPairingQrContent } from "../../lib/chat/pairing-qr.ts";
 import type { ChatHistoryCursor, ChatHistoryPagination } from "./chat-history-pagination.ts";
@@ -64,6 +64,7 @@ export function projectChatTranscriptMetadata(row: GatewaySessionRow): ChatTrans
 }
 
 export type ChatSessionSnapshot = {
+  board?: { snapshot: BoardSnapshot; receivedAtMs: number } | null;
   widgetHeights?: Record<string, number>;
   transcriptMetadata?: ChatTranscriptMetadata;
   progressCard?: ProgressCard | null;
@@ -318,10 +319,15 @@ export function cacheChatSessionSnapshot(
     existing.snapshot.sessionId === incoming.sessionId
       ? { ...incoming, progressCard: existing.snapshot.progressCard }
       : incoming;
-  const snapshot =
+  const withWidgetHeights =
     withProgress.widgetHeights === undefined && existing?.snapshot.sessionId === incoming.sessionId
       ? { ...withProgress, widgetHeights: existing.snapshot.widgetHeights }
       : withProgress;
+  // Boards belong to the scoped conversation key, independently of transcript resets.
+  const snapshot =
+    withWidgetHeights.board === undefined && existing?.snapshot.board !== undefined
+      ? { ...withWidgetHeights, board: existing.snapshot.board }
+      : withWidgetHeights;
   if (
     existing?.snapshot.messages === snapshot.messages &&
     existing.snapshot.deltaCursor === snapshot.deltaCursor &&
@@ -331,6 +337,7 @@ export function cacheChatSessionSnapshot(
     existing.snapshot.transcriptMetadata === snapshot.transcriptMetadata &&
     existing.snapshot.progressCard === snapshot.progressCard &&
     existing.snapshot.widgetHeights === snapshot.widgetHeights &&
+    existing.snapshot.board === snapshot.board &&
     samePagination(existing.snapshot.pagination, snapshot.pagination)
   ) {
     return;
@@ -338,6 +345,7 @@ export function cacheChatSessionSnapshot(
   if (
     snapshot.messages.length === 0 &&
     snapshot.sessionId === null &&
+    snapshot.board === undefined &&
     !snapshot.pagination.hasMore &&
     (snapshot.pagination.totalMessages ?? 0) === 0 &&
     snapshot.pagination.completeSnapshot !== true
@@ -355,12 +363,48 @@ export function cacheChatSessionSnapshot(
   chatCacheObservers.get(cache)?.write(cacheKey, bounded.snapshot);
 }
 
+export function cacheChatBoardSnapshot(
+  cache: ChatMessageCache,
+  host: ChatMessageCacheHost,
+  target: ChatMessageCacheTarget,
+  snapshot: BoardSnapshot | null,
+  receivedAtMs = Date.now(),
+): void {
+  const existing = readChatSessionSnapshot(cache, host, target);
+  if (snapshot ? existing?.board?.snapshot === snapshot : existing?.board === null) {
+    return;
+  }
+  cacheChatSessionSnapshot(cache, host, target, {
+    ...(existing ?? { messages: [], pagination: { hasMore: false }, sessionId: null }),
+    board: snapshot ? { snapshot, receivedAtMs } : null,
+  });
+}
+
 export function readChatSessionSnapshot(
   cache: ChatMessageCache,
   host: ChatMessageCacheHost,
   target: ChatMessageCacheTarget,
 ): ChatSessionSnapshot | null {
   return getSessionCacheValue(cache, resolveChatSnapshotKey(host, target))?.snapshot ?? null;
+}
+
+export function mergeStoredChatSessionSnapshot(
+  cache: ChatMessageCache,
+  host: ChatMessageCacheHost,
+  target: ChatMessageCacheTarget,
+  stored: ChatSessionSnapshot | null,
+): ChatSessionSnapshot | null {
+  const cached = readChatSessionSnapshot(cache, host, target);
+  const board = cached?.board === undefined ? stored?.board : cached.board;
+  // A board can arrive before history; its empty envelope must not hide stored rows.
+  const snapshot =
+    stored && cached?.sessionId === null && cached.messages.length === 0
+      ? stored
+      : (cached ?? stored);
+  if (board) {
+    cacheChatBoardSnapshot(cache, host, target, board.snapshot, board.receivedAtMs);
+  }
+  return snapshot && board !== undefined ? { ...snapshot, board } : snapshot;
 }
 
 function boundChatSessionSnapshot(snapshot: ChatSessionSnapshot): CachedChatSessionSnapshot | null {

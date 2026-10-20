@@ -2,14 +2,17 @@
 
 import { createSignal, flush, Show } from "solid-js";
 import { describe, expect, it, vi } from "vitest";
+import { createDeferred } from "../../../../test/helpers/promise.js";
 import type { GatewayBrowserClient } from "../../api/gateway.ts";
 import type { ApplicationContext } from "../../app/context.ts";
 import type { BoardProvider } from "../../lib/board/provider.ts";
 import { mountSolid } from "../../test-helpers/mount-solid.ts";
+import { chatHistoryRequests } from "./chat-history-state.ts";
 import type { ResolvedBoardView } from "./chat-pane-shared.ts";
 import { ChatBoardPanel } from "./chat-pane-surfaces.tsx";
 import { createSessionCapabilityFixture, createTestChatPane } from "./chat-pane.test-support.ts";
 import type { ChatPageHost } from "./chat-state-host.ts";
+import { cacheChatSessionSnapshot, readChatSessionSnapshot } from "./session-message-cache.ts";
 import { openSlot } from "./sidebar-layout.ts";
 import "../../components/board/board-view.ts";
 
@@ -73,6 +76,53 @@ function createGatewayBoardPane(sessionKey: string) {
 }
 
 describe("chat pane board loading states", () => {
+  it("persists a first-visit board under its admitted scope after transcript hydration", async () => {
+    const sessionKey = "agent:main:warm-persistence";
+    const { pane, request, snapshot, cleanup } = createGatewayBoardPane(sessionKey);
+    const response = createDeferred<typeof snapshot>();
+    const hydration = createDeferred<void>();
+    pane.state.settings = { ...pane.state.settings, gatewayUrl: "wss://gateway.example" };
+    request.mockReturnValue(response.promise);
+    chatHistoryRequests(pane.state).initialSnapshotHydration = {
+      sessionKey,
+      connected: false,
+      promise: hydration.promise,
+    };
+    const provider = pane.resolveBoardProvider();
+    Object.assign(pane.state.client!, {
+      recoveryScope: "admitted-account",
+      recoveryScopeReady: true,
+    });
+    response.resolve(snapshot);
+    try {
+      await vi.waitFor(() => expect(provider.hasLoadedSnapshot).toBe(true));
+      expect(
+        readChatSessionSnapshot(pane.state.chatMessagesBySession, pane.state, { sessionKey }),
+      ).toBeNull();
+      cacheChatSessionSnapshot(
+        pane.state.chatMessagesBySession,
+        pane.state,
+        { sessionKey },
+        {
+          messages: [{ role: "assistant", content: "Retained conversation" }],
+          sessionId: "retained-session",
+          pagination: { hasMore: false },
+        },
+      );
+      hydration.resolve();
+      await hydration.promise;
+      await Promise.resolve();
+      const cached = readChatSessionSnapshot(pane.state.chatMessagesBySession, pane.state, {
+        sessionKey,
+      });
+      expect(cached?.messages).toEqual([{ role: "assistant", content: "Retained conversation" }]);
+      expect(cached?.board?.snapshot).toEqual(snapshot);
+    } finally {
+      hydration.resolve();
+      cleanup();
+    }
+  });
+
   it("shows a board skeleton until the snapshot arrives", async () => {
     const sessionKey = "agent:main:pending-board";
     const { pane, request, snapshot, container, draw, cleanup } =
