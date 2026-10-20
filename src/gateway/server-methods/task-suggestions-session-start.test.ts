@@ -52,23 +52,18 @@ async function sourceSuggestion(cwd: string, prompt: string, operator = false) {
   };
   const request = (method: Parameters<typeof call>[0], params: Record<string, unknown>) =>
     call(method, params, vi.fn(), options);
-  const created = await call(
-    "taskSuggestions.create",
-    {
-      title: "Investigate service",
-      prompt,
-      tldr: "A service stopped unexpectedly.",
-      cwd,
-      sessionKey: SOURCE_SESSION_KEY,
-    },
-    vi.fn(),
-    operator ? options : { config },
-  );
+  const created = await request("taskSuggestions.create", {
+    title: "Investigate service",
+    prompt,
+    tldr: "Service stopped.",
+    cwd,
+    sessionKey: SOURCE_SESSION_KEY,
+  });
   return { request, taskId: (requirePayload(created) as { taskId: string }).taskId };
 }
 
-it("keeps an unborn-repository suggestion retryable and starts it once from the corrected repository", async () => {
-  await withOpenClawTestState({ scenario: "minimal" }, async ({ root, workspaceDir }) => {
+it("keeps an unborn-repository suggestion retryable and starts it once from the corrected repository", () =>
+  withOpenClawTestState({ scenario: "minimal" }, async ({ root, workspaceDir }) => {
     const cwd = await fs.realpath(workspaceDir);
     await promisify(execFile)("git", ["init", "-b", "main", cwd]);
     const repository = await initializeRepository(root, "project");
@@ -78,10 +73,7 @@ it("keeps an unborn-repository suggestion retryable and starts it once from the 
     expect(rejected.response).toMatchObject([
       false,
       undefined,
-      {
-        code: "INVALID_REQUEST",
-        details: { code: "TASK_WORKTREE_SOURCE_REQUIRED", cwd },
-      },
+      { code: "INVALID_REQUEST", details: { code: "TASK_WORKTREE_SOURCE_REQUIRED", cwd } },
     ]);
     expect(handleChatSend).not.toHaveBeenCalled();
     expect(requirePayload(await request("taskSuggestions.list", {}))).toMatchObject({
@@ -108,42 +100,35 @@ it("keeps an unborn-repository suggestion retryable and starts it once from the 
     await expect(
       promisify(execFile)("git", ["-C", cwd, "rev-parse", "--verify", "HEAD"]),
     ).rejects.toBeDefined();
-  });
-});
+  }));
 
-it.each(["plain folder", "unavailable Git metadata"])(
-  "starts a local task: %s",
-  async (scenario) => {
-    await withOpenClawTestState({ scenario: "minimal" }, async ({ workspaceDir }) => {
-      const cwd = await fs.realpath(workspaceDir);
-      const gitMarker = path.join(cwd, ".git");
-      const brokenGit = "gitdir: /missing/follow-up-repository\n";
-      if (scenario === "unavailable Git metadata") {
-        await fs.writeFile(gitMarker, brokenGit);
-      }
-      const prompt = "Investigate the restarting local service without changing storage.";
-      const { taskId, request } = await sourceSuggestion(cwd, prompt);
-      const accepted = await request("taskSuggestions.accept", { taskId, mode: "local" });
-      expect(accepted.response?.[2]).toBeUndefined();
-      const { key } = requirePayload(accepted) as { key: string };
-      expect(key).not.toBe(SOURCE_SESSION_KEY);
-      const entry = loadSessionEntry({ agentId: "main", sessionKey: key });
-      expect(entry).toMatchObject({ spawnedCwd: cwd, parentSessionKey: SOURCE_SESSION_KEY });
-      expect(entry).not.toHaveProperty("pendingWorktree");
-      expect(entry).not.toHaveProperty("worktree");
-      expect(handleChatSend).toHaveBeenCalledTimes(1);
-      const dispatch = handleChatSend.mock.calls[0];
-      expect(dispatch?.[0]).toMatchObject({
-        params: { sessionKey: key, message: expect.stringContaining(prompt) },
-      });
-      const message = dispatch?.[0].params.message as string;
-      expect(message).toContain("ask the user before creating or switching to it");
-      expect(message.endsWith(`\n\n${prompt}`)).toBe(true);
-      if (scenario === "unavailable Git metadata") {
-        expect(await fs.readFile(gitMarker, "utf8")).toBe(brokenGit);
-      } else {
-        await expect(fs.stat(gitMarker)).rejects.toMatchObject({ code: "ENOENT" });
-      }
-    });
-  },
+it.each(["plain folder", "unavailable Git metadata"])("starts a local task: %s", (scenario) =>
+  withOpenClawTestState({ scenario: "minimal" }, async ({ workspaceDir }) => {
+    const cwd = await fs.realpath(workspaceDir);
+    const gitMarker = path.join(cwd, ".git");
+    const brokenGit = "gitdir: /missing/follow-up-repository\n";
+    if (scenario === "unavailable Git metadata") {
+      await fs.writeFile(gitMarker, brokenGit);
+    }
+    const prompt = "Investigate the restarting local service without changing storage.";
+    const { taskId, request } = await sourceSuggestion(cwd, prompt);
+    const accepted = await request("taskSuggestions.accept", { taskId, mode: "local" });
+    expect(accepted.response?.[2]).toBeUndefined();
+    const { key } = requirePayload(accepted) as { key: string };
+    expect(key).not.toBe(SOURCE_SESSION_KEY);
+    const entry = loadSessionEntry({ agentId: "main", sessionKey: key });
+    expect(entry).toMatchObject({ spawnedCwd: cwd, parentSessionKey: SOURCE_SESSION_KEY });
+    expect(entry).not.toHaveProperty("pendingWorktree");
+    expect(entry).not.toHaveProperty("worktree");
+    expect(handleChatSend).toHaveBeenCalledTimes(1);
+    const { sessionKey, message } = handleChatSend.mock.calls[0][0].params;
+    expect(sessionKey).toBe(key);
+    expect(message).toContain("ask the user before creating or switching to it");
+    expect(message.endsWith(`\n\n${prompt}`)).toBe(true);
+    if (scenario === "unavailable Git metadata") {
+      expect(await fs.readFile(gitMarker, "utf8")).toBe(brokenGit);
+    } else {
+      await expect(fs.stat(gitMarker)).rejects.toMatchObject({ code: "ENOENT" });
+    }
+  }),
 );

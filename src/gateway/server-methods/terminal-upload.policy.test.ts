@@ -3,7 +3,6 @@ import path from "node:path";
 import { expectDefined } from "@openclaw/normalization-core";
 import { afterEach, expect, it, vi } from "vitest";
 import { useAutoCleanupTempDirTracker } from "../../../test/helpers/temp-dir.js";
-import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import { stageTerminalUpload } from "../../infra/terminal-file-upload.js";
 import { createDeferredCore } from "../../shared/deferred.js";
 import { createDirectChatContext } from "../server-chat.agent-events.test-helpers.js";
@@ -22,16 +21,15 @@ vi.mock("node:fs/promises", async (original) => {
 const actualFs = await vi.importActual<typeof import("node:fs/promises")>("node:fs/promises");
 const dirs = useAutoCleanupTempDirTracker(afterEach);
 const upload = expectDefined(terminalUploadHandlers["terminal.upload"], "terminal.upload");
+const clientInfo = { id: "test", version: "1", platform: "test", mode: "test" };
+const connect = { minProtocol: 1, maxProtocol: 1, client: clientInfo };
 const isClientFile = (target: unknown) =>
   typeof target === "string" && path.basename(target) === "client.bin";
-afterEach(() => {
-  vi.restoreAllMocks();
-  vi.clearAllMocks();
-});
+afterEach(() => vi.clearAllMocks());
 
 it.each(["queued", "before-write"])("rechecks upload policy at %s", async (phase) => {
   const root = dirs.make("openclaw-terminal-policy-");
-  let config: OpenClawConfig = { gateway: { uploads: { enabled: true } } };
+  let config = { gateway: { uploads: { enabled: true } } };
   const manager = new TerminalSessionManager({ emit: vi.fn(), spawn: async () => makeFakePty() });
   const openRequest = baseOpenRequest({
     stageUpload: (file) => stageTerminalUpload(file, { tempRoot: root }),
@@ -70,14 +68,7 @@ it.each(["queued", "before-write"])("rechecks upload policy at %s", async (phase
       context,
       respond,
       isWebchatConnect: () => false,
-      client: {
-        connId: "conn-1",
-        connect: {
-          minProtocol: 1,
-          maxProtocol: 1,
-          client: { id: "test", version: "1", platform: "test", mode: "test" },
-        },
-      },
+      client: { connId: "conn-1", connect },
     });
   const agent =
     phase === "queued"

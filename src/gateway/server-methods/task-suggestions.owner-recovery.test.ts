@@ -39,8 +39,8 @@ afterEach(async () => {
 
 it.each(["worktree", "local", "cloud", "session"] as const)(
   "keeps %s suggestions retryable when their owner is temporarily unavailable",
-  async (mode) => {
-    await withOpenClawTestState({ scenario: "minimal" }, async ({ root }) => {
+  (mode) =>
+    withOpenClawTestState({ scenario: "minimal" }, async ({ root }) => {
       setRuntimeConfigSnapshot({});
       await upsertSessionEntryCore(
         { agentId: "main", sessionKey: SOURCE_SESSION_KEY },
@@ -93,6 +93,5 @@ it.each(["worktree", "local", "cloud", "session"] as const)(
       } finally {
         abandonTaskSuggestionAcceptance(taskId);
       }
-    });
-  },
+    }),
 );

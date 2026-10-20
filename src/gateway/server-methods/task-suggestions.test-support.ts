@@ -4,13 +4,11 @@ import { setRuntimeConfigSnapshot } from "../../config/runtime-snapshot.js";
 import { taskSuggestionsHandlers } from "./task-suggestions.js";
 import type { GatewayClient, GatewayRequestContext, RespondFn } from "./types.js";
 
-type Method = `taskSuggestions.${"list" | "create" | "accept" | "dismiss"}`;
-
 export const GIT_CWD = process.cwd();
 export const SOURCE_SESSION_KEY = "agent:main:source";
 
 export async function call(
-  method: Method,
+  method: `taskSuggestions.${"list" | "create" | "accept" | "dismiss"}`,
   params: Record<string, unknown>,
   broadcast = vi.fn(),
   overrides: Record<string, unknown> & {
@@ -49,50 +47,36 @@ export async function dismissPendingTaskSuggestions(): Promise<void> {
   }
 }
 
-export function operatorClient(): GatewayClient {
-  return {
-    connect: {
-      minProtocol: 1,
-      maxProtocol: 1,
-      client: { id: "openclaw-control-ui", version: "test", platform: "test", mode: "webchat" },
-      role: "operator",
-      scopes: ["operator.admin"],
-      caps: [GATEWAY_CLIENT_CAPS.TASK_SUGGESTIONS],
-    },
-  };
-}
+export const operatorClient = (): GatewayClient => ({
+  connect: {
+    minProtocol: 1,
+    maxProtocol: 1,
+    client: { id: "openclaw-control-ui", version: "test", platform: "test", mode: "webchat" },
+    role: "operator",
+    scopes: ["operator.admin"],
+    caps: [GATEWAY_CLIENT_CAPS.TASK_SUGGESTIONS],
+  },
+});
 
-export function configuredCloudContext(
+export const configuredCloudContext = (
   profiles: Record<string, { provider: string }> = { primary: { provider: "test" } },
-): Partial<GatewayRequestContext> {
-  return {
-    workerEnvironmentService: {} as never,
-    workerPlacementDispatchService: {} as never,
-    getRuntimeConfig: () => ({ cloudWorkers: { profiles } }),
-  };
-}
+): Partial<GatewayRequestContext> => ({
+  workerEnvironmentService: {} as never,
+  workerPlacementDispatchService: {} as never,
+  getRuntimeConfig: () => ({ cloudWorkers: { profiles } }),
+});
 
-async function createSuggestion(params: Record<string, unknown>) {
+async function createSuggestion(source: boolean) {
   const created = await call("taskSuggestions.create", {
     cwd: GIT_CWD,
     agentId: "main",
-    ...params,
+    title: source ? "Fix the source session" : "Add coverage",
+    prompt: source ? "Apply the focused fix in this session." : "Add the missing regression test.",
+    tldr: source ? "Source context." : "Untested edge case.",
+    sessionKey: source ? SOURCE_SESSION_KEY : "agent:main:main",
   });
   return (requirePayload(created) as { taskId: string }).taskId;
 }
 
-export const createSourceSuggestion = () =>
-  createSuggestion({
-    title: "Fix the source session",
-    prompt: "Apply the focused fix in this session.",
-    tldr: "The current session already owns the relevant context.",
-    sessionKey: SOURCE_SESSION_KEY,
-  });
-
-export const createLocalTaskSuggestion = () =>
-  createSuggestion({
-    title: "Add coverage",
-    prompt: "Add the missing regression test.",
-    tldr: "The edge case is untested.",
-    sessionKey: "agent:main:main",
-  });
+export const createSourceSuggestion = () => createSuggestion(true);
+export const createLocalTaskSuggestion = () => createSuggestion(false);
