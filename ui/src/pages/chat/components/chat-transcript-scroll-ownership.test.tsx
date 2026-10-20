@@ -527,12 +527,12 @@ it("preserves reader policy when row measurement clamps a positive adjustment to
 });
 
 it.each([
-  ["wheel", null, () => null, false],
-  ["downward wheel", null, () => null, false],
-  ["stationary wheel", null, () => null, false],
-  ["pointer", null, () => null, false],
-  ["latest", null, () => null, false],
-  ["automatic follow", null, () => null, true],
+  ["wheel", null, (): null => null, false],
+  ["downward wheel", null, (): null => null, false],
+  ["stationary wheel", null, (): null => null, false],
+  ["pointer", null, (): null => null, false],
+  ["latest", null, (): null => null, false],
+  ["automatic follow", null, (): null => null, true],
   ["text input", "ArrowUp", () => <input />, true],
   ["range input", "Home", () => <input type="range" />, true],
   ["range Space", " ", () => <input type="range" />, false],

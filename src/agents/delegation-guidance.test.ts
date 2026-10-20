@@ -9,7 +9,7 @@ function delegationConfig(
   delegationMode: "prefer" | "suggest",
   agentMode?: "prefer" | "suggest",
   agentId = "main",
-) {
+): OpenClawConfig {
   return {
     agents: {
       defaults: { subagents: { delegationMode } },

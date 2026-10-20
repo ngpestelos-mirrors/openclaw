@@ -152,8 +152,8 @@ describe("delegation capability", () => {
     await expect(cron?.execute("cron-add", { action: "add" })).rejects.toThrow(denied);
     await expect(image?.execute("image-status", { action: "status" })).resolves.toEqual(result);
     await expect(image?.execute("image-generate", {})).rejects.toThrow(denied);
-    expect(tools[0].execute).toHaveBeenCalledTimes(2);
-    expect(tools[1].execute).toHaveBeenCalledTimes(1);
+    expect(tools[0]?.execute).toHaveBeenCalledTimes(2);
+    expect(tools[1]?.execute).toHaveBeenCalledTimes(1);
   });
 
   it("preserves plugin ownership metadata through the report-only wrapper", () => {

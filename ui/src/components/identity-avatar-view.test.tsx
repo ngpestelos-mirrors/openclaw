@@ -22,7 +22,7 @@ const imageResponse = () =>
   new Response(new Uint8Array([1, 2, 3]), { headers: { "content-type": "image/png" } });
 
 function mountAvatar<T>(initial: T, render: (value: () => T) => JSX.Element, frameClass: string) {
-  const [input, setInput] = createSignal(initial);
+  const [input, setInput] = createSignal<T>(() => initial);
   const [presented, setPresented] = createSignal(true);
   const mounted = mountSolid(() => <Show when={presented()}>{render(input)}</Show>);
   const image = () => mounted.container.querySelector<HTMLImageElement>("img");

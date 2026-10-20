@@ -607,15 +607,17 @@ it("runs both SDK versions through the source TypeSafe plugin, prepared auth, an
           expect(prepared.snapshot.modelCatalog.entries).toContainEqual(
             expect.objectContaining({ provider: "typesafe", id: "kev-latest" }),
           );
-          const evaluate = trace.runtime?.evaluateV2,
-            legacy = trace.runtime?.evaluate;
-          if (!evaluate || !legacy) {
+          const runtime = trace.runtime;
+          if (!runtime) {
             throw new Error("Missing registered decision SDK");
           }
           const typesafeOptions = () =>
             harness.decisionOptions({ purpose: "actual-engine-fixture", rubricVersion: "1" });
           const batch = textBatch();
-          const outcome = await evaluate(batch, { ...typesafeOptions(), reasoning: "auto" });
+          const outcome = await runtime.evaluateV2(batch, {
+            ...typesafeOptions(),
+            reasoning: "auto",
+          });
           expect(outcome).toMatchObject({
             status: "ok",
             result: {
@@ -624,19 +626,19 @@ it("runs both SDK versions through the source TypeSafe plugin, prepared auth, an
             },
           });
           expect(
-            await legacy(
+            await runtime.evaluate(
               { state: "synthetic evidence", questions: batch.questions },
               typesafeOptions(),
             ),
           ).toMatchObject({ status: "ok", result: { answers: { q: { probabilityTrue: 0.37 } } } });
           for (const reasoning of ["off", "on"] as const) {
             await expect(
-              evaluate(batch, { ...typesafeOptions(), reasoning }),
+              runtime.evaluateV2(batch, { ...typesafeOptions(), reasoning }),
             ).resolves.toMatchObject(harness.unavailable("unsupported-input"));
           }
           for (const rejection of [413, 422]) {
             status = rejection;
-            expect(await evaluate(batch, typesafeOptions())).toMatchObject(
+            expect(await runtime.evaluateV2(batch, typesafeOptions())).toMatchObject(
               harness.unavailable("unsupported-input"),
             );
           }

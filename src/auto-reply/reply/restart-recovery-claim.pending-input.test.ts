@@ -7,6 +7,7 @@ import { upsertSessionEntryCore } from "../../config/sessions/session-accessor.j
 import { enqueueCommandInLane } from "../../process/command-queue.js";
 import { withCurrentUserTurnInput } from "../../sessions/user-turn-transcript-runtime-context.js";
 import { createUserTurnTranscriptRecorder } from "../../sessions/user-turn-transcript.js";
+import type { PersistedUserTurnMessage } from "../../sessions/user-turn-transcript.types.js";
 import { withOpenClawTestState } from "../../test-utils/openclaw-test-state.js";
 import { createRecoveryControllerFixture } from "./recovery-controller.fixture.test-support.js";
 
@@ -35,6 +36,7 @@ it.each(["internal_system", "external_user"] as const)(
       const controller = actor.controller({
         inputProvenance: provenance,
         admissionRunId: "event-run",
+        executionRunId: "event-run",
       });
       const releaseCompletion = createDeferred();
       const lane = "session:" + target.sessionKey;
@@ -49,12 +51,13 @@ it.each(["internal_system", "external_user"] as const)(
         completion = enqueueCommandInLane(lane, async () => {
           await releaseCompletion.promise;
           const manager = await SessionManager.openAsync(target, state.workspaceDir);
-          await manager.appendMessageAsync({
+          const completionInput: PersistedUserTurnMessage = {
             role: "user",
             content: "Earlier worker completed",
             timestamp: 2,
             provenance: { kind: "inter_session", sourceTool: "sessions_send" },
-          });
+          };
+          await manager.appendMessageAsync(completionInput);
           await manager.appendMessageAsync(
             makeAssistantMessageFixture({
               content: [{ type: "text", text: "Completion acknowledged" }],

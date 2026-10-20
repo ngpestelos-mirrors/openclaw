@@ -174,7 +174,9 @@ it("preserves navigation started by an earlier not-found subscriber", async () =
       recovery = router.navigate("second", { label: "test" });
     }
   });
-  onTestFinished(unsubscribe);
+  onTestFinished(() => {
+    unsubscribe();
+  });
   const onNotFound = vi.fn();
   const outlet = mountRouterOutlet({ router, onNotFound });
   try {

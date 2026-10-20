@@ -54,6 +54,7 @@ it.each(["new input", "accepted input"] as const)(
   "keeps %s admission durable across restart and settles the backend runtime",
   (admission) =>
     withOpenClawTestState({ scenario: "minimal" }, async (state) => {
+      setRuntimeConfigSnapshot({});
       const scope = recoveryScope(state.sessionsDir(), "durable-admission");
       const executionRunId = "admitted-execution";
       const lifecycleGeneration = getAgentEventLifecycleGeneration();
@@ -135,6 +136,7 @@ it.each(["new input", "accepted input"] as const)(
 
 it("keeps an authenticated peer follow-up internal while retaining its operator source", () =>
   withOpenClawTestState({ scenario: "minimal" }, async (state) => {
+    setRuntimeConfigSnapshot({});
     const scope = recoveryScope(state.sessionsDir(), "peer-target");
     const entry: InternalSessionEntry = { sessionId: "peer-session", updatedAt: 1 };
     await using actor = await createRecoveryControllerFixture(scope, entry);

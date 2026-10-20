@@ -300,6 +300,7 @@ it("retires detached work and reconnects without downloading", async () => {
 });
 
 it.each([
+  ["data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg'></svg>", "image/svg+xml", false],
   ["blob:untrusted-svg", "image/svg+xml", false],
   ["blob:safe-png", "image/png", true],
 ] as const)("downloads only inert image bytes on request: %s", async (src, type, allowed) => {

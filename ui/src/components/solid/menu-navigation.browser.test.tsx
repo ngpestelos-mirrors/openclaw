@@ -155,7 +155,7 @@ it("navigates search, grouped rows, and embedded controls", async () => {
   expect(selected).toEqual(["beta", "footer"]);
 });
 
-it("preserves middle-click and context-menu intent", async () => {
+it("preserves modified, middle-click and context-menu intent", async () => {
   const selected: string[] = [];
   let parentContextMenus = 0;
   render(() => (
@@ -182,11 +182,24 @@ it("preserves middle-click and context-menu intent", async () => {
     // Observe the menu's decision before suppressing browser navigation in this test.
     event.preventDefault();
   };
+  window.addEventListener("click", stopNavigation);
   window.addEventListener("auxclick", stopNavigation);
   try {
+    for (const modifiers of [
+      { metaKey: true },
+      { ctrlKey: true },
+      { shiftKey: true },
+      { altKey: true },
+      { button: 1 },
+    ]) {
+      link.dispatchEvent(
+        new MouseEvent("click", { bubbles: true, cancelable: true, ...modifiers }),
+      );
+    }
     link.dispatchEvent(new MouseEvent("auxclick", { bubbles: true, cancelable: true, button: 1 }));
-    expect(prevented).toEqual([false]);
+    expect(prevented).toEqual(Array(6).fill(false));
   } finally {
+    window.removeEventListener("click", stopNavigation);
     window.removeEventListener("auxclick", stopNavigation);
   }
   const contextMenu = new MouseEvent("contextmenu", {
@@ -205,7 +218,7 @@ it("preserves middle-click and context-menu intent", async () => {
   expect(parentContextMenus).toBe(1);
 });
 
-it("keeps disabled links inert", async () => {
+it("keeps disabled links inert and honors link selection vetoes", async () => {
   const selected: string[] = [];
   mountMenu({
     items: [
@@ -226,6 +239,14 @@ it("keeps disabled links inert", async () => {
   ]);
   disabled.click();
   expect(selected).toEqual([]);
+  const link = surface().querySelector<HTMLAnchorElement>('a[data-value="new"]')!;
+  await userEvent.click(link);
+  expect(selected).toEqual(["new"]);
+  expect(surface().matches(":popover-open")).toBe(true);
+  link.focus();
+  await userEvent.keyboard("{Enter}");
+  expect(selected).toEqual(["new", "new"]);
+  expect(surface().matches(":popover-open")).toBe(true);
 });
 
 it("vetoes Tab exit and honors custom focus destinations", async () => {

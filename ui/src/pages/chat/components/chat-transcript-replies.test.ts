@@ -468,7 +468,7 @@ it.each(["group", "frame"] as const)(
     for (const [name, text] of [
       ["Carol", "Original question loaded"],
       ["Caroline", "Original question corrected"],
-    ]) {
+    ] as const) {
       props.messages = [
         turn("p500", "user", text, { senderId: "carol", senderName: name }),
         ...history,
