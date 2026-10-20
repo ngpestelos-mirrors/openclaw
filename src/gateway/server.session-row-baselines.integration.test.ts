@@ -11,6 +11,7 @@ import {
   emitSessionsChanged,
   flushPendingSessionsChangedEvents,
 } from "./server-methods/session-change-event.js";
+import { captureGatewayKernel } from "./server.capture-kernel.test-support.js";
 import { startGatewayServerHarness } from "./server.e2e-ws-harness.js";
 import { broadcastSessionActivitySummary } from "./session-activity-summary-events.js";
 import { drainSessionEventPublications } from "./session-event-prepared-row.js";
@@ -21,31 +22,21 @@ import { loadGatewaySessionEntryReadOnlyAsync } from "./session-utils-store.js";
 import { dispatchInboundMessageMock, installGatewayTestHooks, rpcReq } from "./test-helpers.js";
 
 let harness: Awaited<ReturnType<typeof startGatewayServerHarness>>;
-let kernel: Awaited<ReturnType<(typeof import("./server-kernel.js"))["createGatewayKernel"]>>;
+let kernel: Awaited<ReturnType<typeof captureGatewayKernel>>;
 installGatewayTestHooks({
   scope: "suite",
   setup: async () => {
     vi.stubEnv("OPENCLAW_TEST_MINIMAL_GATEWAY", "0");
-    const module = await import("./server-kernel.js");
-    const create = module.createGatewayKernel;
-    const capture = vi.spyOn(module, "createGatewayKernel").mockImplementation(async (...args) => {
-      kernel = await create(...args);
-      return kernel;
-    });
-    try {
+    kernel = await captureGatewayKernel(async () => {
       harness = await startGatewayServerHarness();
-    } finally {
-      capture.mockRestore();
-    }
+    });
   },
   cleanup: async () => harness?.close(),
 });
 
 test("ordinary fact changes keep warm wire rows across three real sockets", async () => {
-  const resets: Array<{ cause: string; count: number }> = [];
-  const readRetention = observeSessionEventRowRetention(({ cause, count }) =>
-    resets.push({ cause, count }),
-  );
+  const onReset = vi.fn();
+  const readRetention = observeSessionEventRowRetention(onReset);
   const sockets = await Promise.all(
     [true, true, false].map((deltas) =>
       harness.openClient({
@@ -56,7 +47,6 @@ test("ordinary fact changes keep warm wire rows across three real sockets", asyn
   const request = async (socket: (typeof sockets)[number], method: string, params: unknown) => {
     const response = await rpcReq(socket.ws, method, params);
     expect(response.ok).toBe(true);
-    return response;
   };
   const keys = ["parent", "child", "other"].map((suffix) => `agent:main:baseline-${suffix}`);
   const key = keys[1]!;
@@ -161,13 +151,8 @@ test("ordinary fact changes keep warm wire rows across three real sockets", asyn
   const patch = async (changes: (entry: SessionEntry) => Partial<SessionEntry>) => {
     const current = await loadGatewaySessionEntryReadOnlyAsync(key, { agentId: "main" });
     assert(current.entry, "Expected durable session");
-    replaceSessionEntrySync(
-      { ...target, storePath: current.storePath },
-      {
-        ...current.entry,
-        ...changes(current.entry),
-      },
-    );
+    const replacement = { ...current.entry, ...changes(current.entry) };
+    replaceSessionEntrySync({ ...target, storePath: current.storePath }, replacement);
   };
   await patch(() => ({ modelOverride: "synthetic-model", providerOverride: "synthetic" }));
   emitSessionsChanged(context, { ...target, reason: "patch" });
@@ -230,7 +215,7 @@ test("ordinary fact changes keep warm wire rows across three real sockets", asyn
     }
   }
   expect(await readRetention()).toMatchObject({ entries: keys.length * 2 });
-  expect(resets).toEqual([]);
+  expect(onReset).not.toHaveBeenCalled();
   expect(reasons).toEqual(
     expect.arrayContaining([
       "send",

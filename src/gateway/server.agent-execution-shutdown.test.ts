@@ -9,6 +9,7 @@ import { captureSessionTarget } from "../sessions/session-controller.lifecycle.j
 import { callGateway } from "./call.js";
 import { registerChatAbortController } from "./chat-abort.js";
 import { dispatchGatewayMethodInProcess } from "./server-plugin-in-process-dispatch.js";
+import { captureGatewayKernel } from "./server.capture-kernel.test-support.js";
 import { startGatewayServerHarness, type GatewayServerHarness } from "./server.e2e-ws-harness.js";
 import { loadSessionEntryAsync } from "./session-entry-load.test-support.js";
 import {
@@ -33,15 +34,7 @@ for (const mode of ["stop", "restart", "graceful"] as const) {
           await import("../agents/main-session-recovery/main-session-restart-recovery.js");
         markRestartAbortedMainSessions = recoveryModule.markRestartAbortedMainSessions;
         restartMarkers = vi.spyOn(recoveryModule, "markRestartAbortedMainSessions");
-        const kernelModule = await import("./server-kernel.js");
-        const createKernel = kernelModule.createGatewayKernel;
-        const capture = vi
-          .spyOn(kernelModule, "createGatewayKernel")
-          .mockImplementation(async (...args) => {
-            kernel = await createKernel(...args);
-            return kernel;
-          });
-        try {
+        kernel = await captureGatewayKernel(async () => {
           acquisition = startGatewayServerHarness();
           harness = await acquisition;
           agentDispatch = await import("./agent-turn/agent-run-dispatch.js");
@@ -51,9 +44,7 @@ for (const mode of ["stop", "restart", "graceful"] as const) {
           ]);
           // Lazy module transformation belongs to fixture setup, outside the RPC deadline.
           await prepareGatewayRequestHandler(coreGatewayHandlers["sessions.create"]!);
-        } finally {
-          capture.mockRestore();
-        }
+        });
       },
       cleanup: async () => {
         const [result] = await Promise.allSettled([acquisition]);
@@ -119,10 +110,8 @@ for (const mode of ["stop", "restart", "graceful"] as const) {
         kind: "agent",
       });
       let terminalPayload: unknown;
-      let dispatchStarted = false;
       let runSignal: AbortSignal | undefined;
       const observed: Record<string, boolean | undefined> = {};
-      let recoveryMarked = false;
       let emergencyReleaseUsed = false;
       let closing: Promise<void> | undefined;
       let request: Promise<unknown> | undefined;
@@ -136,7 +125,6 @@ for (const mode of ["stop", "restart", "graceful"] as const) {
       const observeDispatch = vi
         .spyOn(agentDispatch, "dispatchAgentRunFromGateway")
         .mockImplementation((params) => {
-          dispatchStarted = true;
           runSignal = params.abortController.signal;
           return dispatch({
             ...params,
@@ -276,7 +264,7 @@ for (const mode of ["stop", "restart", "graceful"] as const) {
             );
           const result = await markRestartAbortedMainSessions(params);
           const { entry } = await loadSessionEntryAsync("main");
-          recoveryMarked = Boolean(entry?.mainRestartRecovery?.cycleId);
+          observed.recoveryMarked = Boolean(entry?.mainRestartRecovery?.cycleId);
           observed.afterMarkAborted = runSignal?.aborted;
           return result;
         });
@@ -313,13 +301,13 @@ for (const mode of ["stop", "restart", "graceful"] as const) {
           markAvailable: true,
           finalizerAvailable: true,
           entryFenced: true,
+          recoveryMarked: mode !== "graceful",
         });
         expect(
           settlementWarnings.mock.calls.filter(([message]) =>
             message.includes("failed to settle pending agent input"),
           ),
         ).toEqual([]);
-        expect(recoveryMarked).toBe(mode !== "graceful");
         expect(runtime.isAvailable()).toBe(false);
         if (mode === "graceful") {
           expect(runSignal?.aborted).toBe(false);
@@ -345,7 +333,7 @@ for (const mode of ["stop", "restart", "graceful"] as const) {
       } finally {
         release();
         await Promise.allSettled([request, grace]);
-        if (dispatchStarted) {
+        if (runSignal) {
           // A started command must publish its original terminal tail before fixture restoration.
           await terminalObserved.promise;
         }

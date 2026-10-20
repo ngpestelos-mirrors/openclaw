@@ -149,30 +149,22 @@ test("sidebar wire caches retain deltas across real runtime publications", async
         const snapshot = {
           client: null,
           phase: "connected" as const,
-          offlineStable: false,
           hello: null,
-          canvasPluginSurfaceUrl: null,
-          assistantAgentId: "main",
-          sessionKey: target.sessionKey,
-          lastError: null,
-          lastErrorCode: null,
           selfUser: { id: viewer.id },
         };
-        const queries = [false, true].map((involvingMe) => ({
-          name: involvingMe ? "involving" : "general",
-          params: buildSessionListParams(
-            prepareSessionRefreshOptions(
-              sidebarSessionListQuery(
-                {
-                  sidebarSessionOwnerFilter: () => ({ ownerId: "", involvingMe }),
-                  sidebarSessionStatusFilter: () => "active",
-                },
-                "main",
-              ),
-              snapshot,
-            ),
-          ),
-        }));
+        const queries = [false, true].map((involvingMe) => {
+          const options = sidebarSessionListQuery(
+            {
+              sidebarSessionOwnerFilter: () => ({ ownerId: "", involvingMe }),
+              sidebarSessionStatusFilter: () => "active",
+            },
+            "main",
+          );
+          return {
+            name: involvingMe ? "involving" : "general",
+            params: buildSessionListParams(prepareSessionRefreshOptions(options, snapshot)),
+          };
+        });
         const read = async (
           label: string,
           expected: Observation["outcome"],

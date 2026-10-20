@@ -22,6 +22,7 @@ import type { PreparedAgentRunDispatch } from "./agent-turn/agent-run-admission-
 import { captureGatewayOperatorRunAuthority } from "./operator-run-authority.js";
 import { createOperatorClient } from "./server-plugin-in-process-dispatch.test-support.js";
 import { dispatchGatewayMethodInProcess } from "./server-plugins.js";
+import { captureGatewayKernel } from "./server.capture-kernel.test-support.js";
 import { startGatewayServerHarness, type GatewayServerHarness } from "./server.e2e-ws-harness.js";
 import { loadSessionEntryAsync } from "./session-entry-load.test-support.js";
 import {
@@ -36,17 +37,9 @@ let kernel: Awaited<ReturnType<(typeof import("./server-kernel.js"))["createGate
 installGatewayTestHooks({
   scope: "suite",
   setup: async () => {
-    const module = await import("./server-kernel.js");
-    const create = module.createGatewayKernel;
-    const capture = vi.spyOn(module, "createGatewayKernel").mockImplementation(async (...args) => {
-      kernel = await create(...args);
-      return kernel;
-    });
-    try {
+    kernel = await captureGatewayKernel(async () => {
       harness = await startGatewayServerHarness();
-    } finally {
-      capture.mockRestore();
-    }
+    });
   },
   cleanup: async () => harness?.close(),
 });
@@ -77,25 +70,23 @@ it("rejects retained agent and independent-creation input after acceptance", asy
     await captureGatewayOperatorRunAuthority({ client, context }),
     "creation operator",
   );
-  const admission = prepareAgentRunAdmission({
-    cfg: context.getRuntimeConfig(),
-    operationalRunInstance: createOperationalRunInstanceRef(`parent-${runId}`),
-    facts: {
-      runId: `parent-${runId}`,
-      agentId: "main",
-      ingress: { kind: "system", boundary: "spawn-input-proof", state: "present" },
-    },
-  });
-  const creationAdmission = prepareAgentRunAdmission({
-    cfg: context.getRuntimeConfig(),
-    operationalRunInstance: createOperationalRunInstanceRef(`creation-parent-${runId}`),
-    operatorAuthority: operator.authority,
-    facts: {
-      runId: `creation-parent-${runId}`,
-      agentId: "main",
-      ingress: { kind: "gateway-client", boundary: "agent", state: "present" },
-    },
-  });
+  const prepareParent = (creation = false) => {
+    const parentRunId = `${creation ? "creation-parent" : "parent"}-${runId}`;
+    return prepareAgentRunAdmission({
+      cfg: context.getRuntimeConfig(),
+      operationalRunInstance: createOperationalRunInstanceRef(parentRunId),
+      ...(creation ? { operatorAuthority: operator.authority } : {}),
+      facts: {
+        runId: parentRunId,
+        agentId: "main",
+        ingress: creation
+          ? { kind: "gateway-client", boundary: "agent", state: "present" }
+          : { kind: "system", boundary: "spawn-input-proof", state: "present" },
+      },
+    });
+  };
+  const admission = prepareParent();
+  const creationAdmission = prepareParent(true);
   const releaseExecution = createDeferred();
   const createCaller = async (parent: ReturnType<typeof prepareAgentRunAdmission>) =>
     createAdmittedGatewayToolCallerIdentity({
@@ -254,17 +245,17 @@ it("rejects retained agent and independent-creation input after acceptance", asy
         message: "Gateway instance dispatch unavailable for agent turn",
       },
     });
-    expect(await listSessionPendingInputs(scope)).toEqual({
-      total: 1,
-      items: [{ ...pending.items[0], state: "interrupted" }],
-    });
-    expect(sessionAccessor.loadTranscriptEventsSync(scope)).toEqual(transcript);
+    for (const [target, before, beforeTranscript] of [
+      [scope, pending, transcript],
+      [createdScope, createdPending, createdTranscript],
+    ] as const) {
+      expect(await listSessionPendingInputs(target)).toEqual({
+        total: 1,
+        items: [{ ...before.items[0], state: "interrupted" }],
+      });
+      expect(sessionAccessor.loadTranscriptEventsSync(target)).toEqual(beforeTranscript);
+    }
     expect(userTurn.recorder?.getAdmissionReceipt()).toBeUndefined();
-    expect(await listSessionPendingInputs(createdScope)).toEqual({
-      total: 1,
-      items: [{ ...createdPending.items[0], state: "interrupted" }],
-    });
-    expect(sessionAccessor.loadTranscriptEventsSync(createdScope)).toEqual(createdTranscript);
     expect(createdAbortEntry.input.abortSignal.aborted).toBe(false);
     expect(agentCommandMock).not.toHaveBeenCalled();
     expect(abort.controller.signal.aborted).toBe(false);
