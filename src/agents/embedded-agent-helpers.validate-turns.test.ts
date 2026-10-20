@@ -9,9 +9,9 @@ const user = (value: string | unknown[]) => ({
   content: typeof value === "string" ? [text(value)] : value,
 });
 const assistant = (content: unknown[]) => ({ role: "assistant", content });
-const call = (type: string, id = "tool-1", name = "gateway") => ({ type, id, name, arguments: {} });
+const call = (type: string, id = "tool-1") => ({ type, id, name: "gateway", arguments: {} });
 const thinking = { type: "thinking", thinking: "internal", thinkingSignature: "sig_1" };
-const signed = (id = "tool-1") => [thinking, call("toolCall", id)];
+const signed = () => [thinking, call("toolCall")];
 const omitted = assistant([text("[tool calls omitted]")]);
 
 function checkToolTurn(content: unknown[], following: unknown[], expected: unknown[], fields = {}) {
