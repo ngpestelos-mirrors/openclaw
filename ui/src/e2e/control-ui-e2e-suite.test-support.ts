@@ -524,7 +524,7 @@ export function createControlUiE2eSuite(options: ControlUiE2eSuiteOptions) {
       activeScenario = { controller: new AbortController(), test: context };
       return runOwnedScenario(activeScenario, scenario);
     },
-    define(defineTests: () => void) {
+    define: (defineTests: () => void) => {
       describeControlUiE2e(options.name, () => {
         beforeEach((context) => {
           assertControlUiForkActive();
