@@ -31,6 +31,37 @@ const dirs = useAutoCleanupTempDirTracker(afterEach);
 afterEach(() => closeOpenClawStateDatabaseForTest());
 const now = Date.parse("2026-10-16T12:00:00Z");
 
+function captureManifest(
+  runId: string,
+  ageDays: number,
+  stateDir: string,
+  installRoot = stateDir,
+  configPath = path.join(stateDir, "openclaw.json"),
+) {
+  return JSON.stringify({
+    schemaVersion: 2,
+    kind: "update-recovery",
+    generation: { kind: "baseline" },
+    databases: [],
+    runId,
+    installRoot,
+    stateDir,
+    configPath,
+    configPaths: [configPath],
+    creator: { host: "fixture", pid: 1, startIdentity: "1" },
+    drivers: [],
+    createdAt: new Date(now - ageDays * 86_400_000).toISOString(),
+    roots: [configPath],
+    excludedRoots: [],
+    protectedPaths: [configPath],
+    entries: [{ kind: "missing", sourcePath: configPath, sqlite: false, directory: false }],
+  });
+}
+
+function retire(f: ReturnType<typeof fixture>, keepRunId = "") {
+  return retireExpiredStandaloneDoctorCaptures({ ...f, now, keepRunId, assertCurrent: vi.fn() });
+}
+
 function fixture() {
   const stateDir = path.join(fs.realpathSync(dirs.make("doctor-retention-")), "state");
   fs.mkdirSync(stateDir);
@@ -45,31 +76,7 @@ function fixture() {
     );
     fs.writeFileSync(
       path.join(directory, "manifest.json"),
-      JSON.stringify({
-        schemaVersion: 2,
-        kind: "update-recovery",
-        generation: { kind: "baseline" },
-        databases: [],
-        runId,
-        installRoot: stateDir,
-        stateDir,
-        configPath: path.join(stateDir, "openclaw.json"),
-        configPaths: [path.join(stateDir, "openclaw.json")],
-        creator: { host: "fixture", pid: 1, startIdentity: "1" },
-        drivers: [],
-        createdAt: new Date(now - ageDays * 86_400_000).toISOString(),
-        roots: [path.join(stateDir, "openclaw.json")],
-        excludedRoots: [],
-        protectedPaths: [path.join(stateDir, "openclaw.json")],
-        entries: [
-          {
-            kind: "missing",
-            sourcePath: path.join(stateDir, "openclaw.json"),
-            sqlite: false,
-            directory: false,
-          },
-        ],
-      }),
+      captureManifest(runId, ageDays, stateDir),
     );
     return directory;
   };
@@ -82,12 +89,7 @@ it("retains only the newest three of five sealed standalone captures, leaving up
   const update = f.seal(40, randomUUID());
   const incomplete = f.seal(40);
   fs.writeFileSync(path.join(incomplete, "manifest.json.partial"), "unfinished");
-  const result = await retireExpiredStandaloneDoctorCaptures({
-    ...f,
-    now,
-    keepRunId: path.basename(captures[4]!),
-    assertCurrent: vi.fn(),
-  });
+  const result = await retire(f, path.basename(captures[4]!));
   expect(result.warnings).toEqual([]);
   expect(result.retired.toSorted()).toEqual(captures.slice(0, 2).toSorted());
   expect(captures.map((directory) => fs.existsSync(directory))).toEqual([
@@ -119,24 +121,14 @@ it("protects an old capture referenced by active recovery and keeps all captures
     reason: "pending-update-recovery",
   });
   expect(preview.captures.get(superseded)?.eligible).toBe(true);
-  const retired = await retireExpiredStandaloneDoctorCaptures({
-    ...f,
-    now,
-    keepRunId: "",
-    assertCurrent: vi.fn(),
-  });
+  const retired = await retire(f);
   expect(retired).toEqual({ retired: [superseded], warnings: [] });
   expect(fs.existsSync(old)).toBe(true);
   const unreadableCandidate = f.seal(10);
   openOpenClawStateDatabase(options)
     .db.prepare("UPDATE config_machine_state SET value_json = ? WHERE state_key = ?")
     .run("unreadable", `update.recovery.${runId}`);
-  const result = await retireExpiredStandaloneDoctorCaptures({
-    ...f,
-    now,
-    keepRunId: "",
-    assertCurrent: vi.fn(),
-  });
+  const result = await retire(f);
   expect(result.retired).toEqual([]);
   expect(result.warnings).toHaveLength(1);
   expect(fs.existsSync(unreadableCandidate)).toBe(true);
@@ -146,42 +138,16 @@ it("expires captures after thirty days but always keeps the newest sealed captur
   const f = fixture();
   const expired = f.seal(40);
   const newest = f.seal(31);
-  const result = await retireExpiredStandaloneDoctorCaptures({
-    ...f,
-    now,
-    keepRunId: path.basename(newest),
-    assertCurrent: vi.fn(),
-  });
+  const result = await retire(f, path.basename(newest));
   expect(result).toEqual({ retired: [expired], warnings: [] });
   expect(fs.existsSync(newest)).toBe(true);
 });
 
 it("retires only expired sealed standalone Doctor captures and preserves incomplete or linked copies", async () => {
   await withOpenClawTestState({ scenario: "minimal" }, async (state) => {
-    const day = 24 * 60 * 60_000;
     const store = resolveUpdateCaptureRoot(state.stateDir);
     const sealed = async (runId: string, ageDays: number, directory = path.join(store, runId)) => {
-      const manifest = {
-        schemaVersion: 2,
-        kind: "update-recovery",
-        generation: { kind: "baseline" },
-        databases: [],
-        runId,
-        installRoot: state.root,
-        stateDir: state.stateDir,
-        configPath: state.configPath,
-        configPaths: [state.configPath],
-        creator: { host: "fixture", pid: 1, startIdentity: "1" },
-        drivers: [],
-        createdAt: new Date(now - ageDays * day).toISOString(),
-        roots: [state.configPath],
-        excludedRoots: [],
-        protectedPaths: [state.configPath],
-        entries: [
-          { kind: "missing", sourcePath: state.configPath, sqlite: false, directory: false },
-        ],
-      };
-      const raw = JSON.stringify(manifest);
+      const raw = captureManifest(runId, ageDays, state.stateDir, state.root, state.configPath);
       parseUpdateRecoveryBackupManifest(raw);
       await fsPromises.mkdir(directory, { recursive: true });
       await fsPromises.writeFile(path.join(directory, "manifest.json"), raw);

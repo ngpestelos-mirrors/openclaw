@@ -56,10 +56,31 @@ function modelStartedEvent(runId = "run-1", callId = "call-1") {
   };
 }
 
+function collectEvents(subscribe: (listener: (event: DiagnosticEventPayload) => void) => unknown) {
+  const events: DiagnosticEventPayload[] = [];
+  subscribe((event) => events.push(event));
+  return events;
+}
+
+function toolErrorEvent(runId: string, toolCallId: string) {
+  return {
+    type: "tool.execution.error" as const,
+    runId,
+    toolName: "exec",
+    toolCallId,
+    durationMs: 1,
+    errorCategory: "test",
+  };
+}
+
+const diagnosticTraceInput = {
+  traceId: "4bf92f3577b34da6a3ce929d0e0e4736",
+  spanId: "00f067aa0ba902b7",
+  traceFlags: "01",
+};
+
 describe("diagnostic-events", () => {
-  beforeEach(() => {
-    resetDiagnosticEventsForTest();
-  });
+  beforeEach(resetDiagnosticEventsForTest);
 
   afterEach(() => {
     resetDiagnosticEventsForTest();
@@ -83,8 +104,7 @@ describe("diagnostic-events", () => {
       },
     };
     emitTrustedDiagnosticEvent(event);
-    const publicEvents: DiagnosticEventPayload[] = [];
-    onDiagnosticEvent((value) => publicEvents.push(value));
+    const publicEvents = collectEvents(onDiagnosticEvent);
     emitTrustedDiagnosticEvent(event);
     onInternalDiagnosticEvent(() => {}, { includeTrusted: ["model.call.error"] });
     emitTrustedDiagnosticEvent(event);
@@ -188,11 +208,7 @@ describe("diagnostic-events", () => {
   });
 
   it("prepares trusted events synchronously without cloning private data", async () => {
-    const diagnosticTrace = createDiagnosticTraceContext({
-      traceId: "4bf92f3577b34da6a3ce929d0e0e4736",
-      spanId: "00f067aa0ba902b7",
-      traceFlags: "01",
-    });
+    const diagnosticTrace = createDiagnosticTraceContext(diagnosticTraceInput);
     const exportedTrace = createDiagnosticTraceContext({
       traceId: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
       spanId: "bbbbbbbbbbbbbbbb",
@@ -234,11 +250,8 @@ describe("diagnostic-events", () => {
     expect(privateDataReads).toBe(0);
     expect(hasPendingInternalDiagnosticEvent(() => true)).toBe(false);
     emitTrustedDiagnosticEvent({
+      ...modelStartedEvent(),
       type: "model.call.completed",
-      runId: "run-1",
-      callId: "call-1",
-      provider: "openai",
-      model: "gpt-5.4",
       durationMs: 1,
       trace: diagnosticTrace,
     });
@@ -255,11 +268,7 @@ describe("diagnostic-events", () => {
   });
 
   it("does not fall back to diagnostic ids when an active propagation bridge misses", () => {
-    const diagnosticTrace = createDiagnosticTraceContext({
-      traceId: "4bf92f3577b34da6a3ce929d0e0e4736",
-      spanId: "00f067aa0ba902b7",
-      traceFlags: "01",
-    });
+    const diagnosticTrace = createDiagnosticTraceContext(diagnosticTraceInput);
     registerDiagnosticTracePropagationBridge({
       resolveTraceContext: () => undefined,
     });
@@ -314,16 +323,14 @@ describe("diagnostic-events", () => {
     "keeps skill file identity trusted-only when diagnostics enabled=%s",
     async (enabled) => {
       const skillFile = "/workspace/skills/daily-brief/SKILL.md";
-      const publicEvents: DiagnosticEventPayload[] = [];
-      const sharedEvents: DiagnosticEventPayload[] = [];
+      const publicEvents = collectEvents(onDiagnosticEvent);
+      const sharedEvents = collectEvents(onInternalDiagnosticEvent);
       const metadataOnly = vi.fn();
       const readSkillFile = vi.fn(() => skillFile);
       const trustedEvents: Array<{
         event: DiagnosticEventPayload;
         privateData: DiagnosticEventPrivateData;
       }> = [];
-      onDiagnosticEvent((event) => publicEvents.push(event));
-      onInternalDiagnosticEvent((event) => sharedEvents.push(event));
       onTrustedInternalDiagnosticEvent(metadataOnly, undefined, { includePrivateData: false });
       onTrustedInternalDiagnosticEvent((event, _metadata, privateData) => {
         trustedEvents.push({ event, privateData });
@@ -364,8 +371,7 @@ describe("diagnostic-events", () => {
   );
 
   it("emits canonical security events only through the trusted security helper", () => {
-    const publicEvents: DiagnosticEventPayload[] = [];
-    onDiagnosticEvent((event) => publicEvents.push(event));
+    const publicEvents = collectEvents(onDiagnosticEvent);
     const internalEvents: Array<{
       action?: string;
       eventId?: string;
@@ -533,10 +539,7 @@ describe("diagnostic-events", () => {
       enumerable: true,
       value: { polluted: true },
     });
-    const events: Array<Parameters<Parameters<typeof onInternalDiagnosticEvent>[0]>[0]> = [];
-    onInternalDiagnosticEvent((event) => {
-      events.push(event);
-    });
+    const events = collectEvents(onInternalDiagnosticEvent);
 
     emitDiagnosticEvent(eventInput);
 
@@ -576,19 +579,8 @@ describe("diagnostic-events", () => {
   });
 
   it("passes immutable pending diagnostic copies to queue inspectors", async () => {
-    const events: DiagnosticEventPayload[] = [];
-    onInternalDiagnosticEvent((event) => {
-      events.push(event);
-    });
-
-    emitTrustedDiagnosticEvent({
-      type: "tool.execution.error",
-      runId: "run-immutable",
-      toolName: "exec",
-      toolCallId: "call-immutable",
-      durationMs: 1,
-      errorCategory: "test",
-    });
+    const events = collectEvents(onInternalDiagnosticEvent);
+    emitTrustedDiagnosticEvent(toolErrorEvent("run-immutable", "call-immutable"));
 
     let mutationErrors = 0;
     expect(
@@ -631,14 +623,7 @@ describe("diagnostic-events", () => {
       ...modelStartedEvent("run-uncloneable", "call-uncloneable"),
       badValue: () => undefined,
     } as never);
-    emitTrustedDiagnosticEvent({
-      type: "tool.execution.error",
-      runId: "run-cloneable",
-      toolName: "exec",
-      toolCallId: "call-cloneable",
-      durationMs: 1,
-      errorCategory: "test",
-    });
+    emitTrustedDiagnosticEvent(toolErrorEvent("run-cloneable", "call-cloneable"));
 
     expect(
       hasPendingInternalDiagnosticEvent(
@@ -651,14 +636,11 @@ describe("diagnostic-events", () => {
   });
 
   it("keeps trusted private data off shared internal diagnostic listeners", async () => {
-    const internalEvents: DiagnosticEventPayload[] = [];
+    const internalEvents = collectEvents(onInternalDiagnosticEvent);
     const trustedEvents: Array<{
       event: DiagnosticEventPayload;
       privateData: unknown;
     }> = [];
-    onInternalDiagnosticEvent((event) => {
-      internalEvents.push(event);
-    });
     onTrustedInternalDiagnosticEvent((event, _metadata, privateData) => {
       trustedEvents.push({ event, privateData });
     });
@@ -733,15 +715,11 @@ describe("diagnostic-events", () => {
 });
 
 describe("diagnostic-events", () => {
-  beforeEach(() => {
-    resetDiagnosticEventsForTest();
-  });
-
+  beforeEach(resetDiagnosticEventsForTest);
   afterEach(() => {
     resetDiagnosticEventsForTest();
     vi.restoreAllMocks();
   });
-
   it("keeps log records and runtime measurements off the public diagnostic event stream", async () => {
     const publicEvents: string[] = [];
     const internalEvents: string[] = [];
@@ -766,9 +744,7 @@ describe("diagnostic-events", () => {
     emitInternalDiagnosticEvent({ type: "gateway.http.cancelled", source: "client" });
     expect(internalEvents).toStrictEqual([]);
 
-    await new Promise<void>((resolve) => {
-      setImmediate(resolve);
-    });
+    await yieldToEventLoop();
     expect(publicEvents).toStrictEqual([]);
     expect(internalEvents).toEqual([
       "log.record",
@@ -794,10 +770,8 @@ describe("queued runtime diagnostic phases", () => {
   });
 
   it("preserves synchronous startup history and queues owned runtime snapshots with their captured trace", async () => {
-    const events: DiagnosticEventPayload[] = [];
-    const publicEvents: DiagnosticEventPayload[] = [];
-    onDiagnosticEvent((event) => publicEvents.push(event));
-    onTrustedInternalDiagnosticEvent((event) => events.push(event));
+    const publicEvents = collectEvents(onDiagnosticEvent);
+    const events = collectEvents(onTrustedInternalDiagnosticEvent);
     await withDiagnosticPhase("startup.fixture", () => undefined);
     expect(events.map((event) => event.type)).toEqual(["diagnostic.phase.completed"]);
     expect(getRecentDiagnosticPhases(0).map((entry) => entry.name)).toEqual(["startup.fixture"]);
@@ -823,8 +797,7 @@ describe("queued runtime diagnostic phases", () => {
   });
 
   it("requires a currently interested trusted consumer and respects disabled diagnostics", async () => {
-    const events: DiagnosticEventPayload[] = [];
-    onInternalDiagnosticEvent((event) => events.push(event));
+    const events = collectEvents(onInternalDiagnosticEvent);
     onTrustedInternalDiagnosticEvent(() => {}, { includeTrusted: ["gateway.rpc"] });
     expect(createQueuedDiagnosticPhaseEmitter()).toBeUndefined();
     const stop = onTrustedInternalDiagnosticEvent(() => {}, {
@@ -844,10 +817,8 @@ describe("queued runtime diagnostic phases", () => {
   });
 
   it("uses the bounded diagnostic queue without displacing required lifecycle terminals", async () => {
-    const events: DiagnosticEventPayload[] = [];
-    const publicEvents: DiagnosticEventPayload[] = [];
-    onDiagnosticEvent((event) => publicEvents.push(event));
-    onTrustedInternalDiagnosticEvent((event) => events.push(event));
+    const publicEvents = collectEvents(onDiagnosticEvent);
+    const events = collectEvents(onTrustedInternalDiagnosticEvent);
     const emit = createQueuedDiagnosticPhaseEmitter()!;
     for (let index = 0; index < 9_999; index++) {
       emit(phase);
@@ -884,59 +855,58 @@ describe("queued runtime diagnostic phases", () => {
 });
 
 describe("diagnostic event plugin usage attribution", () => {
-  beforeEach(() => {
-    resetDiagnosticEventsForTest();
-  });
+  beforeEach(resetDiagnosticEventsForTest);
+
+  type Observation = {
+    eventPluginId?: unknown;
+    hostPluginId?: string;
+    internal?: boolean;
+    trusted: boolean;
+  };
+  function recordUsage(
+    events: Observation[],
+    event: DiagnosticEventPayload,
+    metadata: DiagnosticEventMetadata,
+    hostPluginId?: string,
+  ) {
+    if (event.type === "model.usage") {
+      events.push({
+        eventPluginId: (event as typeof event & { pluginId?: unknown }).pluginId,
+        hostPluginId,
+        internal: metadata.internal,
+        trusted: metadata.trusted,
+      });
+    }
+  }
 
   it("keeps host plugin attribution private and unforgeable", () => {
-    const publicEvents: Array<{
-      eventPluginId?: unknown;
-      hostPluginId?: string;
-      internal?: boolean;
-      trusted: boolean;
-    }> = [];
-    const trustedEvents: Array<{
-      eventPluginId?: unknown;
-      privateHostPluginId?: unknown;
-      internal?: boolean;
-      trusted: boolean;
-    }> = [];
-    const otelEvents: Array<{
-      eventPluginId?: unknown;
-      hostPluginId?: string;
-      internal?: boolean;
-      trusted: boolean;
-    }> = [];
+    const publicEvents: Observation[] = [];
+    const trustedEvents: Observation[] = [];
+    const otelEvents: Observation[] = [];
     onInternalDiagnosticEvent((event, metadata) => {
-      if (event.type === "model.usage") {
-        publicEvents.push({
-          eventPluginId: (event as typeof event & { pluginId?: unknown }).pluginId,
-          hostPluginId: (metadata as typeof metadata & { hostPluginId?: string }).hostPluginId,
-          internal: metadata.internal,
-          trusted: metadata.trusted,
-        });
-      }
+      recordUsage(
+        publicEvents,
+        event,
+        metadata,
+        (metadata as typeof metadata & { hostPluginId?: string }).hostPluginId,
+      );
     });
     onTrustedInternalDiagnosticEvent((event, metadata, privateData) => {
-      if (event.type === "model.usage") {
-        trustedEvents.push({
-          eventPluginId: (event as typeof event & { pluginId?: unknown }).pluginId,
-          privateHostPluginId: (privateData as { hostPluginId?: unknown }).hostPluginId,
-          internal: metadata.internal,
-          trusted: metadata.trusted,
-        });
-      }
+      recordUsage(
+        trustedEvents,
+        event,
+        metadata,
+        (privateData as { hostPluginId?: string }).hostPluginId,
+      );
     });
     onTrustedInternalDiagnosticEvent(
       markTrustedOtelDiagnosticListener((event, metadata, privateData) => {
-        if (event.type === "model.usage") {
-          otelEvents.push({
-            eventPluginId: (event as typeof event & { pluginId?: unknown }).pluginId,
-            hostPluginId: (privateData as { hostPluginId?: string }).hostPluginId,
-            internal: metadata.internal,
-            trusted: metadata.trusted,
-          });
-        }
+        recordUsage(
+          otelEvents,
+          event,
+          metadata,
+          (privateData as { hostPluginId?: string }).hostPluginId,
+        );
       }),
     );
 
@@ -964,33 +934,19 @@ describe("diagnostic event plugin usage attribution", () => {
       ),
     );
 
+    const unattributed = {
+      eventPluginId: undefined,
+      hostPluginId: undefined,
+      internal: undefined,
+      trusted: true,
+    };
     const expectedUnattributed = [
-      {
-        eventPluginId: "public-emitter-spoof",
-        hostPluginId: undefined,
-        internal: undefined,
-        trusted: true,
-      },
-      {
-        eventPluginId: undefined,
-        hostPluginId: undefined,
-        internal: undefined,
-        trusted: true,
-      },
-      {
-        eventPluginId: undefined,
-        hostPluginId: undefined,
-        internal: true,
-        trusted: true,
-      },
+      { ...unattributed, eventPluginId: "public-emitter-spoof" },
+      unattributed,
+      { ...unattributed, internal: true },
     ];
     expect(publicEvents).toEqual(expectedUnattributed);
-    expect(trustedEvents).toEqual(
-      expectedUnattributed.map(({ hostPluginId, ...event }) => ({
-        ...event,
-        privateHostPluginId: hostPluginId,
-      })),
-    );
+    expect(trustedEvents).toEqual(expectedUnattributed);
     expect(otelEvents).toEqual([
       ...expectedUnattributed.slice(0, 2),
       { ...expectedUnattributed[2], hostPluginId: "llm-task" },

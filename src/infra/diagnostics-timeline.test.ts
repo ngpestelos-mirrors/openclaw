@@ -1,4 +1,3 @@
-// Covers diagnostics timeline event writing and spans.
 import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
@@ -41,17 +40,6 @@ async function readTimeline(path: string) {
     .trim()
     .split("\n")
     .map((line) => JSON.parse(line) as Record<string, unknown>);
-}
-
-function attributesRecord(event: Record<string, unknown>): Record<string, unknown> {
-  if (
-    !event.attributes ||
-    typeof event.attributes !== "object" ||
-    Array.isArray(event.attributes)
-  ) {
-    throw new Error("Expected diagnostics event attributes");
-  }
-  return event.attributes as Record<string, unknown>;
 }
 
 afterEach(async () => {
@@ -136,7 +124,7 @@ describe("diagnostics timeline", () => {
     const events = await readTimeline(path);
     expect(events.map((event) => event.name)).toEqual([...names, "oversized", "last"]);
     const oversizedEvent = expectDefined(events[names.length], "oversized timeline event");
-    expect(attributesRecord(oversizedEvent).text).toBe(oversized);
+    expect(oversizedEvent).toMatchObject({ attributes: { text: oversized } });
   });
 
   it.each(["natural", "immediate", "first-event-at-exit"])(
@@ -172,33 +160,18 @@ describe("diagnostics timeline", () => {
   it("detects when timeline output is enabled", async () => {
     const { env } = await createTimelineEnv();
 
-    expect(isDiagnosticsTimelineEnabled({ env })).toBe(true);
-    expect(isDiagnosticsTimelineEnabled({ env: { ...env, OPENCLAW_DIAGNOSTICS: "1" } })).toBe(true);
-    expect(isDiagnosticsTimelineEnabled({ env: { ...env, OPENCLAW_DIAGNOSTICS: "yes" } })).toBe(
-      true,
-    );
-    expect(isDiagnosticsTimelineEnabled({ env: { ...env, OPENCLAW_DIAGNOSTICS: "on" } })).toBe(
-      true,
-    );
-    expect(isDiagnosticsTimelineEnabled({ env: { ...env, OPENCLAW_DIAGNOSTICS: "all" } })).toBe(
-      true,
-    );
-    expect(isDiagnosticsTimelineEnabled({ env: { ...env, OPENCLAW_DIAGNOSTICS: "*" } })).toBe(true);
+    for (const flag of ["timeline", "1", "yes", "on", "all", "*", "diagnostics.timeline"]) {
+      expect(isDiagnosticsTimelineEnabled({ env: { ...env, OPENCLAW_DIAGNOSTICS: flag } })).toBe(
+        true,
+      );
+    }
+    for (const flag of ["telegram.http", "0"]) {
+      expect(isDiagnosticsTimelineEnabled({ env: { ...env, OPENCLAW_DIAGNOSTICS: flag } })).toBe(
+        false,
+      );
+    }
     expect(
-      isDiagnosticsTimelineEnabled({
-        env: { ...env, OPENCLAW_DIAGNOSTICS: "diagnostics.timeline" },
-      }),
-    ).toBe(true);
-    expect(
-      isDiagnosticsTimelineEnabled({ env: { ...env, OPENCLAW_DIAGNOSTICS: "telegram.http" } }),
-    ).toBe(false);
-    expect(isDiagnosticsTimelineEnabled({ env: { ...env, OPENCLAW_DIAGNOSTICS: "0" } })).toBe(
-      false,
-    );
-    expect(
-      isDiagnosticsTimelineEnabled({
-        env: { ...env, OPENCLAW_DIAGNOSTICS_TIMELINE_PATH: "" },
-      }),
+      isDiagnosticsTimelineEnabled({ env: { ...env, OPENCLAW_DIAGNOSTICS_TIMELINE_PATH: "" } }),
     ).toBe(false);
   });
 
@@ -234,18 +207,18 @@ describe("diagnostics timeline", () => {
     );
 
     const [event] = await readTimeline(path);
-    expect(event?.schemaVersion).toBe("openclaw.diagnostics.v1");
-    expect(event?.type).toBe("mark");
-    expect(event?.name).toBe("gateway.ready");
-    expect(event?.runId).toBe("run-1");
-    expect(event?.envName).toBe("env-1");
-    expect(event?.phase).toBe("startup");
-    const attributes = attributesRecord(event ?? {});
-    expect(attributes.ok).toBe(true);
-    expect(attributes.count).toBe(2);
-    expect(event?.timestamp).toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/u);
-    expect(event?.pid).toBe(process.pid);
-    expect(attributes.ignored).toBeUndefined();
+    expect(event).toMatchObject({
+      schemaVersion: "openclaw.diagnostics.v1",
+      type: "mark",
+      name: "gateway.ready",
+      runId: "run-1",
+      envName: "env-1",
+      phase: "startup",
+      attributes: { ok: true, count: 2 },
+      timestamp: expect.stringMatching(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/u),
+      pid: process.pid,
+    });
+    expect(event?.attributes).not.toHaveProperty("ignored");
   });
 
   it("writes provider response status as a top-level field", async () => {
@@ -337,14 +310,9 @@ describe("diagnostics timeline", () => {
     expect(events).toHaveLength(2);
     const start = expectDefined(events[0], "span start");
     const end = expectDefined(events[1], "span end");
-    expect(start.type).toBe("span.start");
-    expect(start.name).toBe("runtimeDeps.stage");
-    expect(start.phase).toBe("startup");
-    expect(attributesRecord(start).pluginCount).toBe(3);
-    expect(end.type).toBe("span.end");
-    expect(end.name).toBe("runtimeDeps.stage");
-    expect(end.phase).toBe("startup");
-    expect(attributesRecord(end).pluginCount).toBe(3);
+    const common = { name: "runtimeDeps.stage", phase: "startup", attributes: { pluginCount: 3 } };
+    expect(start).toMatchObject({ ...common, type: "span.start" });
+    expect(end).toMatchObject({ ...common, type: "span.end" });
     expect(end.spanId).toBe(start.spanId);
     expect(end.durationMs).toBeGreaterThanOrEqual(0);
   });
@@ -365,11 +333,13 @@ describe("diagnostics timeline", () => {
     const events = await readTimeline(path);
     expect(events).toHaveLength(2);
     const errorEvent = expectDefined(events[1], "span error");
-    expect(errorEvent.type).toBe("span.error");
-    expect(errorEvent.name).toBe("plugins.load");
-    expect(errorEvent.phase).toBe("startup");
-    expect(errorEvent.errorName).toBe("TypeError");
-    expect(errorEvent.errorMessage).toBe("bad plugin");
+    expect(errorEvent).toMatchObject({
+      type: "span.error",
+      name: "plugins.load",
+      phase: "startup",
+      errorName: "TypeError",
+      errorMessage: "bad plugin",
+    });
   });
 
   it("can omit sensitive span error messages", async () => {
@@ -388,9 +358,11 @@ describe("diagnostics timeline", () => {
     const events = await readTimeline(path);
     expect(events).toHaveLength(2);
     const errorEvent = expectDefined(events[1], "span error");
-    expect(errorEvent.type).toBe("span.error");
-    expect(errorEvent.name).toBe("secrets.prepare");
-    expect(errorEvent.errorName).toBe("Error");
+    expect(errorEvent).toMatchObject({
+      type: "span.error",
+      name: "secrets.prepare",
+      errorName: "Error",
+    });
     expect(errorEvent.errorMessage).toBeUndefined();
     expect(JSON.stringify(events)).not.toContain("TOKEN_ID");
     expect(JSON.stringify(events)).not.toContain("prod");
@@ -414,20 +386,17 @@ describe("diagnostics timeline", () => {
     expect(result).toBe(42);
     const events = await readTimeline(path);
     expect(events).toHaveLength(4);
-    const [parentStart, childStart, childEnd, parentEnd] = events;
-    expect(parentStart?.type).toBe("span.start");
-    expect(parentStart?.name).toBe("reply.run_agent_turn");
-    expect(parentStart?.phase).toBe("agent-turn");
-    expect(childStart?.type).toBe("span.start");
-    expect(childStart?.name).toBe("plugins.metadata.scan");
-    expect(childStart?.phase).toBe("agent-turn");
-    expect(childStart?.parentSpanId).toBe(parentStart?.spanId);
-    expect(childEnd?.type).toBe("span.end");
-    expect(childEnd?.name).toBe("plugins.metadata.scan");
-    expect(childEnd?.phase).toBe("agent-turn");
-    expect(childEnd?.parentSpanId).toBe(parentStart?.spanId);
-    expect(parentEnd?.type).toBe("span.end");
-    expect(parentEnd?.name).toBe("reply.run_agent_turn");
-    expect(parentEnd?.phase).toBe("agent-turn");
+    const parent = { name: "reply.run_agent_turn", phase: "agent-turn" };
+    const child = {
+      name: "plugins.metadata.scan",
+      phase: "agent-turn",
+      parentSpanId: events[0]?.spanId,
+    };
+    expect(events).toMatchObject([
+      { ...parent, type: "span.start" },
+      { ...child, type: "span.start" },
+      { ...child, type: "span.end" },
+      { ...parent, type: "span.end" },
+    ]);
   });
 });

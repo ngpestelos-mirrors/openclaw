@@ -1,4 +1,3 @@
-// Tests diagnostic trace context propagation and reset behavior.
 import { describe, expect, it } from "vitest";
 import {
   createChildDiagnosticTraceContext,
@@ -16,6 +15,7 @@ import {
 const TRACE_ID = "4bf92f3577b34da6a3ce929d0e0e4736";
 const SPAN_ID = "00f067aa0ba902b7";
 const CHILD_SPAN_ID = "7ad6b9a982deb2c9";
+const ROOT = { traceId: TRACE_ID, spanId: SPAN_ID, traceFlags: "01" };
 
 describe("diagnostic-trace-context", () => {
   it("rejects malformed traceparent values", () => {
@@ -42,17 +42,10 @@ describe("diagnostic-trace-context", () => {
         spanId: SPAN_ID.toUpperCase(),
         traceFlags: "00",
       }),
-    ).toEqual({
-      traceId: TRACE_ID,
-      spanId: SPAN_ID,
-      traceFlags: "00",
-    });
-
-    expect(createDiagnosticTraceContext({ traceparent: `00-${TRACE_ID}-${SPAN_ID}-01` })).toEqual({
-      traceId: TRACE_ID,
-      spanId: SPAN_ID,
-      traceFlags: "01",
-    });
+    ).toEqual({ ...ROOT, traceFlags: "00" });
+    expect(createDiagnosticTraceContext({ traceparent: `00-${TRACE_ID}-${SPAN_ID}-01` })).toEqual(
+      ROOT,
+    );
   });
 
   it("generates valid non-zero ids for fallback contexts", () => {
@@ -64,11 +57,7 @@ describe("diagnostic-trace-context", () => {
   });
 
   it("freezes a defensive trace context copy", () => {
-    const context = createDiagnosticTraceContext({
-      traceId: TRACE_ID,
-      spanId: SPAN_ID,
-      traceFlags: "01",
-    });
+    const context = createDiagnosticTraceContext(ROOT);
     const frozen = freezeDiagnosticTraceContext(context);
 
     expect(frozen).toEqual(context);
@@ -77,13 +66,8 @@ describe("diagnostic-trace-context", () => {
   });
 
   it("carries active trace context across async work and restores outer scopes", async () => {
-    const outer = createDiagnosticTraceContext({
-      traceId: TRACE_ID,
-      spanId: SPAN_ID,
-    });
-    const inner = createChildDiagnosticTraceContext(outer, {
-      spanId: CHILD_SPAN_ID,
-    });
+    const outer = createDiagnosticTraceContext({ traceId: TRACE_ID, spanId: SPAN_ID });
+    const inner = createChildDiagnosticTraceContext(outer, { spanId: CHILD_SPAN_ID });
 
     await runWithDiagnosticTraceContext(outer, async () => {
       expect(getActiveDiagnosticTraceContext()).toEqual(outer);
@@ -107,17 +91,10 @@ describe("diagnostic-trace-context", () => {
   });
 
   it("creates child trace contexts from the active request scope", () => {
-    const requestTrace = createDiagnosticTraceContext({
-      traceId: TRACE_ID,
-      spanId: SPAN_ID,
-      traceFlags: "00",
-    });
+    const requestTrace = createDiagnosticTraceContext({ ...ROOT, traceFlags: "00" });
 
     runWithDiagnosticTraceContext(requestTrace, () => {
-      const scoped = createDiagnosticTraceContextFromActiveScope({
-        spanId: CHILD_SPAN_ID,
-      });
-
+      const scoped = createDiagnosticTraceContextFromActiveScope({ spanId: CHILD_SPAN_ID });
       expect(scoped).toEqual({
         traceId: TRACE_ID,
         spanId: CHILD_SPAN_ID,
