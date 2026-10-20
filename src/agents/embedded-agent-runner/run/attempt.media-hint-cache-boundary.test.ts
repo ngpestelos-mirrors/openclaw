@@ -3,7 +3,7 @@ import {
   SYSTEM_PROMPT_CACHE_BOUNDARY,
   splitSystemPromptCacheBoundary,
 } from "@openclaw/ai/internal/shared";
-import { afterEach, beforeEach, expect, it, onTestFinished, vi } from "vitest";
+import { expect, it, onTestFinished, vi } from "vitest";
 import {
   clearRuntimeConfigSnapshot,
   setRuntimeConfigSnapshot,
@@ -22,7 +22,6 @@ import {
   prepareEmbeddedAttemptPromptAssembly,
   prepareEmbeddedAttemptPromptContext,
 } from "./attempt-prompt-build.js";
-import type { EmbeddedRunAttemptParams } from "./types.js";
 
 vi.mock("../../../plugins/host-hook-state.js", () => ({
   drainPluginNextTurnInjectionContext: vi.fn(async () => ({ queuedInjections: [] })),
@@ -30,47 +29,35 @@ vi.mock("../../../plugins/host-hook-state.js", () => ({
 
 registerAgentSessionLoopTestLifecycle();
 
-beforeEach(() => {
-  vi.spyOn(mediaTaskStatus, "buildMediaTaskRuntimeContext").mockResolvedValue(undefined);
-});
-afterEach(() => {
-  vi.restoreAllMocks();
-  clearRuntimeConfigSnapshot();
-});
-
 const HOOK = "Static plugin guidance";
 const BASE = `Stable workspace prefix${SYSTEM_PROMPT_CACHE_BOUNDARY}Dynamic channel guidance`;
 const OVERRIDE = "Custom hook system prompt without a cache boundary";
 
-async function createTurnFixture() {
+it("#85203 keeps static hooks and model identity stable with a marker-free hook override", async () => {
+  onTestFinished(() => {
+    vi.restoreAllMocks();
+    clearRuntimeConfigSnapshot();
+  });
+  vi.spyOn(mediaTaskStatus, "buildMediaTaskRuntimeContext").mockResolvedValue(undefined);
   const config = {};
   setRuntimeConfigSnapshot(config);
-  const { session, sessionManager, modelRegistry } = await createTestSession();
+  const { session, sessionManager } = await createTestSession();
   const runId = "media-cache-override";
   const admission = prepareSystemAgentRunAdmission(config, runId, "main", "media-cache-test");
   onTestFinished(() => {
     admission.close();
     forgetPromptBuildDrainCacheForRun(runId);
   });
-  const attempt: EmbeddedRunAttemptParams = {
+  const attempt: Parameters<typeof prepareEmbeddedAttemptPromptAssembly>[0]["attempt"] = {
     admittedRunContext: await admission.admit("embedded"),
-    authStorage: modelRegistry.authStorage,
-    authProfileStore: { version: 1, profiles: {} },
-    modelRegistry,
     config,
     model: testModel,
-    modelId: testModel.id,
     provider: testModel.provider,
-    thinkLevel: "off",
     prompt: "How is the image progressing?",
-    transcriptPrompt: "How is the image progressing?",
     runId,
     sessionId: runId,
     sessionKey: `agent:main:${runId}`,
-    sessionFile: "",
-    sessionPersistence: "detached",
     trigger: "user",
-    timeoutMs: 10_000,
     workspaceDir: "/tmp/media-cache-test",
   };
   const hookRunner = createHookRunner({
@@ -86,7 +73,7 @@ async function createTurnFixture() {
     ],
   });
   const common = { attempt, isRawModelRun: false, sessionAgentId: "main" };
-  return async (progress?: string) => {
+  async function prepareTurn(progress?: string) {
     vi.mocked(mediaTaskStatus.buildMediaTaskRuntimeContext).mockResolvedValue(
       progress
         ? `## Media Generation Tasks\n- tool=image_generate; task=task-1; status=running; progress_json="${progress}"`
@@ -123,11 +110,7 @@ async function createTurnFixture() {
       systemPromptText,
       toolResultPromptProjectionState: createToolResultPromptProjectionState(),
     });
-  };
-}
-
-it("#85203 keeps static hooks and model identity stable with a marker-free hook override", async () => {
-  const prepareTurn = await createTurnFixture();
+  }
   const rendering = await prepareTurn("Rendering image");
   const encoding = await prepareTurn("Encoding image");
   const idle = await prepareTurn();

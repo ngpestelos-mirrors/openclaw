@@ -48,16 +48,12 @@ function interrupt(): AgentMessage {
   };
 }
 
-async function seed(
-  sessionManager: SessionManager,
-  assistantCount: number,
-  includeInterrupt = true,
-) {
+async function seed(sessionManager: SessionManager, count: number, includeInterrupt = true) {
   const toolResult = makeTextToolResult("call-1", "sessions_spawn", "result", false, 1);
-  const assistants = Array.from({ length: assistantCount }, (_, index) =>
+  const assistants = Array.from({ length: count }, (_, index) =>
     makeAgentAssistantMessage({
       content: [{ type: "text", text: `assistant ${index}` }],
-      stopReason: index === assistantCount - 1 ? "aborted" : "stop",
+      stopReason: index === count - 1 ? "aborted" : "stop",
       timestamp: index + 2,
     }),
   );
@@ -181,7 +177,6 @@ describe("runEmbeddedAttempt sessions_yield", () => {
       attemptOverrides: { disableTools: false, runId },
       sessionPrompt: async (session) => {
         session.steer = sessionSteer;
-        // The runtime queues its own interrupt through the agent when the turn yields.
         Object.assign(session.agent, { steer: yieldInterrupt });
         operation = findSessionControllerOperationByRunId(runId);
         // The steer captures the running turn before the yield and reaches it after.
@@ -211,13 +206,11 @@ describe("runEmbeddedAttempt sessions_yield", () => {
             return ended;
           },
         });
-        // The aborted prompt can return before this tool result; the test awaits it below.
         yieldOutcome = yieldTool.execute("yield", {});
         await yieldOutcome;
       },
     });
 
-    // The tool finishes on its own result after yield() closed the turn's tool authority.
     await expect(yieldOutcome).resolves.toMatchObject({ details: { status: "yielded" } });
     expect(duringYield).toEqual({ phase: "running", result: null });
     await expect(steerOutcome).resolves.toMatchObject({

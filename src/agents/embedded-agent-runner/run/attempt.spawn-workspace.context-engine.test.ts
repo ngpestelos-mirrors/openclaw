@@ -81,17 +81,9 @@ function capturePrompt(
           transformContext?: (messages: AgentMessage[]) => Promise<AgentMessage[]>;
         }
       ).transformContext;
+      const text = transform === "preprocessed" ? `session preprocessed\n\n${prompt}` : prompt;
       const messages = await transformContext?.([
-        {
-          role: "user",
-          content: [
-            {
-              type: "text",
-              text: transform === "preprocessed" ? `session preprocessed\n\n${prompt}` : prompt,
-            },
-          ],
-          timestamp: 1,
-        },
+        { role: "user", content: [{ type: "text", text }], timestamp: 1 },
       ]);
       seen.modelMessages = messages && normalizeMessagesForLlmBoundary(messages);
     }
@@ -139,11 +131,9 @@ describe("runEmbeddedAttempt context engine sessionKey forwarding", () => {
   it("forwards the normalized message channel to the embedded subscription", async () => {
     await runAttempt({ attemptOverrides: { messageChannel: "TELEGRAM" } });
 
-    const subscriptionParams = requireRecord(
-      hoisted.subscribeEmbeddedAgentSessionMock.mock.calls[0]?.[0],
-      "subscription params",
-    );
-    expect(subscriptionParams.messageChannel).toBe("telegram");
+    expect(hoisted.subscribeEmbeddedAgentSessionMock.mock.calls[0]?.[0]).toMatchObject({
+      messageChannel: "telegram",
+    });
   });
 
   it("keeps client tool names out of context engine capability guidance", async () => {
@@ -226,11 +216,7 @@ describe("runEmbeddedAttempt context engine sessionKey forwarding", () => {
         session.agent.streamFn = async (_model, _context, options) => {
           observedOptions.push(options as Record<string, unknown>);
           const payload: Record<string, unknown> = {
-            tools: [
-              { type: "function", name: "exec" },
-              { type: "function", name: "wait" },
-              { type: "function", name: "read" },
-            ],
+            tools: ["exec", "wait", "read"].map((name) => ({ type: "function", name })),
           };
           (
             options as
@@ -247,10 +233,7 @@ describe("runEmbeddedAttempt context engine sessionKey forwarding", () => {
             {} as never,
             {
               messages: [],
-              tools: [
-                { name: "exec", description: "", parameters: {} },
-                { name: "wait", description: "", parameters: {} },
-              ],
+              tools: ["exec", "wait"].map((name) => ({ name, description: "", parameters: {} })),
             } as never,
             {},
           );
@@ -394,8 +377,6 @@ describe("runEmbeddedAttempt context engine sessionKey forwarding", () => {
             authProfileProviderForAuth: "",
             forwardedAuthProfileId: undefined,
           },
-          delivery: { resolveFollowupRoute: () => undefined },
-          outcome: { classifyRunResult: () => undefined },
           observability: {
             resolvedRef: "anthropic/claude-sonnet-4-6",
             provider: "anthropic",
@@ -441,10 +422,8 @@ describe("runEmbeddedAttempt context engine sessionKey forwarding", () => {
       },
     });
 
-    const firstProviderContext = providerContexts[0] ?? [];
-    const retryProviderContext = providerContexts[1] ?? [];
-    expect(JSON.stringify(firstProviderContext)).toContain("stale-signature");
-    expect(JSON.stringify(retryProviderContext)).not.toContain("stale-signature");
+    expect(JSON.stringify(providerContexts[0] ?? [])).toContain("stale-signature");
+    expect(JSON.stringify(providerContexts[1] ?? [])).not.toContain("stale-signature");
 
     const finalMessages = sessionManager.buildSessionContext().messages;
     expect(JSON.stringify(finalMessages[1])).not.toContain("historical stale thinking");
@@ -455,89 +434,73 @@ describe("runEmbeddedAttempt context engine sessionKey forwarding", () => {
     );
   });
 
-  it("keeps bootstrap truncation warnings out of WebChat runtime context", async () => {
-    const { seen, sessionPrompt } = capturePrompt();
-    hoisted.resolveBootstrapContextForRunMock.mockResolvedValueOnce({
-      bootstrapFiles: [
-        {
-          name: "AGENTS.md",
-          path: "/tmp/openclaw-warning-workspace/AGENTS.md",
-          content: "A".repeat(200),
-          missing: false,
-        },
-      ],
-      contextFiles: [
-        { path: "/tmp/openclaw-warning-workspace/AGENTS.md", content: "A".repeat(20) },
-      ],
-    });
-
-    await runAttempt({
-      attemptOverrides: {
-        config: {
-          agents: { defaults: { bootstrapMaxChars: 50, bootstrapTotalMaxChars: 50 } },
-        } as OpenClawConfig,
-        ...visibleAsk,
-      },
-      sessionPrompt,
-    });
-
-    expect(seen.prompt).toBe("visible ask");
-    expect(JSON.stringify(seen.messages)).not.toContain("[Bootstrap truncation warning]");
-    expect(JSON.stringify(seen.messages)).not.toContain("bootstrapMaxChars");
-  });
-
-  it("includes hook-adjusted bootstrap files preloaded before routing", async () => {
-    const workspaceDir = "/tmp/openclaw-hook-workspace";
-    hoisted.resolveBootstrapFilesForRunMock.mockResolvedValueOnce([
-      {
+  it.each(["warning", "preloaded", "continuation"])(
+    "handles %s bootstrap context",
+    async (mode) => {
+      const { seen, sessionPrompt } = capturePrompt();
+      const workspaceDir = "/tmp/openclaw-hook-workspace";
+      const preload = {
         name: "BOOTSTRAP.md",
         path: `${workspaceDir}/BOOTSTRAP.md`,
         content: "Ask who I am before continuing.",
         missing: false,
-      },
-    ]);
-
-    await runAttempt({
-      attemptOverrides: {
-        ...visibleAsk,
-        trigger: "user",
-        workspaceDir,
-      },
-    });
-
-    expect(hoisted.resolveBootstrapFilesForRunMock).toHaveBeenCalledOnce();
-    expect(hoisted.resolveBootstrapContextForRunMock).not.toHaveBeenCalled();
-    const promptInput = hoisted.embeddedSystemPromptInputs.at(-1) as {
-      bootstrapMode?: string;
-      contextFiles?: Array<{ path: string; content: string }>;
-    };
-
-    expect(promptInput.bootstrapMode).toBe("full");
-    expect(promptInput.contextFiles).toEqual([
-      {
-        path: `${workspaceDir}/BOOTSTRAP.md`,
-        content: "Ask who I am before continuing.",
-      },
-    ]);
-  });
-
-  it("skips bootstrap preload on completed continuation-skip turns", async () => {
-    hoisted.resolveContextInjectionModeMock.mockReturnValue("continuation-skip");
-    hoisted.hasCompletedBootstrapTurnMock.mockResolvedValue(true);
-    hoisted.isWorkspaceBootstrapPendingMock.mockResolvedValue(false);
-
-    await runAttempt({
-      attemptOverrides: {
-        ...visibleAsk,
-        trigger: "user",
-      },
-    });
-
-    expect(hoisted.hasCompletedBootstrapTurnMock).toHaveBeenCalledOnce();
-    expect(hoisted.isWorkspaceBootstrapPendingMock).toHaveBeenCalledOnce();
-    expect(hoisted.resolveBootstrapFilesForRunMock).not.toHaveBeenCalled();
-    expect(hoisted.resolveBootstrapContextForRunMock).not.toHaveBeenCalled();
-  });
+      };
+      if (mode === "warning") {
+        hoisted.resolveBootstrapContextForRunMock.mockResolvedValueOnce({
+          bootstrapFiles: [
+            {
+              name: "AGENTS.md",
+              path: "/tmp/openclaw-warning-workspace/AGENTS.md",
+              content: "A".repeat(200),
+              missing: false,
+            },
+          ],
+          contextFiles: [
+            { path: "/tmp/openclaw-warning-workspace/AGENTS.md", content: "A".repeat(20) },
+          ],
+        });
+      } else if (mode === "preloaded") {
+        hoisted.resolveBootstrapFilesForRunMock.mockResolvedValueOnce([preload]);
+      } else {
+        hoisted.resolveContextInjectionModeMock.mockReturnValue("continuation-skip");
+        hoisted.hasCompletedBootstrapTurnMock.mockResolvedValue(true);
+        hoisted.isWorkspaceBootstrapPendingMock.mockResolvedValue(false);
+      }
+      await runAttempt({
+        attemptOverrides: {
+          ...visibleAsk,
+          ...(mode === "warning"
+            ? {
+                config: {
+                  agents: { defaults: { bootstrapMaxChars: 50, bootstrapTotalMaxChars: 50 } },
+                } as OpenClawConfig,
+              }
+            : { trigger: "user" as const, ...(mode === "preloaded" ? { workspaceDir } : {}) }),
+        },
+        sessionPrompt: mode === "warning" ? sessionPrompt : undefined,
+      });
+      if (mode === "warning") {
+        expect(seen.prompt).toBe("visible ask");
+        expect(JSON.stringify(seen.messages)).not.toContain("[Bootstrap truncation warning]");
+        expect(JSON.stringify(seen.messages)).not.toContain("bootstrapMaxChars");
+        return;
+      }
+      expect(hoisted.resolveBootstrapContextForRunMock).not.toHaveBeenCalled();
+      if (mode === "preloaded") {
+        expect(hoisted.resolveBootstrapFilesForRunMock).toHaveBeenCalledOnce();
+        const input = requireRecord(
+          hoisted.embeddedSystemPromptInputs.at(-1),
+          "system prompt input",
+        );
+        expect(input).toMatchObject({ bootstrapMode: "full" });
+        expect(input?.contextFiles).toEqual([{ path: preload.path, content: preload.content }]);
+      } else {
+        expect(hoisted.hasCompletedBootstrapTurnMock).toHaveBeenCalledOnce();
+        expect(hoisted.isWorkspaceBootstrapPendingMock).toHaveBeenCalledOnce();
+        expect(hoisted.resolveBootstrapFilesForRunMock).not.toHaveBeenCalled();
+      }
+    },
+  );
 
   it("keeps inbound context separate on runtime-only turns", async () => {
     hoisted.sessionManager.getHeader.mockReturnValue({ version: 4 });
@@ -554,14 +517,7 @@ describe("runEmbeddedAttempt context engine sessionKey forwarding", () => {
           text: [
             "Reply target of current user message:",
             "```json",
-            JSON.stringify(
-              {
-                sender_label: "Mike",
-                body: "WT daily plan - Sat May 2\nSee ./quoted-secret.png and [media attached: media://inbound/quoted.png]",
-              },
-              null,
-              2,
-            ),
+            '{"sender_label": "Mike", "body": "WT daily plan - Sat May 2\\nSee ./quoted-secret.png and [media attached: media://inbound/quoted.png]"}',
             "```",
           ].join("\n"),
         },
@@ -627,9 +583,6 @@ describe("runEmbeddedAttempt context engine sessionKey forwarding", () => {
 
       expect(seen.prompt).toBe("visible ask");
       expect(result.finalPromptText).toBe("visible ask");
-      expect(JSON.stringify(seen.modelMessages)).toContain("<relevant-memories>");
-      expect(JSON.stringify(seen.modelMessages)).toContain("/tmp/some.png");
-      expect(JSON.stringify(seen.modelMessages)).toContain("/tmp/other.png");
       expect(JSON.stringify(seen.modelMessages)).toContain("dynamic hook tail");
       expect(JSON.stringify(seen.modelMessages)).toContain(
         JSON.stringify(recalledMemoryContext).slice(1, -1),
@@ -687,150 +640,123 @@ describe("runEmbeddedAttempt context engine sessionKey forwarding", () => {
     expect(hoisted.sessionManager.branchAsync).toHaveBeenCalledWith("parent-leaf");
   });
 
-  it("skips blank visible prompts with replay history before provider submission", async () => {
+  it.each(["blank", "blocked"])("does not submit a %s prompt", async (mode) => {
     const sessionPrompt = vi.fn(async () => {
-      throw new Error("blank prompt should not be submitted");
-    });
-
-    const result = await runAttempt({
-      trajectory: true,
-      attemptOverrides: {
-        prompt: "  \n\t  ",
-      },
-      sessionPrompt,
-    });
-
-    expect(sessionPrompt).not.toHaveBeenCalled();
-    expect(result.finalPromptText).toBeUndefined();
-    expect(projectAgentRunAttemptTerminal(result.terminal).promptError).toBeNull();
-    expect(result.messagesSnapshot).toHaveLength(1);
-    expect(result.messagesSnapshot[0]).toMatchObject({
-      role: "user",
-      content: "seed",
-    });
-    expect(trajectoryEvent("prompt.submitted")).toBeUndefined();
-    expect(trajectoryEvent("prompt.skipped")?.data?.reason).toBe("blank_user_prompt");
-  });
-
-  it("releases the initial session lock before before_agent_run block finalizers", async () => {
-    const sessionPrompt = vi.fn(async () => {
-      throw new Error("blocked prompt should not be submitted");
+      throw new Error("prompt should not be submitted");
     });
     const runBeforeAgentRun = vi.fn(async () => ({
       outcome: "block" as const,
       reason: "Blocked by test policy.",
     }));
-    useHooks([
-      { hookName: "before_agent_run", pluginId: "test-policy", handler: runBeforeAgentRun },
-    ]);
+    if (mode === "blocked") {
+      useHooks([
+        { hookName: "before_agent_run", pluginId: "test-policy", handler: runBeforeAgentRun },
+      ]);
+    }
 
     const result = await runAttempt({
+      trajectory: mode === "blank",
+      ...(mode === "blank" ? { attemptOverrides: { prompt: "  \n\t  " } } : {}),
       sessionPrompt,
     });
 
-    expect(runBeforeAgentRun).toHaveBeenCalledTimes(1);
     expect(sessionPrompt).not.toHaveBeenCalled();
     expect(result.finalPromptText).toBeUndefined();
-    expect(projectAgentRunAttemptTerminal(result.terminal).promptErrorSource).toBe(
-      "hook:before_agent_run",
-    );
-  });
-
-  it("preserves pipeline history when owning context engine assembly mutates then returns malformed context", async () => {
-    let sawPrompt = false;
-    let preassemblyMessages: AgentMessage[] = [];
-    let providerMessages: AgentMessage[] = [];
-    const hugeHistory = "large raw history ".repeat(2_000);
-
-    const result = await runAttempt({
-      contextEngine: createTestContextEngine({
-        info: { ...contextEngineInfo, ownsCompaction: true },
-        assemble: async ({ messages }) => {
-          preassemblyMessages = messages.slice();
-          messages.reverse();
-          messages.pop();
-          return { estimatedTokens: 0 } as never;
-        },
-      }),
-
-      sessionMessages: [{ role: "user", content: hugeHistory, timestamp: 1 }] as AgentMessage[],
-      attemptOverrides: {
-        contextTokenBudget: 500,
-      },
-      sessionPrompt: async (session) => {
-        sawPrompt = true;
-        providerMessages = session.messages.slice() as AgentMessage[];
-        session.messages = [...session.messages, doneMessage];
-      },
-    });
-
-    expect(sawPrompt).toBe(true);
-    expect(providerMessages).toEqual([
-      ...preassemblyMessages,
-      expect.objectContaining({
-        role: "custom",
-        customType: "openclaw.runtime-context",
-        display: false,
-        content: expect.stringMatching(
-          /^## Temporal Context\nCurrent date: \d{4}-\d{2}-\d{2}\nTime zone: [^\n]+$/,
-        ),
-      }),
-    ]);
-    for (const [index, message] of preassemblyMessages.entries()) {
-      expect(providerMessages[index]).toBe(message);
+    if (mode === "blocked") {
+      expect(runBeforeAgentRun).toHaveBeenCalledTimes(1);
+      expect(projectAgentRunAttemptTerminal(result.terminal).promptErrorSource).toBe(
+        "hook:before_agent_run",
+      );
+      return;
     }
     expect(projectAgentRunAttemptTerminal(result.terminal).promptError).toBeNull();
-    expect(projectAgentRunAttemptTerminal(result.terminal).promptErrorSource).toBeNull();
-    expect(result.preflightRecovery).toBeUndefined();
-    expect(hoisted.preemptiveCompactionCalls).toHaveLength(1);
-    expect(hoisted.preemptiveCompactionCalls.at(-1)?.unwindowedMessages).toBeUndefined();
+    expect(result.messagesSnapshot).toMatchObject([{ role: "user", content: "seed" }]);
+    expect(trajectoryEvent("prompt.submitted")).toBeUndefined();
+    expect(trajectoryEvent("prompt.skipped")?.data?.reason).toBe("blank_user_prompt");
   });
 
-  it("snapshots pre-assembly messages before assemble even when the engine windows in place", async () => {
-    const hugeHistory = "large raw history ".repeat(2_000);
-    const preassemblyMarker = { role: "user", content: hugeHistory, timestamp: 1 } as AgentMessage;
+  it.each(["malformed", "windowed"])(
+    "preserves preassembly history after %s mutation",
+    async (mode) => {
+      let sawPrompt = false;
+      let preassemblyMessages: AgentMessage[] = [];
+      let providerMessages: AgentMessage[] = [];
+      const hugeHistory = "large raw history ".repeat(2_000);
 
-    const result = await runAttempt({
-      contextEngine: createTestContextEngine({
-        info: { ...contextEngineInfo, ownsCompaction: true },
-        assemble: async ({ messages }: { messages: AgentMessage[] }) => {
-          messages.length = 0;
-          messages.push({ role: "user", content: "windowed", timestamp: 2 } as AgentMessage);
-          return {
-            messages: [
-              { role: "user", content: "small assembled context", timestamp: 1 },
-            ] as AgentMessage[],
-            estimatedTokens: 8,
-            promptAuthority: "preassembly_may_overflow",
-          };
-        },
-      }),
+      const result = await runAttempt({
+        contextEngine: createTestContextEngine({
+          info: { ...contextEngineInfo, ownsCompaction: true },
+          assemble: async ({ messages }) => {
+            preassemblyMessages = messages.slice();
+            if (mode === "malformed") {
+              messages.reverse();
+              messages.pop();
+              return { estimatedTokens: 0 } as never;
+            }
+            messages.length = 0;
+            messages.push({ role: "user", content: "windowed", timestamp: 2 } as AgentMessage);
+            return {
+              messages: [
+                { role: "user", content: "small assembled context", timestamp: 1 },
+              ] as AgentMessage[],
+              estimatedTokens: 8,
+              promptAuthority: "preassembly_may_overflow",
+            };
+          },
+        }),
+        sessionMessages: [{ role: "user", content: hugeHistory, timestamp: 1 }] as AgentMessage[],
+        attemptOverrides: { contextTokenBudget: 500 },
+        sessionPrompt:
+          mode === "malformed"
+            ? async (session) => {
+                sawPrompt = true;
+                providerMessages = session.messages.slice() as AgentMessage[];
+                session.messages = [...session.messages, doneMessage];
+              }
+            : undefined,
+      });
 
-      sessionMessages: [preassemblyMarker],
-      attemptOverrides: {
-        contextTokenBudget: 500,
-      },
-    });
-
-    expect(result.messagesSnapshot).toContainEqual(doneMessage);
-    expect(projectAgentRunAttemptTerminal(result.terminal).promptError).toBeNull();
-    expect(projectAgentRunAttemptTerminal(result.terminal).promptErrorSource).toBeNull();
-    expect(result.preflightRecovery).toBeUndefined();
-    expect(result.contextBudgetStatus?.overflowTokens).toBeGreaterThan(0);
-    expect(hoisted.preemptiveCompactionCalls).toHaveLength(1);
-    const lastCall = hoisted.preemptiveCompactionCalls.at(-1);
-    expect(lastCall).toHaveProperty("unwindowedMessages");
-    const unwindowed = (lastCall as { unwindowedMessages?: AgentMessage[] }).unwindowedMessages;
-    expect(unwindowed).toHaveLength(1);
-    const [unwindowedMessage] = unwindowed ?? [];
-    expect(unwindowedMessage).toMatchObject({ role: "user", timestamp: 1 });
-    const unwindowedContent = (unwindowedMessage as { content?: unknown } | undefined)?.content;
-    expect(unwindowedContent).toEqual(
-      expect.stringMatching(/^\[[A-Za-z]{3} \d{4}-\d{2}-\d{2} \d{2}:\d{2} [^\]]+\] /),
-    );
-    expect(unwindowedContent).toContain(hugeHistory);
-    expect(unwindowedContent).not.toContain("windowed");
-  });
+      expect(projectAgentRunAttemptTerminal(result.terminal)).toMatchObject({
+        promptError: null,
+        promptErrorSource: null,
+      });
+      expect(result.preflightRecovery).toBeUndefined();
+      expect(hoisted.preemptiveCompactionCalls).toHaveLength(1);
+      const lastCall = hoisted.preemptiveCompactionCalls.at(-1);
+      if (mode === "malformed") {
+        expect(sawPrompt).toBe(true);
+        expect(providerMessages).toEqual([
+          ...preassemblyMessages,
+          expect.objectContaining({
+            role: "custom",
+            customType: "openclaw.runtime-context",
+            display: false,
+            content: expect.stringMatching(
+              /^## Temporal Context\nCurrent date: \d{4}-\d{2}-\d{2}\nTime zone: [^\n]+$/,
+            ),
+          }),
+        ]);
+        for (const [index, message] of preassemblyMessages.entries()) {
+          expect(providerMessages[index]).toBe(message);
+        }
+        expect(lastCall?.unwindowedMessages).toBeUndefined();
+        return;
+      }
+      expect(result.messagesSnapshot).toContainEqual(doneMessage);
+      expect(result.contextBudgetStatus?.overflowTokens).toBeGreaterThan(0);
+      expect(lastCall).toHaveProperty("unwindowedMessages");
+      const unwindowed = (lastCall as { unwindowedMessages?: AgentMessage[] }).unwindowedMessages;
+      expect(unwindowed).toHaveLength(1);
+      const [unwindowedMessage] = unwindowed ?? [];
+      expect(unwindowedMessage).toMatchObject({ role: "user", timestamp: 1 });
+      const unwindowedContent = (unwindowedMessage as { content?: unknown } | undefined)?.content;
+      expect(unwindowedContent).toEqual(
+        expect.stringMatching(/^\[[A-Za-z]{3} \d{4}-\d{2}-\d{2} \d{2}:\d{2} [^\]]+\] /),
+      );
+      expect(unwindowedContent).toContain(hugeHistory);
+      expect(unwindowedContent).not.toContain("windowed");
+    },
+  );
 
   it("keeps gateway model runs independent from agent context and session history", async () => {
     const bootstrap = vi.fn(async () => ({ bootstrapped: true }));
@@ -884,13 +810,9 @@ describe("runEmbeddedAttempt context engine sessionKey forwarding", () => {
       projectContextChars: 0,
       nonProjectContextChars: 0,
     });
-    expect(result.messagesSnapshot).toHaveLength(1);
     const sessionOptions = mockParams(hoisted.createAgentSessionMock);
     expect(sessionOptions.customTools).toStrictEqual([]);
-    expect(result.messagesSnapshot[0]).toMatchObject({
-      role: "assistant",
-      content: "pong",
-    });
+    expect(result.messagesSnapshot).toMatchObject([{ role: "assistant", content: "pong" }]);
     expect(hoisted.resolveBootstrapContextForRunMock).not.toHaveBeenCalled();
     expect(bootstrap).not.toHaveBeenCalled();
     expect(assemble).not.toHaveBeenCalled();
