@@ -1,7 +1,7 @@
 import { spawnSync } from "node:child_process";
 import { chmodSync, readFileSync, writeFileSync } from "node:fs";
 import { delimiter, join, resolve } from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, expect, it } from "vitest";
 import { encodeNodeTestGroups } from "../../scripts/lib/ci-node-test-groups-codec.mts";
 import { useAutoCleanupTempDirTracker } from "../helpers/temp-dir.js";
 
@@ -54,7 +54,11 @@ function log(shard_name: string, timing_key?: string, files?: string[]) {
   return `2026-09-01T01:01:00Z OPENCLAW_NODE_TEST_GROUPS_GZIP_BASE64: ${encodeNodeTestGroups([group])}\n2026-09-01T01:02:00Z [shard:${key}] begin\n2026-09-01T01:04:00Z [shard:${key}] end (exit 0)\n`;
 }
 function execute(
-  options: { after?: typeof run; jobs?: Array<typeof job>; logs?: Record<string, string> } = {},
+  options: {
+    after?: typeof run;
+    jobs?: readonly (typeof job)[];
+    logs?: Record<string, string>;
+  } = {},
 ) {
   const root = tempRoots.make("ci-shard-refresh-");
   const out = join(root, "timings.json");
@@ -96,111 +100,91 @@ function execute(
   return { result, before, bytes: readFileSync(out, "utf8") };
 }
 
-describe("release shard timing refresh CLI", () => {
-  it.each(["bun-all", "dual-all"])("keeps %s release wall costs separate from Node", (policy) => {
-    const runtimeLog =
-      policy === "bun-all"
-        ? log("fixture").replaceAll("[shard:fixture]", "[shard:bun:fixture]")
-        : log("fixture") + log("fixture").replaceAll("[shard:fixture]", "[shard:bun:fixture]");
-    const { result, bytes } = execute({
-      logs: {
-        "1": `2026-09-01T01:01:00Z OPENCLAW_CI_TEST_RUNTIME_POLICY: ${policy}\n${runtimeLog}`,
+it.each(["bun-all", "dual-all"])("keeps %s release wall costs separate from Node", (policy) => {
+  const runtimeLog =
+    policy === "bun-all"
+      ? log("fixture").replaceAll("[shard:fixture]", "[shard:bun:fixture]")
+      : log("fixture") + log("fixture").replaceAll("[shard:fixture]", "[shard:bun:fixture]");
+  const { result, bytes } = execute({
+    logs: {
+      "1": `2026-09-01T01:01:00Z OPENCLAW_CI_TEST_RUNTIME_POLICY: ${policy}\n${runtimeLog}`,
+    },
+  });
+  expect(result.status, result.stderr).toBe(0);
+  expect(JSON.parse(bytes).compactGroupSeconds.github).toEqual({
+    ...baseline.compactGroupSeconds.github,
+    [`${policy}:release-full-fixture`]: 900,
+  });
+});
+
+it.each([
+  { name: "whole owner", files: undefined },
+  { name: "explicit files", files: ["test/fixture.test.ts"] },
+  { name: "wildcard owner", files: ["src/**/*.test.ts"] },
+])("writes $name timings while retaining unrelated costs and skipping other jobs", ({ files }) => {
+  const { result, bytes } = execute({
+    jobs: [
+      job,
+      { ...job, id: 2, conclusion: "failure" },
+      { ...job, id: 3, labels: ["ubuntu-24.04", "self-hosted"] },
+      { ...job, id: 4, labels: ["blacksmith-4vcpu-ubuntu-2404"] },
+      { ...job, id: 5 },
+      {
+        ...job,
+        id: 6,
+        name: "checks-node-compat-node24",
+        steps: [{ name: "Run Node 24 minimum compatibility" }],
       },
-    });
-    expect(result.status, result.stderr).toBe(0);
-    expect(JSON.parse(bytes).compactGroupSeconds.github).toEqual({
-      ...baseline.compactGroupSeconds.github,
-      [`${policy}:release-full-fixture`]: 900,
-    });
+      { ...job, id: 7, name: "checks-node-compact-small-1" },
+      { ...job, id: 8, name: "checks-node-release-packed-1" },
+    ],
+    logs: {
+      "1": log("fixture", undefined, files),
+      "5": log("retained", "release-full-retained"),
+      "6": "2026-09-01T01:04:00Z Node 24 compatibility succeeded\n",
+    },
   });
+  expect(result.status, result.stderr).toBe(0);
+  const written = JSON.parse(bytes);
+  if (files?.[0] === "test/fixture.test.ts") {
+    expect(Object.entries(written.compactGroupSeconds.github)).toContainEqual([
+      expect.stringMatching(
+        /^release-full-fixture#selector-1-[a-f0-9]{12}#generation-[a-f0-9]{12}#part-1-of-1#include-1-[a-f0-9]{12}$/u,
+      ),
+      900,
+    ]);
+  } else {
+    expect(written.compactGroupSeconds).toEqual({
+      blacksmith: { other: 99 },
+      github: { compact: 17, "release-full-fixture": 900, "release-full-retained": 2000 },
+    });
+  }
+  expect(bytes).toBe(`${JSON.stringify(written, null, 2)}\n`);
+  expect(written.source).toContain("Release CI 321 attempt 1");
+});
 
-  it.each([
-    { name: "whole owner", files: undefined },
-    { name: "explicit files", files: ["test/fixture.test.ts"] },
-    { name: "wildcard owner", files: ["src/**/*.test.ts"] },
-  ])(
-    "writes $name timings while retaining unrelated costs and skipping other jobs",
-    ({ files }) => {
-      const { result, bytes } = execute({
-        jobs: [
-          job,
-          { ...job, id: 2, conclusion: "failure" },
-          { ...job, id: 3, labels: ["ubuntu-24.04", "self-hosted"] },
-          { ...job, id: 4, labels: ["blacksmith-4vcpu-ubuntu-2404"] },
-          { ...job, id: 5 },
-          {
-            ...job,
-            id: 6,
-            name: "checks-node-compat-node24",
-            steps: [{ name: "Run Node 24 minimum compatibility" }],
-          },
-          { ...job, id: 7, name: "checks-node-compact-small-1" },
-          { ...job, id: 8, name: "checks-node-release-packed-1" },
-        ],
-        logs: {
-          "1": log("fixture", undefined, files),
-          "5": log("retained", "release-full-retained"),
-          "6": "2026-09-01T01:04:00Z Node 24 compatibility succeeded\n",
-        },
-      });
-      expect(result.status, result.stderr).toBe(0);
-      const written = JSON.parse(bytes);
-      if (files?.[0] === "test/fixture.test.ts") {
-        expect(Object.entries(written.compactGroupSeconds.github)).toEqual(
-          expect.arrayContaining([
-            [
-              expect.stringMatching(
-                /^release-full-fixture#selector-1-[a-f0-9]{12}#generation-[a-f0-9]{12}#part-1-of-1#include-1-[a-f0-9]{12}$/u,
-              ),
-              900,
-            ],
-          ]),
-        );
-      } else {
-        expect(written.compactGroupSeconds).toEqual({
-          blacksmith: { other: 99 },
-          github: { compact: 17, "release-full-fixture": 900, "release-full-retained": 2000 },
-        });
-      }
-      expect(bytes).toBe(`${JSON.stringify(written, null, 2)}\n`);
-      expect(written.source).toContain("Release CI 321 attempt 1");
-    },
-  );
-
-  it.each([
-    {
-      label: "missing descriptor",
-      log: "2026-09-01T01:04:00Z [shard:fixture] end (exit 0)\n",
-      error: "one unambiguous shard descriptor",
-    },
-    {
-      label: "ambiguous descriptors",
-      log: log("fixture") + log("other"),
-      error: "one unambiguous shard descriptor",
-    },
-    {
-      label: "unsuccessful shard span",
-      log: log("fixture").replace("end (exit 0)", "end (exit 1)"),
-      error: "successful matching shard span",
-    },
-  ])(
-    "rejects a planned shard with $label without changing timing bytes",
-    ({ log: shardLog, error }) => {
-      const { result, before, bytes } = execute({ logs: { "1": shardLog } });
-      expect(result.status).toBe(1);
-      expect(result.stderr).toContain(error);
-      expect(bytes).toBe(before);
-    },
-  );
-
-  it.each([
-    { label: "run retry", after: { ...run, run_attempt: 2 } },
-    { label: "wrong job attempt", jobs: [{ ...job, run_attempt: 2 }] },
-    { label: "wrong job source", jobs: [{ ...job, head_sha: "b".repeat(40) }] },
-  ])("leaves the committed timing bytes untouched on $label", (options) => {
-    const { result, before, bytes } = execute(options);
-    expect(result.status).toBe(1);
-    expect(result.stderr).toMatch(/attempt|identity/u);
-    expect(bytes).toBe(before);
-  });
+it.each([
+  [
+    "missing descriptor",
+    { logs: { "1": "2026-09-01T01:04:00Z [shard:fixture] end (exit 0)\n" } },
+    "one unambiguous shard descriptor",
+  ],
+  [
+    "ambiguous descriptors",
+    { logs: { "1": log("fixture") + log("other") } },
+    "one unambiguous shard descriptor",
+  ],
+  [
+    "unsuccessful shard span",
+    { logs: { "1": log("fixture").replace("end (exit 0)", "end (exit 1)") } },
+    "successful matching shard span",
+  ],
+  ["run retry", { after: { ...run, run_attempt: 2 } }, /attempt|identity/u],
+  ["wrong job attempt", { jobs: [{ ...job, run_attempt: 2 }] }, /attempt|identity/u],
+  ["wrong job source", { jobs: [{ ...job, head_sha: "b".repeat(40) }] }, /attempt|identity/u],
+] as const)("leaves timing bytes untouched on %s", (_name, options, error) => {
+  const { result, before, bytes } = execute(options);
+  expect(result.status).toBe(1);
+  expect(result.stderr).toMatch(error);
+  expect(bytes).toBe(before);
 });

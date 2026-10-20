@@ -24,6 +24,17 @@ function rows(outputs: Record<string, string>, key: string) {
     group?: string;
   }>;
 }
+const checks = (outputs: Record<string, string>) =>
+  ["check_matrix", "check_additional_matrix"].flatMap((key) => rows(outputs, key));
+const heavyLanes = [
+  ["checks-ui-e2e-real-gateway", "run_ui_real_gateway"],
+  ["checks-windows", "run_checks_windows"],
+  ["macos-node", "run_macos_node"],
+  ["macos-swift", "run_macos_swift"],
+  ["ios-build", "run_ios_build"],
+  ["android-screenshots", "run_android_screenshots"],
+  ["published-driver-update", "run_published_driver_update"],
+] as const;
 
 it.each(["openclaw/openclaw", "contributor/openclaw"])(
   "keeps TypeScript cycle and Kysely checks in the existing PR guard for %s",
@@ -44,12 +55,10 @@ it.each(["openclaw/openclaw", "contributor/openclaw"])(
       });
       expect(result.outputs.run_pr_madge_import_cycles).toBe(String(cycles));
       expect(result.outputs.run_pr_kysely_guardrails).toBe(String(kysely));
-      const checks = ["check_matrix", "check_additional_matrix"].flatMap((key) =>
-        rows(result.outputs, key),
-      );
-      expect(checks.filter((row) => (row.task ?? row.group) === "guards")).toHaveLength(1);
-      expect(checks.some((row) => row.group === "runtime-topology-architecture")).toBe(false);
-      expect(checks.some((row) => /import-cycle|kysely/u.test(row.check_name))).toBe(false);
+      const selected = checks(result.outputs);
+      expect(selected.filter((row) => (row.task ?? row.group) === "guards")).toHaveLength(1);
+      expect(selected.some((row) => row.group === "runtime-topology-architecture")).toBe(false);
+      expect(selected.some((row) => /import-cycle|kysely/u.test(row.check_name))).toBe(false);
     }
   },
 );
@@ -106,26 +115,17 @@ it.each([
   });
   expect(result.outputs.run_pr_madge_import_cycles).toBe(String(deferred));
   expect(result.outputs.run_pr_kysely_guardrails).toBe(String(deferred));
-  for (const flag of [
-    "run_ui_real_gateway",
-    "run_checks_windows",
-    "run_macos_node",
-    "run_macos_swift",
-    "run_ios_build",
-    "run_android_screenshots",
-    "run_published_driver_update",
-  ]) {
+  for (const [, flag] of heavyLanes) {
     expect(result.outputs[flag], flag).toBe(String(!deferred));
   }
-  // Keep independent static checks, ordinary UI/browser proof, and Android unit/lint work.
   for (const flag of ["run_protocol_event_coverage", "run_ui_e2e", "run_android_job"]) {
     expect(result.outputs[flag], flag).toBe("true");
   }
-  const checks = ["check_matrix", "check_additional_matrix"].flatMap((key) =>
-    rows(result.outputs, key),
+  const selectedChecks = checks(result.outputs);
+  expect(selectedChecks.some((row) => (row.task ?? row.group) === "dependencies")).toBe(!deferred);
+  expect(selectedChecks.some((row) => row.group === "runtime-topology-architecture")).toBe(
+    !deferred,
   );
-  expect(checks.some((row) => (row.task ?? row.group) === "dependencies")).toBe(!deferred);
-  expect(checks.some((row) => row.group === "runtime-topology-architecture")).toBe(!deferred);
   if (deferred) {
     for (const key of ["checks_windows_matrix", "macos_node_matrix", "ui_real_gateway_matrix"]) {
       expect(rows(result.outputs, key)).toEqual([]);
@@ -146,19 +146,10 @@ it.each([
     expect(selected).toEqual(expect.arrayContaining(CI_MANIFEST_FIXTURE_TARGETS.mocked));
   }
 
-  const workflow = readCiWorkflow();
-  const gate = workflow.jobs["ci-gate"].steps.find(
+  const gate = readCiWorkflow().jobs["ci-gate"].steps.find(
     (step: WorkflowStep) => step.name === "Verify selected CI lanes",
   );
-  const movedJobs = new Set([
-    "checks-ui-e2e-real-gateway",
-    "checks-windows",
-    "macos-node",
-    "macos-swift",
-    "ios-build",
-    "android-screenshots",
-    "published-driver-update",
-  ]);
+  const movedJobs = new Set<string>(heavyLanes.map(([job]) => job));
   const jobResults = gate.env.JOB_RESULTS.replace(/\$\{\{[\s\S]*?\}\}/gu, (expression: string) => {
     const job = expression.match(/^\$\{\{\s*needs\.([\w-]+)\.result\s*\}\}$/u)?.[1];
     if (job) {
