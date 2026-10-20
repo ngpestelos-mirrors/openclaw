@@ -71,7 +71,6 @@ import {
 import {
   applyChatCacheSnapshot,
   cacheChatSessionSnapshot,
-  readChatSessionSnapshot,
   resolveChatSnapshotKey,
 } from "./session-message-cache.ts";
 import { resetToolStream } from "./tool-stream-state.ts";
