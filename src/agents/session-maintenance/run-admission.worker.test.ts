@@ -34,57 +34,60 @@ beforeEach(() => {
   memory.runSessionCompactionIfNeeded.mockReset();
 });
 
+async function setup(env: NodeJS.ProcessEnv, sessionId: string) {
+  const database = openOpenClawAgentDatabase({ agentId: "main", env });
+  const sessionKey = `agent:main:${sessionId}`;
+  const entry = { sessionId, lifecycleRevision: "initial", updatedAt: 1 };
+  writeSessionEntry(database, sessionKey, entry);
+  await closeOpenClawAgentDatabaseByPathAsync(database.path);
+  const scope = { agentId: "main", sessionKey, sessionId, storePath: database.path };
+  const request = {
+    prepared: { cfg: {}, sessionKey, storePath: database.path, timeoutMs: 60_000 },
+    followupRun: createTestFollowupRun({ sessionKey, sessionId }),
+    sessionId,
+    lifecycleRevision: entry.lifecycleRevision,
+    lifecycleGeneration: getAgentEventLifecycleGeneration(),
+    startedAt: Date.now(),
+  };
+  const schedule = (
+    afterOwnerSettles?: Promise<boolean>,
+    resolveGatewayContext?: () => GatewayRequestContext | undefined,
+  ) =>
+    withPluginRuntimeGatewayRequestScope(
+      {
+        pluginRegistry: createEmptyPluginRegistry(),
+        resolveGatewayContext,
+        isWebchatConnect: () => false,
+      },
+      () => scheduleSessionMaintenance(request, afterOwnerSettles),
+    );
+  return { scope, entry, schedule };
+}
+
 it("rejects a replacement database while waiting for the foreground owner", async () => {
   await withOpenClawTestState({ label: "maintenance-worker-source" }, async ({ env, path }) => {
-    const database = openOpenClawAgentDatabase({ agentId: "main", env });
-    const sessionKey = "agent:main:maintenance-source";
-    const entry = { sessionId: "maintenance-source", lifecycleRevision: "initial", updatedAt: 1 };
-    writeSessionEntry(database, sessionKey, entry);
-    await closeOpenClawAgentDatabaseByPathAsync(database.path);
+    const { scope, entry, schedule } = await setup(env, "maintenance-source");
     const replacementPath = path("replacement.sqlite");
-    copyFileSync(database.path, replacementPath);
+    copyFileSync(scope.storePath, replacementPath);
     const predecessor = createDeferred<boolean>();
-    const followupRun = createTestFollowupRun({ sessionKey, sessionId: entry.sessionId });
-    const request = {
-      prepared: { cfg: {}, sessionKey, storePath: database.path, timeoutMs: 60_000 },
-      followupRun,
-      sessionId: entry.sessionId,
-      lifecycleRevision: entry.lifecycleRevision,
-      lifecycleGeneration: getAgentEventLifecycleGeneration(),
-      startedAt: Date.now(),
-    };
-    const schedule = (afterOwnerSettles?: Promise<boolean>) =>
-      withPluginRuntimeGatewayRequestScope(
-        { pluginRegistry: createEmptyPluginRegistry(), isWebchatConnect: () => false },
-        () => scheduleSessionMaintenance(request, afterOwnerSettles),
-      );
-    memory.runMemoryFlushIfNeeded.mockClear();
-    memory.runSessionCompactionIfNeeded.mockClear();
     try {
       schedule(predecessor.promise);
-      renameSync(database.path, path("original.sqlite"));
-      renameSync(replacementPath, database.path);
-      expect(
-        await entryReads.readSessionEntryReadOnlyInWorker({
-          agentId: "main",
-          storePath: database.path,
-          sessionKey,
-          env,
-        }),
-      ).toMatchObject(entry);
+      renameSync(scope.storePath, path("original.sqlite"));
+      renameSync(replacementPath, scope.storePath);
+      expect(await entryReads.readSessionEntryReadOnlyInWorker({ ...scope, env })).toMatchObject(
+        entry,
+      );
       predecessor.resolve(true);
-      await waitForSessionMaintenance(sessionKey);
+      await waitForSessionMaintenance(scope.sessionKey);
       expect(memory.runMemoryFlushIfNeeded).not.toHaveBeenCalled();
       expect(memory.runSessionCompactionIfNeeded).not.toHaveBeenCalled();
       schedule();
-      await waitForSessionMaintenance(sessionKey);
+      await waitForSessionMaintenance(scope.sessionKey);
       expect(memory.runMemoryFlushIfNeeded).toHaveBeenCalledOnce();
       expect(memory.runSessionCompactionIfNeeded).toHaveBeenCalledOnce();
     } finally {
       predecessor.resolve(false);
-      await waitForSessionMaintenance(sessionKey);
-      memory.runMemoryFlushIfNeeded.mockClear();
-      memory.runSessionCompactionIfNeeded.mockClear();
+      await waitForSessionMaintenance(scope.sessionKey);
     }
   });
 });
@@ -99,11 +102,7 @@ it.each([
   "gateway-instance-retired-during-flush",
 ] as const)("fences scheduled effects for %s", async (mode) => {
   await withOpenClawTestState({ label: `maintenance-${mode}` }, async ({ env }) => {
-    const database = openOpenClawAgentDatabase({ agentId: "main", env });
-    const sessionKey = `agent:main:maintenance-${mode}`;
-    const entry = { sessionId: mode, lifecycleRevision: "initial", updatedAt: 1 };
-    writeSessionEntry(database, sessionKey, entry);
-    await closeOpenClawAgentDatabaseByPathAsync(database.path);
+    const { scope, entry, schedule } = await setup(env, mode);
     const predecessor = createDeferred<boolean>();
     const flushStarted = createDeferred();
     const releaseFlush = createDeferred();
@@ -120,14 +119,6 @@ it.each([
       resolveGatewayContext: (): GatewayRequestContext | undefined =>
         gatewayLive ? gatewayContext : undefined,
     } as GatewayRequestContext;
-    const request = {
-      prepared: { cfg: {}, sessionKey, storePath: database.path, timeoutMs: 60_000 },
-      followupRun: createTestFollowupRun({ sessionKey, sessionId: entry.sessionId }),
-      sessionId: entry.sessionId,
-      lifecycleRevision: entry.lifecycleRevision,
-      lifecycleGeneration: getAgentEventLifecycleGeneration(),
-      startedAt: Date.now(),
-    };
     const retireGateway = () => {
       if (mode.startsWith("gateway-lifecycle-retired")) {
         rotateAgentEventLifecycleGeneration();
@@ -137,33 +128,23 @@ it.each([
     };
     try {
       expect(gatewayContext.resolveGatewayContext?.()).toBe(gatewayContext);
-      withPluginRuntimeGatewayRequestScope(
-        {
-          pluginRegistry: createEmptyPluginRegistry(),
-          resolveGatewayContext: () => gatewayContext,
-          isWebchatConnect: () => false,
-        },
-        () => scheduleSessionMaintenance(request, predecessor.promise),
-      );
+      schedule(predecessor.promise, () => gatewayContext);
       await Promise.resolve();
       expect(memory.runMemoryFlushIfNeeded).not.toHaveBeenCalled();
       if (!duringFlush) {
         retireGateway();
       }
       if (mode === "session-replaced") {
-        await replaceSessionEntry(
-          { agentId: "main", sessionKey, storePath: database.path },
-          { ...entry, lifecycleRevision: "replacement" },
-        );
+        await replaceSessionEntry(scope, { ...entry, lifecycleRevision: "replacement" });
       }
       predecessor.resolve(mode !== "unsuccessful-owner");
       if (duringFlush) {
-        await Promise.race([flushStarted.promise, waitForSessionMaintenance(sessionKey)]);
+        await Promise.race([flushStarted.promise, waitForSessionMaintenance(scope.sessionKey)]);
         expect(memory.runMemoryFlushIfNeeded).toHaveBeenCalledOnce();
         retireGateway();
         releaseFlush.resolve();
       }
-      await waitForSessionMaintenance(sessionKey);
+      await waitForSessionMaintenance(scope.sessionKey);
       expect(memory.runMemoryFlushIfNeeded).toHaveBeenCalledTimes(
         mode === "completed-owner" || duringFlush ? 1 : 0,
       );
@@ -173,22 +154,14 @@ it.each([
     } finally {
       predecessor.resolve(false);
       releaseFlush.resolve();
-      await waitForSessionMaintenance(sessionKey);
+      await waitForSessionMaintenance(scope.sessionKey);
     }
   });
 });
 
 it("lets an admitted turn read before its queued maintenance, while external drains wait for cleanup", async () => {
   await withOpenClawTestState({ label: "maintenance-queued-read" }, async ({ env }) => {
-    const database = openOpenClawAgentDatabase({ agentId: "main", env });
-    const sessionKey = "agent:main:maintenance-queued-read";
-    const entry = {
-      sessionId: "maintenance-queued-read",
-      lifecycleRevision: "initial",
-      updatedAt: 1,
-    };
-    writeSessionEntry(database, sessionKey, entry);
-    await closeOpenClawAgentDatabaseByPathAsync(database.path);
+    const { scope, schedule } = await setup(env, "maintenance-queued-read");
     const flushStarted = createDeferred();
     const releaseFlush = createDeferred();
     const events: string[] = [];
@@ -202,33 +175,21 @@ it("lets an admitted turn read before its queued maintenance, while external dra
       events.push("compaction");
     });
     try {
-      await withSessionTurn(
-        { sessionKey, sessionId: entry.sessionId, storePath: database.path, agentId: "main" },
-        async () => {
-          withPluginRuntimeGatewayRequestScope(
-            { pluginRegistry: createEmptyPluginRegistry(), isWebchatConnect: () => false },
-            () =>
-              scheduleSessionMaintenance({
-                prepared: { cfg: {}, sessionKey, storePath: database.path, timeoutMs: 60_000 },
-                followupRun: createTestFollowupRun({ sessionKey, sessionId: entry.sessionId }),
-                sessionId: entry.sessionId,
-                lifecycleRevision: entry.lifecycleRevision,
-                lifecycleGeneration: getAgentEventLifecycleGeneration(),
-                startedAt: Date.now(),
-              }),
-          );
-          const checkpoint = waitForSessionMaintenance(sessionKey).then(() => {
-            events.push("read");
-          });
-          // Both admission and the checkpoint have only no-I/O continuations before blocking.
-          await new Promise<void>((resolve) => {
-            setImmediate(resolve);
-          });
-          expect(events).toEqual(["read"]);
-          await checkpoint;
-        },
+      await withSessionTurn(scope, async () => {
+        schedule();
+        const checkpoint = waitForSessionMaintenance(scope.sessionKey).then(() => {
+          events.push("read");
+        });
+        // Both admission and the checkpoint have only no-I/O continuations before blocking.
+        await new Promise<void>((resolve) => {
+          setImmediate(resolve);
+        });
+        expect(events).toEqual(["read"]);
+        await checkpoint;
+      });
+      const drained = waitForSessionMaintenance(scope.sessionKey).then(() =>
+        events.push("drained"),
       );
-      const drained = waitForSessionMaintenance(sessionKey).then(() => events.push("drained"));
       await flushStarted.promise;
       expect(events).toEqual(["read", "flush"]);
       releaseFlush.resolve();
@@ -236,7 +197,7 @@ it("lets an admitted turn read before its queued maintenance, while external dra
       expect(events).toEqual(["read", "flush", "compaction", "drained"]);
     } finally {
       releaseFlush.resolve();
-      await waitForSessionMaintenance(sessionKey);
+      await waitForSessionMaintenance(scope.sessionKey);
     }
   });
 });
