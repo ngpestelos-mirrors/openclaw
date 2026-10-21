@@ -434,7 +434,8 @@ describe("PluginPage", () => {
 
 type BundledView = (typeof import("./logbook-view.tsx"))["Logbook"];
 function setBundledLoad(load: Promise<BundledView>) {
-  const started = createDeferred<void>();
+  const started = createDeferred();
+  // mock-isolation: Control lazy import settlement without initializing the real Logbook module.
   vi.doMock("./logbook-view.tsx", async () => {
     started.resolve();
     return { Logbook: await load };
