@@ -1,6 +1,6 @@
 import { setImmediate } from "node:timers/promises";
 import { createDeferred } from "openclaw/plugin-sdk/extension-shared";
-import { describe, expect, it, vi } from "vitest";
+import { expect, it, vi } from "vitest";
 import { withPendingWebPage } from "./web-runtime.pending-navigation.test-helper.js";
 
 function pendingFixture() {
@@ -8,122 +8,91 @@ function pendingFixture() {
   const ready = createDeferred<void>();
   const close = vi.fn<() => void>();
   const verify = vi.fn<() => Promise<void>>();
-  return {
-    opening,
-    ready,
-    close,
-    verify,
-    run: () =>
-      withPendingWebPage({ opening: opening.promise, ready: ready.promise, close, verify }),
-  };
+  const input = { opening: opening.promise, ready: ready.promise, close, verify };
+  return { ...input, opening, ready, run: () => withPendingWebPage(input) };
 }
 
-describe("QA web pending-navigation fixture", () => {
-  it("rejects acquisition that completes before the request", async () => {
-    const { opening, close, verify, run } = pendingFixture();
+it.each([false, true])("settles before readiness (rejects: %s)", async (rejects) => {
+  const { opening, close, verify, run } = pendingFixture();
+  const openError = new Error("navigation failed"),
+    rollback = new Error("rollback failed");
+  const primary = new AggregateError([openError, rollback], "open", { cause: openError });
+  const cleanup = new AggregateError([rollback], "cleanup failed");
+  if (rejects) {
+    close.mockImplementation(() => {
+      throw cleanup;
+    });
+    opening.reject(primary);
+  } else {
     opening.resolve();
-    await expect(run()).rejects.toThrow("web page acquisition completed before pending navigation");
-    expect(verify).not.toHaveBeenCalled();
-    expect(close).toHaveBeenCalledOnce();
-  });
+  }
+  const failure = await run().catch((error: unknown) => error);
+  if (rejects && failure instanceof AggregateError) {
+    expect(failure.errors).toHaveLength(2);
+    expect(failure.errors[0]).toBe(primary);
+    expect(failure.errors[1]).toBe(cleanup);
+    expect(failure.cause).toBe(primary);
+  } else if (!rejects && failure instanceof Error) {
+    expect(failure.message).toContain("web page acquisition completed before pending navigation");
+  } else {
+    throw failure;
+  }
+  expect(verify).not.toHaveBeenCalled();
+  expect(close).toHaveBeenCalledOnce();
+});
 
-  it("runs the cancellation assertion only after request readiness", async () => {
-    const { opening, ready, close, verify, run } = pendingFixture();
-    const cancelled = new Error("scenario cancelled");
-    const order: string[] = [];
-    verify.mockImplementation(async () => {
-      order.push("verify");
-      opening.reject(cancelled);
-      await expect(opening.promise).rejects.toBe(cancelled);
-    });
-    close.mockImplementation(() => {
-      order.push("close");
-    });
-    const pending = run();
-    try {
-      expect(verify).not.toHaveBeenCalled();
-      ready.resolve();
-      await pending;
-      expect(verify).toHaveBeenCalledOnce();
-      expect(order).toEqual(["verify", "close"]);
-    } finally {
-      ready.resolve();
-      opening.reject(cancelled);
-      await pending;
-    }
-  });
-
-  it.each(["assertion", "close"] as const)(
-    "cancels and joins acquisition after %s failure",
-    async (phase) => {
-      const { opening, ready, close, verify, run } = pendingFixture();
-      const cancelled = new Error("fixture cancelled");
-      const closeError = new Error("fixture close failed");
-      const assertionError = new Error("fixture assertion failed");
-      const closing = createDeferred<void>();
-      const finished = vi.fn();
-      close.mockImplementation(() => {
-        closing.resolve();
-        if (phase === "close") {
-          throw closeError;
-        }
-      });
-      verify.mockImplementation(async () => {
-        if (phase === "assertion") {
-          throw assertionError;
-        }
-      });
-      ready.resolve();
-      const pending = run()
-        .catch((error: unknown) => error)
-        .then((result) => {
-          finished();
-          return result;
-        });
-      try {
-        await Promise.race([
-          closing.promise,
-          pending.then(() => {
-            throw new Error("fixture settled before cancellation");
-          }),
-        ]);
-        await setImmediate();
-        expect(close).toHaveBeenCalledOnce();
-        expect(finished).not.toHaveBeenCalled();
-        opening.reject(cancelled);
-        await expect(pending).resolves.toBe(phase === "assertion" ? assertionError : closeError);
-        expect(finished).toHaveBeenCalledOnce();
-      } finally {
-        opening.reject(cancelled);
-        await pending;
-      }
-    },
-  );
-
-  it("preserves both acquisition and cleanup failures without waiting for readiness", async () => {
-    const { opening, close, verify, run } = pendingFixture();
-    const acquisitionError = new Error("navigation failed");
-    const rollbackError = new Error("rollback failed");
-    const primaryFailure = new AggregateError(
-      [acquisitionError, rollbackError],
-      "web page open and cleanup failed",
-      { cause: acquisitionError },
-    );
-    const closeError = new AggregateError([rollbackError], "web session cleanup failed");
-    close.mockImplementation(() => {
-      throw closeError;
-    });
-    opening.reject(primaryFailure);
-    const failure = await run().catch((error: unknown) => error);
-    expect(failure).toBeInstanceOf(AggregateError);
-    if (!(failure instanceof AggregateError)) {
+it.each(["success", "assertion", "close"])("joins acquisition after %s", async (phase) => {
+  const { opening, ready, close, verify, run } = pendingFixture();
+  const cancelled = new Error("scenario cancelled");
+  const failure = new Error(`${phase} failed`);
+  const closing = createDeferred<void>();
+  const finished = vi.fn((result: unknown) => result);
+  const order: string[] = [];
+  verify.mockImplementation(async () => {
+    order.push("verify");
+    if (phase === "assertion") {
       throw failure;
     }
-    expect(failure.errors).toHaveLength(2);
-    expect(failure.errors[0]).toBe(primaryFailure);
-    expect(failure.errors[1]).toBe(closeError);
-    expect(failure.cause).toBe(primaryFailure);
-    expect(close).toHaveBeenCalledOnce();
-    expect(verify).not.toHaveBeenCalled();
+    if (phase === "success") {
+      opening.reject(cancelled);
+      await expect(opening.promise).rejects.toBe(cancelled);
+    }
   });
+  close.mockImplementation(() => {
+    order.push("close");
+    closing.resolve();
+    if (phase === "close") {
+      throw failure;
+    }
+  });
+  const pending = run()
+    .catch((error: unknown) => error)
+    .then(finished);
+  try {
+    expect(verify).not.toHaveBeenCalled();
+    ready.resolve();
+    if (phase === "success") {
+      await expect(pending).resolves.toBeUndefined();
+    } else {
+      await Promise.race([
+        closing.promise,
+        pending.then(() => {
+          throw new Error("fixture settled before cancellation");
+        }),
+      ]);
+      await setImmediate();
+      expect(close).toHaveBeenCalledOnce();
+      expect(finished).not.toHaveBeenCalled();
+      opening.reject(cancelled);
+      await expect(pending).resolves.toBe(failure);
+    }
+    expect(verify).toHaveBeenCalledOnce();
+    expect(close).toHaveBeenCalledOnce();
+    expect(finished).toHaveBeenCalledOnce();
+    expect(order).toEqual(["verify", "close"]);
+  } finally {
+    ready.resolve();
+    opening.reject(cancelled);
+    await pending;
+  }
 });
