@@ -35,43 +35,54 @@ function installSpawnLineage(test: ReturnType<typeof fixture>) {
   };
   Object.assign(test.runtime, {
     config: { current: () => config },
-    agent: {
-      session: {
-        resolveStorePath: () => "/synthetic/sessions.json",
-        getSessionEntryAsync: async ({ sessionKey }: { sessionKey: string }) => entries[sessionKey],
-      },
-    },
+  });
+  Object.assign(test.runtime.agent.session, {
+    getSessionEntryAsync: async ({ sessionKey }: { sessionKey: string }) => entries[sessionKey],
+  });
+}
+
+async function originFixture(posts: Parameters<typeof fixture>[0]["posts"] = []) {
+  const test = fixture({ posts });
+  await openXWorkOrigins(test.runtime).registerIfAbsent(child, origin);
+  return test;
+}
+
+function guidance(test: ReturnType<typeof fixture>) {
+  const on = vi.fn<OpenClawPluginApi["on"]>();
+  registerXWorkOriginGuidance({ on, runtime: test.runtime });
+  // Invoke this registration's documented prompt-hook contract.
+  const handler = on.mock.calls[0]![1] as (
+    event: { prompt: string; messages: unknown[] },
+    ctx: { sessionKey?: string },
+  ) => Promise<{ appendSystemContext: string } | undefined>;
+  return (ctx: { sessionKey?: string }, prompt = "hello", messages: unknown[] = []) =>
+    handler({ prompt, messages }, ctx);
+}
+
+function send(sessionKey: string, to: string, message: string, params = {}) {
+  return xPlugin.actions!.handleAction!({
+    channel: "x",
+    action: "send",
+    cfg: config,
+    sessionKey,
+    params: { to, message, ...params },
   });
 }
 
 describe("X work-session origin", () => {
   it("contributes exact stable system guidance only to the recorded session", async () => {
-    const test = fixture({ posts: [] });
+    const test = await originFixture();
     const store = openXWorkOrigins(test.runtime);
-    await store.registerIfAbsent(child, origin);
     await store.registerIfAbsent(child, { ...origin, postId: "502", authorHandle: "other" });
-    const on = vi.fn<OpenClawPluginApi["on"]>();
-    registerXWorkOriginGuidance({ on, runtime: test.runtime });
-    // The fixture invokes only this registration's documented prompt-hook contract.
-    const handler = on.mock.calls[0]![1] as (
-      event: { prompt: string; messages: unknown[] },
-      ctx: { sessionKey?: string },
-    ) => Promise<{ appendSystemContext: string } | undefined>;
-    expect(await handler({ prompt: "first task", messages: [] }, { sessionKey: child })).toEqual({
+    const handler = guidance(test);
+    expect(await handler({ sessionKey: child }, "first task")).toEqual({
       appendSystemContext: expectedGuidance,
     });
-    expect(
-      await handler(
-        { prompt: "post the draft", messages: [{ role: "user" }] },
-        { sessionKey: child },
-      ),
-    ).toEqual({
+    expect(await handler({ sessionKey: child }, "post the draft", [{ role: "user" }])).toEqual({
       appendSystemContext: expectedGuidance,
     });
-    expect(
-      await handler({ prompt: "hello", messages: [] }, { sessionKey: "unrelated" }),
-    ).toBeUndefined();
-    expect(await handler({ prompt: "hello", messages: [] }, {})).toBeUndefined();
+    expect(await handler({ sessionKey: "unrelated" })).toBeUndefined();
+    expect(await handler({})).toBeUndefined();
   });
 
   it.each(
@@ -79,15 +90,9 @@ describe("X work-session origin", () => {
       { target: "501", conversation: "500", allowed: true },
       { target: "502", conversation: "500", allowed: true },
       { target: "503", conversation: "600", allowed: false },
-    ].flatMap(({ target, conversation, allowed }) =>
+    ].flatMap((scenario) =>
       ["action", "outbound"].flatMap((route) =>
-        [child, descendant].map((sessionKey) => ({
-          target,
-          conversation,
-          allowed,
-          route,
-          sessionKey,
-        })),
+        [child, descendant].map((sessionKey) => Object.assign({ route, sessionKey }, scenario)),
       ),
     ),
   )(
@@ -98,18 +103,11 @@ describe("X work-session origin", () => {
         conversation_id: conversation,
         entities: { mentions: [{ id: "100", username: "roboclawbot" }] },
       };
-      const test = fixture({ posts: [mention] });
+      const test = await originFixture([mention]);
       installSpawnLineage(test);
-      await openXWorkOrigins(test.runtime).registerIfAbsent(child, origin);
       const reply =
         route === "action"
-          ? xPlugin.actions!.handleAction!({
-              channel: "x",
-              action: "send",
-              cfg: config,
-              sessionKey,
-              params: { to: `https://x.com/config_maintainer/status/${target}`, message: "Fixed." },
-            })
+          ? send(sessionKey, `https://x.com/config_maintainer/status/${target}`, "Fixed.")
           : xPlugin.outbound!.sendText!({
               cfg: config,
               to: `x:${target}`,
@@ -127,20 +125,12 @@ describe("X work-session origin", () => {
   );
 
   it("gives visible descendants their origin's approval guidance before the first turn", async () => {
-    const test = fixture({ posts: [] });
+    const test = await originFixture();
     installSpawnLineage(test);
-    await openXWorkOrigins(test.runtime).registerIfAbsent(child, origin);
-    const on = vi.fn<OpenClawPluginApi["on"]>();
-    registerXWorkOriginGuidance({ on, runtime: test.runtime });
-    const handler = on.mock.calls[0]![1] as (
-      event: { prompt: string; messages: unknown[] },
-      ctx: { sessionKey: string },
-    ) => Promise<{ appendSystemContext: string } | undefined>;
-    expect(await handler({ prompt: "continue", messages: [] }, { sessionKey: descendant })).toEqual(
-      {
-        appendSystemContext: expectedGuidance,
-      },
-    );
+    const handler = guidance(test);
+    expect(await handler({ sessionKey: descendant }, "continue")).toEqual({
+      appendSystemContext: expectedGuidance,
+    });
     expect(await openXWorkOrigins(test.runtime).lookup(descendant)).toEqual(origin);
   });
 
@@ -150,43 +140,23 @@ describe("X work-session origin", () => {
       entities: { mentions: [{ id: "999", username: "someone_else" }] },
       referenced_tweets: [{ type: "quoted" as const, id: "600" }],
     };
-    const test = fixture({ posts: [sibling] });
+    const test = await originFixture([sibling]);
     test.api.getPosts.mockResolvedValue({
       data: [sibling],
       includes: { users: [], tweets: [post("600", "100")] },
       meta: {},
     });
-    await openXWorkOrigins(test.runtime).registerIfAbsent(child, origin);
     await expect(
-      xPlugin.actions!.handleAction!({
-        channel: "x",
-        action: "send",
-        cfg: config,
-        sessionKey: child,
-        params: {
-          to: "x:502",
-          message: "Unrelated quote",
-          sessionKey: "unrelated",
-        },
-      }),
+      send(child, "x:502", "Unrelated quote", { sessionKey: "unrelated" }),
     ).rejects.toThrow("only replies to posts");
     expect(test.api.reply).not.toHaveBeenCalled();
   });
 
   it("leaves the front door's reply path unrestricted by a child's origin", async () => {
-    const test = fixture({
-      posts: [
-        { ...post("503", "10"), entities: { mentions: [{ id: "100", username: "roboclawbot" }] } },
-      ],
-    });
-    await openXWorkOrigins(test.runtime).registerIfAbsent(child, origin);
-    await xPlugin.actions!.handleAction!({
-      channel: "x",
-      action: "send",
-      cfg: config,
-      sessionKey: "agent:maintainer:x:group:500",
-      params: { to: "x:503", message: "I am on it." },
-    });
+    const test = await originFixture([
+      { ...post("503", "10"), entities: { mentions: [{ id: "100", username: "roboclawbot" }] } },
+    ]);
+    await send("agent:maintainer:x:group:500", "x:503", "I am on it.");
     expect(test.replies).toEqual([{ text: "I am on it.", parent: "503" }]);
   });
 });
