@@ -129,6 +129,45 @@ async function expectRowRefresh(sidebar: Sidebar, change: () => void) {
 }
 
 describe("sidebar projection memo", () => {
+  it.each([10, 30])("keeps newer pagination at %s rows through cached handoff", async (limit) => {
+    const sessionsToShow = Array.from({ length: 40 }, (_, index) => session(`row-${index}`));
+    const { sidebar, sessions } = await mount(sessionsToShow);
+    const owner = getAppSidebarOwner(sidebar.hostElement)!;
+    const sectionId = sidebar
+      .querySelector("[data-session-section]")!
+      .getAttribute("data-session-section")!;
+    vi.spyOn(owner, "sidebarSnapshotSettled").mockReturnValue(false);
+    const rows = snapshotSessions(
+      sessionsToShow.map((row) => sidebar.getSessionNavigationState().toSidebarSession(row)),
+    );
+    owner.restoreSidebarSnapshot({
+      ...sidebarBootSnapshot(captureBootRoster(sessions.sessions.state)),
+      mode: "chip",
+      sessions: rows,
+      entries: [],
+      sections: [
+        {
+          id: sectionId,
+          rows: rows.slice(0, 20),
+          totalRowCount: rows.length,
+          visibleRowCount: 20,
+          visibleLimit: 20,
+          collapsedVisibleRowCount: 10,
+          renderHeader: false,
+        },
+      ],
+    });
+    owner.invalidate();
+    await settleLitElement(sidebar);
+    owner.setVisibleSessionLimit(sectionId, limit);
+    owner.releaseSidebarSnapshot();
+    owner.invalidate();
+    await settleLitElement(sidebar);
+    expect(
+      sidebar.querySelectorAll(".sidebar-session-content .sidebar-recent-session"),
+    ).toHaveLength(limit);
+  });
+
   it("keeps cached row and rail projections stable across unrelated live replies", async () => {
     const initial = session("cached");
     const { sidebar, row, publish, sessions } = await mount([initial]);

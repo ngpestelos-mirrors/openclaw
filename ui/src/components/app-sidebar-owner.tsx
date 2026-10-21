@@ -123,10 +123,15 @@ export class AppSidebarOwner extends AppSidebarSessionNavigationElement implemen
     const snapshot = this.sidebarSnapshot;
     if (snapshot) {
       this.pinnedSessions.seed(snapshot.pinnedSessions);
-      this.sessionData.visibleSessionLimits = new Map(
-        snapshot.sections.map((section) => [section.id, section.visibleLimit]),
+      const limits = snapshot.sections.map(
+        (section) => [section.id, section.visibleLimit] as const,
       );
-      this.rosterVisibleSessionLimits = new Map(this.sessionData.visibleSessionLimits);
+      // Pagination chosen while cached takes precedence over the saved view.
+      this.sessionData.visibleSessionLimits = new Map([
+        ...limits,
+        ...this.sessionData.visibleSessionLimits,
+      ]);
+      this.rosterVisibleSessionLimits = new Map([...limits, ...this.rosterVisibleSessionLimits]);
     }
     this.sidebarPluginSnapshot =
       snapshot && this.context.plugins.registryStatus !== "complete"
