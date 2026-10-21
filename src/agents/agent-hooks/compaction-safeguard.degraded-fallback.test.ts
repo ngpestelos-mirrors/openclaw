@@ -14,28 +14,15 @@ import {
   expectCompactionResult,
 } from "./compaction-safeguard.test-support.js";
 
-const { compactionLogger } = vi.hoisted(() => {
-  const logger = {
-    subsystem: "compaction-safeguard",
-    isEnabled: vi.fn(() => false),
-    trace: vi.fn(),
-    debug: vi.fn(),
-    info: vi.fn(),
-    warn: vi.fn(),
-    error: vi.fn(),
-    fatal: vi.fn(),
-    raw: vi.fn(),
-    child: vi.fn(),
+const { warn } = vi.hoisted(() => ({ warn: vi.fn() }));
+vi.mock("../../logging/subsystem.js", async (importOriginal) => {
+  const { createMockSubsystemLogger } =
+    await import("../../../test/helpers/mock-subsystem-logger.js");
+  const compactionLogger = createMockSubsystemLogger("compaction-safeguard", { warn });
+  return {
+    ...(await importOriginal<typeof import("../../logging/subsystem.js")>()),
+    createSubsystemLogger: () => compactionLogger,
   };
-  logger.child.mockReturnValue(logger);
-  return { compactionLogger: logger };
-});
-
-vi.mock("../../logging/subsystem.js", async () => {
-  const actual = await vi.importActual<typeof import("../../logging/subsystem.js")>(
-    "../../logging/subsystem.js",
-  );
-  return { ...actual, createSubsystemLogger: () => compactionLogger };
 });
 
 const { MAX_COMPACTION_SUMMARY_CHARS, CONTEXT_TRUNCATED_MARKER } = testing;
@@ -44,13 +31,27 @@ const mockSummarizeCompactionHistory = vi.fn<typeof summarizeCompactionHistory>(
 beforeEach(() => {
   mockSummarizeCompactionHistory.mockReset();
   testing.setSummarizeCompactionHistoryForTest(mockSummarizeCompactionHistory);
-  compactionLogger.warn.mockClear();
+  warn.mockClear();
 });
 afterEach(() => testing.setSummarizeCompactionHistoryForTest());
 
-// qualityGuardMaxRetries: 0 makes the first failed audit final, so the terminal path runs.
-const terminalAttemptSession = (recentTurnsPreserve = 0) =>
-  createQualityGuardSessionManager({ recentTurnsPreserve, qualityGuardMaxRetries: 0 });
+async function degradedSummary(
+  event: Parameters<typeof createCompactionEvent>[0],
+  session = createQualityGuardSessionManager({ qualityGuardMaxRetries: 0 }),
+) {
+  const { result } = await runCompactionScenario(session, createCompactionEvent(event));
+  expect(result).toMatchObject({ compaction: { details: { qualityDegraded: true } } });
+  expect(consumeCompactionSafeguardCancellation(session)).toBeNull();
+  const { summary } = expectCompactionResult(result);
+  expect(summary.length).toBeLessThanOrEqual(MAX_COMPACTION_SUMMARY_CHARS);
+  return summary;
+}
+
+function expectSummaryContains(summary: string, ...fragments: string[]) {
+  for (const fragment of fragments) {
+    expect(summary).toContain(fragment);
+  }
+}
 
 describe("compaction-safeguard degraded fallback", () => {
   it.each(["branch read", "context projection"] as const)(
@@ -81,11 +82,9 @@ describe("compaction-safeguard degraded fallback", () => {
           },
         ];
       };
-      const event = createCompactionEvent({ preparation: { messagesToSummarize: [] } });
-
       const { result, getApiKeyAndHeadersMock } = await runCompactionScenario(
         sessionManager,
-        event,
+        createCompactionEvent({ preparation: { messagesToSummarize: [] } }),
       );
 
       expect(result).toEqual({ cancel: true });
@@ -93,7 +92,7 @@ describe("compaction-safeguard degraded fallback", () => {
         reason: "session history inspection failed",
         error: failure,
       });
-      expect(compactionLogger.warn).toHaveBeenCalledWith(
+      expect(warn).toHaveBeenCalledWith(
         expect.stringContaining("session history inspection failed"),
       );
       expect(getApiKeyAndHeadersMock).not.toHaveBeenCalled();
@@ -101,12 +100,9 @@ describe("compaction-safeguard degraded fallback", () => {
     },
   );
 
-  it.each([
-    { name: "source ask", runOwnedRequest: false },
-    { name: "run-owned request", runOwnedRequest: true },
-  ])(
-    "degrades with the $name when an identifier cannot fit the artifact cap",
-    async ({ runOwnedRequest }) => {
+  it.each([false, true])(
+    "degrades when an identifier exceeds the cap (run-owned request: %s)",
+    async (runOwnedRequest) => {
       const latestAsk = "preserve the pending deployment status";
       const identifier = `https://example.com/${"a".repeat(MAX_COMPACTION_SUMMARY_CHARS)}`;
       const fittingIdentifier = "/var/log/deploy-status.log";
@@ -114,70 +110,38 @@ describe("compaction-safeguard degraded fallback", () => {
         structuredSummary({ asks: latestAsk, identifiers: identifier }),
       );
 
-      const sessionManager = terminalAttemptSession();
-      const { result } = await runCompactionScenario(
-        sessionManager,
-        createCompactionEvent({
-          preparation: {
-            messagesToSummarize: [
-              userMessage(`the status log is ${fittingIdentifier}`, 1),
-              userMessage(`${latestAsk} ${identifier}`, 2),
-            ],
-            // The session owner bounds a run-owned request to 800 chars before it gets here.
-            ...(runOwnedRequest ? { latestUnresolvedUserRequest: latestAsk } : {}),
-          },
-        }),
-      );
+      const summary = await degradedSummary({
+        preparation: {
+          messagesToSummarize: [
+            userMessage(`the status log is ${fittingIdentifier}`, 1),
+            userMessage(`${latestAsk} ${identifier}`, 2),
+          ],
+          // The session owner bounds a run-owned request to 800 chars before it gets here.
+          ...(runOwnedRequest ? { latestUnresolvedUserRequest: latestAsk } : {}),
+        },
+      });
 
-      // Cancelling here left the session permanently uncompactable: the required facts
-      // never shrink, so every later attempt hits the same wall. Both terminal quality
-      // paths now commit the same bounded artifact and mark it as degraded.
-      expect(result).toMatchObject({ compaction: { details: { qualityDegraded: true } } });
-      // Identifiers are best-effort on this path and the request context is bounded, so an
-      // identifier that cannot fit must not take the request down with it.
-      const summary = expectCompactionResult(result).summary;
-      expect(summary).toContain("Latest user request context:");
-      expect(summary).toContain(latestAsk);
-      expect(summary).toContain(fittingIdentifier);
+      // Oversized identifiers must not leave the session permanently uncompactable.
+      expectSummaryContains(summary, "Latest user request context:", latestAsk, fittingIdentifier);
       expect(summary).not.toContain(identifier);
-      expect(summary.length).toBeLessThanOrEqual(MAX_COMPACTION_SUMMARY_CHARS);
-      expect(compactionLogger.warn).toHaveBeenCalledWith(
-        expect.stringMatching(/loss=.*identifier-retention/),
-      );
+      expect(warn).toHaveBeenCalledWith(expect.stringMatching(/loss=.*identifier-retention/));
       expect(mockSummarizeCompactionHistory).toHaveBeenCalledTimes(1);
-      expect(consumeCompactionSafeguardCancellation(sessionManager)).toBeNull();
     },
   );
 
-  it("carries the pending ask and identifiers into the degraded fallback and logs its reasonCode", async () => {
+  it("retains the pending ask and identifiers and logs the degraded reasonCode", async () => {
     const latestAsk = "confirm the staging rollback finished";
     const identifier = "/tmp/degraded-retention.log";
-    // A summary the audit rejects (no required headings), with facts small enough to fit.
     mockSummarizeCompactionHistory.mockResolvedValue("Core summary without headings");
+    const summary = await degradedSummary({ messageText: `${latestAsk} ${identifier}` });
 
-    const sessionManager = terminalAttemptSession();
-    const { result } = await runCompactionScenario(
-      sessionManager,
-      createCompactionEvent({ messageText: `${latestAsk} ${identifier}` }),
-    );
-
-    // The degrade is lossy on purpose, but the pending request and exact identifiers are
-    // the facts worth carrying across a compaction. Finalizing without the retention plan
-    // dropped both and stored only the empty fallback template.
-    expect(result).toMatchObject({ compaction: { details: { qualityDegraded: true } } });
-    const summary = expectCompactionResult(result).summary;
-    expect(summary).toContain("Core summary without headings");
-    expect(summary).toContain(latestAsk);
-    expect(summary).toContain(identifier);
-    // Operators and dashboards branch on this marker; pin it so a refactor of the helper's
-    // log contract cannot drop it silently.
-    expect(compactionLogger.warn).toHaveBeenCalledWith(
+    expectSummaryContains(summary, "Core summary without headings", latestAsk, identifier);
+    expect(warn).toHaveBeenCalledWith(
       expect.stringContaining("reasonCode=quality_guard_degraded_fallback"),
     );
-    expect(consumeCompactionSafeguardCancellation(sessionManager)).toBeNull();
   });
 
-  it("keeps the stronger generated summary when a corrective retry loses more context", async () => {
+  it("keeps the stronger summary when a corrective retry loses context", async () => {
     const better = structuredSummary({ decisions: "Keep the blue deployment." }).replace(
       "## Exact identifiers",
       "Identifiers",
@@ -185,24 +149,20 @@ describe("compaction-safeguard degraded fallback", () => {
     mockSummarizeCompactionHistory
       .mockResolvedValueOnce(better)
       .mockResolvedValueOnce("Unrelated retry without sections.");
-    const { result } = await runCompactionScenario(
+    const summary = await degradedSummary(
+      { messageText: "confirm deployment status" },
       createQualityGuardSessionManager({ recentTurnsPreserve: 0, qualityGuardMaxRetries: 1 }),
-      createCompactionEvent({ messageText: "confirm deployment status" }),
     );
-    expect(result).toMatchObject({ compaction: { details: { qualityDegraded: true } } });
-    const summary = expectCompactionResult(result).summary;
-    expect(summary).toContain("Keep the blue deployment.");
+    expectSummaryContains(summary, "Keep the blue deployment.", "confirm deployment status");
     expect(summary).not.toContain("Unrelated retry");
     expect(summary.match(/^## Pending user asks$/gm)).toHaveLength(1);
-    expect(summary).toContain("confirm deployment status");
     expect(mockSummarizeCompactionHistory).toHaveBeenCalledTimes(2);
   });
 
-  it("keeps the generated split-turn context when a terminal audit failure trims the degraded suffix", async () => {
+  it("keeps generated split-turn context when a terminal audit trims the suffix", async () => {
     const latestAsk = "roll back the api deployment and confirm health";
     const activeTurn = "Active turn: rolled back api-7 and is waiting on the health check.";
-    // Twelve long preserved turns, the file lists and the split-turn summary each fill their
-    // own cap, so the degraded suffix alone outgrows the artifact and must be trimmed.
+    // Fill each cap so the suffix alone exceeds the artifact budget.
     const files = (kind: string) =>
       Array.from({ length: 40 }, (_, index) => `/srv/app/${kind}/module-${index}.ts`);
     const history = Array.from({ length: 14 }, (_, turn) => [
@@ -223,16 +183,18 @@ describe("compaction-safeguard degraded fallback", () => {
       },
     });
     Object.assign(event.preparation.fileOps, { read: files("read"), edited: files("edit") });
-    const { result } = await runCompactionScenario(terminalAttemptSession(12), event);
-
-    expect(result).toMatchObject({ compaction: { details: { qualityDegraded: true } } });
-    const summary = expectCompactionResult(result).summary;
+    const summary = await degradedSummary(
+      event,
+      createQualityGuardSessionManager({ recentTurnsPreserve: 12, qualityGuardMaxRetries: 0 }),
+    );
     // Capping the suffix by its tail used to drop the active split turn first.
-    expect(summary).toContain(`**Turn Context (split turn):**\n\n${activeTurn}`);
-    expect(summary).toContain(latestAsk);
-    expect(summary).toContain(CONTEXT_TRUNCATED_MARKER.trim());
-    expect(summary).toContain("reply 13 ");
-    expect(summary.length).toBeLessThanOrEqual(MAX_COMPACTION_SUMMARY_CHARS);
+    expectSummaryContains(
+      summary,
+      `**Turn Context (split turn):**\n\n${activeTurn}`,
+      latestAsk,
+      CONTEXT_TRUNCATED_MARKER.trim(),
+      "reply 13 ",
+    );
     expect(mockSummarizeCompactionHistory).toHaveBeenCalledTimes(2);
   });
 });
