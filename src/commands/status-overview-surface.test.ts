@@ -43,10 +43,8 @@ describe("status-overview-surface", () => {
         agentsValue: "2 total",
         updateValue: "available · custom update",
         gatewayAuthWarningValue: "warn(warn-text)",
-        gatewaySelfFallbackValue: "gateway-self",
         includeDnsNameWhenOff: true,
         decorateOk: (value) => `ok(${value})`,
-        decorateWarn: (value) => `warn(${value})`,
         decorateTailscaleOff: (value) => `muted(${value})`,
       }),
     ).toEqual([

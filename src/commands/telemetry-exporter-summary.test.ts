@@ -13,7 +13,11 @@ function event(seq: number, fields: Record<string, unknown>) {
   };
 }
 
-function expectSummary(events: unknown[], status: "ok" | "warn", lines: string[]) {
+function expectSummary(
+  events: readonly unknown[],
+  status: "ok" | "warn",
+  lines: readonly string[],
+) {
   const summary = formatTelemetryExporterSummary({ events });
   expect(summary).toEqual({ title: "Telemetry exporters", status, lines });
   return summary;
@@ -23,11 +27,7 @@ describe("formatTelemetryExporterSummary", () => {
   it("renders bounded redacted exporter facts without misattribution", () => {
     const summary = expectSummary(
       [
-        event(1, {
-          source: "https://spoofed.example",
-          target: "traces",
-          reason: "export_failed",
-        }),
+        event(1, { source: "https://spoofed.example" }),
         event(2, {
           target: "traces",
           outcome: "recovered",
@@ -50,11 +50,7 @@ describe("formatTelemetryExporterSummary", () => {
           outcome: "started",
           reason: "configured",
         }),
-        event(5, {
-          transport: "stdout",
-          outcome: "started",
-          reason: "configured",
-        }),
+        event(5, { transport: "stdout", outcome: "started" }),
       ],
       "warn",
       [
@@ -64,43 +60,35 @@ describe("formatTelemetryExporterSummary", () => {
         "diagnostics-prometheus · metrics · failed · prometheus-scrape · handler failed",
       ],
     );
-    expect(JSON.stringify(summary)).not.toContain("collector.example");
-    expect(JSON.stringify(summary)).not.toContain("secret");
-    expect(JSON.stringify(summary)).not.toContain("raw collector failure");
-    expect(JSON.stringify(summary)).not.toContain("spoofed.example");
-  });
-
-  it("warns for a final exporter failure", () => {
-    expectSummary([event(1, { reason: "shutdown_failed", mode: "configured" })], "warn", [
-      "diagnostics-otel · logs · failed · OTLP/HTTP protobuf (explicit endpoint) · shutdown failed",
-    ]);
-  });
-
-  it("renders startup failures with explicit and dependency-default ownership", () => {
-    expectSummary(
-      [
-        event(1, {
-          target: "traces",
-          reason: "start_failed",
-          mode: "default_endpoint",
-        }),
-        event(2, {
-          target: "metrics",
-          reason: "start_failed",
-          mode: "configured",
-        }),
-      ],
-      "warn",
-      [
-        "diagnostics-otel · traces · failed · OTLP/HTTP protobuf (dependency default endpoint) · start failed",
-        "diagnostics-otel · metrics · failed · OTLP/HTTP protobuf (explicit endpoint) · start failed",
-      ],
+    expect(JSON.stringify(summary)).not.toMatch(
+      /collector\.example|secret|raw collector failure|spoofed\.example/,
     );
   });
 
-  it("renders stdout recovery without exposing failure details", () => {
-    expectSummary(
-      [
+  it.each([
+    {
+      name: "final exporter failure",
+      events: [event(1, { reason: "shutdown_failed", mode: "configured" })],
+      status: "warn",
+      lines: [
+        "diagnostics-otel · logs · failed · OTLP/HTTP protobuf (explicit endpoint) · shutdown failed",
+      ],
+    },
+    {
+      name: "startup failures with explicit and dependency-default ownership",
+      events: [
+        event(1, { target: "traces", reason: "start_failed", mode: "default_endpoint" }),
+        event(2, { target: "metrics", reason: "start_failed", mode: "configured" }),
+      ],
+      status: "warn",
+      lines: [
+        "diagnostics-otel · traces · failed · OTLP/HTTP protobuf (dependency default endpoint) · start failed",
+        "diagnostics-otel · metrics · failed · OTLP/HTTP protobuf (explicit endpoint) · start failed",
+      ],
+    },
+    {
+      name: "stdout recovery without exposing failure details",
+      events: [
         event(1, {
           transport: "stdout",
           outcome: "recovered",
@@ -108,9 +96,11 @@ describe("formatTelemetryExporterSummary", () => {
           error: "private stdout details",
         }),
       ],
-      "ok",
-      ["diagnostics-otel · logs · recovered · stdout · after emit failure"],
-    );
+      status: "ok",
+      lines: ["diagnostics-otel · logs · recovered · stdout · after emit failure"],
+    },
+  ] as const)("renders $name", ({ events, status, lines }) => {
+    expectSummary(events, status, lines);
   });
 
   it("renders safe unknown transports and redacts unsafe ones", () => {
@@ -120,7 +110,6 @@ describe("formatTelemetryExporterSummary", () => {
           source: "custom_exporter",
           transport: "vendor-proto",
           outcome: "started",
-          reason: "configured",
         }),
         event(2, {
           source: "second_exporter",
