@@ -24,6 +24,12 @@ import {
 import "./chat-ci-details.ts";
 import "./chat-ci-automation-control.ts";
 
+const CHECK_ROLLUP = {
+  failing: ["failed", "chat.pullRequests.checksFailed", "circleX"],
+  pending: ["running", "chat.pullRequests.checksRunning", "loader"],
+  passing: ["passed", "chat.pullRequests.checksPassed", "check"],
+} as const;
+
 export function PullRequestActions(props: {
   label: string;
   disabled: boolean;
@@ -82,28 +88,13 @@ export function PullRequestActions(props: {
     if (!current) {
       return undefined;
     }
-    if (current.state === "failing" && current.failed > 0) {
+    const [state, label, icon] = CHECK_ROLLUP[current.state];
+    if (current[state] > 0) {
       return {
-        label: t("chat.pullRequests.checksFailed"),
-        count: current.failed,
-        icon: "circleX",
-        state: "failed",
-      } as const;
-    }
-    if (current.state === "pending" && current.running > 0) {
-      return {
-        label: t("chat.pullRequests.checksRunning"),
-        count: current.running,
-        icon: "loader",
-        state: "running",
-      } as const;
-    }
-    if (current.state === "passing" && current.passed > 0) {
-      return {
-        label: t("chat.pullRequests.checksPassed"),
-        count: current.passed,
-        icon: "check",
-        state: "passed",
+        label: t(label),
+        count: current[state],
+        icon,
+        state,
       } as const;
     }
     if (current.skipped > 0) {
