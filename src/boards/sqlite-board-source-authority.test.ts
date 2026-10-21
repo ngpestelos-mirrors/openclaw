@@ -39,61 +39,56 @@ async function fixture() {
   const result = await authorize();
   expect(result.error).toBeNull();
   const authorization = result.authorization!;
-  const write = (name: string) =>
-    store.putWidget(
-      { ...target, name, content: { kind: "html", html: name } },
-      { assertCurrent: authorization.assertCurrent },
-    );
-  return { source, target, store, memberId, authorize, authorization, write };
+  const options = { assertCurrent: authorization.assertCurrent };
+  const write = (
+    name: string,
+    declared?: Parameters<SqliteBoardStore["putWidget"]>[0]["declared"],
+  ) =>
+    store.putWidget({ ...target, name, content: { kind: "html", html: name }, declared }, options);
+  return { source, target, store, memberId, authorize, authorization, options, write };
 }
 
-it("uses retained source facts for every Board mutation and agrees with cold authorization after revocation", async () => {
-  await withOpenClawTestState({ scenario: "minimal" }, async () => {
-    const { source, target, store, memberId, authorize, authorization, write } = await fixture();
+function withFixture(run: (context: Awaited<ReturnType<typeof fixture>>) => Promise<void>) {
+  return withOpenClawTestState({ scenario: "minimal" }, async () => {
+    const context = await fixture();
     try {
-      const host = observeHostDataSql();
-      try {
-        const put = await store.putWidget(
-          {
-            ...target,
-            name: "allowed",
-            content: { kind: "html", html: "allowed" },
-            declared: { tools: ["health"] },
-          },
-          { assertCurrent: authorization.assertCurrent },
-        );
-        await store.applyOps(
-          target,
-          [{ kind: "widget_resize", name: "allowed", sizeW: 8, sizeH: 6 }],
-          { assertCurrent: authorization.assertCurrent },
-        );
-        await store.grant(target, "allowed", "granted", 1, put.widgets[0]?.instanceId, {
-          assertCurrent: authorization.assertCurrent,
-        });
-        expect(host.queries).toEqual([]);
-      } finally {
-        host.restore();
-      }
-      await removeSessionMember(source, memberId);
-      await expect(write("denied")).rejects.toThrow();
-      const cold = await authorize();
-      try {
-        expect(cold.error).not.toBeNull();
-      } finally {
-        cold.authorization?.release?.();
-      }
-      expect((await store.getSnapshot(target)).widgets).toMatchObject([
-        { name: "allowed", sizeW: 8, sizeH: 6, grantState: "granted" },
-      ]);
+      await run(context);
     } finally {
-      authorization.release?.();
+      context.authorization.release?.();
     }
   });
-});
+}
 
-it("finishes an admitted cross-database write after source revocation and denies the next write", async () => {
-  await withOpenClawTestState({ scenario: "minimal" }, async () => {
-    const { source, target, store, memberId, authorization, write } = await fixture();
+it("uses retained source facts for every Board mutation and agrees with cold authorization after revocation", () =>
+  withFixture(async ({ source, target, store, memberId, authorize, options, write }) => {
+    const host = observeHostDataSql();
+    try {
+      const put = await write("allowed", { tools: ["health"] });
+      await store.applyOps(
+        target,
+        [{ kind: "widget_resize", name: "allowed", sizeW: 8, sizeH: 6 }],
+        options,
+      );
+      await store.grant(target, "allowed", "granted", 1, put.widgets[0]?.instanceId, options);
+      expect(host.queries).toEqual([]);
+    } finally {
+      host.restore();
+    }
+    await removeSessionMember(source, memberId);
+    await expect(write("denied")).rejects.toThrow();
+    const cold = await authorize();
+    try {
+      expect(cold.error).not.toBeNull();
+    } finally {
+      cold.authorization?.release?.();
+    }
+    expect((await store.getSnapshot(target)).widgets).toMatchObject([
+      { name: "allowed", sizeW: 8, sizeH: 6, grantState: "granted" },
+    ]);
+  }));
+
+it("finishes an admitted cross-database write after source revocation and denies the next write", () =>
+  withFixture(async ({ source, target, store, memberId, write }) => {
     let revoked = false;
     const interception = probe.admission(admission, (request, grant, admit) => {
       if (request.stage === "transaction" && !revoked) {
@@ -110,14 +105,11 @@ it("finishes an admitted cross-database write after source revocation and denies
       expect((await store.getSnapshot(target)).widgets).toMatchObject([{ name: "in-flight" }]);
     } finally {
       interception.mockRestore();
-      authorization.release?.();
     }
-  });
-});
+  }));
 
-it("denies new Board admissions while a source revocation is pending and after unknown settlement", async () => {
-  await withOpenClawTestState({ scenario: "minimal" }, async () => {
-    const { source, target, store, authorization, write } = await fixture();
+it("denies new Board admissions while a source revocation is pending and after unknown settlement", () =>
+  withFixture(async ({ source, target, store, write }) => {
     const database = openOpenClawAgentDatabase({ agentId: source.agentId });
     const identity = readOpenClawAgentDatabaseIdentity(database).identity;
     if (typeof identity !== "string") {
@@ -136,7 +128,5 @@ it("denies new Board admissions while a source revocation is pending and after u
       expect((await store.getSnapshot(target)).widgets).toEqual([]);
     } finally {
       publication.settle(undefined, false);
-      authorization.release?.();
     }
-  });
-});
+  }));

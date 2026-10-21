@@ -20,6 +20,8 @@ function makeWidget(name: string, tabId: string, position: number): BoardLayout[
     revision: 1,
   };
 }
+const apply = (...ops: Parameters<typeof applyBoardOps>[1]) => applyBoardOps(layout(), ops);
+const tabIds = (state: BoardLayout) => state.tabs.map((tab) => tab.tabId);
 
 function layout(): BoardLayout {
   return {
@@ -78,59 +80,47 @@ describe("board layout", () => {
   });
 
   it("reorders widgets by position and after anchors, including cross-tab moves", () => {
-    const reordered = applyBoardOps(layout(), [
+    const reordered = apply(
       { kind: "widget_move", name: "beta", position: 0 },
       { kind: "widget_move", name: "gamma", tabId: "one", after: "beta" },
-    ]);
+    );
     expect(widgetOrder(reordered, "one")).toEqual(["beta", "gamma", "alpha"]);
     expect(widgetOrder(reordered, "two")).toEqual([]);
   });
 
   it("rejects missing and self after anchors", () => {
-    expect(() =>
-      applyBoardOps(layout(), [{ kind: "widget_move", name: "alpha", after: "missing" }]),
-    ).toThrow(BoardValidationError);
-    expect(() =>
-      applyBoardOps(layout(), [{ kind: "widget_move", name: "alpha", after: "alpha" }]),
-    ).toThrow("after itself");
+    const move = (after: string) => apply({ kind: "widget_move", name: "alpha", after });
+    expect(() => move("missing")).toThrow(BoardValidationError);
+    expect(() => move("alpha")).toThrow("after itself");
   });
 
   it("clamps widget sizes to the grid bounds", () => {
-    const resized = applyBoardOps(layout(), [
-      { kind: "widget_resize", name: "alpha", sizeW: 99, sizeH: -5 },
-    ]);
-    const widget = resized.widgets.find((candidate) => candidate.name === "alpha");
-    expect(widget).toMatchObject({ sizeW: 12, sizeH: 1 });
+    const resized = apply({ kind: "widget_resize", name: "alpha", sizeW: 99, sizeH: -5 });
+    expect(resized.widgets.find((widget) => widget.name === "alpha")).toMatchObject({
+      sizeW: 12,
+      sizeH: 1,
+    });
   });
 
   it("moves deleted-tab widgets to the first remaining tab", () => {
-    const next = applyBoardOps(layout(), [{ kind: "tab_delete", tabId: "one" }]);
-    expect(next.tabs.map((tab) => tab.tabId)).toEqual(["two"]);
+    const next = apply({ kind: "tab_delete", tabId: "one" });
+    expect(tabIds(next)).toEqual(["two"]);
     expect(widgetOrder(next, "two")).toEqual(["gamma", "alpha", "beta"]);
   });
 
   it("allows deleting the last empty tab but rejects deleting it with widgets", () => {
-    expect(
-      applyBoardOps(
-        { tabs: [{ tabId: "main", title: "Main", position: 0, chatDock: "right" }], widgets: [] },
-        [{ kind: "tab_delete", tabId: "main" }],
-      ).tabs,
-    ).toEqual([]);
-    expect(() =>
-      applyBoardOps({ ...layout(), tabs: [layout().tabs[0]!], widgets: [layout().widgets[0]!] }, [
-        { kind: "tab_delete", tabId: "one" },
-      ]),
-    ).toThrow("last board tab");
+    const state = layout();
+    state.tabs = state.tabs.slice(0, 1);
+    state.widgets = state.widgets.slice(0, 1);
+    const remove = () => applyBoardOps(state, [{ kind: "tab_delete", tabId: "one" }]);
+    expect(remove).toThrow("last board tab");
+    state.widgets = [];
+    expect(remove().tabs).toEqual([]);
   });
 
   it("requires tabs_reorder to be an exact permutation", () => {
-    expect(
-      applyBoardOps(layout(), [{ kind: "tabs_reorder", tabIds: ["two", "one"] }]).tabs.map(
-        (tab) => tab.tabId,
-      ),
-    ).toEqual(["two", "one"]);
-    expect(() =>
-      applyBoardOps(layout(), [{ kind: "tabs_reorder", tabIds: ["one", "one"] }]),
-    ).toThrow("every tab exactly once");
+    const reorder = (ids: string[]) => apply({ kind: "tabs_reorder", tabIds: ids });
+    expect(tabIds(reorder(["two", "one"]))).toEqual(["two", "one"]);
+    expect(() => reorder(["one", "one"])).toThrow("every tab exactly once");
   });
 });

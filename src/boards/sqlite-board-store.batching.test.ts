@@ -36,55 +36,32 @@ afterEach(async () => {
   closeOpenClawStateDatabaseForTest();
 });
 
+const tabIds = Array.from({ length: 130 }, (_, index) => `tab-${index}`);
+const createTabs = tabIds.map((tabId) => ({ kind: "tab_create" as const, tabId, title: tabId }));
+const deleteTabs = tabIds.map((tabId) => ({ kind: "tab_delete" as const, tabId }));
+
 it("round-trips and removes a board with many tabs", async () => {
   const store = createTestBoardStore();
   const target = { sessionKey: "agent:main:many-tabs" };
-  const tabIds = Array.from({ length: 130 }, (_, index) => `tab-${index}`);
-  const created = await store.applyOps(
-    target,
-    tabIds.map((tabId) => ({ kind: "tab_create", tabId, title: tabId })),
-  );
+  const empty = { ...target, tabs: [], widgets: [] };
+  const created = await store.applyOps(target, createTabs);
   expect(created.tabs.map((tab) => tab.tabId)).toEqual(tabIds);
   expect(await store.getSnapshot(target)).toEqual(created);
-  expect(
-    await store.applyOps(
-      target,
-      tabIds.map((tabId) => ({ kind: "tab_delete", tabId })),
-    ),
-  ).toEqual({
-    ...target,
-    revision: 2,
-    tabs: [],
-    widgets: [],
-  });
-  expect(await store.getSnapshot(target)).toEqual({
-    ...target,
-    revision: 0,
-    tabs: [],
-    widgets: [],
-  });
+  expect(await store.applyOps(target, deleteTabs)).toEqual({ ...empty, revision: 2 });
+  expect(await store.getSnapshot(target)).toEqual({ ...empty, revision: 0 });
 });
 
 it("rolls back late board writes and preserves surviving widget documents", async () => {
   const stateDir = tempDirs.make("openclaw-board-batch-rollback-");
   const env = { OPENCLAW_STATE_DIR: stateDir };
-  const sessionKey = "agent:main:batch-rollback";
+  const target = { sessionKey: "agent:main:batch-rollback" };
   const store = createTestBoardStore({ stateDir });
-
-  const tabIds = Array.from({ length: 130 }, (_, index) => `tab-${index}`);
-  await store.applyOps(
-    { sessionKey },
-    tabIds.map((tabId) => ({
-      kind: "tab_create",
-      tabId,
-      title: tabId,
-    })),
-  );
-  const widgetNames = tabIds.slice(0, 48);
-  for (const name of widgetNames) {
-    await store.putWidget({ sessionKey, name, content: { kind: "html", html: name } });
+  await store.applyOps(target, createTabs);
+  const names = tabIds.slice(0, 48);
+  for (const name of names) {
+    await store.putWidget({ ...target, name, content: { kind: "html", html: name } });
   }
-  const before = await store.getSnapshot({ sessionKey });
+  const before = await store.getSnapshot(target);
   const database = openOpenClawAgentDatabase({ agentId: "main", env });
   const readRows = () => ({
     tabs: database.db.prepare("SELECT * FROM board_tabs ORDER BY session_key, tab_id").all(),
@@ -99,34 +76,23 @@ it("rolls back late board writes and preserves surviving widget documents", asyn
   );
   fault.enable(0);
   await expect(
-    store.applyOps({ sessionKey }, [
-      {
-        kind: "tab_update",
-        tabId: "tab-0",
-        title: "changed",
-      },
-    ]),
+    store.applyOps(target, [{ kind: "tab_update", tabId: "tab-0", title: "changed" }]),
   ).rejects.toThrow("late tab write");
-  expect(changes).toEqual([]);
-  expect(readRows()).toEqual(beforeRows);
+  expect({ changes, ...readRows() }).toEqual({ changes: [], ...beforeRows });
   fault.disable();
-  expect(await store.getSnapshot({ sessionKey })).toEqual(before);
+  expect(await store.getSnapshot(target)).toEqual(before);
 
-  const removedNames = widgetNames.slice(0, -1);
-  const removeOps = removedNames.map((name) => ({ kind: "widget_remove" as const, name }));
+  const removeOps = names.slice(0, -1).map((name) => ({ kind: "widget_remove" as const, name }));
   fault.enable(1);
-  await expect(store.applyOps({ sessionKey }, removeOps)).rejects.toThrow("late widget delete");
-  expect(changes).toEqual([]);
-  expect(readRows()).toEqual(beforeRows);
+  await expect(store.applyOps(target, removeOps)).rejects.toThrow("late widget delete");
+  expect({ changes, ...readRows() }).toEqual({ changes: [], ...beforeRows });
   fault.disable();
-  const removed = await store.applyOps({ sessionKey }, removeOps);
+  const removed = await store.applyOps(target, removeOps);
   expect(changes).toEqual([
-    { change: { sessionKey, storePath: database.path }, inTransaction: false },
+    { change: { ...target, storePath: database.path }, inTransaction: false },
   ]);
   expect(removed.widgets.map((widget) => widget.name)).toEqual(["tab-47"]);
-  expect(await store.getSnapshot({ sessionKey })).toEqual(removed);
-  expect(await readBoardHtml(store, { sessionKey }, "tab-47")).toMatchObject({
-    html: "tab-47",
-  });
-  expect(await readBoardHtml(store, { sessionKey }, "tab-46")).toBeUndefined();
+  expect(await store.getSnapshot(target)).toEqual(removed);
+  expect(await readBoardHtml(store, target, "tab-47")).toMatchObject({ html: "tab-47" });
+  expect(await readBoardHtml(store, target, "tab-46")).toBeUndefined();
 });
