@@ -101,23 +101,20 @@ export function loginHarness(
   return { ...harness, answer, cancel, status };
 }
 
-export async function openPicker(page: ModelProvidersPageTestElement) {
-  await waitForSolid(() => expect(page.view.props.updatedAt).toEqual(expect.any(Number)));
-  await waitForSolid(() =>
-    expect(page.querySelector<HTMLButtonElement>("[data-models-connect]")?.disabled).toBe(false),
-  );
-  page.querySelector<HTMLButtonElement>("[data-models-connect]")!.click();
+async function clickEnabled(page: ModelProvidersPageTestElement, selector: string) {
+  const button = () => page.querySelector<HTMLButtonElement>(selector);
+  await waitForSolid(() => expect(button()?.disabled).toBe(false));
+  button()!.click();
   await page.updateComplete;
 }
 
+export async function openPicker(page: ModelProvidersPageTestElement) {
+  await waitForSolid(() => expect(page.view.props.updatedAt).toEqual(expect.any(Number)));
+  await clickEnabled(page, "[data-models-connect]");
+}
+
 export async function selectProvider(page: ModelProvidersPageTestElement, provider: string) {
-  await waitForSolid(() =>
-    expect(
-      page.querySelector<HTMLButtonElement>(`[data-models-login-provider="${provider}"]`)?.disabled,
-    ).toBe(false),
-  );
-  page.querySelector<HTMLButtonElement>(`[data-models-login-provider="${provider}"]`)!.click();
-  await page.updateComplete;
+  await clickEnabled(page, `[data-models-login-provider="${provider}"]`);
 }
 
 export async function chooseLogin(page: ModelProvidersPageTestElement, label = "Example API key") {
