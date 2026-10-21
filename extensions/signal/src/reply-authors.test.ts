@@ -61,7 +61,7 @@ function installRuntime() {
 
 it.each(["lookup", "register"] as const)("retains memory after %s fails", async (stage) => {
   const { runtime, logger } = installRuntime();
-  const store = runtime.state.openKeyedStoreV2({ namespace: "failures" });
+  const store = runtime.state.openKeyedStoreV2({ namespace: "failures", maxEntries: 10 });
   vi.spyOn(runtime.state, "openKeyedStoreV2").mockReturnValue(store);
   vi.spyOn(store, "lookup").mockResolvedValue(record);
   vi.spyOn(store, stage).mockRejectedValue(new Error("storage unavailable"));
