@@ -28,12 +28,15 @@ vi.mock("openclaw/plugin-sdk/plugin-runtime", async (importOriginal) => ({
   ...(await importOriginal<typeof import("openclaw/plugin-sdk/plugin-runtime")>()),
   startLazyPluginServiceModule: startEager,
 }));
+// mock-isolation: Lifecycle assertions must not schedule real tab sweeps.
 vi.mock("./src/browser/session-tab-cleanup.js", () => ({
   startTrackedBrowserTabCleanupTimer: startCleanup,
 }));
+// mock-isolation: Exercise registration activity without starting real relay sockets.
 vi.mock("./src/browser/extension-relay/gateway-relay-route.js", () => ({
   handleGatewayExtensionUpgrade: upgradeExtension,
 }));
+// mock-isolation: Exercise registration activity without creating a WebSocket server.
 vi.mock("./src/browser/screencast/upgrade.js", () => ({
   handleBrowserScreencastUpgrade: upgradeScreencast,
 }));
