@@ -4,16 +4,14 @@ import type { ForeignLaunchdJob } from "../../daemon/launchd-foreign-jobs.js";
 import type { StaleOpenClawUpdateLaunchdJob } from "../../daemon/launchd.js";
 import type { PortConnections, PortUsage } from "../../infra/ports-types.js";
 import { defaultRuntime } from "../../runtime.js";
+import type { probeGatewayStatus } from "./probe.js";
 import { printDaemonStatus } from "./status.print.js";
 
-export function capturePrintedDaemonStatus(
-  status: Parameters<typeof printDaemonStatus>[0],
-  options: Parameters<typeof printDaemonStatus>[1],
-): { logs: string; errors: string } {
+export function capturePrintedDaemonStatus(...args: Parameters<typeof printDaemonStatus>) {
   const log = vi.spyOn(defaultRuntime, "log").mockImplementation(() => {});
   const error = vi.spyOn(defaultRuntime, "error").mockImplementation(() => {});
   try {
-    printDaemonStatus(status, options);
+    printDaemonStatus(...args);
     return {
       logs: log.mock.calls.flat().join("\n"),
       errors: error.mock.calls.flat().join("\n"),
@@ -24,10 +22,7 @@ export function capturePrintedDaemonStatus(
   }
 }
 
-export type GatewayStatusProbeOptions = Parameters<
-  typeof import("./probe.js").probeGatewayStatus
->[0];
-
+export type GatewayStatusProbeOptions = Parameters<typeof probeGatewayStatus>[0];
 export const callGatewayStatusProbe = vi.fn<
   (opts: GatewayStatusProbeOptions) => Promise<{
     ok: boolean;
@@ -44,7 +39,6 @@ export const callGatewayStatusProbe = vi.fn<
 }));
 
 export type PortUsageTestSummary = Omit<PortUsage, "errors">;
-
 export type PortUsageInspectionOptions = { probeHosts?: readonly string[] };
 
 const freePort = (port: number): PortUsageTestSummary => ({
@@ -53,7 +47,6 @@ const freePort = (port: number): PortUsageTestSummary => ({
   listeners: [],
   hints: [],
 });
-
 export const inspectPortUsage = vi.fn<
   (port: number, options?: PortUsageInspectionOptions) => Promise<PortUsageTestSummary>
 >(async (port) => freePort(port));

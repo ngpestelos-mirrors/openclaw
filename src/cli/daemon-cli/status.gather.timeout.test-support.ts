@@ -1,24 +1,21 @@
 import { spawnSync } from "node:child_process";
 import { expect, it, onTestFinished, vi, type Mock } from "vitest";
 import { readScheduledTaskRuntime } from "../../daemon/schtasks-runtime.js";
-import type { ServiceConfigAudit } from "../../daemon/service-audit.js";
-import type { GatewayServiceRuntime } from "../../daemon/service-runtime.js";
+import { makeSpawnSyncResult } from "../../daemon/test-helpers/schtasks-fixtures.js";
 import { withMockedPlatform } from "../../test-utils/vitest-spies.js";
 import type { gatherDaemonStatus } from "./status.gather.js";
 import { callGatewayStatusProbe } from "./status.gather.probes.test-support.js";
+
+type MockCalls = { mock: { calls: unknown[][] } };
 
 export function registerStatusTimeoutTests(params: {
   gatherStatus: (
     overrides?: Partial<Parameters<typeof gatherDaemonStatus>[0]>,
   ) => ReturnType<typeof gatherDaemonStatus>;
-  serviceIsLoaded: Mock<
-    (opts?: { env?: NodeJS.ProcessEnv; timeoutMs?: number }) => Promise<boolean>
-  >;
-  serviceReadRuntime: Mock<
-    (env?: NodeJS.ProcessEnv, opts?: { timeoutMs?: number }) => Promise<GatewayServiceRuntime>
-  >;
-  serviceReadCommand: { mock: { calls: unknown[][] } };
-  auditGatewayServiceConfig: Mock<(opts?: unknown) => Promise<ServiceConfigAudit>>;
+  serviceIsLoaded: MockCalls;
+  serviceReadRuntime: Mock<typeof readScheduledTaskRuntime>;
+  serviceReadCommand: MockCalls;
+  auditGatewayServiceConfig: MockCalls;
   makeTempDir: () => string;
 }): void {
   const { gatherStatus, serviceReadRuntime } = params;
@@ -30,37 +27,31 @@ export function registerStatusTimeoutTests(params: {
         const clock = vi.spyOn(performance, "now").mockReturnValue(1_000);
         onTestFinished(() => clock.mockRestore());
         const stateDir = params.makeTempDir();
-        const nativeSpawn = vi
-          .mocked(spawnSync)
-          .mockClear()
-          .mockImplementation((_file, _args, options) => {
-            const expired = typeof options?.timeout === "number" && options.timeout < 12_000;
-            return {
-              pid: 0,
-              output: [null, "", ""],
-              stdout: expired
-                ? ""
-                : JSON.stringify({
-                    taskPath: "\\OpenClaw Gateway",
-                    state: 4,
-                    lastRunResult: 0,
-                    actions: [
-                      {
-                        type: 0,
-                        path: "C:\\Fixture\\openclaw.exe",
-                        arguments: "gateway",
-                        workingDirectory: "",
-                      },
-                    ],
-                  }),
-              stderr: "",
-              status: expired ? null : 0,
-              signal: null,
-              ...(expired
-                ? { error: Object.assign(new Error("cold probe timed out"), { code: "ETIMEDOUT" }) }
-                : {}),
-            };
-          });
+        const nativeSpawn = vi.mocked(spawnSync).mockClear();
+        nativeSpawn.mockImplementation((_file, _args, options) => {
+          const expired = typeof options?.timeout === "number" && options.timeout < 12_000;
+          return {
+            ...makeSpawnSyncResult(),
+            stdout: expired
+              ? ""
+              : JSON.stringify({
+                  taskPath: "\\OpenClaw Gateway",
+                  state: 4,
+                  actions: [
+                    {
+                      type: 0,
+                      path: "C:\\Fixture\\openclaw.exe",
+                      arguments: "gateway",
+                      workingDirectory: "",
+                    },
+                  ],
+                }),
+            status: expired ? null : 0,
+            error: expired
+              ? Object.assign(new Error("cold probe timed out"), { code: "ETIMEDOUT" })
+              : undefined,
+          };
+        });
         serviceReadRuntime.mockImplementationOnce((env, options) =>
           readScheduledTaskRuntime({ ...env, OPENCLAW_STATE_DIR: stateDir }, options),
         );
