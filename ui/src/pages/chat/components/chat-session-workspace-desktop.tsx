@@ -3,6 +3,7 @@ import { createMemo, createSignal, createUniqueId, For, onSettled, Show } from "
 import { Icon } from "../../../components/solid/icon.tsx";
 import { Menu } from "../../../components/solid/menu.tsx";
 import { PanelLoadingSkeleton } from "../../../components/solid/panel-loading-skeleton.tsx";
+import { StrokeIcon } from "../../../components/solid/stroke-icon.tsx";
 import { t } from "../../../lib/reactive/i18n.ts";
 import { createLayoutMeasurement } from "../../../lib/reactive/layout-measurement.ts";
 import { liveValue } from "../../../lib/reactive/live-value.ts";
@@ -142,17 +143,9 @@ function RailRow(props: {
           <span class="workspace-desktop__folder-icon">
             <Show when={props.expanded} fallback={<Icon name="folder" />}>
               {/* Lucide folder-open, the approved Files glyph (ISC). */}
-              <svg
-                viewBox="0 0 24 24"
-                fill="none"
-                stroke="currentColor"
-                stroke-width="2"
-                stroke-linecap="round"
-                stroke-linejoin="round"
-                aria-hidden="true"
-              >
+              <StrokeIcon aria-hidden="true">
                 <path d="m6 14 1.5-2.9A2 2 0 0 1 9.24 10H20a2 2 0 0 1 1.94 2.5l-1.54 6a2 2 0 0 1-1.95 1.5H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h3.9a2 2 0 0 1 1.69.9l.81 1.2a2 2 0 0 0 1.67.9H18a2 2 0 0 1 2 2v2" />
-              </svg>
+              </StrokeIcon>
             </Show>
           </span>
         </Show>
@@ -330,19 +323,11 @@ function ActivityMenu(props: {
             icon:
               filter === "all" ? (
                 // Lucide files, the approved activity glyph (ISC).
-                <svg
-                  viewBox="0 0 24 24"
-                  fill="none"
-                  stroke="currentColor"
-                  stroke-width="2"
-                  stroke-linecap="round"
-                  stroke-linejoin="round"
-                  aria-hidden="true"
-                >
+                <StrokeIcon aria-hidden="true">
                   <path d="M15 2h-4a2 2 0 0 0-2 2v11a2 2 0 0 0 2 2h8a2 2 0 0 0 2-2V8" />
                   <path d="M16.706 2.706A2.4 2.4 0 0 0 15 2v5a1 1 0 0 0 1 1h5a2.4 2.4 0 0 0-.706-1.706z" />
                   <path d="M5 7a2 2 0 0 0-2 2v11a2 2 0 0 0 2 2h8a2 2 0 0 0 1.732-1" />
-                </svg>
+                </StrokeIcon>
               ) : (
                 <Icon
                   name={
