@@ -4,55 +4,44 @@ import {
   clearRuntimeConfigSnapshot,
   setRuntimeConfigSnapshot,
 } from "openclaw/plugin-sdk/runtime-config-snapshot";
-import { useAutoCleanupTempDirTracker } from "openclaw/plugin-sdk/test-env";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { createFileTransferNodeInvokePolicy } from "../shared/node-invoke-policy.js";
 import { createCtx } from "../shared/node-invoke-policy.test-support.js";
 import { handleFileStat } from "./file-stat.js";
+import { useFiles } from "./node-host.test-support.js";
 
 vi.mock("../shared/audit.js", () => ({ appendFileTransferAudit: vi.fn() }));
 
-let directory: string;
 let file: string;
-const tempDirs = useAutoCleanupTempDirTracker(afterEach);
+const { at, file: makeFile } = useFiles("file-stat-test-", clearRuntimeConfigSnapshot);
 
 beforeEach(async () => {
   setRuntimeConfigSnapshot({});
-  directory = await fs.realpath(tempDirs.make("file-stat-test-"));
-  file = path.join(directory, "AGENTS.md");
-  await fs.writeFile(file, "workspace instructions");
+  file = await makeFile("AGENTS.md", "workspace instructions");
 });
 
-afterEach(() => {
-  clearRuntimeConfigSnapshot();
-});
+async function expectStatError(params: Parameters<typeof handleFileStat>[0], code: string) {
+  expect(await handleFileStat(params)).toMatchObject({ ok: false, code });
+}
 
 describe("file.stat", () => {
   it("distinguishes missing paths from invalid input", async () => {
-    expect(await handleFileStat({ path: path.join(directory, "missing") })).toMatchObject({
-      ok: false,
-      code: "NOT_FOUND",
-    });
-    expect(await handleFileStat({ path: "AGENTS.md" })).toMatchObject({
-      ok: false,
-      code: "INVALID_PATH",
-    });
+    await expectStatError({ path: at("missing") }, "NOT_FOUND");
+    await expectStatError({ path: "AGENTS.md" }, "INVALID_PATH");
   });
 
   it("rejects symlinks by default and returns the canonical target when allowed", async () => {
-    const link = path.join(directory, "link");
+    const link = at("link");
     await fs.symlink(file, link);
-    expect(await handleFileStat({ path: link })).toMatchObject({
-      ok: false,
-      code: "SYMLINK_REDIRECT",
-    });
+    await expectStatError({ path: link }, "SYMLINK_REDIRECT");
     expect(await handleFileStat({ path: link, followSymlinks: true })).toMatchObject({
       ok: true,
       path: file,
     });
-    expect(
-      await handleFileStat({ path: link, followSymlinks: true, expectedCanonicalPath: link }),
-    ).toMatchObject({ ok: false, code: "CANONICAL_PATH_CHANGED" });
+    await expectStatError(
+      { path: link, followSymlinks: true, expectedCanonicalPath: link },
+      "CANONICAL_PATH_CHANGED",
+    );
   });
 
   it("refuses a replacement at the same path after authorization", async () => {
@@ -62,32 +51,30 @@ describe("file.stat", () => {
     }
     await fs.rename(file, `${file}.old`);
     await fs.writeFile(file, "replacement");
-    expect(
-      await handleFileStat({
+    await expectStatError(
+      {
         path: file,
         expectedCanonicalPath: authorized.path,
         expectedBinding: authorized.binding,
-      }),
-    ).toMatchObject({ ok: false, code: "CANONICAL_PATH_CHANGED" });
+      },
+      "CANONICAL_PATH_CHANGED",
+    );
   });
 
   it.each(["file", "directory"] as const)(
     "reads %s metadata with its grant but denies its parent",
     async (type) => {
-      const target = type === "file" ? file : directory;
+      const target = type === "file" ? file : at();
       const stats = await fs.stat(target, { bigint: true });
       const { ctx, invokeNode } = createCtx({
         command: "file.stat",
         params: { path: target, followSymlinks: true, preflightOnly: true },
         pluginConfig: { nodes: { "node-1": { allowReadPaths: [target], ask: "off" } } },
       });
-      invokeNode.mockImplementation(async (options = {}) => {
-        const { params } = options;
-        return {
-          ok: true,
-          payload: await handleFileStat(params as Parameters<typeof handleFileStat>[0]),
-        };
-      });
+      invokeNode.mockImplementation(async ({ params } = {}) => ({
+        ok: true,
+        payload: await handleFileStat(params as Parameters<typeof handleFileStat>[0]),
+      }));
       const result = await createFileTransferNodeInvokePolicy().handle(ctx);
       expect(result).toMatchObject({
         ok: true,

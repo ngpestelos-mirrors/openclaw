@@ -1,20 +1,16 @@
 import crypto from "node:crypto";
 import fs from "node:fs/promises";
-import path from "node:path";
 import { createDeferred } from "openclaw/plugin-sdk/extension-shared";
 import type { OpenClawPluginNodeHostCommandIo } from "openclaw/plugin-sdk/node-host";
-import { useAutoCleanupTempDirTracker } from "openclaw/plugin-sdk/test-env";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { FILE_FETCH_CHUNK_BYTES } from "../shared/file-fetch-protocol.js";
 import { handleFileFetch } from "./file-fetch.js";
+import { useFiles } from "./node-host.test-support.js";
 
-const tempDirs = useAutoCleanupTempDirTracker(afterEach);
-afterEach(() => vi.restoreAllMocks());
+const { file } = useFiles("binary-fetch-", vi.restoreAllMocks);
 
 async function fixture(bytes = Buffer.from("output")) {
-  const directory = await fs.realpath(tempDirs.make("binary-fetch-"));
-  const target = path.join(directory, "output.bin");
-  await fs.writeFile(target, bytes);
+  const target = await file("output.bin", bytes);
   const params = { path: target, transport: "binary", maxBytes: bytes.length };
   const preflight = await handleFileFetch({ ...params, preflightOnly: true });
   if (!preflight.ok) {
@@ -45,32 +41,19 @@ async function fixture(bytes = Buffer.from("output")) {
       },
     },
   };
-  return {
-    target,
-    bytes,
-    params,
-    preflight,
-    controller,
-    ready,
-    io,
-    chunks,
-    onChunk,
-    send: async (control: string) => {
-      if (!receive) {
-        throw new Error("No receiver");
-      }
-      await receive(Buffer.from(control));
-    },
-    start: () =>
-      handleFileFetch(
-        {
-          ...params,
-          expectedBinding: preflight.binding,
-          expectedCanonicalPath: preflight.path,
-        },
-        io,
-      ),
+  const authorized = {
+    ...params,
+    expectedBinding: preflight.binding,
+    expectedCanonicalPath: preflight.path,
   };
+  const send = async (control: string) => {
+    if (!receive) {
+      throw new Error("No receiver");
+    }
+    await receive(Buffer.from(control));
+  };
+  const start = () => handleFileFetch(authorized, io);
+  return { target, bytes, preflight, controller, ready, io, chunks, onChunk, send, start };
 }
 
 describe("binary file.fetch", () => {
@@ -140,12 +123,8 @@ describe("binary file.fetch", () => {
   it.each([undefined, -1, Number.MAX_SAFE_INTEGER + 1])(
     "rejects an invalid explicit binary budget %s",
     async (maxBytes) => {
-      expect(
-        await handleFileFetch({ path: "/unused", transport: "binary", maxBytes }),
-      ).toMatchObject({
-        ok: false,
-        code: "INVALID_PARAMS",
-      });
+      const result = await handleFileFetch({ path: "/unused", transport: "binary", maxBytes });
+      expect(result).toMatchObject({ ok: false, code: "INVALID_PARAMS" });
     },
   );
 });
