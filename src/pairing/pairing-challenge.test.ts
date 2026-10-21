@@ -7,11 +7,22 @@ import { createMockPluginRegistry } from "../plugins/hooks.test-fixtures.js";
 import { issuePairingChallenge } from "./pairing-challenge.js";
 
 describe("issuePairingChallenge", () => {
-  const base = {
-    channel: "forum",
-    senderId: "123",
-    senderIdLine: "Your forum user id: 123",
-  };
+  function issue(
+    code: string,
+    overrides: Partial<Parameters<typeof issuePairingChallenge>[0]> = {},
+  ) {
+    return issuePairingChallenge({
+      channel: "forum",
+      senderId: "123",
+      senderIdLine: "Your forum user id: 123",
+      upsertPairingRequest: async () => ({ code, created: true }),
+      sendPairingReply: async () => {},
+      ...overrides,
+    });
+  }
+  function hooks(...entries: Parameters<typeof createMockPluginRegistry>[0]) {
+    initializeGlobalHookRunner(createMockPluginRegistry(entries));
+  }
 
   afterEach(() => {
     resetGlobalHookRunner();
@@ -19,9 +30,7 @@ describe("issuePairingChallenge", () => {
 
   it("supports custom reply text builder", async () => {
     const sendPairingReply = vi.fn(async (_text: string) => {});
-    const result = await issuePairingChallenge({
-      ...base,
-      upsertPairingRequest: async () => ({ code: "ZXCV", created: true }),
+    const result = await issue("ZXCV", {
       buildReplyText: ({ code }) => `custom ${code}`,
       sendPairingReply,
     });
@@ -32,12 +41,10 @@ describe("issuePairingChallenge", () => {
   it("calls onCreated and forwards meta to upsert", async () => {
     const onCreated = vi.fn();
     const upsertPairingRequest = vi.fn(async () => ({ code: "1111", created: true }));
-    const result = await issuePairingChallenge({
-      ...base,
+    const result = await issue("1111", {
       meta: { name: "alice" },
       upsertPairingRequest,
       onCreated,
-      sendPairingReply: async () => {},
     });
     expect(result).toEqual({ created: true, code: "1111" });
     expect(upsertPairingRequest).toHaveBeenCalledWith({ id: "123", meta: { name: "alice" } });
@@ -47,9 +54,7 @@ describe("issuePairingChallenge", () => {
   it("captures reply errors through onReplyError", async () => {
     const error = new Error("send failed");
     const onReplyError = vi.fn();
-    const result = await issuePairingChallenge({
-      ...base,
-      upsertPairingRequest: async () => ({ code: "9999", created: true }),
+    const result = await issue("9999", {
       onReplyError,
       sendPairingReply: async () => {
         throw error;
@@ -61,27 +66,15 @@ describe("issuePairingChallenge", () => {
 
   it("fires channel_pairing_requested only for newly created requests", async () => {
     const handler = vi.fn(async () => {});
-    initializeGlobalHookRunner(
-      createMockPluginRegistry([
-        {
-          hookName: "channel_pairing_requested",
-          handler,
-        },
-      ]),
-    );
+    hooks({ hookName: "channel_pairing_requested", handler });
 
-    await issuePairingChallenge({
-      ...base,
+    await issue("HOOK1234", {
       accountId: "alerts",
       meta: { username: "alice" },
-      upsertPairingRequest: async () => ({ code: "HOOK1234", created: true }),
-      sendPairingReply: async () => {},
     });
-    await issuePairingChallenge({
-      ...base,
+    await issue("EXISTS12", {
       accountId: "alerts",
       upsertPairingRequest: async () => ({ code: "EXISTS12", created: false }),
-      sendPairingReply: async () => {},
     });
 
     expect(handler).toHaveBeenCalledTimes(1);
@@ -93,11 +86,7 @@ describe("issuePairingChallenge", () => {
         code: "HOOK1234",
         metadata: { username: "alice" },
       },
-      {
-        channelId: "forum",
-        accountId: "alerts",
-        senderId: "123",
-      },
+      { channelId: "forum", accountId: "alerts", senderId: "123" },
     );
   });
 
@@ -106,27 +95,13 @@ describe("issuePairingChallenge", () => {
       throw new Error("notification failed");
     });
     const stallingHook = vi.fn(() => new Promise<void>(() => {}));
-    initializeGlobalHookRunner(
-      createMockPluginRegistry([
-        {
-          hookName: "channel_pairing_requested",
-          handler: throwingHook,
-          pluginId: "throwing",
-        },
-        {
-          hookName: "channel_pairing_requested",
-          handler: stallingHook,
-          pluginId: "stalling",
-        },
-      ]),
+    hooks(
+      { hookName: "channel_pairing_requested", handler: throwingHook, pluginId: "throwing" },
+      { hookName: "channel_pairing_requested", handler: stallingHook, pluginId: "stalling" },
     );
     const sendPairingReply = vi.fn(async () => {});
 
-    const result = await issuePairingChallenge({
-      ...base,
-      upsertPairingRequest: async () => ({ code: "FAST1234", created: true }),
-      sendPairingReply,
-    });
+    const result = await issue("FAST1234", { sendPairingReply });
 
     expect(result).toEqual({ created: true, code: "FAST1234" });
     expect(throwingHook).toHaveBeenCalledTimes(1);

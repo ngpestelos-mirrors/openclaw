@@ -22,14 +22,25 @@ const directories = useAutoCleanupTempDirTracker((cleanup) =>
 let root: string;
 let env: NodeJS.ProcessEnv;
 
+function writeAllowlist(channel: string, allowFrom: Record<string, string[]>) {
+  writeChannelPairingStateSnapshot(channel, { version: 1, requests: [], allowFrom }, env);
+}
+
+function resolveIngress(accountId: string) {
+  return resolveStableChannelIngressPolicy({
+    channelId: "demo",
+    accountId,
+    subject: { stableId: "first" },
+    conversation: { kind: "direct", id: "first" },
+    dmPolicy: "pairing",
+    useDefaultPairingStore: true,
+  });
+}
+
 beforeAll(() => {
   root = directories.make("openclaw-pairallow-worker-");
   env = { ...process.env, OPENCLAW_STATE_DIR: root };
-  writeChannelPairingStateSnapshot(
-    "demo",
-    { version: 1, requests: [], allowFrom: { alpha: ["second", "first"], beta: ["other"] } },
-    env,
-  );
+  writeAllowlist("demo", { alpha: ["second", "first"], beta: ["other"] });
 });
 
 afterEach(() => {
@@ -40,16 +51,11 @@ afterEach(() => {
 it("reads pairing allowlists through ingress and plugin runtime without caller-thread SQL", async () => {
   vi.stubEnv("OPENCLAW_STATE_DIR", root);
   const sql = vi.spyOn(kysely, "executeSqliteQuerySync");
-  const ingress = await resolveStableChannelIngressPolicy({
-    channelId: "demo",
-    accountId: "alpha",
-    subject: { stableId: "first" },
-    conversation: { kind: "direct", id: "first" },
-    dmPolicy: "pairing",
-    useDefaultPairingStore: true,
+  const ingress = await resolveIngress("alpha");
+  expect(ingress.senderAccess).toMatchObject({
+    allowed: true,
+    effectiveAllowFrom: ["second", "first"],
   });
-  expect(ingress.senderAccess.allowed).toBe(true);
-  expect(ingress.senderAccess.effectiveAllowFrom).toEqual(["second", "first"]);
   expect(sql).not.toHaveBeenCalled();
   await expect(
     createRuntimeChannel().pairing.readAllowFromStore({
@@ -79,16 +85,8 @@ it.each(["__proto__", "constructor"])(
     await expect(readChannelAllowFromStore("demo", env, accountId)).rejects.toBeInstanceOf(
       TypeError,
     );
-    const ingress = await resolveStableChannelIngressPolicy({
-      channelId: "demo",
-      accountId,
-      subject: { stableId: "first" },
-      conversation: { kind: "direct", id: "first" },
-      dmPolicy: "pairing",
-      useDefaultPairingStore: true,
-    });
-    expect(ingress.senderAccess.allowed).toBe(false);
-    expect(ingress.senderAccess.effectiveAllowFrom).toEqual([]);
+    const ingress = await resolveIngress(accountId);
+    expect(ingress.senderAccess).toMatchObject({ allowed: false, effectiveAllowFrom: [] });
     expect(ingress.ingress.admission).not.toBe("dispatch");
     const missing = path.join(root, `missing-${accountId}`);
     await expect(
@@ -99,11 +97,7 @@ it.each(["__proto__", "constructor"])(
 );
 
 it("captures the original store before yielding and preserves normalized persisted account ordering", async () => {
-  writeChannelPairingStateSnapshot(
-    "legacy",
-    { version: 1, requests: [], allowFrom: { alpha: ["last", "first"] } },
-    env,
-  );
+  writeAllowlist("legacy", { alpha: ["last", "first"] });
   openOpenClawStateDatabase({ env }).db.exec(
     "UPDATE channel_pairing_allow_entries SET account_id = ' Alpha ' WHERE channel_key = 'legacy'",
   );
@@ -118,11 +112,7 @@ it("captures the original store before yielding and preserves normalized persist
 it("reads current approval rows instead of an inherited discovery snapshot", async () => {
   await withOpenClawStateDatabaseReadSnapshot(
     async () => {
-      writeChannelPairingStateSnapshot(
-        "snapshot",
-        { version: 1, requests: [], allowFrom: { alpha: ["new-approval"] } },
-        env,
-      );
+      writeAllowlist("snapshot", { alpha: ["new-approval"] });
       await expect(readChannelAllowFromStore("snapshot", env, "alpha")).resolves.toEqual([
         "new-approval",
       ]);

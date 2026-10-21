@@ -5,6 +5,7 @@ import {
   FULL_ACCESS_PAIRING_SETUP_BOOTSTRAP_PROFILE,
   PAIRING_SETUP_BOOTSTRAP_PROFILE,
 } from "../shared/device-bootstrap-profile.js";
+import { makeNetworkInterfacesSnapshot } from "../test-helpers/network-interfaces.js";
 import {
   encodePairingSetupCode,
   resolvePairingGatewayUrl,
@@ -23,53 +24,33 @@ vi.mock("../infra/device-bootstrap.js", () => ({
 const options = { env: {}, networkInterfaces: () => ({}) };
 
 describe("pairing public origin", () => {
-  type OriginCase = {
-    config: Parameters<typeof resolvePairingGatewayUrl>[0];
-    networkInterfaces?: Parameters<typeof resolvePairingGatewayUrl>[1]["networkInterfaces"];
-    expected: Awaited<ReturnType<typeof resolvePairingGatewayUrl>>;
-  };
+  type OriginCase = [
+    NonNullable<Parameters<typeof resolvePairingGatewayUrl>[0]["gateway"]>,
+    Awaited<ReturnType<typeof resolvePairingGatewayUrl>>,
+    Parameters<typeof resolvePairingGatewayUrl>[1]["networkInterfaces"]?,
+  ];
   it.each<OriginCase>([
-    {
-      config: {
-        gateway: { bind: "loopback", publicOrigin: "https://gateway.example.test/openclaw-gw" },
-      },
-      expected: {
-        url: "wss://gateway.example.test/openclaw-gw",
-        source: "gateway.publicOrigin",
-      },
-    },
-    {
-      config: {
-        gateway: { bind: "loopback", publicOrigin: "https://gateway.example.test:notaport" },
-      },
-      expected: { error: "Configured gateway.publicOrigin is invalid." },
-    },
-    {
-      config: {
-        gateway: { bind: "lan", port: 19001, publicOrigin: "https://gateway.example.test" },
-      },
-      networkInterfaces: () => ({
-        en0: [
-          {
-            address: "192.168.1.20",
-            family: "IPv4",
-            internal: false,
-            netmask: "255.255.255.0",
-            mac: "00:00:00:00:00:00",
-            cidr: "192.168.1.20/24",
-          },
-        ],
-      }),
-      expected: { url: "ws://192.168.1.20:19001", source: "gateway.bind=lan" },
-    },
-  ])(
-    "resolves public-origin fallback: $expected",
-    async ({ config, networkInterfaces, expected }) => {
-      await expect(
-        resolvePairingGatewayUrl(config, {
-          ...options,
-          networkInterfaces: networkInterfaces ?? options.networkInterfaces,
+    [
+      { bind: "loopback", publicOrigin: "https://gateway.example.test/openclaw-gw" },
+      { url: "wss://gateway.example.test/openclaw-gw", source: "gateway.publicOrigin" },
+    ],
+    [
+      { bind: "loopback", publicOrigin: "https://gateway.example.test:notaport" },
+      { error: "Configured gateway.publicOrigin is invalid." },
+    ],
+    [
+      { bind: "lan", port: 19001, publicOrigin: "https://gateway.example.test" },
+      { url: "ws://192.168.1.20:19001", source: "gateway.bind=lan" },
+      () =>
+        makeNetworkInterfacesSnapshot({
+          en0: [{ address: "192.168.1.20", family: "IPv4", netmask: "255.255.255.0" }],
         }),
+    ],
+  ])(
+    "resolves public-origin fallback for %j",
+    async (gateway, expected, networkInterfaces = options.networkInterfaces) => {
+      await expect(
+        resolvePairingGatewayUrl({ gateway }, { ...options, networkInterfaces }),
       ).resolves.toEqual(expected);
     },
   );
@@ -109,38 +90,18 @@ describe("pairing public origin", () => {
 describe("trusted-proxy pairing setup", () => {
   beforeEach(() => vi.mocked(issueDevicePairSetupBootstrapToken).mockClear());
 
-  it.each([
-    {
-      name: "issues full setup codes without a shared secret over TLS",
-      url: "wss://gateway.example.test",
-      profile: FULL_ACCESS_PAIRING_SETUP_BOOTSTRAP_PROFILE,
-      access: "full",
-      accessDowngraded: false,
-    },
-    {
-      name: "keeps the proxy label with an ambient local password",
-      url: "wss://gateway.example.test",
-      env: { OPENCLAW_GATEWAY_PASSWORD: "synthetic-local-password" },
-      profile: FULL_ACCESS_PAIRING_SETUP_BOOTSTRAP_PROFILE,
-      access: "full",
-      accessDowngraded: false,
-    },
-    {
-      name: "keeps the proxy label with a configured local password",
-      url: "wss://gateway.example.test",
-      password: "synthetic-local-password",
-      profile: FULL_ACCESS_PAIRING_SETUP_BOOTSTRAP_PROFILE,
-      access: "full",
-      accessDowngraded: false,
-    },
-    {
-      name: "keeps plaintext LAN handoff limited",
-      url: "ws://192.168.1.20:18789",
-      profile: PAIRING_SETUP_BOOTSTRAP_PROFILE,
-      access: "limited",
-      accessDowngraded: true,
-    },
-  ])("$name", async ({ url, env = {}, password, profile, access, accessDowngraded }) => {
+  it.each<[string, NodeJS.ProcessEnv, string | undefined, boolean]>([
+    ["TLS without shared secret", {}, undefined, false],
+    [
+      "ambient password",
+      { OPENCLAW_GATEWAY_PASSWORD: "synthetic-local-password" },
+      undefined,
+      false,
+    ],
+    ["configured password", {}, "synthetic-local-password", false],
+    ["limited plaintext LAN", {}, undefined, true],
+  ])("preserves trusted-proxy setup: %s", async (_name, env, password, limited) => {
+    const url = limited ? "ws://192.168.1.20:18789" : "wss://gateway.example.test";
     const result = await resolvePairingSetupFromConfig(
       {
         gateway: {
@@ -158,12 +119,14 @@ describe("trusted-proxy pairing setup", () => {
       setupId: "setup-123",
       expiresAtMs: 123,
       urlSource: "plugins.entries.device-pair.config.publicUrl",
-      access,
-      accessDowngraded,
+      access: limited ? "limited" : "full",
+      accessDowngraded: limited,
     });
     expect(issueDevicePairSetupBootstrapToken).toHaveBeenCalledExactlyOnceWith({
       baseDir: undefined,
-      profile,
+      profile: limited
+        ? PAIRING_SETUP_BOOTSTRAP_PROFILE
+        : FULL_ACCESS_PAIRING_SETUP_BOOTSTRAP_PROFILE,
     });
     if (result.ok) {
       expect(result.payload).not.toHaveProperty("setupId");
