@@ -54,6 +54,7 @@ async function runIdentityFlow(failure?: Failure) {
           const marker = inbound.text.split("Reply exactly: ")[1];
           assert(marker, "Missing exact reply marker");
           return state.addOutboundMessage({
+            accountId: "sut",
             to: `${isGroup ? "group" : "dm"}:${inbound.conversation.id}`,
             text: marker,
           });

@@ -43,7 +43,10 @@ function fixture(responses: unknown[], props: Record<string, string> = {}) {
     },
   } as unknown as UI.ControlUiHost;
   void plugin.activate(host);
-  const [[page]] = registerPage.mock.calls;
+  const page = registerPage.mock.calls[0]?.[0];
+  if (!page) {
+    throw new Error("Connected apps page was not registered");
+  }
   const context: UI.ControlUiViewContext = {
     host,
     props,
