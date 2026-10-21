@@ -524,22 +524,6 @@ describe("sidebar snapshot lifecycle", () => {
     ).toBeNull();
   });
 
-  it("discards a lazy capture that resolves after its account scope retires", async () => {
-    const test = await warmFixture();
-    void test.settle();
-    test.publish();
-    const captured = createDeferred<SidebarSnapshotModel>();
-    vi.spyOn(test.host, "captureSidebarSnapshot").mockReturnValue(captured.promise);
-    await capture(test.snapshotOwner);
-    clearBootRecords(scope.gatewayScope, { recoveryScope: scope.recoveryScope });
-    captured.resolve(model);
-    await vi.advanceTimersByTimeAsync(0);
-    expect(test.snapshotOwner.read().saved).toBe(false);
-    expect(
-      await test.store.readSidebar(sidebarSnapshotScopeKey(scope), parseSidebarSnapshot),
-    ).toBeNull();
-  });
-
   it("does not report an unchanged model saved while its write is pending", async () => {
     const test = fixture();
     const issued = createDeferred();

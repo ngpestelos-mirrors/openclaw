@@ -23,7 +23,7 @@ type SidebarSnapshotHost = {
     connectionBootstrap: { readonly foregroundReady: boolean };
   };
   expandedAgentId(): string;
-  captureSidebarSnapshot(): SidebarSnapshotModel | null | Promise<SidebarSnapshotModel | null>;
+  captureSidebarSnapshot(): SidebarSnapshotModel | null;
   sidebarSnapshotSettled(): boolean;
   restoreSidebarSnapshot(model: SidebarSnapshotModel): void;
   releaseSidebarSnapshot(): void;
@@ -221,7 +221,7 @@ export function createSidebarSnapshot(host: SidebarSnapshotHost) {
     cancelCapture = () => globalThis.clearTimeout(timer);
   }
 
-  async function flushCapture(): Promise<void> {
+  function flushCapture(): void {
     if (!cancelCapture) {
       return;
     }
@@ -237,11 +237,8 @@ export function createSidebarSnapshot(host: SidebarSnapshotHost) {
     ) {
       return;
     }
-    const current = captureScope();
-    const key = sidebarSnapshotScopeKey(scope);
-    // Serialization loads only at idle; scope may retire while its chunk arrives.
-    const model = await Promise.resolve(host.captureSidebarSnapshot()).catch(() => null);
-    if (!current() || !model) {
+    const model = host.captureSidebarSnapshot();
+    if (!model) {
       return;
     }
     const nextSerialized = JSON.stringify(model);
@@ -250,6 +247,8 @@ export function createSidebarSnapshot(host: SidebarSnapshotHost) {
     }
     serialized = nextSerialized;
     saved = false;
+    const current = captureScope();
+    const key = sidebarSnapshotScopeKey(scope);
     void retirement.then(async () => {
       if (!current()) {
         return;

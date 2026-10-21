@@ -1,17 +1,10 @@
 import type { JSX } from "@solidjs/web";
 import { createMemo, onSettled, Show } from "solid-js";
-import type {
-  FsListDirResult,
-  WorktreeRepositoryStatus,
-  WorktreesBranchesResult,
-} from "../../../packages/gateway-protocol/src/index.js";
 import type { SessionObserverDigest } from "../../../packages/gateway-protocol/src/schema/sessions.js";
 import { isSessionRouteId } from "../app-route-paths.ts";
 import type { NativeGatewaysSnapshot } from "../app/native-gateways.runtime.ts";
 import { beginNativeWindowDragFromTopInset } from "../app/native-window-drag.ts";
-import { rosterActivityStore } from "../lib/agents/roster-activity-store.ts";
 import { createIdleImport } from "../lib/idle-import.ts";
-import { t } from "../lib/reactive/i18n.ts";
 import {
   buildCatalogSessionKey,
   catalogSessionKeyFromSearch,
@@ -19,11 +12,7 @@ import {
 import type { CatalogProjectGrouping } from "../lib/sessions/catalog-project-grouping.ts";
 import "./sidebar-attention.tsx";
 import "./tooltip.ts";
-import {
-  renderAppSidebarOnline,
-  resolveSidebarOnline,
-  sidebarOnlineOrder,
-} from "./app-sidebar-online.tsx";
+import { renderAppSidebarOnline, sidebarOnlineOrder } from "./app-sidebar-online.tsx";
 import { hidePersonalSidebarCatalog } from "./app-sidebar-personal-navigation.ts";
 import { renderSidebarRail, renderSidebarPages } from "./app-sidebar-rail.tsx";
 import "../styles/app-sidebar.css";
@@ -46,13 +35,16 @@ import {
   type SidebarRecentSession,
   type SidebarToolActivity,
 } from "./app-sidebar-session-types.ts";
-import { hasSidebarListFilter } from "./session-data-events.ts";
 import { SessionOrganizer } from "./session-organizer.ts";
 import { SidebarAgentRoster, renderSidebarPinnedSession } from "./sidebar-agent-roster.tsx";
 import type { createSidebarScroll } from "./sidebar-context-controller.ts";
 import { createSidebarMenus } from "./sidebar-menus.tsx";
 import type { SidebarNavigationCatalog } from "./sidebar-navigation-catalog.ts";
 import { createSidebarPeople, SidebarPeoplePreferences } from "./sidebar-people.ts";
+import {
+  captureSidebarSnapshotModel,
+  isSidebarSnapshotSettled,
+} from "./sidebar-snapshot-capture.ts";
 import type { SidebarSnapshotModel } from "./sidebar-snapshot-model.ts";
 import { createSidebarSnapshot } from "./sidebar-snapshot.ts";
 import { GatewayStatus } from "./solid/gateway-status.tsx";
@@ -152,44 +144,10 @@ export class AppSidebarOwner extends AppSidebarSessionNavigationElement implemen
   }
 
   sidebarSnapshotSettled(): boolean {
-    const context = this.sessionDataContext;
-    if (!this.connected || !context) {
-      return false;
-    }
-    if (this.navigationView === "pages") {
-      const pages = this.navigationCatalog.dashboards;
-      return pages?.loading === false && (pages.readSucceeded === true || pages.error !== null);
-    }
-    const people = resolveSidebarOnline(this).users;
-    if (
-      people.some((person) => person.identity?.type === "profile") &&
-      this.sessionData.ownerCounts.counts === null &&
-      this.sessionData.ownerCounts.error === null
-    ) {
-      return false;
-    }
-    if (this.sidebarAgentsMode === "roster") {
-      const roster = rosterActivityStore(context).snapshot;
-      return (
-        (roster.membershipReady || roster.error !== null) &&
-        !roster.loading &&
-        roster.involvingMe === this.sidebarSessionOwnerFilter().involvingMe
-      );
-    }
-    if (hasSidebarListFilter(this)) {
-      const query = this.sessionData.sessionListQuery(this.expandedAgentId());
-      const selected = context.sessions.listSnapshot(query);
-      return selected.readSucceeded === true || selected.error !== null;
-    }
-    return (
-      !this.sessionData.sessionsLoading &&
-      (Boolean(this.sessionData.sessionMutationError ?? context.sessions.state.error) ||
-        (Boolean(this.sessionData.sessionsResult) && !context.sessions.presentation.resultCached))
-    );
+    return isSidebarSnapshotSettled(this);
   }
 
-  async captureSidebarSnapshot(): Promise<SidebarSnapshotModel | null> {
-    const { captureSidebarSnapshotModel } = await import("./sidebar-snapshot-capture.ts");
+  captureSidebarSnapshot(): SidebarSnapshotModel | null {
     const rows = this.selectedAgentSessionRows(this.getSessionNavigationState());
     return captureSidebarSnapshotModel(
       this,
@@ -199,47 +157,8 @@ export class AppSidebarOwner extends AppSidebarSessionNavigationElement implemen
     );
   }
 
-  sessionGroupDefaults(name: string) {
-    if (this.context.sessions.groupsStatus() !== "ready") {
-      return null;
-    }
-    const group = this.context.sessions.state.groupSettings.find((entry) => entry.name === name);
-    return group ? { cwd: group.cwd ?? "", worktree: group.worktree === true } : null;
-  }
-
-  async listSessionGroupFolders(path?: string): Promise<FsListDirResult> {
-    const sessions = this.context.sessions;
-    const scope = sessions.captureConnectionScope();
-    if (!scope) {
-      throw new Error(t("sessionsView.groupDefaultsStale"));
-    }
-    const result = await scope.client.request<FsListDirResult>("fs.listDir", path ? { path } : {});
-    if (this.context.sessions !== sessions || !sessions.isConnectionScopeCurrent(scope)) {
-      throw new Error(t("sessionsView.groupDefaultsStale"));
-    }
-    return result;
-  }
-
-  async inspectSessionGroupRepository(path?: string): Promise<WorktreeRepositoryStatus> {
-    const requestedPath = path?.trim() || this.activeChipAgent().agent?.workspace?.trim();
-    if (!requestedPath) {
-      return "unavailable";
-    }
-    const sessions = this.context.sessions;
-    const scope = sessions.captureConnectionScope();
-    if (!scope) {
-      throw new Error(t("sessionsView.groupDefaultsStale"));
-    }
-    const result = await scope.client.request<WorktreesBranchesResult>("worktrees.branches", {
-      repoRoot: requestedPath,
-      includeRepositoryStatus: true,
-    });
-    if (this.context.sessions !== sessions || !sessions.isConnectionScopeCurrent(scope)) {
-      throw new Error(t("sessionsView.groupDefaultsStale"));
-    }
-    return result.repositoryStatus === "git" || result.repositoryStatus === "not_git"
-      ? result.repositoryStatus
-      : "unavailable";
+  sessionGroupWorkspace(): string | undefined {
+    return this.activeChipAgent().agent?.workspace;
   }
 
   // Token suppression and schema validation stay behind the live-activity boundary.
