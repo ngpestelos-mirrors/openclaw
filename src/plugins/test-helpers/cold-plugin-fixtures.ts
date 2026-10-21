@@ -1,4 +1,3 @@
-// Cold plugin fixture helpers create plugin packages for cold import and loader tests.
 import fs from "node:fs";
 import path from "node:path";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
@@ -18,14 +17,15 @@ type ColdPluginFixtureOptions = {
 };
 
 export function createColdPluginFixture(options: ColdPluginFixtureOptions) {
+  const { rootDir } = options;
   const pluginId = options.pluginId ?? "cold-control-plane";
   const providerId = options.providerId ?? "cold-model-provider";
   const channelId = options.channelId ?? "cold-channel";
   const authChoiceId = options.authChoiceId ?? "cold-provider-api-key";
-  const runtimeSource = path.join(options.rootDir, "index.cjs");
-  const runtimeMarker = path.join(options.rootDir, "runtime-loaded.txt");
+  const runtimeSource = path.join(rootDir, "index.cjs");
+  const runtimeMarker = path.join(rootDir, "runtime-loaded.txt");
   const writeJson = (name: string, value: object) =>
-    fs.writeFileSync(path.join(options.rootDir, name), JSON.stringify(value, null, 2), "utf8");
+    fs.writeFileSync(path.join(rootDir, name), JSON.stringify(value, null, 2), "utf8");
   writeJson("package.json", {
     name: options.packageName ?? "@example/openclaw-cold-control-plane",
     version: options.packageVersion ?? "1.0.0",
@@ -64,21 +64,9 @@ export function createColdPluginFixture(options: ColdPluginFixtureOptions) {
     "utf8",
   );
   if (options.setupEntrySource !== undefined) {
-    fs.writeFileSync(
-      path.join(options.rootDir, "setup-entry.cjs"),
-      options.setupEntrySource,
-      "utf8",
-    );
+    fs.writeFileSync(path.join(rootDir, "setup-entry.cjs"), options.setupEntrySource, "utf8");
   }
-  return {
-    authChoiceId,
-    channelId,
-    pluginId,
-    providerId,
-    rootDir: options.rootDir,
-    runtimeMarker,
-    runtimeSource,
-  };
+  return { authChoiceId, channelId, pluginId, providerId, rootDir, runtimeMarker, runtimeSource };
 }
 
 export function createColdPluginConfig(pluginDir: string, pluginId: string): OpenClawConfig {
