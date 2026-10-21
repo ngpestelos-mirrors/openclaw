@@ -434,7 +434,8 @@ export function beginProfileTransition(
         if (cleanupActor.cleanupChromeMcp) {
           try {
             const chromeMcp = await getChromeMcpModule.peek();
-            stopped = (await chromeMcp?.closeChromeMcpSession(cleanupActor.cleanupChromeMcp)) || stopped;
+            stopped =
+              (await chromeMcp?.closeChromeMcpSession(cleanupActor.cleanupChromeMcp)) || stopped;
             cleanupActor.cleanupChromeMcp = undefined;
           } catch (err) {
             firstError ??= toLifecycleError(err, "Chrome MCP cleanup failed.");
