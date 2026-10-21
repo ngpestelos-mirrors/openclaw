@@ -27,6 +27,7 @@ export interface PopoverProps {
   triggerId?: string;
   triggerClass?: JSX.HTMLAttributes<HTMLButtonElement>["class"];
   triggerTitle?: string;
+  triggerAriaLabel?: string | null;
   children?: JSX.Element;
   class?: JSX.HTMLAttributes<HTMLDivElement>["class"];
   open?: boolean;
@@ -94,7 +95,9 @@ export function Popover(props: PopoverProps): JSX.Element {
           class={props.triggerClass}
           title={props.triggerTitle}
           disabled={props.disabled}
-          aria-label={props.label}
+          aria-label={
+            props.triggerAriaLabel === null ? undefined : (props.triggerAriaLabel ?? props.label)
+          }
           aria-haspopup="dialog"
           aria-controls={initialIdentity.id}
           aria-expanded="false"
