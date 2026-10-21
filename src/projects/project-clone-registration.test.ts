@@ -17,7 +17,6 @@ const fixture = vi.hoisted(() => {
     checkouts: new Set<string>(),
     clone: vi.fn<(input: { target: string }) => Promise<void>>(),
     remove: vi.fn<(target: string) => Promise<void>>(),
-    resolveCheckout: vi.fn<(root: string) => Promise<{ path: string; repoRoot: string }>>(),
     execute: vi.fn<() => Promise<ProjectRegistryRecord>>(),
     finishWorker: vi.fn<() => void>(),
     finishCheckout: vi.fn<() => void>(),
@@ -25,7 +24,6 @@ const fixture = vi.hoisted(() => {
 });
 
 vi.mock("node:fs/promises", () => ({ default: { rm: fixture.remove } }));
-
 vi.mock("../state/openclaw-state-worker-context.js", () => ({
   captureOpenClawStateWorkerContext: () => ({
     admission: { databasePath: "/synthetic/state/openclaw.sqlite" },
@@ -39,7 +37,7 @@ vi.mock("../state/openclaw-state-lease.js", () => ({
 vi.mock("./project-checkout.js", () => ({
   ProjectCheckoutError: class extends Error {},
   resolveProjectDirectory: async (root: string) => root,
-  resolveProjectCheckout: fixture.resolveCheckout,
+  resolveProjectCheckout: async (root: string) => ({ path: root, repoRoot: root }),
   withProjectCheckoutLifecycle: async (_root: string, _options: unknown, run: LeaseRun) => {
     const result = await run(fixture.checkoutLease);
     fixture.finishCheckout();
@@ -48,7 +46,6 @@ vi.mock("./project-checkout.js", () => ({
 }));
 
 vi.mock("./project-registry.js", () => ({ listProjectRegistry: async () => [] }));
-
 vi.mock("./project-clone-runtime.js", () => ({ cloneProjectCheckout: fixture.clone }));
 
 vi.mock("../state/openclaw-state-lease-worker-operation.js", () => ({
@@ -69,25 +66,17 @@ vi.mock("../state/openclaw-state-lease-worker-operation.js", () => ({
   },
 }));
 
-function materialize() {
-  return materializeProjectClone(
+const materialize = () =>
+  materializeProjectClone(
     { cfg: {}, gitUrl: "https://github.com/example/project.git" },
     { env: { OPENCLAW_STATE_DIR: "/synthetic/state" } },
   );
-}
-
-async function expectFailure(failure: Error, retained = true, removed = false) {
-  await expect(materialize()).rejects.toBe(failure);
-  expect(fixture.checkouts.size).toBe(retained ? 1 : 0);
-  expect(fixture.remove).toHaveBeenCalledTimes(removed ? 1 : 0);
-}
 
 beforeEach(() => {
   vi.resetAllMocks();
   fixture.checkouts.clear();
   fixture.clone.mockImplementation(async ({ target }) => void fixture.checkouts.add(target));
   fixture.remove.mockImplementation(async (target) => void fixture.checkouts.delete(target));
-  fixture.resolveCheckout.mockImplementation(async (root) => ({ path: root, repoRoot: root }));
   fixture.execute.mockImplementation(async () => {
     const repoRoot = [...fixture.checkouts][0];
     if (!repoRoot) {
@@ -109,51 +98,40 @@ it("returns an acknowledged registration and retains its checkout", async () => 
   expect(fixture.remove).not.toHaveBeenCalled();
 });
 
-it("retains the checkout for a plain wire-coded unknown outcome inside a cleanup aggregate", async () => {
-  const unknown = Object.assign(new Error("Worker result was unavailable"), {
-    name: "SqliteWorkerError",
-    code: "outcome-unknown",
-  });
-  const failure = new AggregateError([unknown, new Error("Retirement failed")], "Cleanup failed");
-  fixture.execute.mockRejectedValue(failure);
-  await expectFailure(failure);
-});
-
-it.each(["worker", "checkout"] as const)(
-  "retains an acknowledged checkout when %s finalization fails",
-  async (owner) => {
-    const failure = new Error(`${owner} finalization failed`);
-    const finish = owner === "worker" ? fixture.finishWorker : fixture.finishCheckout;
-    finish.mockImplementation(() => {
+it.each(["unknown", "worker", "finalizer", "precommit", "removal", "origin", "checkout"] as const)(
+  "settles registration after %s failure",
+  async (stage) => {
+    let failure: Error = new Error(`${stage} failed`);
+    if (stage === "unknown") {
+      const unknown = Object.assign(new Error("Worker result unavailable"), {
+        name: "SqliteWorkerError",
+        code: "outcome-unknown",
+      });
+      failure = new AggregateError([unknown, new Error("Retirement failed")], "Cleanup failed");
+    }
+    const fail = () => {
       throw failure;
-    });
-    await expectFailure(failure);
-  },
-);
-
-it.each([false, true])(
-  "cleans a definite precommit failure (removal fails: %s)",
-  async (removalFails) => {
-    const failure = new Error("Insert was refused before execution");
-    fixture.execute.mockRejectedValue(failure);
-    if (removalFails) {
+    };
+    if (stage === "worker" || stage === "finalizer") {
+      const finish = stage === "worker" ? fixture.finishWorker : fixture.finishCheckout;
+      finish.mockImplementation(fail);
+    } else {
+      fixture.execute.mockImplementation(async () => {
+        if (stage === "origin" || stage === "checkout") {
+          const lease = stage === "origin" ? fixture.originLease : fixture.checkoutLease;
+          lease.assertOwned.mockImplementation(() => {
+            throw new Error("Owner is no longer current");
+          });
+        }
+        return fail();
+      });
+    }
+    if (stage === "removal") {
       fixture.remove.mockRejectedValue(new Error("Checkout removal failed"));
     }
-    await expectFailure(failure, removalFails, true);
-  },
-);
-
-it.each(["origin", "checkout"] as const)(
-  "preserves the registration error and checkout when its %s owner cannot authorize cleanup",
-  async (owner) => {
-    const failure = new Error("Insert was refused before execution");
-    const lease = owner === "origin" ? fixture.originLease : fixture.checkoutLease;
-    fixture.execute.mockImplementation(async () => {
-      lease.assertOwned.mockImplementation(() => {
-        throw new Error("Owner is no longer current");
-      });
-      throw failure;
-    });
-    await expectFailure(failure);
+    await expect(materialize()).rejects.toBe(failure);
+    expect(fixture.checkouts.size).toBe(stage === "precommit" ? 0 : 1);
+    const removals = stage === "precommit" || stage === "removal" ? 1 : 0;
+    expect(fixture.remove).toHaveBeenCalledTimes(removals);
   },
 );
