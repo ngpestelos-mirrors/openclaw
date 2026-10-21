@@ -1,5 +1,5 @@
 import type { JSX } from "@solidjs/web";
-import { createMemo, createSignal, createUniqueId, For, onSettled, Show } from "solid-js";
+import { createMemo, createSignal, createUniqueId, For, Show } from "solid-js";
 import { Icon } from "../../../components/solid/icon.tsx";
 import { Menu } from "../../../components/solid/menu.tsx";
 import { PanelLoadingSkeleton } from "../../../components/solid/panel-loading-skeleton.tsx";
@@ -34,29 +34,14 @@ function WorkspaceFilename(props: { name: string }) {
   const parts = createMemo(() => splitWorkspaceFilename(props.name));
   const [overflow, setOverflow] = createSignal(false);
   let stem: HTMLSpanElement | undefined;
-  const schedule = createLayoutMeasurement(
+  createLayoutMeasurement(
     () => props.name,
     () => {
       const overflowing = Boolean(stem && stem.scrollWidth > stem.clientWidth);
       return () => setOverflow(overflowing);
     },
-    { targets: () => (stem ? [stem] : []) },
+    { targets: () => (stem ? [stem] : []), fonts: true },
   );
-  onSettled(() => {
-    if (!stem) {
-      return undefined;
-    }
-    let active = true;
-    const update = () => {
-      if (active) {
-        schedule();
-      }
-    };
-    void document.fonts.ready.then(update);
-    return () => {
-      active = false;
-    };
-  });
   return (
     <span class="workspace-desktop__filename">
       <span
