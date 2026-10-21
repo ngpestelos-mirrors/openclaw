@@ -20,51 +20,47 @@ vi.mock("openclaw/plugin-sdk/agent-runtime", () => ({
   resolveDefaultModelForAgent: vi.fn(),
 }));
 
-describe("active-memory search queries", () => {
-  it.each([
-    [
-      `what should I pack?\n\n${buildPromptPrefix("User prefers aisle seats.")}`,
-      [],
-      "what should I pack?",
-    ],
-    ["Context: my project uses TypeScript", [], "Context: my project uses TypeScript"],
-    [
-      "why?",
-      [{ role: "user" as const, text: `${"x".repeat(119)}🚀tail` }],
-      `${"x".repeat(119)} why?`,
-    ],
-  ])("builds a safe query from %#", (latestUserMessage, recentTurns, expected) => {
-    const query = buildSearchQuery({ latestUserMessage, recentTurns });
-    expect(query).toBe(expected);
-    expect(query).not.toMatch(UNPAIRED_SURROGATE);
-  });
+it.each([
+  [
+    `what should I pack?\n\n${buildPromptPrefix("User prefers aisle seats.")}`,
+    [],
+    "what should I pack?",
+  ],
+  ["Context: my project uses TypeScript", [], "Context: my project uses TypeScript"],
+  [
+    "why?",
+    [{ role: "user" as const, text: `${"x".repeat(119)}🚀tail` }],
+    `${"x".repeat(119)} why?`,
+  ],
+])("builds a safe query from %#", (latestUserMessage, recentTurns, expected) => {
+  const query = buildSearchQuery({ latestUserMessage, recentTurns });
+  expect(query).toBe(expected);
+  expect(query).not.toMatch(UNPAIRED_SURROGATE);
 });
 
-describe("active-memory recent turn block boundaries", () => {
-  const header = "Context:";
-  const open = "<active_memory_plugin>";
-  const close = "</active_memory_plugin>";
+const header = "Context:";
+const open = "<active_memory_plugin>";
+const close = "</active_memory_plugin>";
 
-  it.each`
-    name                                           | content                                                                                                          | assistant                | user
-    ${"multiple blocks after an earlier close"}    | ${`${close}\nbefore\n${header}\n${open}\nhidden\n${close}\nmiddle\n${header}\n${open}\nhidden\n${close}\nafter`} | ${"before middle after"} | ${`${close} before middle after`}
-    ${"a physical blank between header and open"}  | ${`${header}\n\n${open}\nvisible\n${close}\nafter`}                                                              | ${"after"}               | ${`${header} ${open} visible ${close} after`}
-    ${"an unclosed block"}                         | ${`${header}\n${open}\nvisible`}                                                                                 | ${`${open} visible`}     | ${`${header} ${open} visible`}
-    ${"the first close after nested opening text"} | ${`${header}\n${open}\nouter\n${open}\ninner\n${close}\ntail\n${close}\nafter`}                                  | ${"tail after"}          | ${`tail ${close} after`}
-    ${"trimmed CRLF markers"}                      | ${` ${header} \r\n\t${open}\r\nhidden\r\n ${close} \r\n after `}                                                 | ${"after"}               | ${"after"}
-    ${"a block-only turn"}                         | ${`${header}\n${open}\nhidden\n${close}`}                                                                        | ${""}                    | ${""}
-  `(
-    "preserves role-specific cleanup for $name",
-    ({ content, assistant, user }: { content: string; assistant: string; user: string }) => {
-      for (const [role, text] of [
-        ["assistant", assistant],
-        ["user", user],
-      ] as const) {
-        expect(extractRecentTurns([{ role, content }])).toEqual(text ? [{ role, text }] : []);
-      }
-    },
-  );
-});
+it.each`
+  name                                           | content                                                                                                          | assistant                | user
+  ${"multiple blocks after an earlier close"}    | ${`${close}\nbefore\n${header}\n${open}\nhidden\n${close}\nmiddle\n${header}\n${open}\nhidden\n${close}\nafter`} | ${"before middle after"} | ${`${close} before middle after`}
+  ${"a physical blank between header and open"}  | ${`${header}\n\n${open}\nvisible\n${close}\nafter`}                                                              | ${"after"}               | ${`${header} ${open} visible ${close} after`}
+  ${"an unclosed block"}                         | ${`${header}\n${open}\nvisible`}                                                                                 | ${`${open} visible`}     | ${`${header} ${open} visible`}
+  ${"the first close after nested opening text"} | ${`${header}\n${open}\nouter\n${open}\ninner\n${close}\ntail\n${close}\nafter`}                                  | ${"tail after"}          | ${`tail ${close} after`}
+  ${"trimmed CRLF markers"}                      | ${` ${header} \r\n\t${open}\r\nhidden\r\n ${close} \r\n after `}                                                 | ${"after"}               | ${"after"}
+  ${"a block-only turn"}                         | ${`${header}\n${open}\nhidden\n${close}`}                                                                        | ${""}                    | ${""}
+`(
+  "preserves role-specific cleanup for $name",
+  ({ content, assistant, user }: { content: string; assistant: string; user: string }) => {
+    for (const [role, text] of [
+      ["assistant", assistant],
+      ["user", user],
+    ] as const) {
+      expect(extractRecentTurns([{ role, content }])).toEqual(text ? [{ role, text }] : []);
+    }
+  },
+);
 
 describe("active-memory recall query limits", () => {
   it.each([

@@ -1,6 +1,7 @@
 import type { OpenClawConfig } from "openclaw/plugin-sdk/config-contracts";
 import type { OpenClawPluginApi } from "openclaw/plugin-sdk/plugin-entry";
 import { createTestPluginApi } from "openclaw/plugin-sdk/plugin-test-api";
+import type { createPluginRuntimeMock } from "openclaw/plugin-sdk/plugin-test-runtime";
 import type { SessionEntry } from "openclaw/plugin-sdk/session-store-runtime";
 import { describe, expect, it, vi } from "vitest";
 import plugin from "./index.js";
@@ -17,7 +18,6 @@ vi.mock("openclaw/plugin-sdk/agent-runtime", () => ({
   DEFAULT_PROVIDER: "ollama",
   parseModelRef: () => ({ provider: "ollama", model: "qwen3:4b" }),
   resolveAgentEffectiveModelPrimary: () => undefined,
-  resolveAgentConfig: unexpectedIo,
   resolveDefaultModelForAgent: unexpectedIo,
   resolveAgentDir: () => "/synthetic/agent",
   resolveAgentWorkspaceDir: () => "/synthetic/workspace",
@@ -46,10 +46,6 @@ vi.mock("openclaw/plugin-sdk/memory-core-host-engine-storage", () => ({
 }));
 // mock-isolation: The fixture owns session state; unexpected database I/O must fail.
 vi.mock("openclaw/plugin-sdk/session-store-runtime", () => ({
-  cleanupSessionLifecycleArtifacts: unexpectedIo,
-  formatSqliteSessionFileMarker: unexpectedIo,
-  parseSqliteSessionFileMarker: unexpectedIo,
-  prepareSessionEntryPatch: unexpectedIo,
   deliveryContextFromSession: unexpectedIo,
   sessionDeliveryOrigin: unexpectedIo,
   rethrowIncognitoSessionError: (error: unknown) => {
@@ -58,12 +54,10 @@ vi.mock("openclaw/plugin-sdk/session-store-runtime", () => ({
 }));
 // mock-isolation: Skipped recall must not load a real transcript reader or its workers.
 vi.mock("openclaw/plugin-sdk/session-transcript-runtime", () => ({
-  readSessionTranscriptEvents: unexpectedIo,
   readSessionTranscriptRawDelta: unexpectedIo,
 }));
 
-type Runtime = OpenClawPluginApi["runtime"];
-type Agent = Runtime["agent"];
+type Agent = OpenClawPluginApi["runtime"]["agent"];
 
 function setup(mode: "off" | "escalate" | "always" = "escalate") {
   const otherEntry = { pluginId: "other-plugin", lines: ["Other plugin status"] };
@@ -73,8 +67,6 @@ function setup(mode: "off" | "escalate" | "always" = "escalate") {
     pluginDebugEntries: [otherEntry],
   };
   const config: OpenClawConfig = {
-    agents: { defaults: { model: { primary: "ollama/qwen3:4b" } } },
-    memory: { search: { rememberAcrossConversations: false } },
     plugins: {
       slots: { memory: "memory-core" },
       entries: { "active-memory": { config: { mode, agents: ["main"] } } },
@@ -110,16 +102,7 @@ function setup(mode: "off" | "escalate" | "always" = "escalate") {
         clear: async () => {},
       }),
     },
-  } satisfies {
-    config: Pick<Runtime["config"], "current">;
-    agent: Pick<Agent, "resolveCliBackendDispatchEligibilityAsync" | "runEmbeddedAgent"> & {
-      session: Pick<
-        Agent["session"],
-        "resolveStorePath" | "getSessionEntryAsync" | "prepareSessionEntryPatch"
-      >;
-    };
-    state: Pick<Runtime["state"], "openKeyedStore">;
-  };
+  } satisfies NonNullable<Parameters<typeof createPluginRuntimeMock>[0]>;
   const on = vi.fn<OpenClawPluginApi["on"]>();
   const api = createTestPluginApi({
     id: "active-memory",
@@ -193,42 +176,33 @@ describe("Active Memory policy status", () => {
   });
 
   it.each(["off", "escalate"] as const)(
-    "clears a denied turn's status when an allowed %s turn skips recall",
+    "clears a denied turn's status before %s preflight settles and keeps it clear",
     async (mode) => {
-      const fixture = setup(mode);
-      await fixture.run(false);
-      expect(fixture.entry.pluginDebugEntries).toContainEqual({
+      const { entry, otherEntry, lookup, run, runtime } = setup(mode);
+      await run(false);
+      expect(entry.pluginDebugEntries).toContainEqual({
         pluginId: "active-memory",
         lines: ["🧩 Active Memory: status=policy-disabled"],
       });
 
-      await fixture.run(true);
-
-      expect(fixture.entry.pluginDebugEntries).toEqual([fixture.otherEntry]);
-      expect(fixture.entry.updatedAt).toBe(25);
-      expect(fixture.runtime.agent.runEmbeddedAgent).not.toHaveBeenCalled();
+      const entered = Promise.withResolvers<void>();
+      const preflight = Promise.withResolvers<undefined>();
+      lookup.mockImplementationOnce(async () => {
+        entered.resolve();
+        return preflight.promise;
+      });
+      const pending = run(true);
+      try {
+        await entered.promise;
+        expect([entry.pluginDebugEntries, entry.updatedAt]).toEqual([[otherEntry], 25]);
+      } finally {
+        preflight.resolve(undefined);
+        await pending;
+      }
+      expect([entry.pluginDebugEntries, entry.updatedAt]).toEqual([[otherEntry], 25]);
+      expect(runtime.agent.runEmbeddedAgent).not.toHaveBeenCalled();
     },
   );
-
-  it("clears stale status before awaited preflight finishes", async () => {
-    const fixture = setup();
-    await fixture.run(false);
-    const entered = Promise.withResolvers<void>();
-    const preflight = Promise.withResolvers<undefined>();
-    fixture.lookup.mockImplementationOnce(async () => {
-      entered.resolve();
-      return preflight.promise;
-    });
-    const pending = fixture.run(true);
-    try {
-      await entered.promise;
-      expect(fixture.entry.pluginDebugEntries).toEqual([fixture.otherEntry]);
-      expect(fixture.entry.updatedAt).toBe(25);
-    } finally {
-      preflight.resolve(undefined);
-      await pending;
-    }
-  });
 
   it("leaves a model-locked session's status untouched", async () => {
     const fixture = setup();
