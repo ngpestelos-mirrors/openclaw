@@ -66,7 +66,7 @@ export async function createWorkspaceFixture(parent: string, unary = false) {
     }
     return result;
   });
-  let service!: Parameters<Plugin.OpenClawPluginApi["registerService"]>[0];
+  const registerService = vi.fn<Plugin.OpenClawPluginApi["registerService"]>();
   const scheduler = testApi.createTestPluginServiceScheduler();
   const api = testApi.createTestPluginApi({
     config: { plugins: { entries: { "file-transfer": { config: pluginConfig } } } },
@@ -75,9 +75,7 @@ export async function createWorkspaceFixture(parent: string, unary = false) {
       agent: { resolveAgentWorkspaceDir: (): string => fixture.local },
       nodes: { invoke },
     } as unknown as Plugin.OpenClawPluginApi["runtime"],
-    registerService: (value) => {
-      service = value;
-    },
+    registerService,
   });
   const fixture = {
     ...state,
@@ -86,7 +84,7 @@ export async function createWorkspaceFixture(parent: string, unary = false) {
     invoke,
     api,
     get service() {
-      return service;
+      return registerService.mock.lastCall![0];
     },
     scheduler,
     context: () => ({
@@ -98,7 +96,7 @@ export async function createWorkspaceFixture(parent: string, unary = false) {
       scheduler,
     }),
     async start() {
-      await service.start(this.context());
+      await this.service.start(this.context());
       return workspace.getAgentWorkspaceAccess(fixture.local)!;
     },
   };

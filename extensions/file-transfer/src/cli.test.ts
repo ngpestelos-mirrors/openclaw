@@ -76,13 +76,9 @@ afterEach(() => {
 
 it("reports unresolved legacy permissions as JSON without prompting or writing", async () => {
   prepare({ path: "/tmp/report-*.txt" });
-  const writes: string[] = [];
-  vi.spyOn(process.stdout, "write").mockImplementation((chunk) => {
-    writes.push(String(chunk));
-    return true;
-  });
+  const stdout = vi.spyOn(process.stdout, "write").mockReturnValue(true);
   await migrate("--json");
-  expect(JSON.parse(writes.join(""))).toMatchObject({
+  expect(JSON.parse(stdout.mock.calls.map(([chunk]) => String(chunk)).join(""))).toMatchObject({
     status: "needs-input",
     changed: false,
     command: "openclaw file-transfer approvals migrate",
