@@ -54,41 +54,34 @@ describe("SDK resolveAccountKey channel context", () => {
   });
 });
 
-describe("resolveAccountEntry", () => {
-  const accounts = { default: { id: "default" }, Business: { id: "business" } };
-
-  it("resolves an exact account key", () => {
-    expect(resolveAccountEntry(accounts, "default")).toEqual({ id: "default" });
-  });
-
-  it("ignores prototype-chain values", () => {
-    expect(
-      resolveAccountEntry(Object.create({ default: { id: "polluted" } }), "default"),
-    ).toBeUndefined();
-  });
+it("resolves an exact account key", () => {
+  expect(resolveAccountEntry({ default: { id: "default" } }, "default")).toEqual({ id: "default" });
 });
 
-describe("resolveNormalizedAccountEntry", () => {
-  it("resolves normalized account keys with a custom normalizer", () => {
-    expect(
-      resolveNormalizedAccountEntry({ "Ops Team": { id: "ops" } }, "ops-team", (id) =>
-        id.trim().toLowerCase().replaceAll(" ", "-"),
-      ),
-    ).toEqual({ id: "ops" });
-  });
+it("ignores prototype-chain values", () => {
+  expect(
+    resolveAccountEntry(Object.create({ default: { id: "polluted" } }), "default"),
+  ).toBeUndefined();
+});
+it("resolves normalized account keys with a custom normalizer", () => {
+  expect(
+    resolveNormalizedAccountEntry({ "Ops Team": { id: "ops" } }, "ops-team", (id) =>
+      id.trim().toLowerCase().replaceAll(" ", "-"),
+    ),
+  ).toEqual({ id: "ops" });
+});
 
-  it.each([
-    ["blocked raw keys", "__proto__", "default", normalizeRoutingAccountId],
-    [
-      "keys normalizing to blocked keys",
-      "constructor ",
-      "constructor",
-      (id: string) => id.trim().toLowerCase(),
-    ],
-    ["invalid raw keys via default fallback", "constructor ", "default", normalizeRoutingAccountId],
-  ] as const)("does not resolve %s", (_name, rawKey, accountId, normalize) => {
-    expect(
-      resolveNormalizedAccountEntry({ [rawKey]: { id: "blocked" } }, accountId, normalize),
-    ).toBeUndefined();
-  });
+it.each([
+  ["blocked raw keys", "__proto__", "default", normalizeRoutingAccountId],
+  [
+    "keys normalizing to blocked keys",
+    "constructor ",
+    "constructor",
+    (id: string) => id.trim().toLowerCase(),
+  ],
+  ["invalid raw keys via default fallback", "constructor ", "default", normalizeRoutingAccountId],
+] as const)("does not resolve %s", (_name, rawKey, accountId, normalize) => {
+  expect(
+    resolveNormalizedAccountEntry({ [rawKey]: { id: "blocked" } }, accountId, normalize),
+  ).toBeUndefined();
 });
