@@ -16,24 +16,29 @@ import {
 
 const persistedStores = vi.hoisted(() => new Map<string, { profiles: Record<string, unknown> }>());
 
+// mock-isolation: fixed labels keep overview assertions independent of account display state.
 vi.mock("../../agents/auth-profiles/display.js", () => ({
   resolveAuthProfileDisplayLabel: ({ profileId }: { profileId: string }) => profileId,
 }));
 
+// mock-isolation: read only synthetic credential stores, never operator credentials.
 vi.mock("../../agents/auth-profiles/persisted.js", () => ({
   loadPersistedAuthProfileStore: (agentDir?: string) => persistedStores.get(agentDir ?? "__main__"),
 }));
 
+// mock-isolation: synthetic display paths must not depend on the host state directory.
 vi.mock("../../agents/auth-profiles/paths.js", () => ({
   resolveAuthStorePathForDisplay: (agentDir?: string) =>
     agentDir ? `${agentDir}/auth-profiles.json` : "/tmp/auth-profiles.json",
 }));
 
+// mock-isolation: select fixture profiles without loading unrelated credential state.
 vi.mock("../../agents/auth-profiles/profiles.js", () => ({
   listProfilesForProvider: (store: OverviewParams["store"], provider: string) =>
     Object.keys(store.profiles).filter((id) => store.profiles[id]?.provider === provider),
 }));
 
+// mock-isolation: host cooldown state must not change synthetic auth overview results.
 vi.mock("../../agents/auth-profiles/usage.js", () => ({
   resolveProfileUnusableUntilForDisplay: () => undefined,
 }));

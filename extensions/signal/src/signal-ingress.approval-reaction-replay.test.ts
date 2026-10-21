@@ -29,6 +29,7 @@ vi.mock("openclaw/plugin-sdk/approval-reaction-runtime", async (importOriginal) 
 
 const resolveApproval = vi.hoisted(() => vi.fn());
 
+// mock-isolation: simulate approval failures without sending requests to a real Gateway.
 vi.mock("openclaw/plugin-sdk/approval-gateway-runtime", () => ({
   resolveApprovalOverGateway: resolveApproval,
 }));

@@ -29,15 +29,18 @@ vi.mock("../infra/update-run-status.js", async (importOriginal) => ({
   readUpdateRunStatus: async () => ({}),
 }));
 
+// mock-isolation: project synthetic admitted store facts without opening host databases.
 vi.mock("../infra/database-engine/admitted-diagnostics.js", () => ({
   describeAdmittedDatabaseStores: mocks.describe,
 }));
 
+// mock-isolation: shared runtime and usage probes must not inspect the operator Gateway.
 vi.mock("./status-runtime-shared.js", () => ({
   resolveStatusRuntimeSnapshot: async () => ({}),
   resolveStatusUsageSummary: vi.fn(),
 }));
 
+// mock-isolation: backup freshness is unrelated and must not read host backup records.
 vi.mock("../state/backup-run-records.js", () => ({
   readBackupRunFreshness: async () => ({}),
 }));

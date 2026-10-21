@@ -2,6 +2,7 @@ import { beforeAll, beforeEach, expect, it, vi } from "vitest";
 
 const rpcMock = vi.fn();
 
+// mock-isolation: fixed account routing avoids reading operator Signal configuration.
 vi.mock("./accounts.js", () => ({
   resolveSignalAccount: () => ({
     baseUrl: "http://signal.local",

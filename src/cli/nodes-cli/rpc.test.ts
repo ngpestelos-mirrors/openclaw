@@ -3,6 +3,7 @@ import { GatewayClientRequestError } from "../../../packages/gateway-client/src/
 
 const callGateway = vi.hoisted(() => vi.fn());
 
+// mock-isolation: exercise node resolution without opening an actual Gateway connection.
 vi.mock("../gateway-rpc.js", () => ({
   callGatewayFromCliWithTransport: callGateway,
 }));
