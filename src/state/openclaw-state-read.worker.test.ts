@@ -36,7 +36,9 @@ vi.mock("node:worker_threads", async (importOriginal) => {
         super(...args);
         if (String(args[0]).includes("postgres-sync/bridge.worker")) {
           const data = args[1]?.workerData as { signal: SharedArrayBuffer };
-          const online = new Promise<void>((resolve) => this.once("online", () => resolve()));
+          const online = new Promise<void>((resolve) => {
+            this.once("online", () => resolve());
+          });
           mock.bridges.push({ worker: this, control: new Int32Array(data.signal), online });
         }
       }
@@ -63,6 +65,7 @@ vi.mock("../plugins/plugin-metadata-state.kernel.js", async (importOriginal) => 
 vi.mock("./openclaw-agent-db-registry.read.js", () => ({
   readRegisteredAgentDatabaseRows: mock.query,
 }));
+// mock-isolation: Hold command-module loading until the early bridge startup has been observed.
 vi.mock("./state-bootstrap-read.worker.js", async () => {
   mock.bootstrapLoading.resolve();
   await mock.bootstrapRelease.promise;

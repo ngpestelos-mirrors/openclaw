@@ -501,8 +501,8 @@ async function receive(request: SqliteWorkerRequest): Promise<void> {
         ) {
           throw new Error("SQLite worker module returned an invalid backend");
         }
-        // SAFETY: The validated backend and its typed client own the private command contract.
         actors.set(request.actor, {
+          // SAFETY: The validated backend and its typed client own the private command contract.
           backend: backend as SqliteWorkerPreparedBackend<SqliteWorkerOperations>,
           bridge,
         });
