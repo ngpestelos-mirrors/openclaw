@@ -4,6 +4,11 @@ import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { resolveDefaultAgentBoundAccountId } from "./bindings.js";
 import { resolveFirstBoundAccountId } from "./bound-account-read.js";
 
+const match = (accountId: string, scope: Partial<AgentRouteBinding["match"]> = {}) => ({
+  agentId: "bot-alpha",
+  match: { channel: "discord", accountId, ...scope },
+});
+
 function countRoleVisits<T>(memberRoleIds: string[], read: () => T) {
   const iterate = memberRoleIds[Symbol.iterator].bind(memberRoleIds);
   let iterations = 0;
@@ -50,29 +55,20 @@ describe("bound account selection work", () => {
         { agentId: "other", match: { channel: "matrix", accountId: "other" } },
         ...eligible,
       ];
-      const cfg: OpenClawConfig = {
-        agents: { entries: { "bot-alpha": {} } },
-        bindings,
-      };
+      const cfg: OpenClawConfig = { agents: { entries: { "bot-alpha": {} } }, bindings };
 
       const result =
         selector === "peerless"
           ? resolveFirstBoundAccountId({ cfg, channelId: " MATRIX ", agentId: "bot-alpha" })
           : resolveDefaultAgentBoundAccountId(cfg, " MATRIX ");
-      const reads = typeReads;
-
       expect(result).toBe("account-0");
       expect(cfg.bindings).toBe(bindings);
       expect(bindings).toHaveLength(10_004);
-      expect(reads).toBe(1);
+      expect(typeReads).toBe(1);
     },
   );
 
   it.each([true, false])("prepares caller roles once only for matching scopes (%s)", (matching) => {
-    const match = (accountId: string, scope: Partial<AgentRouteBinding["match"]> = {}) => ({
-      agentId: "bot-alpha",
-      match: { channel: "discord", accountId, ...scope },
-    });
     const bindings = matching
       ? Array.from({ length: 1000 }, (_, index) =>
           match(`account-${index}`, {
@@ -90,33 +86,25 @@ describe("bound account selection work", () => {
       ? Array.from({ length: 1000 }, (_, index) => `role-${index}`)
       : ["admin"];
     const memberRoleIds = [...expectedRoles];
-    const result = countRoleVisits(memberRoleIds, () =>
+    const select = () =>
       resolveFirstBoundAccountId({
         cfg,
         channelId: "discord",
         agentId: "bot-alpha",
         groupSpace: "current",
         memberRoleIds,
-      }),
-    );
+      });
+    const result = countRoleVisits(memberRoleIds, select);
 
-    expect(result.value).toBe(matching ? "account-999" : "unscoped");
     expect(cfg.bindings).toBe(bindings);
     expect(bindings).toHaveLength(matching ? 1000 : 3);
     expect(memberRoleIds).toEqual(expectedRoles);
-    expect({ iterations: result.iterations, visits: result.visits }).toEqual({
+    expect(result).toEqual({
+      value: matching ? "account-999" : "unscoped",
       iterations: matching ? 1 : 0,
       visits: matching ? 1000 : 0,
     });
     if (matching) {
-      const select = () =>
-        resolveFirstBoundAccountId({
-          cfg,
-          channelId: "discord",
-          agentId: "bot-alpha",
-          groupSpace: "current",
-          memberRoleIds,
-        });
       memberRoleIds[999] = "other-role";
       expect(select()).toBeUndefined();
       memberRoleIds[999] = "role-999";
