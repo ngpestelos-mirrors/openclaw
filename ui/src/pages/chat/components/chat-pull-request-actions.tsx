@@ -1,5 +1,6 @@
 import { createMemo, createSignal, createUniqueId, Show, useContext } from "solid-js";
 import type { ControlUiSessionPullRequest } from "../../../../../src/gateway/control-ui-contract.js";
+import { GitDiffValues } from "../../../components/session-git-diff.tsx";
 import { Icon } from "../../../components/solid/icon.tsx";
 import {
   createMenuControls,
@@ -241,16 +242,11 @@ export function PullRequestActions(props: {
                     <Icon name="diff" />
                     <span>{t("chat.pullRequests.codeChanges")}</span>
                     <span class="chat-pr-menu__value">
-                      <Show when={props.pullRequest.additions !== undefined}>
-                        <span class="chat-pr__additions">
-                          +{props.pullRequest.additions?.toLocaleString("en-US")}
-                        </span>
-                      </Show>
-                      <Show when={props.pullRequest.deletions !== undefined}>
-                        <span class="chat-pr__deletions">
-                          −{props.pullRequest.deletions?.toLocaleString("en-US")}
-                        </span>
-                      </Show>
+                      <GitDiffValues
+                        item={props.pullRequest}
+                        classPrefix="chat-pr"
+                        locale="en-US"
+                      />
                     </span>
                   </div>
                 </Show>

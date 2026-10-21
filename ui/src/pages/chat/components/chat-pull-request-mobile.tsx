@@ -4,6 +4,7 @@ import type {
   ControlUiSessionPullRequestSnapshot,
 } from "../../../../../src/gateway/control-ui-contract.js";
 import type { ApplicationGateway } from "../../../app/gateway.ts";
+import { GitDiffValues } from "../../../components/session-git-diff.tsx";
 import { Icon } from "../../../components/solid/icon.tsx";
 import { registerGitHubEnglish } from "../../../i18n/locales/en-github.ts";
 import { copyToClipboard } from "../../../lib/clipboard.ts";
@@ -116,16 +117,7 @@ export function ChatPullRequestMobileRow(props: ChatPullRequestMobileRowProps) {
             }
           >
             <span aria-hidden="true"> · </span>
-            <Show when={props.pullRequest.additions !== undefined}>
-              <span class="chat-pr__additions">
-                +{props.pullRequest.additions?.toLocaleString("en-US")}
-              </span>
-            </Show>{" "}
-            <Show when={props.pullRequest.deletions !== undefined}>
-              <span class="chat-pr__deletions">
-                −{props.pullRequest.deletions?.toLocaleString("en-US")}
-              </span>
-            </Show>
+            <GitDiffValues item={props.pullRequest} classPrefix="chat-pr" locale="en-US" spaced />
           </Show>
         </span>
       </span>
@@ -241,16 +233,7 @@ export function ChatPullRequestMobileDetail(props: ChatPullRequestMobileDetailPr
                         })}
                       </span>
                     </Show>
-                    <Show when={pullRequest().additions !== undefined}>
-                      <span class="chat-pr__additions">
-                        +{pullRequest().additions?.toLocaleString("en-US")}
-                      </span>
-                    </Show>
-                    <Show when={pullRequest().deletions !== undefined}>
-                      <span class="chat-pr__deletions">
-                        −{pullRequest().deletions?.toLocaleString("en-US")}
-                      </span>
-                    </Show>
+                    <GitDiffValues item={pullRequest()} classPrefix="chat-pr" locale="en-US" />
                   </div>
                 </Show>
               </div>
