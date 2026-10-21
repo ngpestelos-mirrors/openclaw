@@ -15,14 +15,31 @@ import {
 import { readScriptProducerEvidence } from "./test-file-scenario-script-evidence.js";
 
 const tempDirs = useAutoCleanupTempDirTracker(afterEach);
+function fixture(prefix: string, dirname = "output", id = "owned-scenario") {
+  const repoRoot = tempDirs.make(prefix);
+  const outputDir = path.join(repoRoot, dirname);
+  const scenario = { id };
+  const evidenceDir = path.join(outputDir, id);
+  return {
+    repoRoot,
+    outputDir,
+    scenario,
+    evidenceDir,
+    read: (from = outputDir) =>
+      readScriptProducerEvidence({
+        repoRoot,
+        outputDir: from,
+        scenario,
+        requireCurrentRunEvidence: true,
+      }),
+    write: (name: string, value: unknown) =>
+      fs.writeFile(path.join(evidenceDir, name), JSON.stringify(value)),
+  };
+}
 
 describe("script evidence reader", () => {
   it("rebases receipt artifacts without changing full source evidence", async () => {
-    const evidenceMode = "full";
-    const repoRoot = tempDirs.make("qa-script-receipt-");
-    const outputDir = path.join(repoRoot, "output");
-    const scenario = { id: "owned-scenario" };
-    const evidenceDir = path.join(outputDir, scenario.id);
+    const { evidenceDir, read } = fixture("qa-script-receipt-");
     await fs.mkdir(evidenceDir, { recursive: true });
     const content = "observed synthetic target\n";
     const digest = createHash("sha256").update(content).digest("hex");
@@ -56,7 +73,7 @@ describe("script evidence reader", () => {
     });
     const evidence = buildQaOccurrenceEvidenceSummary({
       generatedAt: source.generatedAt,
-      evidenceMode,
+      evidenceMode: "full",
       occurrences: [occurrence],
       entries: source.entries.map((entry) =>
         Object.assign({}, entry, {
@@ -68,12 +85,7 @@ describe("script evidence reader", () => {
     const evidencePath = path.join(evidenceDir, "qa-evidence.json");
     const raw = JSON.stringify(evidence);
     await fs.writeFile(evidencePath, raw);
-    const { producerEvidence: imported } = await readScriptProducerEvidence({
-      outputDir,
-      repoRoot,
-      scenario,
-      requireCurrentRunEvidence: true,
-    });
+    const { producerEvidence: imported } = await read();
     expect(imported?.schemaVersion).toBe(3);
     if (imported?.schemaVersion !== 3) {
       throw new Error("expected occurrence evidence");
@@ -92,16 +104,16 @@ describe("script evidence reader", () => {
   });
 
   it("retains actual nested native slim files and receipt hashes across repeated imports", async () => {
-    const evidenceMode = "slim";
-    const repoRoot = tempDirs.make("qa-native-receipt-base-");
-    const outputDir = path.join(repoRoot, "outer");
-    const scenario = { id: "native-child" };
-    const evidenceDir = path.join(outputDir, scenario.id);
+    const { repoRoot, scenario, evidenceDir, read } = fixture(
+      "qa-native-receipt-base-",
+      "outer",
+      "native-child",
+    );
     const result = await runQaTestFileScenarios({
       ...QA_TEST_RUNNER_DEFAULTS,
       repoRoot,
       outputDir: evidenceDir,
-      evidenceMode,
+      evidenceMode: "slim",
       scenarios: [makeTestFileScenario("vitest", "owned.test.ts")],
       runCommand: async (command) => {
         await writeNativeVitestReport(command, { passed: 1 });
@@ -110,12 +122,7 @@ describe("script evidence reader", () => {
     });
     expect(result.results[0]!.status).toBe("pass");
     const original = await fs.readFile(result.evidencePath);
-    const first = await readScriptProducerEvidence({
-      repoRoot,
-      outputDir,
-      scenario,
-      requireCurrentRunEvidence: true,
-    });
+    const first = await read();
     expect(first.producerEvidence).toEqual(result.evidence);
     if (first.producerEvidence?.schemaVersion !== 3) {
       throw new Error("expected native v3");
@@ -131,39 +138,18 @@ describe("script evidence reader", () => {
     await fs.mkdir(nextDir, { recursive: true });
     const nextPath = path.join(nextDir, "qa-evidence.json");
     await fs.writeFile(nextPath, JSON.stringify(first.producerEvidence));
-    const second = await readScriptProducerEvidence({
-      repoRoot,
-      outputDir: path.dirname(nextDir),
-      scenario,
-      requireCurrentRunEvidence: true,
-    });
+    const second = await read(path.dirname(nextDir));
     expect(second.producerEvidence).toEqual(first.producerEvidence);
     expect(await fs.readFile(result.evidencePath)).toEqual(original);
     expect(first.producerEvidence.entries[0]!.execution).toBeUndefined();
   });
 
   it("rejects an existing null bundle instead of using another bundle", async () => {
-    const repoRoot = tempDirs.make("qa-script-malformed-");
-    const outputDir = path.join(repoRoot, "output");
-    const scenario = { id: "owned-scenario" };
-    const evidenceDir = path.join(outputDir, scenario.id);
+    const { evidenceDir, read, write } = fixture("qa-script-malformed-");
     await fs.mkdir(evidenceDir, { recursive: true });
-    await fs.writeFile(
-      path.join(evidenceDir, "latest-run.json"),
-      JSON.stringify({ qaEvidence: "bad.json" }),
-    );
-    await fs.writeFile(path.join(evidenceDir, "bad.json"), "null");
-    await fs.writeFile(
-      path.join(evidenceDir, "qa-evidence.json"),
-      JSON.stringify(buildScriptProducerEvidence({ status: "pass" })),
-    );
-    await expect(
-      readScriptProducerEvidence({
-        outputDir,
-        repoRoot,
-        scenario,
-        requireCurrentRunEvidence: true,
-      }),
-    ).rejects.toThrow();
+    await write("latest-run.json", { qaEvidence: "bad.json" });
+    await write("bad.json", null);
+    await write("qa-evidence.json", buildScriptProducerEvidence({ status: "pass" }));
+    await expect(read()).rejects.toThrow();
   });
 });

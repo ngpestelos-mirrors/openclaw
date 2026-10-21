@@ -11,6 +11,13 @@ describe("QA web session ownership with Chromium", () => {
   let baseUrl: string;
   let waiting: ReturnType<typeof createDeferred<void>>;
   let browsers: Browser[];
+  const expectConnections = (...connected: boolean[]) =>
+    expect(browsers.map((browser) => browser.isConnected())).toEqual(connected);
+  const expectPage = (pageId: string) =>
+    expect(qaWebSnapshot({ pageId })).resolves.toMatchObject({
+      title: "QA web lifecycle",
+      text: "owned page",
+    });
 
   beforeEach(async () => {
     browsers = [];
@@ -44,30 +51,27 @@ describe("QA web session ownership with Chromium", () => {
 
   afterEach(async () => {
     const failures: unknown[] = [];
-    try {
-      await closeQaWebSessions();
-    } catch (error) {
-      failures.push(error);
-    }
-    // Assertions run before this fallback. Even a failing regression must retire
-    // only the real browser handles and loopback server created by this test.
-    for (const browser of browsers) {
+    const cleanup = async (action: () => Promise<unknown>) => {
       try {
-        await browser.close();
+        await action();
       } catch (error) {
         failures.push(error);
       }
+    };
+    await cleanup(() => closeQaWebSessions());
+    // Retire only this test's real handles even if a regression assertion failed.
+    for (const browser of browsers) {
+      await cleanup(() => browser.close());
     }
     const activeServer = server;
     if (activeServer) {
       activeServer.closeAllConnections();
-      try {
-        await new Promise<void>((resolve, reject) => {
-          activeServer.close((error) => (error ? reject(error) : resolve()));
-        });
-      } catch (error) {
-        failures.push(error);
-      }
+      await cleanup(
+        () =>
+          new Promise<void>((resolve, reject) => {
+            activeServer.close((error) => (error ? reject(error) : resolve()));
+          }),
+      );
     }
     vi.restoreAllMocks();
     if (failures.length) {
@@ -80,17 +84,14 @@ describe("QA web session ownership with Chromium", () => {
     const openPage = createQaWebPageOpener(owner);
 
     await expect(openPage({ url: `${baseUrl}/abort` })).rejects.toThrow("ERR_EMPTY_RESPONSE");
-    expect(browsers.map((browser) => browser.isConnected())).toEqual([false]);
+    expectConnections(false);
     expect(owner.size).toBe(0);
 
     const opened = await openPage({ url: baseUrl });
-    await expect(qaWebSnapshot({ pageId: opened.pageId })).resolves.toMatchObject({
-      title: "QA web lifecycle",
-      text: "owned page",
-    });
-    expect(browsers.map((browser) => browser.isConnected())).toEqual([false, true]);
+    await expectPage(opened.pageId);
+    expectConnections(false, true);
     await closeQaWebSessions(owner);
-    expect(browsers.map((browser) => browser.isConnected())).toEqual([false, false]);
+    expectConnections(false, false);
     await expect(openPage({ url: baseUrl })).rejects.toThrow("web session owner is closed");
   });
 
@@ -109,14 +110,12 @@ describe("QA web session ownership with Chromium", () => {
         await Promise.all([closeQaWebSessions(pendingOwner), closeQaWebSessions(pendingOwner)]);
         await expect(opening).rejects.toBeInstanceOf(Error);
         expect(pendingOwner.size).toBe(0);
-        expect(browsers.map((browser) => browser.isConnected())).toEqual([true, false]);
+        expectConnections(true, false);
       },
     });
-    await expect(qaWebSnapshot({ pageId: other.pageId })).resolves.toMatchObject({
-      text: "owned page",
-    });
+    await expectPage(other.pageId);
     await closeQaWebSessions(otherOwner);
-    expect(browsers.map((browser) => browser.isConnected())).toEqual([false, false]);
+    expectConnections(false, false);
   });
 
   it("cancels pending navigation before reusing the suite owner for cleanup", async () => {
@@ -131,12 +130,12 @@ describe("QA web session ownership with Chromium", () => {
       close: () => controller.abort(cancelled),
       verify: async () => {
         expect(owner.size).toBe(1);
-        expect(browsers.map((browser) => browser.isConnected())).toEqual([true]);
+        expectConnections(true);
 
         controller.abort(cancelled);
         await expect(opening).rejects.toBe(cancelled);
         expect(owner.size).toBe(0);
-        expect(browsers.map((browser) => browser.isConnected())).toEqual([false]);
+        expectConnections(false);
       },
     });
     await expect(openPage({ url: baseUrl })).rejects.toBe(cancelled);
@@ -144,14 +143,11 @@ describe("QA web session ownership with Chromium", () => {
 
     const openCleanupPage = createQaWebPageOpener(owner);
     const opened = await openCleanupPage({ url: baseUrl });
-    await expect(qaWebSnapshot({ pageId: opened.pageId })).resolves.toMatchObject({
-      title: "QA web lifecycle",
-      text: "owned page",
-    });
+    await expectPage(opened.pageId);
     expect(owner.size).toBe(1);
-    expect(browsers.map((browser) => browser.isConnected())).toEqual([false, true]);
+    expectConnections(false, true);
     await closeQaWebSessions(owner);
     expect(owner.size).toBe(0);
-    expect(browsers.map((browser) => browser.isConnected())).toEqual([false, false]);
+    expectConnections(false, false);
   });
 });

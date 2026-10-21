@@ -3,42 +3,43 @@ import { createDeferred } from "openclaw/plugin-sdk/extension-shared";
 import { describe, expect, it, vi } from "vitest";
 import { withPendingWebPage } from "./web-runtime.pending-navigation.test-helper.js";
 
+function pendingFixture() {
+  const opening = createDeferred<void>();
+  const ready = createDeferred<void>();
+  const close = vi.fn<() => void>();
+  const verify = vi.fn<() => Promise<void>>();
+  return {
+    opening,
+    ready,
+    close,
+    verify,
+    run: () =>
+      withPendingWebPage({ opening: opening.promise, ready: ready.promise, close, verify }),
+  };
+}
+
 describe("QA web pending-navigation fixture", () => {
   it("rejects acquisition that completes before the request", async () => {
-    const ready = createDeferred<void>();
-    const close = vi.fn();
-    const verify = vi.fn();
-
-    await expect(
-      withPendingWebPage({
-        opening: Promise.resolve({ pageId: "unexpected-page" }),
-        ready: ready.promise,
-        close,
-        verify,
-      }),
-    ).rejects.toThrow("web page acquisition completed before pending navigation");
+    const { opening, close, verify, run } = pendingFixture();
+    opening.resolve();
+    await expect(run()).rejects.toThrow("web page acquisition completed before pending navigation");
     expect(verify).not.toHaveBeenCalled();
     expect(close).toHaveBeenCalledOnce();
   });
 
   it("runs the cancellation assertion only after request readiness", async () => {
-    const opening = createDeferred<void>();
-    const ready = createDeferred<void>();
+    const { opening, ready, close, verify, run } = pendingFixture();
     const cancelled = new Error("scenario cancelled");
     const order: string[] = [];
-    const verify = vi.fn(async () => {
+    verify.mockImplementation(async () => {
       order.push("verify");
       opening.reject(cancelled);
       await expect(opening.promise).rejects.toBe(cancelled);
     });
-    const pending = withPendingWebPage({
-      opening: opening.promise,
-      ready: ready.promise,
-      close: () => {
-        order.push("close");
-      },
-      verify,
+    close.mockImplementation(() => {
+      order.push("close");
     });
+    const pending = run();
     try {
       expect(verify).not.toHaveBeenCalled();
       ready.resolve();
@@ -55,30 +56,25 @@ describe("QA web pending-navigation fixture", () => {
   it.each(["assertion", "close"] as const)(
     "cancels and joins acquisition after %s failure",
     async (phase) => {
-      const opening = createDeferred<void>();
+      const { opening, ready, close, verify, run } = pendingFixture();
       const cancelled = new Error("fixture cancelled");
       const closeError = new Error("fixture close failed");
       const assertionError = new Error("fixture assertion failed");
-      const controller = new AbortController();
       const closing = createDeferred<void>();
       const finished = vi.fn();
-      const close = vi.fn(() => {
-        controller.abort(cancelled);
+      close.mockImplementation(() => {
         closing.resolve();
         if (phase === "close") {
           throw closeError;
         }
       });
-      const pending = withPendingWebPage({
-        opening: opening.promise,
-        ready: Promise.resolve(),
-        close,
-        verify: async () => {
-          if (phase === "assertion") {
-            throw assertionError;
-          }
-        },
-      })
+      verify.mockImplementation(async () => {
+        if (phase === "assertion") {
+          throw assertionError;
+        }
+      });
+      ready.resolve();
+      const pending = run()
         .catch((error: unknown) => error)
         .then((result) => {
           finished();
@@ -92,7 +88,6 @@ describe("QA web pending-navigation fixture", () => {
           }),
         ]);
         await setImmediate();
-        expect(controller.signal.reason).toBe(cancelled);
         expect(close).toHaveBeenCalledOnce();
         expect(finished).not.toHaveBeenCalled();
         opening.reject(cancelled);
@@ -106,6 +101,7 @@ describe("QA web pending-navigation fixture", () => {
   );
 
   it("preserves both acquisition and cleanup failures without waiting for readiness", async () => {
+    const { opening, close, verify, run } = pendingFixture();
     const acquisitionError = new Error("navigation failed");
     const rollbackError = new Error("rollback failed");
     const primaryFailure = new AggregateError(
@@ -114,16 +110,11 @@ describe("QA web pending-navigation fixture", () => {
       { cause: acquisitionError },
     );
     const closeError = new AggregateError([rollbackError], "web session cleanup failed");
-    const close = vi.fn(() => {
+    close.mockImplementation(() => {
       throw closeError;
     });
-    const verify = vi.fn();
-    const failure = await withPendingWebPage({
-      opening: Promise.reject(primaryFailure),
-      ready: createDeferred<void>().promise,
-      close,
-      verify,
-    }).catch((error: unknown) => error);
+    opening.reject(primaryFailure);
+    const failure = await run().catch((error: unknown) => error);
     expect(failure).toBeInstanceOf(AggregateError);
     if (!(failure instanceof AggregateError)) {
       throw failure;

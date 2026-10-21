@@ -5,6 +5,7 @@ import { QA_CHILD_STDERR_TAIL_BYTES, QA_CHILD_STDOUT_MAX_BYTES } from "./child-o
 import {
   formatQaScenarioCommandOutput,
   runQaScenarioCommandLifecycle,
+  type QaScenarioCommandExecution,
 } from "./test-file-scenario-command-lifecycle.js";
 import { runQaTestFileScenarios } from "./test-file-scenario-runner.js";
 import {
@@ -15,34 +16,31 @@ import {
 } from "./test-file-scenario-runner.test-support.js";
 
 const harness = createScenarioRunnerTestHarness();
-const makeTempDir = (prefix: string) => harness.makeTempDir(prefix);
-
-afterEach(async () => {
-  await harness.cleanup();
-});
-
+afterEach(() => harness.cleanup());
+const runNative = (script: string, onOutput: QaScenarioCommandExecution["onOutput"]) =>
+  runQaScenarioCommandLifecycle({
+    command: process.execPath,
+    args: ["-e", script],
+    cwd: process.cwd(),
+    env: process.env,
+    timeoutMs: 5_000,
+    onOutput,
+  });
 describe("qa test file scenario runner", () => {
   it("bounds retained child logs without changing the nonzero exit or live output", async () => {
     const exitCode = 7;
 
     const streamed = { stdout: 0, stderr: 0 };
-    const result = await runQaScenarioCommandLifecycle({
-      command: process.execPath,
-      args: [
-        "-e",
-        [
-          `process.stdout.write('x'.repeat(${QA_CHILD_STDOUT_MAX_BYTES * 2}));`,
-          `process.stderr.write('🦞'.repeat(${QA_CHILD_STDERR_TAIL_BYTES / 2 + 1}) + '\\nfinal diagnostic\\n');`,
-          `process.exitCode = ${exitCode};`,
-        ].join("\n"),
-      ],
-      cwd: process.cwd(),
-      env: process.env,
-      onOutput: (stream, chunk) => {
+    const result = await runNative(
+      [
+        `process.stdout.write('x'.repeat(${QA_CHILD_STDOUT_MAX_BYTES * 2}));`,
+        `process.stderr.write('🦞'.repeat(${QA_CHILD_STDERR_TAIL_BYTES / 2 + 1}) + '\\nfinal diagnostic\\n');`,
+        `process.exitCode = ${exitCode};`,
+      ].join("\n"),
+      (stream, chunk) => {
         streamed[stream] += chunk.byteLength;
       },
-      timeoutMs: 5_000,
-    });
+    );
 
     expect(Buffer.byteLength(result.stdout)).toBe(QA_CHILD_STDOUT_MAX_BYTES);
     expect(Buffer.byteLength(result.stderr)).toBeLessThanOrEqual(QA_CHILD_STDERR_TAIL_BYTES);
@@ -64,17 +62,13 @@ describe("qa test file scenario runner", () => {
   it("streams real native subprocess output before command settlement", async () => {
     const observed: Array<{ stream: "stderr" | "stdout"; value: string }> = [];
     let settled = false;
-    const result = await runQaScenarioCommandLifecycle({
-      command: process.execPath,
-      args: ["-e", "process.stdout.write('native stdout'); process.stderr.write('native stderr')"],
-      cwd: process.cwd(),
-      env: process.env,
-      onOutput: (stream, chunk) => {
+    const result = await runNative(
+      "process.stdout.write('native stdout'); process.stderr.write('native stderr')",
+      (stream, chunk) => {
         expect(settled).toBe(false);
         observed.push({ stream, value: chunk.toString("utf8") });
       },
-      timeoutMs: 5_000,
-    });
+    );
     settled = true;
 
     expect(observed).toEqual(
@@ -92,7 +86,7 @@ describe("qa test file scenario runner", () => {
 
   it("dispatches explicit checkout and external artifact roots to a real script", async () => {
     const repoRoot = process.cwd();
-    const external = await makeTempDir("qa-relocated-script-");
+    const external = await harness.makeTempDir("qa-relocated-script-");
     const scriptPath = path.join(external, "roots.mjs");
     await fs.writeFile(
       scriptPath,
@@ -121,7 +115,7 @@ await fs.writeFile(process.argv[3] + '/qa-evidence.json', ${JSON.stringify(JSON.
 
   it("fails script scenarios that exit cleanly after timeout termination", async () => {
     const repoRoot = process.cwd();
-    const tempRoot = await makeTempDir("qa-script-timeout-clean-exit-");
+    const tempRoot = await harness.makeTempDir("qa-script-timeout-clean-exit-");
     const scriptPath = path.join(tempRoot, "clean-exit-after-timeout.ts");
     await fs.writeFile(
       scriptPath,
