@@ -1,28 +1,24 @@
 import { Command } from "commander";
-import { describe, expect, it, vi } from "vitest";
+import { expect, it, vi } from "vitest";
 import type { AuditRow } from "./broker.js";
 import { registerOnePasswordCommands } from "./cli.js";
-import type { OnePasswordConfig } from "./config.js";
+import { parseOnePasswordConfig } from "./config.js";
 import { MemoryKeyedStore } from "./memory-store.test-support.js";
 
-const config: OnePasswordConfig = {
+const config = parseOnePasswordConfig({
   vault: "Automation",
-  defaultPolicy: "approve",
-  cacheTtlSeconds: 300,
-  grantTtlHours: 720,
-  opTimeoutMs: 15_000,
   items: {
-    alpha: { item: "Sensitive title", vault: "Automation", field: "credential", policy: "auto" },
-    beta: { item: "Other", vault: "Automation", field: "credential", policy: "approve" },
-    gamma: { item: "Third", vault: "Automation", field: "credential", policy: "deny" },
+    alpha: { item: "Sensitive title", policy: "auto" },
+    beta: { item: "Other" },
+    gamma: { item: "Third", policy: "deny" },
   },
-};
+});
 
-async function makeAuditStore(...rows: Partial<AuditRow>[]) {
-  const store = new MemoryKeyedStore<AuditRow>();
+async function setupCommands(...rows: Partial<AuditRow>[]) {
+  const auditStore = new MemoryKeyedStore<AuditRow>();
   for (const [index, row] of rows.entries()) {
-    await store.register(String(index), {
-      timestampMs: 1000,
+    await auditStore.register(String(index), {
+      timestampMs: (index + 1) * 1000,
       agentId: "agent-a",
       sessionKey: "session-a",
       toolCallId: "call-a",
@@ -32,108 +28,81 @@ async function makeAuditStore(...rows: Partial<AuditRow>[]) {
       ...row,
     });
   }
-  return store;
-}
-
-function setupCommands(auditStore = new MemoryKeyedStore<AuditRow>()) {
   const program = new Command().exitOverride();
   const write = vi.fn<(message: string) => void>();
   registerOnePasswordCommands({
     program,
-    resolveConfig: () => config,
-    resolveOpClient: () => ({
-      opBin: "/usr/local/bin/op",
-      tokenFilePresent: async () => true,
-    }),
     auditStore,
     write,
+    resolveConfig: () => config,
+    resolveOpClient: () => ({ opBin: "/usr/local/bin/op", tokenFilePresent: async () => true }),
   });
   return {
-    run: (...args: string[]) => program.parseAsync(["onepassword", ...args], { from: "user" }),
+    auditStore,
     write,
+    async run<T = unknown>(...args: string[]): Promise<T> {
+      await program.parseAsync(["onepassword", ...args], { from: "user" });
+      return JSON.parse(String(write.mock.calls[0]?.[0])) as T;
+    },
   };
 }
 
-describe("1Password CLI output", () => {
-  it("status contains readiness and counts without token or item values", async () => {
-    const { run, write } = setupCommands();
-    await run("status");
-    const status = JSON.parse(String(write.mock.calls[0]?.[0])) as Record<string, unknown>;
-
-    expect(status).toEqual({
-      tokenFilePresent: true,
-      opBinaryResolved: true,
-      opBinaryPath: "/usr/local/bin/op",
-      itemCount: 3,
-      policyCounts: { auto: 1, approve: 1, deny: 1 },
-    });
-    expect(JSON.stringify(status)).not.toContain("Sensitive title");
+it("status contains readiness and counts without token or item values", async () => {
+  const { run } = await setupCommands();
+  expect(await run("status")).toEqual({
+    tokenFilePresent: true,
+    opBinaryResolved: true,
+    opBinaryPath: "/usr/local/bin/op",
+    itemCount: 3,
+    policyCounts: { auto: 1, approve: 1, deny: 1 },
   });
+});
 
-  it("audit output is deterministic, limited, truncated, and value-free", async () => {
-    const store = await makeAuditStore(
-      {},
-      {
-        timestampMs: 2000,
-        agentId: "agent-b",
-        sessionKey: "session-b",
-        toolCallId: "call-b",
-        slug: "beta",
-        reason: `prefix-${"x".repeat(100)}`,
-        outcome: "approved",
-      },
-    );
-    const { run, write } = setupCommands(store);
-    await run("audit", "--limit", "1");
-    const rows = JSON.parse(String(write.mock.calls[0]?.[0])) as Array<Record<string, unknown>>;
+it("audit output is deterministic, limited, truncated, and value-free", async () => {
+  const { run } = await setupCommands(
+    {},
+    {
+      agentId: "agent-b",
+      slug: "beta",
+      reason: `prefix-${"x".repeat(100)}`,
+      outcome: "approved",
+    },
+  );
+  const rows = await run("audit", "--limit", "1");
+  expect(rows).toEqual([
+    {
+      timestamp: "1970-01-01T00:00:02.000Z",
+      agent: "agent-b",
+      slug: "beta",
+      outcome: "approved",
+      reason: `prefix-${"x".repeat(70)}...`,
+    },
+  ]);
+});
 
-    expect(rows).toEqual([
-      {
-        timestamp: "1970-01-01T00:00:02.000Z",
-        agent: "agent-b",
-        slug: "beta",
-        outcome: "approved",
-        reason: expect.stringMatching(/^prefix-.+\.\.\.$/),
-      },
-    ]);
-    expect(rows[0]?.reason).toHaveLength(80);
-  });
+it("preserves complete surrogate pairs at the audit reason boundary", async () => {
+  const { run, write } = await setupCommands(
+    { reason: `${"x".repeat(76)}\u{1f600}tail` },
+    { reason: `${"x".repeat(75)}\u{1f600}tail` },
+  );
+  const rows = await run<Array<{ reason: string }>>("audit", "--limit", "2");
+  expect(String(write.mock.calls[0]?.[0])).not.toContain("\\ud83d");
+  expect(rows.map((row) => row.reason)).toEqual([
+    `${"x".repeat(75)}\u{1f600}...`,
+    `${"x".repeat(76)}...`,
+  ]);
+});
 
-  it("preserves complete surrogate pairs at the audit reason boundary", async () => {
-    const store = await makeAuditStore(
-      { reason: `${"x".repeat(76)}\u{1f600}tail` },
-      { timestampMs: 2000, toolCallId: "call-b", reason: `${"x".repeat(75)}\u{1f600}tail` },
-    );
-    const { run, write } = setupCommands(store);
+it.each(["0", "1.5", "1e3", "1001"])("rejects invalid audit limits: %j", async (limit) => {
+  const { run, write, auditStore } = await setupCommands();
+  const entries = vi.spyOn(auditStore, "entries");
+  await expect(run("audit", "--limit", limit)).rejects.toThrow(
+    "--limit must be an integer from 1 to 1000",
+  );
+  expect([entries.mock.calls, write.mock.calls]).toEqual([[], []]);
+});
 
-    await run("audit", "--limit", "2");
-    const output = String(write.mock.calls[0]?.[0]);
-    expect(output).not.toContain("\\ud83d");
-    const rows = JSON.parse(output) as Array<Record<string, unknown>>;
-
-    expect(rows.map((row) => row.reason)).toEqual([
-      `${"x".repeat(75)}\u{1f600}...`,
-      `${"x".repeat(76)}...`,
-    ]);
-  });
-
-  it.each(["0", "1.5", "1e3", "1001"])("rejects invalid audit limits: %j", async (limit) => {
-    const store = new MemoryKeyedStore<AuditRow>();
-    const entries = vi.spyOn(store, "entries");
-    const { run, write } = setupCommands(store);
-
-    await expect(run("audit", "--limit", limit)).rejects.toThrow(
-      "--limit must be an integer from 1 to 1000",
-    );
-    expect(entries).not.toHaveBeenCalled();
-    expect(write).not.toHaveBeenCalled();
-  });
-
-  it("accepts the maximum decimal audit limit", async () => {
-    const { run, write } = setupCommands();
-
-    await run("audit", "--limit", "1000");
-
-    expect(JSON.parse(String(write.mock.calls[0]?.[0]))).toEqual([]);
-  });
+it("accepts the maximum decimal audit limit", async () => {
+  const { run } = await setupCommands();
+  expect(await run("audit", "--limit", "1000")).toEqual([]);
 });
