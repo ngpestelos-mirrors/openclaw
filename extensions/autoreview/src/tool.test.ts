@@ -7,7 +7,14 @@ import { createAutoReviewTool } from "./tool.js";
 
 type Host = Parameters<typeof createAutoReviewTool>[0];
 type Command = Host["runtime"]["system"]["runCommandWithTimeout"];
+type CommandOptions = Exclude<Parameters<Command>[1], number>;
+const jsonResult = (value: unknown, code = 0, stderr = "") => ({
+  code,
+  stdout: JSON.stringify(value),
+  stderr,
+});
 const params = { mode: "local" as const };
+const prompt = "Review the frozen shipping change.";
 const report = {
   findings: [{ title: "[P2] Keep the threshold inclusive" }],
   verdict: "request_changes",
@@ -38,37 +45,28 @@ const callerTools = {
 
 function fixture(
   overrides: {
-    model?: string;
-    passes?: number;
-    settingsModel?: string;
-    settingsThinking?: string;
-    output?: string;
-    stderr?: string;
-    exitCode?: number;
+    result?: Partial<Awaited<ReturnType<Command>>>;
     helperFailure?: string;
-    extraRequestFields?: Record<string, unknown>;
-    secondPass?: Record<string, unknown>;
+    request?: Record<string, unknown>;
+    next?: Record<string, unknown>;
   } = {},
 ) {
-  const prompt = "Review the frozen shipping change.";
-  const reviewModel = overrides.settingsModel ?? "fixture/preferred";
-  const reviewThinking = overrides.settingsThinking ?? null;
   const request = {
     protocol: "autoreview-exec-v1",
     run_id: "fixture-run",
     pass: 1,
-    passes: overrides.passes ?? 1,
+    passes: 1,
     prompt,
     prompt_bytes: Buffer.byteLength(prompt),
     prompt_sha256: createHash("sha256").update(prompt).digest("hex"),
-    model: overrides.model ?? reviewModel,
-    thinking: reviewThinking,
+    model: "fixture/preferred",
+    thinking: null,
     max_result_bytes: 2_000_000,
     admitted_model: true,
     engine_timeout_seconds: null,
-    ...overrides.extraRequestFields,
+    ...overrides.request,
   };
-  const helper = Promise.withResolvers<{ code: number; stdout: string; stderr: string }>();
+  const helper = Promise.withResolvers<ReturnType<typeof jsonResult>>();
   let response:
     | { pass: number; status: string; output: string | null; model: string | null }
     | undefined;
@@ -87,34 +85,32 @@ function fixture(
     cwd = options.cwd;
     expect(await fs.readdir(cwd!)).toEqual([]);
     return {
-      stdout: overrides.output ?? '{"ok":true,"status":"ok","final":"complete"}',
-      stderr: overrides.stderr ?? "",
-      code: overrides.exitCode ?? 0,
+      stdout: "complete",
+      stderr: "",
+      code: 0,
       signal: null,
       killed: false,
       termination: "exit",
       cleanup: "normal",
       noOutputTimedOut: false,
+      ...overrides.result,
     };
   });
   const admitted = vi.fn<(selection: { model: string | null; explicit: boolean }) => void>();
-  const run: NonNullable<OpenClawPluginToolContext["modelExecution"]>["run"] = async (
-    selection,
-    action,
-    signal,
-  ) => {
-    admitted(selection);
-    const result = await action(
-      scope(signal ?? new AbortController().signal, selection.model ?? "fixture/default"),
-    );
-    signal?.throwIfAborted();
-    return result;
-  };
   const context: OpenClawPluginToolContext<2> = {
     assertInvocationCurrent() {},
     assertCompleteResult() {},
     runtimeConfig: { tools: rootTools, agents: { entries: { caller: { tools: callerTools } } } },
-    modelExecution: { cliEntryPath: "/host/openclaw/openclaw.mjs", run },
+    modelExecution: {
+      cliEntryPath: "/host/openclaw/openclaw.mjs",
+      async run(selection, action, signal) {
+        admitted(selection);
+        const activeSignal = signal ?? new AbortController().signal;
+        const result = await action(scope(activeSignal, selection.model ?? "fixture/default"));
+        activeSignal.throwIfAborted();
+        return result;
+      },
+    },
     sandbox: {
       workspaceDir: "/guest/current-repo",
       installedSkillRoots: { autoreview: "/protected/autoreview" },
@@ -131,29 +127,28 @@ function fixture(
         if (argv.includes("--native-submit")) {
           response = JSON.parse(input!);
           if (response?.status !== "done" || response.pass === request.passes) {
-            helper.resolve({
-              code: response?.status === "done" ? 1 : 2,
-              stdout: JSON.stringify({
-                code: 1,
-                report: overrides.helperFailure ? null : report,
-                status: overrides.helperFailure
-                  ? null
-                  : { report_produced: true, effective_models: [reviewModel] },
-              }),
-              stderr:
+            helper.resolve(
+              jsonResult(
+                {
+                  code: 1,
+                  report: overrides.helperFailure ? null : report,
+                  status: overrides.helperFailure
+                    ? null
+                    : { report_produced: true, effective_models: [request.model] },
+                },
+                response?.status === "done" ? 1 : 2,
                 overrides.helperFailure ??
-                (response?.status === "done" ? "" : "reviewer unavailable"),
-            });
+                  (response?.status === "done" ? "" : "reviewer unavailable"),
+              ),
+            );
           }
           return { code: 0, stdout: "", stderr: "" };
         }
-        return {
-          code: 0,
-          stdout: argv.some((arg) => arg.endsWith("/1.request.json"))
-            ? JSON.stringify(request)
-            : JSON.stringify({ ...request, pass: 2, ...overrides.secondPass }),
-          stderr: "",
-        };
+        return jsonResult(
+          argv.some((arg) => arg.endsWith("/1.request.json"))
+            ? request
+            : { ...request, pass: 2, ...overrides.next },
+        );
       },
     },
   };
@@ -169,20 +164,15 @@ function fixture(
     response: () => response,
     cwd: () => cwd,
     helperArgv: () => helperArgv,
+    argv: () => command.mock.calls[0]![0],
   };
 }
 
 it("uses canonical settings and transfers complete output", async () => {
-  const output = JSON.stringify({
-    ok: true,
-    status: "ok",
-    final: "x".repeat(100000),
-    model: "preferred",
-    provider: "fixture",
-  });
+  const output = "x".repeat(100000);
   const test = fixture({
-    output,
-    extraRequestFields: {
+    result: { stdout: output },
+    request: {
       config_override: {
         models: { providers: { fixture: { localService: { command: "/untrusted/host" } } } },
       },
@@ -190,20 +180,16 @@ it("uses canonical settings and transfers complete output", async () => {
     },
   });
   const result = await test.execute();
-  expect(result.content).toEqual([
-    {
-      type: "text",
-      text: JSON.stringify({
-        report,
-        status: { report_produced: true, effective_models: ["fixture/preferred"] },
-      }),
-    },
-  ]);
+  const text = JSON.stringify({
+    report,
+    status: { report_produced: true, effective_models: ["fixture/preferred"] },
+  });
+  expect(result.content).toEqual([{ type: "text", text }]);
   expect(test.response()).toMatchObject({ status: "done", output, model: "fixture/preferred" });
   for (const flag of ["--model", "--thinking", "--engine-timeout-seconds", "--max-review-passes"]) {
     expect(test.helperArgv()).not.toContain(flag);
   }
-  const argv = test.command.mock.calls[0]![0];
+  const argv = test.argv();
   expect(argv).toEqual(expect.arrayContaining(["--code-mode", "direct"]));
   for (const flag of ["--model", "--thinking", "--timeout"]) {
     expect(argv).not.toContain(flag);
@@ -211,6 +197,13 @@ it("uses canonical settings and transfers complete output", async () => {
   const overrides = argv.flatMap((arg, index) =>
     arg === "--config-override" ? [JSON.parse(argv[index + 1]!)] : [],
   );
+  const caller = {
+    skills: [],
+    contextInjection: "never",
+    nativeRuntimeConsent: [],
+    model: { primary: "fixture/preferred", fallbacks: [] },
+    tools: restrictedTools("Fixture/Preferred"),
+  };
   expect(overrides).toEqual([
     {
       tools: {
@@ -221,15 +214,7 @@ it("uses canonical settings and transfers complete output", async () => {
       },
       agents: {
         defaults: { systemAgent: { agentId: "caller" } },
-        entries: {
-          caller: {
-            skills: [],
-            contextInjection: "never",
-            nativeRuntimeConsent: [],
-            model: { primary: "fixture/preferred", fallbacks: [] },
-            tools: restrictedTools("Fixture/Preferred"),
-          },
-        },
+        entries: { caller },
       },
     },
   ]);
@@ -238,13 +223,8 @@ it("uses canonical settings and transfers complete output", async () => {
 });
 
 it("uses changed defaults and forwards requested overrides", async () => {
-  const test = fixture({ settingsModel: "fixture/new-default", settingsThinking: "high" });
-  await test.execute({
-    ...params,
-    maxPriority: "P2",
-    passes: 12,
-    timeoutSeconds: 900,
-  });
+  const test = fixture({ request: { model: "fixture/new-default", thinking: "high" } });
+  await test.execute({ ...params, maxPriority: "P2", passes: 12, timeoutSeconds: 900 });
   expect(test.admitted.mock.calls[0]![0]).toEqual({
     model: "fixture/new-default",
     explicit: false,
@@ -256,45 +236,59 @@ it("uses changed defaults and forwards requested overrides", async () => {
   ]) {
     expect(test.helperArgv()).toEqual(expect.arrayContaining(pair));
   }
-  expect(test.command.mock.calls[0]![0]).toEqual(expect.arrayContaining(["--thinking", "high"]));
+  expect(test.argv()).toEqual(expect.arrayContaining(["--thinking", "high"]));
 });
 
 it.each([{ model: "fixture/substituted" }, { passes: 3 }])(
   "rejects a substituted later plan: %j",
-  async (secondPass) => {
-    const test = fixture({ passes: 2, secondPass });
+  async (next) => {
+    const test = fixture({ request: { passes: 2 }, next });
     await expect(test.execute()).rejects.toThrow("substituted prepared pass");
     expect(test.command).toHaveBeenCalledOnce();
   },
 );
 
-it("rejects old helpers and substituted explicit models", async () => {
-  const old = fixture({ extraRequestFields: { admitted_model: undefined } });
-  await expect(old.execute()).rejects.toThrow("update the Auto Review skill");
-  expect(old.command).not.toHaveBeenCalled();
-  const changed = fixture({ model: "fixture/substituted" });
-  await expect(changed.execute({ ...params, model: "fixture/preferred" })).rejects.toThrow(
+it.each([
+  ["old helper", { admitted_model: undefined }, params, "update the Auto Review skill"],
+  [
+    "model substitution",
+    { model: "fixture/substituted" },
+    { ...params, model: "fixture/preferred" },
     "substituted prepared pass",
-  );
-  expect(changed.command).not.toHaveBeenCalled();
+  ],
+  ["pass count", {}, { passes: 0 }, "Invalid Auto Review arguments"],
+  ["timeout", {}, { timeoutSeconds: 0 }, "Invalid Auto Review arguments"],
+  ["host binary", {}, { openclawBin: "/untrusted" }, "Invalid Auto Review arguments"],
+] as const)("rejects %s before execution", async (_name, request, input, error) => {
+  const test = fixture({ request });
+  await expect(test.execute({ ...params, ...input })).rejects.toThrow(error);
+  expect(test.command).not.toHaveBeenCalled();
 });
 
-it("reports CLI failures with bounded redacted diagnostics", async () => {
-  const test = fixture({
-    exitCode: 1,
-    stderr: `${"x".repeat(5000)}\nAuthorization: Bearer unrelated-fake-secret-token`,
-  });
-  const failure = await test.execute().catch((error: unknown) => error);
-  if (!(failure instanceof Error)) {
-    throw new Error("Expected reviewer failure");
-  }
-  expect(failure.message).toContain("reviewer unavailable");
-  expect(failure.message).toContain("Reviewer command failed (exit 1, exit, cleanup normal");
-  expect(failure.message).not.toContain("unrelated-fake-secret-token");
-  expect(failure.message.length).toBeLessThan(4300);
-  expect(test.response()).toMatchObject({ status: "failed", output: null, model: null });
-  expect(test.command).toHaveBeenCalledOnce();
-});
+it.each([
+  [{ code: 1, termination: "exit" }, "exit 1, exit, cleanup normal"],
+  [{ code: null, termination: "timeout", killed: true }, "exit none, timeout"],
+] as const)(
+  "reports CLI failure %j with bounded redacted diagnostics",
+  async (result, diagnostic) => {
+    const test = fixture({
+      result: {
+        ...result,
+        stderr: `${"x".repeat(5000)}\nAuthorization: Bearer unrelated-fake-secret-token`,
+      },
+    });
+    const failure = await test.execute().catch((error: unknown) => error);
+    if (!(failure instanceof Error)) {
+      throw new Error("Expected reviewer failure");
+    }
+    expect(failure.message).toContain("reviewer unavailable");
+    expect(failure.message).toContain(`Reviewer command failed (${diagnostic}`);
+    expect(failure.message).not.toContain("unrelated-fake-secret-token");
+    expect(failure.message.length).toBeLessThan(4300);
+    expect(test.response()).toMatchObject({ status: "failed", output: null, model: null });
+    expect(test.command).toHaveBeenCalledOnce();
+  },
+);
 
 it("preserves helper diagnostics without a report", async () => {
   const diagnostic =
@@ -302,37 +296,20 @@ it("preserves helper diagnostics without a report", async () => {
   await expect(fixture({ helperFailure: diagnostic }).execute()).rejects.toThrow(diagnostic);
 });
 
-it("requires protected installation and model authority", () => {
-  const test = fixture();
-  expect(
-    createAutoReviewTool(test.host, {
-      ...test.context,
-      sandbox: { ...test.context.sandbox!, installedSkillRoots: {} },
-    }),
-  ).toBeNull();
-  expect(
-    createAutoReviewTool(test.host, { ...test.context, modelExecution: undefined }),
-  ).toBeNull();
+it.each(["installation", "authority"])("requires protected %s", (requirement) => {
+  const { host, context } = fixture();
+  if (requirement === "installation") {
+    context.sandbox!.installedSkillRoots = {};
+  } else {
+    context.modelExecution = undefined;
+  }
+  expect(createAutoReviewTool(host, context)).toBeNull();
 });
-
-it.each([{ passes: 0 }, { timeoutSeconds: 0 }, { openclawBin: "/untrusted" }])(
-  "rejects invalid arguments before execution: %j",
-  async (override) => {
-    const test = fixture();
-    await expect(test.execute({ ...params, ...override })).rejects.toThrow(
-      "Invalid Auto Review arguments",
-    );
-    expect(test.command).not.toHaveBeenCalled();
-  },
-);
 
 it.each([null, 900.25])(
   "retains canonical per-pass timeout %s across the complete plan",
   async (timeoutSeconds) => {
-    const test = fixture({
-      passes: 2,
-      extraRequestFields: { engine_timeout_seconds: timeoutSeconds },
-    });
+    const test = fixture({ request: { passes: 2, engine_timeout_seconds: timeoutSeconds } });
     await test.execute();
     expect(test.command).toHaveBeenCalledTimes(2);
     for (const [argv, options] of test.command.mock.calls) {
@@ -347,30 +324,14 @@ it.each([null, 900.25])(
   },
 );
 
-it("reports reviewer timeouts as failures", async () => {
-  const test = fixture();
-  const run = test.command.getMockImplementation()!;
-  test.command.mockImplementation(async (...args) => ({
-    ...(await run(...args)),
-    code: null,
-    killed: true,
-    termination: "timeout",
-  }));
-  await expect(test.execute()).rejects.toThrow("Reviewer command failed (exit none, timeout");
-  expect(test.response()).toMatchObject({ status: "failed", output: null });
-  expect(test.command).toHaveBeenCalledOnce();
-});
-
 it.each(["caller", "model authority"])(
   "cancels the helper and reviewer after %s revocation",
   async (owner) => {
     const test = fixture();
     const caller = new AbortController();
     const model = new AbortController();
-    const started = Promise.withResolvers<void>();
+    const started = Promise.withResolvers<CommandOptions>();
     const cancellation = new Error("Review cancelled");
-    let reviewerSignal: AbortSignal | undefined;
-    let cwd: string | undefined;
     if (owner === "model authority") {
       test.context.modelExecution!.run = async (_selection, action) =>
         await action(scope(model.signal));
@@ -379,9 +340,7 @@ it.each(["caller", "model authority"])(
       if (typeof options === "number") {
         throw new Error("expected process options");
       }
-      reviewerSignal = options.signal;
-      cwd = options.cwd;
-      started.resolve();
+      started.resolve(options);
       const cancelled = Promise.withResolvers<Awaited<ReturnType<Command>>>();
       options.signal?.addEventListener("abort", () => cancelled.reject(cancellation), {
         once: true,
@@ -390,11 +349,11 @@ it.each(["caller", "model authority"])(
     });
     const result = test.execute(params, caller.signal);
     const rejected = expect(result).rejects.toThrow("Review cancelled");
-    await started.promise;
+    const options = await started.promise;
     (owner === "caller" ? caller : model).abort(cancellation);
     await rejected;
-    expect(reviewerSignal?.aborted).toBe(true);
+    expect(options.signal?.aborted).toBe(true);
     expect(test.response()).toBeUndefined();
-    await expect(fs.stat(path.dirname(cwd!))).rejects.toMatchObject({ code: "ENOENT" });
+    await expect(fs.stat(path.dirname(options.cwd!))).rejects.toMatchObject({ code: "ENOENT" });
   },
 );
