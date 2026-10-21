@@ -123,7 +123,9 @@ export class AppSidebarOwner extends AppSidebarSessionNavigationElement implemen
           this.sessionData.visibleSessionLimits,
           this.rosterVisibleSessionLimits,
         ]) {
-          if (!limits.has(id)) limits.set(id, visibleLimit);
+          if (!limits.has(id)) {
+            limits.set(id, visibleLimit);
+          }
         }
       }
     }

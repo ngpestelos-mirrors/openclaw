@@ -118,8 +118,10 @@ export async function editSessionGroupDefaultsDialog(
     return;
   }
   const readDefaults = () => {
-    if (scope.sessions.groupsStatus() !== "ready") return null;
-    const entry = scope.sessions.state.groupSettings.find((entry) => entry.name === group);
+    if (scope.sessions.groupsStatus() !== "ready") {
+      return null;
+    }
+    const entry = scope.sessions.state.groupSettings.find((item) => item.name === group);
     return entry ? { cwd: entry.cwd ?? "", worktree: entry.worktree === true } : null;
   };
   const requireCurrent = () => {
@@ -145,7 +147,9 @@ export async function editSessionGroupDefaultsDialog(
       inspectRepository: async (path) => {
         requireCurrent();
         const repoRoot = path?.trim() || deps.sessionGroupWorkspace()?.trim();
-        if (!repoRoot) return "unavailable";
+        if (!repoRoot) {
+          return "unavailable";
+        }
         const result = await scope.client.request<WorktreesBranchesResult>("worktrees.branches", {
           repoRoot,
           includeRepositoryStatus: true,

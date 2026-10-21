@@ -210,7 +210,9 @@ describe("sidebar projection memo", () => {
         },
         session("new-live-row", { owner: { actor: bob } }),
       ]);
-      if (change === "owner switch") sidebar.setSessionOwnerFilter("bob");
+      if (change === "owner switch") {
+        sidebar.setSessionOwnerFilter("bob");
+      }
       await settleLitElement(sidebar);
       expect(owner.reconciledSidebarZone()).toBe(zone);
       expect(row(initial.key)).toBe(cachedRow);
