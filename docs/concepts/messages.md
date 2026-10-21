@@ -63,9 +63,10 @@ later messages can update its idle delay within the original maximum deadline.
 Explicit transport timing overrides remain fixed. Telegram's forwarded-message
 collection window remains separate.
 
-Once an immediate message is adopted, its dispatch remains owned by the Gateway
-until completion, even after the webhook request returns. Suspension refuses new
-requests while admitted turns finish; restart draining still blocks new agent work.
+Once a message is adopted, its full channel turn remains owned by the Gateway
+until completion, even after the webhook request or durable ingress acknowledgment
+returns. Suspension refuses new requests while admitted turns finish; restart
+draining still blocks new agent work.
 
 ## Sessions and devices
 

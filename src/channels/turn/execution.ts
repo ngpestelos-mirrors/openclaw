@@ -9,6 +9,7 @@ import {
 } from "../../infra/diagnostic-trace-context.js";
 import { createSubsystemLogger } from "../../logging/subsystem.js";
 import { getPluginServiceSchedulerBinding } from "../../plugins/service-scheduler-binding.js";
+import { runWithRetainedGatewayRootWork } from "../../process/gateway-work-admission.js";
 import { parseAgentSessionKey } from "../../routing/session-key.js";
 import { waitForAgentDatabaseWriteAdmission } from "../../state/agent-database-preparation-context.js";
 import { isRecentOutboundMessageIdentity } from "../message/outbound-echo.js";
@@ -187,8 +188,9 @@ export async function runPreparedChannelTurnCore<
   options: { suppressObserveOnlyDispatch: boolean },
 ): Promise<ChannelTurnResult<TDispatchResult>> {
   const trace = createDiagnosticTraceContextFromActiveScope();
-  return await runWithDiagnosticTraceContext(trace, () =>
-    runPreparedChannelTurnCoreInTrace(params, options),
+  // Durable ingress can return at adoption while this dispatch still owns the turn.
+  return await runWithRetainedGatewayRootWork(() =>
+    runWithDiagnosticTraceContext(trace, () => runPreparedChannelTurnCoreInTrace(params, options)),
   );
 }
 
