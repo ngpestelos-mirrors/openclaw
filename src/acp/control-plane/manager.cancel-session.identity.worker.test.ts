@@ -1,14 +1,18 @@
 import { createIdentityFromStatus } from "@openclaw/acp-core/runtime/session-identity";
 import { expect, it } from "vitest";
-import { createDeferred } from "../../../test/helpers/promise.js";
+import { awaitGateBeforeSettlement, createDeferred } from "../../../test/helpers/promise.js";
 import { observeHostDataSql } from "../../../test/helpers/sqlite-statement-execution-counter.js";
-import { createTestAdmittedRunContext } from "../../agents/admitted-run-context.test-support.js";
 import { replaceSessionEntry } from "../../config/sessions/session-accessor.js";
-import { readAcpSessionEntry, upsertAcpSessionMeta } from "../runtime/session-meta.js";
+import { readAcpSessionEntry } from "../runtime/session-meta.js";
 import {
   readDurableAcpSignals,
   withAcpCancellationFixture,
 } from "./manager.cancel-session.worker.test-support.js";
+import {
+  createGate,
+  replaceRuntime,
+  startTurn,
+} from "./manager.cancellation-locator.test-support.js";
 import { stopAcpControllerTurns } from "./manager.controller-test-support.js";
 
 it.each(["owner", "lifecycle"] as const)(
@@ -16,8 +20,7 @@ it.each(["owner", "lifecycle"] as const)(
   async (replacement) => {
     await withAcpCancellationFixture(async (f) => {
       const entered = createDeferred();
-      const statusEntered = createDeferred();
-      const releaseStatus = createDeferred();
+      const status = createGate("Cancellation ended before final identity observation.");
       let signal: AbortSignal | undefined;
       f.runTurn.mockImplementationOnce(async function* (input) {
         signal = input.signal;
@@ -29,38 +32,23 @@ it.each(["owner", "lifecycle"] as const)(
       });
       f.getStatus.mockImplementation(async () => {
         if (signal?.aborted) {
-          statusEntered.resolve();
-          await releaseStatus.promise;
+          await status.wait();
           return { agentSessionId: "old-runtime-observation" };
         }
         return { summary: "ready" };
       });
-      const context = createTestAdmittedRunContext("identity-worker");
-      const turn = f.manager.runTurn({
-        ...f.target,
-        admittedRunContext: context,
-        provenance: "system",
-        mode: "prompt",
-        text: "first",
-        requestId: "identity-worker",
-      });
+      const turn = startTurn(f, "identity-worker", { text: "first" });
       const turnResult = Promise.allSettled([turn]);
-      await Promise.race([
+      await awaitGateBeforeSettlement(
         entered.promise,
-        turnResult.then(() => {
-          throw new Error("Turn ended before runtime entry.");
-        }),
-      ]);
+        turnResult,
+        "Turn ended before runtime entry.",
+      );
       let sql = observeHostDataSql();
       const cancellation = stopAcpControllerTurns(f.target);
       const result = Promise.allSettled([cancellation, turn]);
       try {
-        await Promise.race([
-          statusEntered.promise,
-          result.then(() => {
-            throw new Error("Cancellation ended before final identity observation.");
-          }),
-        ]);
+        await status.reached(result);
         sql.restore();
         expect(sql.queries).toEqual([]);
         // The replacement producer uses its existing native API while getStatus is held.
@@ -71,24 +59,15 @@ it.each(["owner", "lifecycle"] as const)(
           updatedAt: 200,
           spawnedBy: replacement === "owner" ? "agent:other:parent" : "agent:main:main",
         });
-        await upsertAcpSessionMeta({
-          ...f.target,
-          skipMaintenance: true,
-          mutate: () => ({
-            backend: "cancellation-proof",
-            agent: "main",
-            runtimeSessionName: "successor-runtime",
-            mode: "persistent",
-            state: "running",
-            lastActivityAt: 200,
-            identity: createIdentityFromStatus({
-              status: { agentSessionId: "successor-agent" },
-              now: 200,
-            }),
+        await replaceRuntime(f, {
+          lastActivityAt: 200,
+          identity: createIdentityFromStatus({
+            status: { agentSessionId: "successor-agent" },
+            now: 200,
           }),
         });
         sql = observeHostDataSql();
-        releaseStatus.resolve();
+        status.open();
         await result;
         sql.restore();
         expect(readAcpSessionEntry(f.target)?.acp).toMatchObject({
@@ -101,7 +80,7 @@ it.each(["owner", "lifecycle"] as const)(
         expect(sql.queries).toEqual([]);
       } finally {
         sql.restore();
-        releaseStatus.resolve();
+        status.open();
         await Promise.allSettled([result, turnResult]);
       }
     });
