@@ -1,17 +1,17 @@
 import { DatabaseSync } from "node:sqlite";
 import type { PluginStateKeyedStore } from "openclaw/plugin-sdk/plugin-state-runtime";
-import { createPluginStateKeyedStoreV2ForTests } from "openclaw/plugin-sdk/plugin-state-test-runtime";
+import { createPluginStateKeyedStoreV2ForTests as openStore } from "openclaw/plugin-sdk/plugin-state-test-runtime";
 import { createPluginRuntimeMock } from "openclaw/plugin-sdk/plugin-test-runtime";
 import {
   closeOpenClawStateDatabaseAsync,
   observeHostDataSql,
 } from "openclaw/plugin-sdk/sqlite-runtime-testing";
 import { useAutoCleanupTempDirTracker } from "openclaw/plugin-sdk/test-env";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import type { SignalReplyContextRecord } from "./reply-authors-state.js";
 import {
-  registerSignalReplyContext,
-  resolveSignalReplyContextWithPersistence,
+  registerSignalReplyContext as registerContext,
+  resolveSignalReplyContextWithPersistence as resolveContext,
 } from "./reply-authors.js";
 import { resetSignalReplyAuthorsForTests } from "./reply-authors.test-helpers.js";
 import * as runtimeModule from "./runtime.js";
@@ -37,9 +37,15 @@ const dirs = useAutoCleanupTempDirTracker((cleanup) =>
   }),
 );
 
-beforeEach(() => {
+beforeEach(resetSignalReplyAuthorsForTests);
+
+const register = (overrides: Partial<Parameters<typeof registerContext>[0]> = {}) =>
+  registerContext({ ...input, ...overrides });
+
+async function expectReloaded(expected: Awaited<ReturnType<typeof resolveContext>>, key = reply) {
   resetSignalReplyAuthorsForTests();
-});
+  await expect(resolveContext(key)).resolves.toEqual(expected);
+}
 
 function installStore() {
   const unexpectedOperation = async () => {
@@ -69,43 +75,35 @@ function installStore() {
   return { store, runtime };
 }
 
-describe("Signal reply author storage failures", () => {
-  it.each(["lookup", "register"] as const)(
-    "keeps best-effort memory after %s rejects without retrying",
-    async (failureStage) => {
-      const { store, runtime } = installStore();
-      store.lookup.mockResolvedValue(record);
-      store[failureStage].mockRejectedValue(new Error("storage unavailable"));
-      await registerSignalReplyContext(input);
-      expect(store[failureStage]).toHaveBeenCalledTimes(1);
-      await expect(resolveSignalReplyContextWithPersistence(reply)).resolves.toEqual({
-        author: input.author,
-        body: failureStage === "lookup" ? "new" : "stored",
-      });
-      expect(runtime.logging.getChildLogger({}).warn).toHaveBeenCalledWith(
-        "Signal persistent reply author state failed",
-        { error: "Error: storage unavailable" },
-      );
-    },
-  );
-});
+it.each(["lookup", "register"] as const)(
+  "keeps best-effort memory after %s rejects without retrying",
+  async (failureStage) => {
+    const { store, runtime } = installStore();
+    store.lookup.mockResolvedValue(record);
+    store[failureStage].mockRejectedValue(new Error("storage unavailable"));
+    await register();
+    expect(store[failureStage]).toHaveBeenCalledTimes(1);
+    await expect(resolveContext(reply)).resolves.toEqual({
+      author: input.author,
+      body: failureStage === "lookup" ? "new" : "stored",
+    });
+    expect(runtime.logging.getChildLogger({}).warn).toHaveBeenCalledWith(
+      "Signal persistent reply author state failed",
+      { error: "Error: storage unavailable" },
+    );
+  },
+);
 
 it("persists and reloads merged reply context with zero parent-thread SQL", async () => {
-  const tempDir = dirs.make("signal-reply-worker-");
-  const env = { ...process.env, OPENCLAW_STATE_DIR: tempDir };
+  const env = { ...process.env, OPENCLAW_STATE_DIR: dirs.make("signal-reply-worker-") };
   const runtime = createPluginRuntimeMock({
     state: {
-      openKeyedStoreV2: <T>(options: Parameters<typeof createPluginStateKeyedStoreV2ForTests>[1]) =>
-        createPluginStateKeyedStoreV2ForTests<T>(
-          "signal",
-          { ...options, env },
-          { assertCurrent() {} },
-        ),
+      openKeyedStoreV2: <T>(options: Parameters<typeof openStore>[1]) =>
+        openStore<T>("signal", { ...options, env }, { assertCurrent() {} }),
     },
   });
   vi.spyOn(runtimeModule, "getOptionalSignalRuntime").mockReturnValue(runtime);
-  const observation = observeHostDataSql();
-  const counters = observation.calls;
+  const { calls: counters } = observeHostDataSql();
   const calibration = new DatabaseSync(":memory:");
   try {
     calibration.exec("CREATE TABLE counter (value INTEGER)");
@@ -120,38 +118,27 @@ it("persists and reloads merged reply context with zero parent-thread SQL", asyn
       counter.mockClear();
     }
   }
-  vi.spyOn(runtime.state, "openKeyedStoreV2").mockImplementationOnce(() => {
+  const failOpen = () => {
     throw new Error("store temporarily unavailable");
-  });
-  await registerSignalReplyContext({ ...input, body: "memory fallback", sourceTimestamp: 50 });
+  };
+  vi.spyOn(runtime.state, "openKeyedStoreV2").mockImplementationOnce(failOpen);
+  await register({ body: "memory fallback", sourceTimestamp: 50 });
   await Promise.all([
-    registerSignalReplyContext({
-      ...input,
-      media: [{ kind: "unknown" }, { contentType: " image/png " }, {}],
-    }),
-    registerSignalReplyContext({ ...input, body: "older", sourceTimestamp: 100 }),
+    register({ media: [{ kind: "unknown" }, { contentType: " image/png " }, {}] }),
+    register({ body: "older", sourceTimestamp: 100 }),
   ]);
-  resetSignalReplyAuthorsForTests();
-  await expect(resolveSignalReplyContextWithPersistence(reply)).resolves.toEqual({
+  await expectReloaded({
     author: input.author,
     body: "new",
     media: [{ kind: "unknown" }, { contentType: "image/png" }, {}],
   });
-  await registerSignalReplyContext({ ...input, author: "+15555550999" });
-  await registerSignalReplyContext({ ...input, sourceTimestamp: 400 });
-  resetSignalReplyAuthorsForTests();
-  await expect(resolveSignalReplyContextWithPersistence(reply)).resolves.toEqual({
-    ambiguous: true,
-  });
+  await register({ author: "+15555550999" });
+  await register({ sourceTimestamp: 400 });
+  await expectReloaded({ ambiguous: true });
   const recoveredReply = { ...reply, replyToId: "1700000000002" };
-  vi.mocked(runtime.state.openKeyedStoreV2).mockImplementationOnce(() => {
-    throw new Error("store temporarily unavailable");
-  });
-  await registerSignalReplyContext({ ...input, ...recoveredReply });
-  await registerSignalReplyContext({ ...input, ...recoveredReply, author: "+15555550999" });
-  resetSignalReplyAuthorsForTests();
-  await expect(resolveSignalReplyContextWithPersistence(recoveredReply)).resolves.toEqual({
-    ambiguous: true,
-  });
+  vi.mocked(runtime.state.openKeyedStoreV2).mockImplementationOnce(failOpen);
+  await register(recoveredReply);
+  await register({ ...recoveredReply, author: "+15555550999" });
+  await expectReloaded({ ambiguous: true }, recoveredReply);
   expect(counters.map((counter) => counter.mock.calls.length)).toEqual([0, 0, 0, 0, 0, 0]);
 });
