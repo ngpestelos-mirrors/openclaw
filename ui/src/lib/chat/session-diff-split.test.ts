@@ -3,6 +3,7 @@ import {
   createDiffPairingBudget,
   diffLineChangeRanges,
   pairSessionDiffLines,
+  type SessionSplitDiffRow,
 } from "./session-diff-split.ts";
 import type { DiffLine } from "./tool-call-diff.ts";
 
@@ -11,6 +12,15 @@ function replacements(oldText: string[], newText: string[]): DiffLine[] {
     ...oldText.map((text, index): DiffLine => ({ kind: "del", lineNo: index + 1, text })),
     ...newText.map((text, index): DiffLine => ({ kind: "add", lineNo: index + 1, text })),
   ];
+}
+
+const sideLines = (rows: SessionSplitDiffRow[], side: "left" | "right") =>
+  rows.flatMap((row) => (row.kind === "pair" && row[side] ? [row[side]] : []));
+function expectPreserved(rows: SessionSplitDiffRow[], lines: DiffLine[]) {
+  expect([sideLines(rows, "left"), sideLines(rows, "right")]).toEqual([
+    lines.filter((line) => line.kind === "del"),
+    lines.filter((line) => line.kind === "add"),
+  ]);
 }
 
 function changedText(lines: DiffLine[]) {
@@ -41,33 +51,27 @@ describe("pairSessionDiffLines", () => {
     ]);
   });
 
-  it.each([false, true])(
-    "leaves an unmatched inserted/deleted line beside its corresponding replacements (reverse=%s)",
-    (reverse) => {
-      const oldText = ["const retries = 2;", "const timeout = 3000;", 'const label = "Working";'];
-      const newText = [
-        'const auditLabel = "session:" + owner;',
-        "const retries = 3;",
-        "const timeout = 5000;",
-        'const label = "Running";',
-      ];
-      const lines = replacements(reverse ? newText : oldText, reverse ? oldText : newText);
-      const rows = pairSessionDiffLines(lines);
-      expect(
-        rows.map((row) => (row.kind === "pair" ? [row.left?.text, row.right?.text] : null)),
-      ).toEqual(
-        reverse
-          ? [[newText[0], undefined], ...oldText.map((text, i) => [newText[i + 1], text])]
-          : [[undefined, newText[0]], ...oldText.map((text, i) => [text, newText[i + 1]])],
-      );
-    },
-  );
+  it.each([false, true])("aligns replacements beside unmatched changes (reverse=%s)", (reverse) => {
+    const oldText = ["const retries = 2;", "const timeout = 3000;", 'const label = "Working";'];
+    const newText = [
+      'const auditLabel = "session:" + owner;',
+      "const retries = 3;",
+      "const timeout = 5000;",
+      'const label = "Running";',
+    ];
+    const lines = replacements(reverse ? newText : oldText, reverse ? oldText : newText);
+    const rows = pairSessionDiffLines(lines);
+    expect(
+      rows.map((row) => (row.kind === "pair" ? [row.left?.text, row.right?.text] : null)),
+    ).toEqual(
+      reverse
+        ? [[newText[0], undefined], ...oldText.map((text, i) => [newText[i + 1], text])]
+        : [[undefined, newText[0]], ...oldText.map((text, i) => [text, newText[i + 1]])],
+    );
+  });
 
   it("bounds long-line comparison work without losing fallback inline highlights", () => {
-    const oldText = Array.from(
-      { length: 64 },
-      (_, i) => "const value" + i + ' = "' + "a".repeat(680) + '";',
-    );
+    const oldText = Array.from({ length: 64 }, (_, i) => `const value${i} = "${"a".repeat(680)}";`);
     const newText = oldText.map((line) => line.replace("value", "updated"));
     const lines = replacements(oldText, newText);
     const budget = createDiffPairingBudget();
@@ -90,17 +94,10 @@ describe("pairSessionDiffLines", () => {
       ...block(),
     ]).flat();
     const rows = pairSessionDiffLines(hunks, budget);
-    // Later hunks fall back to positional pairs after earlier files use the budget.
-    expect(
-      rows.filter((row) => row.kind === "pair" && row.left && row.right).length,
-    ).toBeGreaterThan(0);
+    const paired = rows.filter((row) => row.kind === "pair" && row.left && row.right);
+    expect(paired.length).toBeGreaterThan(0);
     expect(budget.remaining).toBeGreaterThanOrEqual(0);
-    expect(rows.flatMap((row) => (row.kind === "pair" && row.left ? [row.left] : []))).toEqual(
-      hunks.filter((line) => line.kind === "del"),
-    );
-    expect(rows.flatMap((row) => (row.kind === "pair" && row.right ? [row.right] : []))).toEqual(
-      hunks.filter((line) => line.kind === "add"),
-    );
+    expectPreserved(rows, hunks);
     expect(pairSessionDiffLines(block(), budget)).toHaveLength(16);
     expect(pairSessionDiffLines(block(), createDiffPairingBudget())).toHaveLength(32);
   });
@@ -127,19 +124,10 @@ describe("pairSessionDiffLines", () => {
       Array.from({ length: 90 }, (_, i) => "other " + i),
     ],
     [["x".repeat(10000)], ["y".repeat(10000)]],
-  ])(
-    "preserves every source line and its order, including bounded fallbacks",
-    (oldText, newText) => {
-      const lines = replacements(oldText, newText);
-      const rows = pairSessionDiffLines(lines);
-      expect(rows.flatMap((row) => (row.kind === "pair" && row.left ? [row.left] : []))).toEqual(
-        lines.filter((line) => line.kind === "del"),
-      );
-      expect(rows.flatMap((row) => (row.kind === "pair" && row.right ? [row.right] : []))).toEqual(
-        lines.filter((line) => line.kind === "add"),
-      );
-    },
-  );
+  ])("preserves source order through pairing and bounded fallbacks", (oldText, newText) => {
+    const lines = replacements(oldText, newText);
+    expectPreserved(pairSessionDiffLines(lines), lines);
+  });
 });
 
 describe("diffLineChangeRanges", () => {
@@ -151,12 +139,9 @@ describe("diffLineChangeRanges", () => {
     ["call(a);", "call(a, b);", [], [", b"]],
     ["  ", "\t", ["  "], ["\t"]],
     ["same", "same", [], []],
-  ])(
-    "marks edited words, punctuation and whitespace without splitting Unicode: %s",
-    (before, after, removed, added) => {
-      expect(changedText(replacements([before], [after]))).toEqual([removed, added]);
-    },
-  );
+  ])("marks words, punctuation, whitespace and Unicode: %s", (before, after, removed, added) => {
+    expect(changedText(replacements([before], [after]))).toEqual([removed, added]);
+  });
 
   it("leaves minified and token-dense lines readable without expensive inline matching", () => {
     for (const [before, after] of [
