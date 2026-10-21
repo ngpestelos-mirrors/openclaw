@@ -22,13 +22,21 @@ function chatRequest(reply: string) {
   }));
 }
 
-function mountSurface(context: ApplicationContext, inputs: Inputs) {
+function mountSurface(
+  context: ApplicationContext,
+  store: CustodianSessionStore,
+  onboarding = false,
+) {
   const provider = createApplicationContextProvider(context);
   const surface = document.createElement("openclaw-custodian-surface");
-  Object.assign(surface, inputs);
+  Object.assign(surface, { store, onboarding, newAgentIntent: false });
   provider.append(surface);
   document.body.append(provider);
   return { provider, surface };
+}
+
+function ready(store: CustodianSessionStore, activeVariant: string) {
+  return waitForSolid(() => expect(store).toMatchObject({ activeVariant, canSend: true }));
 }
 
 afterEach(() => {
@@ -43,11 +51,7 @@ describe("custodian surface input receipts", () => {
     const request = chatRequest("Native session ready.");
     const { context } = createContext(request);
     const store = new CustodianSessionStore();
-    const { surface } = mountSurface(context, {
-      store,
-      onboarding: true,
-      newAgentIntent: false,
-    });
+    const { surface } = mountSurface(context, store, true);
     await waitForSolid(() => expect(store.canSend).toBe(true));
     expect(request.mock.calls.map(([, params]) => params.welcomeVariant)).toEqual(["onboarding"]);
 
@@ -55,10 +59,7 @@ describe("custodian surface input receipts", () => {
     const stop = store.subscribe(() => variants.add(store.activeVariant));
     surface.onboarding = false;
     surface.newAgentIntent = true;
-    await waitForSolid(() => {
-      expect(store.activeVariant).toBe("new-agent");
-      expect(store.canSend).toBe(true);
-    });
+    await ready(store, "new-agent");
     stop();
     expect(variants).toEqual(new Set(["new-agent"]));
     expect(request.mock.calls.map(([, params]) => params.welcomeVariant)).toEqual([
@@ -95,10 +96,7 @@ describe("custodian surface input receipts", () => {
     const replacement = new CustodianSessionStore();
     const next = { store: replacement, onboarding: false, newAgentIntent: true };
     updateInputs(next);
-    await waitForSolid(() => {
-      expect(replacement.activeVariant).toBe("new-agent");
-      expect(replacement.canSend).toBe(true);
-    });
+    await ready(replacement, "new-agent");
     first.setInput("Previous owner draft");
     replacement.setInput("Replacement owner draft");
     await waitForSolid(() =>
@@ -120,11 +118,7 @@ describe("custodian surface input receipts", () => {
     const firstContext = createContext(firstRequest).context;
     const secondContext = createContext(secondRequest).context;
     const store = new CustodianSessionStore();
-    const { provider, surface } = mountSurface(firstContext, {
-      store,
-      onboarding: false,
-      newAgentIntent: false,
-    });
+    const { provider, surface } = mountSurface(firstContext, store);
     await waitForSolid(() => expect(store.canSend).toBe(true));
     provider.setContext(secondContext);
     await waitForSolid(() =>
@@ -139,10 +133,7 @@ describe("custodian surface input receipts", () => {
     );
 
     surface.newAgentIntent = true;
-    await waitForSolid(() => {
-      expect(store.activeVariant).toBe("new-agent");
-      expect(store.canSend).toBe(true);
-    });
+    await ready(store, "new-agent");
     expect(secondRequest.mock.calls.at(-1)?.[1].welcomeVariant).toBe("new-agent");
     store.setInput("Keep the reparented draft");
     surface.remove();
@@ -161,10 +152,7 @@ describe("custodian surface input receipts", () => {
     expect(detached.activeClient).toBeNull();
     expect(secondRequest).toHaveBeenCalledTimes(2);
     provider.append(surface);
-    await waitForSolid(() => {
-      expect(detached.activeVariant).toBe("onboarding");
-      expect(detached.canSend).toBe(true);
-    });
+    await ready(detached, "onboarding");
     expect(secondRequest).toHaveBeenCalledTimes(3);
     expect(surface.textContent).toContain("Second Gateway ready.");
   });

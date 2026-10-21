@@ -9,33 +9,23 @@ import { createContext as createCustodianContext } from "./custodian-page.test-h
 import { CustodianSessionStore } from "./custodian-session-store.ts";
 import "./custodian-page.tsx";
 
-type TestCustodianPage = HTMLElement & {
-  onboarding: boolean;
-  newAgentIntent: boolean;
-  store: CustodianSessionStore;
-  updateComplete: Promise<boolean>;
-};
+const roster = {
+  defaultId: "main",
+  mainKey: "main",
+  scope: "global",
+  agents: ["main", "researcher"].map((id) => ({ id, model: { primary: "openai/gpt-5.5" } })),
+} satisfies NonNullable<ApplicationContext["agents"]["state"]["agentsList"]>;
 
 function createContext(request: Parameters<typeof createCustodianContext>[0]) {
   const calls: string[] = [];
   const setSessionKey = vi.fn((sessionKey: string) => calls.push(`session:${sessionKey}`));
   const setAgent = vi.fn((agentId: string | null) => calls.push(`agent:${agentId}`));
   const refreshList = vi.fn().mockResolvedValue({
-    defaultId: "main",
-    mainKey: "main",
-    scope: "global",
-    agents: [{ id: "main" }, { id: "researcher" }],
+    ...roster,
+    agents: roster.agents.map(({ id }) => ({ id })),
   });
   const harness = createCustodianContext(request, ["openclaw.chat"], {
-    agentsList: {
-      defaultId: "main",
-      mainKey: "main",
-      scope: "global",
-      agents: [
-        { id: "main", model: { primary: "openai/gpt-5.5" } },
-        { id: "researcher", model: { primary: "openai/gpt-5.5" } },
-      ],
-    },
+    agentsList: roster,
   });
   const context = {
     ...harness.context,
@@ -46,9 +36,9 @@ function createContext(request: Parameters<typeof createCustodianContext>[0]) {
   return { calls, context, refreshList, setAgent, setSessionKey };
 }
 
-async function mountPage(context: ApplicationContext): Promise<TestCustodianPage> {
+async function mountPage(context: ApplicationContext) {
   const provider = createApplicationContextProvider(context);
-  const page = document.createElement("openclaw-custodian-page") as TestCustodianPage;
+  const page = document.createElement("openclaw-custodian-page");
   page.store = new CustodianSessionStore();
   page.onboarding = false;
   page.newAgentIntent = true;
@@ -59,8 +49,16 @@ async function mountPage(context: ApplicationContext): Promise<TestCustodianPage
 }
 
 describe("custodian new-agent flow", () => {
+  let request: ReturnType<typeof vi.fn>;
+  let harness: ReturnType<typeof createContext>;
+  const response = {
+    sessionId: "control-ui-onboarding-00000000-0000-4000-8000-000000000001",
+    action: "none",
+  };
   beforeEach(() => {
     vi.spyOn(uuid, "generateUUID").mockReturnValue("00000000-0000-4000-8000-000000000001");
+    request = vi.fn();
+    harness = createContext(request);
   });
 
   afterEach(() => {
@@ -68,22 +66,8 @@ describe("custodian new-agent flow", () => {
     vi.restoreAllMocks();
   });
 
-  it("requests the new-agent welcome variant", async () => {
-    const request = vi.fn().mockResolvedValue({
-      sessionId: "control-ui-onboarding-00000000-0000-4000-8000-000000000001",
-      reply: "What should your new agent do?",
-      action: "none",
-    });
-    const { context } = createContext(request);
-    await mountPage(context);
-
-    await waitForFast(() => expect(request).toHaveBeenCalledOnce());
-    expect(request.mock.calls[0]?.[1]).toMatchObject({ welcomeVariant: "new-agent" });
-  });
-
   it("explains the missing capability and scope before sending an agent creation request", async () => {
-    const request = vi.fn();
-    const { context } = createContext(request);
+    const { context } = harness;
     context.gateway.snapshot.hello = {
       ...context.gateway.snapshot.hello!,
       auth: { role: "operator", scopes: ["operator.read"] },
@@ -102,17 +86,19 @@ describe("custodian new-agent flow", () => {
   });
 
   it("refreshes the roster and opens the created agent hatch session", async () => {
-    const request = vi.fn().mockResolvedValue({
-      sessionId: "control-ui-onboarding-00000000-0000-4000-8000-000000000001",
+    request.mockResolvedValue({
+      ...response,
       reply: "Your agent is hatching.",
       action: "open-agent",
       agentDraft: "hatch",
       agentId: "researcher",
     });
-    const { calls, context, refreshList, setAgent, setSessionKey } = createContext(request);
+    const { calls, context, refreshList, setAgent, setSessionKey } = harness;
     await mountPage(context);
 
     await waitForFast(() => expect(context.navigate).toHaveBeenCalledOnce());
+    expect(request).toHaveBeenCalledOnce();
+    expect(request.mock.calls[0]?.[1]).toMatchObject({ welcomeVariant: "new-agent" });
     expect(refreshList).toHaveBeenCalledOnce();
     expect(setAgent).toHaveBeenCalledWith("researcher");
     expect(setSessionKey).toHaveBeenCalledWith("agent:researcher:main");
@@ -124,13 +110,12 @@ describe("custodian new-agent flow", () => {
   });
 
   it("hands model-account setup to the existing human Profile controls", async () => {
-    const request = vi.fn().mockResolvedValue({
-      sessionId: "control-ui-onboarding-00000000-0000-4000-8000-000000000001",
+    request.mockResolvedValue({
+      ...response,
       reply: "Open Settings → Profile → Connected accounts to connect your account.",
-      action: "none",
       handoff: { kind: "model-accounts" },
     });
-    const { context, refreshList, setAgent, setSessionKey } = createContext(request);
+    const { context, refreshList, setAgent, setSessionKey } = harness;
     const client = context.gateway.snapshot.client;
     await mountPage(context);
 

@@ -21,6 +21,13 @@ const greeting = {
   optionalWelcome: true,
   question: QUICK_ACTIONS_QUESTION,
 };
+const selection = { installed: true, overview: true };
+const prompt = "What does Example Plugin do?";
+const query = <T extends Element = HTMLElement>(page: ParentNode, selector: string) =>
+  page.querySelector<T>(selector);
+const reply = (text: string) => ({ sessionId: greeting.sessionId, reply: text, action: "none" });
+const requestWithAnswer = (text: string) =>
+  vi.fn().mockResolvedValueOnce(greeting).mockResolvedValueOnce(reply(text));
 
 beforeEach(() => {
   localStorage.clear();
@@ -35,7 +42,7 @@ afterEach(() => {
 
 async function mountPluginHelp(request: Parameters<typeof createContext>[0]) {
   const harness = createContext(request);
-  publishPluginHelpContext(harness.context, {}, plugin, { installed: true, overview: true });
+  publishPluginHelpContext(harness.context, {}, plugin, selection);
   const mounted = await mountPage(harness.context, { onboarding: false });
   await waitForFast(() => expect(mounted.page.store.sending).toBe(false));
   await mounted.page.updateComplete;
@@ -43,11 +50,7 @@ async function mountPluginHelp(request: Parameters<typeof createContext>[0]) {
 }
 
 it("replaces optional welcome actions with plugin starters and keeps them unsent", async () => {
-  const request = vi.fn().mockResolvedValueOnce(greeting).mockResolvedValueOnce({
-    sessionId: greeting.sessionId,
-    reply: "This plugin adds useful capabilities.",
-    action: "none",
-  });
+  const request = requestWithAnswer("This plugin adds useful capabilities.");
   const { page } = await mountPluginHelp(request);
   expect(page.textContent).not.toContain(greeting.reply);
   expect(page.querySelector("openclaw-option-card")).toBeNull();
@@ -91,18 +94,14 @@ it("replaces optional welcome actions with plugin starters and keeps them unsent
 });
 
 it("preserves an existing conversation and draft when a plugin becomes selected", async () => {
-  const request = vi.fn().mockResolvedValueOnce(greeting).mockResolvedValueOnce({
-    sessionId: greeting.sessionId,
-    reply: "Your existing conversation answer.",
-    action: "none",
-  });
+  const request = requestWithAnswer("Your existing conversation answer.");
   const { context } = createContext(request);
   const { page } = await mountPage(context, { onboarding: false });
   await waitForFast(() => expect(page.store.canSend).toBe(true));
   await page.store.send("An earlier question.");
   page.store.setInput("An unsent follow-up.");
   const messages = page.store.messages;
-  publishPluginHelpContext(context, {}, plugin, { installed: true, overview: true });
+  publishPluginHelpContext(context, {}, plugin, selection);
   await page.updateComplete;
   expect(page.store.messages).toBe(messages);
   expect(page.textContent).toContain("Your existing conversation answer.");
@@ -116,9 +115,9 @@ it("retires an authored question intent when the operator changes on the same pl
   const { page, context, setGatewayToken } = await mountPluginHelp(request);
   const ask = createPluginHelpRequest(context, plugin);
   setGatewayToken("replacement-fixture-operator");
-  publishPluginHelpContext(context, {}, plugin, { installed: true, overview: true });
+  publishPluginHelpContext(context, {}, plugin, selection);
   await waitForFast(() => expect(page.store.canSend).toBe(true));
-  await ask({ question: "What does Example Plugin do?" });
+  await ask({ question: prompt });
   await page.updateComplete;
   expect(page.store.input).toBe("");
   expect(request.mock.calls.every(([, params]) => params.message === undefined)).toBe(true);
@@ -127,28 +126,22 @@ it("retires an authored question intent when the operator changes on the same pl
 it.each([false, true])(
   "keeps required Gateway content visible (hosted input=%s)",
   async (hosted) => {
-    const reply = hosted
-      ? "Connect the provider."
-      : "A manual configuration edit needs your attention.";
+    const text = hosted ? "Connect the provider." : "A manual configuration edit needs attention.";
     const request = vi.fn().mockResolvedValue(
       hosted
         ? {
-            sessionId: greeting.sessionId,
-            reply,
-            action: "none",
+            ...reply(text),
             wizardInputPending: true,
             sensitive: true,
             step: { id: "key", type: "text", message: "Provider API key", sensitive: true },
           }
-        : { ...greeting, optionalWelcome: false, reply },
+        : { ...greeting, optionalWelcome: false, reply: text },
     );
     const { page } = await mountPluginHelp(request);
-    expect(page.textContent).toContain(reply);
+    expect(page.textContent).toContain(text);
     if (hosted) {
       expect(page.querySelector(".custodian__plugin-intro")).toBeNull();
-      expect(page.querySelector(".custodian__wizard-step")?.textContent).toContain(
-        "Provider API key",
-      );
+      expect(query(page, ".custodian__wizard-step")?.textContent).toContain("Provider API key");
       expect(page.querySelector('input[type="password"]')).not.toBeNull();
     } else {
       expect(page.querySelector(".custodian__plugin-intro")).not.toBeNull();
@@ -161,26 +154,23 @@ it("keeps failed inference visible and starter drafts editable without admitting
   const request = vi.fn().mockRejectedValue(new Error("Inference is unavailable."));
   const { page } = await mountPluginHelp(request);
   expect(page.querySelector('[role="alert"]')?.textContent).toContain("Inference is unavailable.");
-  const starter = page.querySelector<HTMLButtonElement>(".custodian__plugin-starters button")!;
+  const starter = query<HTMLButtonElement>(page, ".custodian__plugin-starters button")!;
   expect(starter).not.toBeNull();
   starter.click();
   await page.updateComplete;
-  expect(page.querySelector<HTMLTextAreaElement>("textarea")?.value).toBe(
-    "What does Example Plugin do?",
-  );
-  expect(page.querySelector<HTMLButtonElement>(".chat-send-btn")?.disabled).toBe(true);
+  expect(query<HTMLTextAreaElement>(page, "textarea")?.value).toBe(prompt);
+  expect(query<HTMLButtonElement>(page, ".chat-send-btn")?.disabled).toBe(true);
   expect(request).toHaveBeenCalledOnce();
 });
 
 it("keeps the selected setting within the context budget when declarations finish loading", async () => {
   const { context } = createContext(vi.fn());
   const owner = {};
-  publishPluginHelpContext(context, owner, plugin, { installed: true, overview: true });
-  await createPluginHelpRequest(
-    context,
-    plugin,
-  )({
-    path: ["accounts", "account.with.dots", "enabled"],
+  publishPluginHelpContext(context, owner, plugin, selection);
+  const path = ["accounts", "account.with.dots", "enabled"];
+  const ask = createPluginHelpRequest(context, plugin);
+  await ask({
+    path,
     label: "Enabled",
     value: true,
     sensitive: false,
@@ -192,10 +182,9 @@ it("keeps the selected setting within the context budget when declarations finis
       ...plugin,
       declared: { tools: Array.from({ length: 12 }, (_, i) => `tool_${i}_${"x".repeat(100)}`) },
     },
-    { installed: true, overview: true },
+    selection,
   );
   const reference = currentPluginHelpReference(context);
-  expect(reference?.setting?.path).toEqual(["accounts", "account.with.dots", "enabled"]);
-  expect(reference?.declared?.incomplete).toBe(true);
+  expect(reference).toMatchObject({ setting: { path }, declared: { incomplete: true } });
   expect(JSON.stringify(reference).length).toBeLessThanOrEqual(1024);
 });
