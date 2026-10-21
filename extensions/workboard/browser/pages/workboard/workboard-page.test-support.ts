@@ -10,7 +10,7 @@ import { createWorkboardCapability } from "../../lib/workboard/capability.ts";
 import { createWorkboardCard } from "../../lib/workboard/test/index-helpers.ts";
 import { workboardTestHost } from "../../test/host.setup.ts";
 import { createViewContext } from "../../test/host.ts";
-import { afterWorkboardUpdate } from "../../test/settle.ts";
+import { afterWorkboardUpdate as settle } from "../../test/settle.ts";
 import { createWorkboardPage } from "./workboard-page.tsx";
 
 const cleanup: (() => void)[] = [];
@@ -33,12 +33,7 @@ export function mountPage(
   let cards = [createWorkboardCard({ title: "Initial card" })];
   const request = vi.fn(async (method: string, requestParams?: unknown): Promise<unknown> => {
     if (method === "agents.list") {
-      return {
-        defaultId: "main",
-        mainKey: "main",
-        scope: "per-sender",
-        agents: [...agents],
-      };
+      return { defaultId: "main", mainKey: "main", scope: "per-sender", agents: [...agents] };
     }
     if (method === "workboard.cards.list") {
       return { cards };
@@ -96,34 +91,26 @@ export function mountPage(
   };
 }
 
+function requiredElement<T extends Element>(container: Element, selector: string) {
+  return expectDefined(container.querySelector<T>(selector), selector);
+}
+
 export async function openBoardEditor(page: ReturnType<typeof mountPage>) {
-  await afterWorkboardUpdate(() => expect(page.workboard.state.loaded).toBe(true));
-  expectDefined(
-    page.container.querySelector<HTMLButtonElement>('button[aria-label="Edit board"]'),
-    "edit board",
-  ).click();
-  return afterWorkboardUpdate(() =>
-    expectDefined(
-      page.container.querySelector<HTMLFormElement>(".workboard-board-draft"),
-      "board editor",
-    ),
-  );
+  await settle(() => expect(page.workboard.state.loaded).toBe(true));
+  requiredElement<HTMLButtonElement>(page.container, 'button[aria-label="Edit board"]').click();
+  return settle(() => requiredElement<HTMLFormElement>(page.container, ".workboard-board-draft"));
 }
 
 export async function openSessionTab(page: ReturnType<typeof mountPage>) {
-  await afterWorkboardUpdate(() =>
-    expect(
-      [...page.container.querySelectorAll<HTMLButtonElement>('[role="tab"]')].some(
-        (tab) => tab.textContent?.trim() === "Session",
+  const tab = await settle(() =>
+    expectDefined(
+      [...page.container.querySelectorAll<HTMLButtonElement>('[role="tab"]')].find(
+        (candidate) => candidate.textContent?.trim() === "Session",
       ),
-    ).toBe(true),
-  );
-  expectDefined(
-    [...page.container.querySelectorAll<HTMLButtonElement>('[role="tab"]')].find(
-      (tab) => tab.textContent?.trim() === "Session",
+      "session tab",
     ),
-    "session tab",
-  ).click();
+  );
+  tab.click();
 }
 
 export function observeSessions(

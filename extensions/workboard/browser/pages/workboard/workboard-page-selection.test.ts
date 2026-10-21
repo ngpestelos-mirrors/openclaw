@@ -9,7 +9,7 @@ import { mountPage } from "./workboard-page.test-support.ts";
 
 type ControlUiSelectPickerProps = Parameters<ControlUiComponents["mountSelectPicker"]>[1];
 
-it("stops a bulk assignment after board scope changes while the first write is pending", async () => {
+async function mountPendingSelection(method: string, scoped = false) {
   const page = mountPage({ boardId: "one" });
   const state = page.workboard.state;
   const first = createWorkboardCard({
@@ -18,18 +18,28 @@ it("stops a bulk assignment after board scope changes while the first write is p
     metadata: { automation: { boardId: "one" } },
   });
   const second = createWorkboardCard({ ...first, id: "second", position: 2000 });
-  const firstWrite = createDeferred<{ card: typeof first }>();
+  const pending = createDeferred<{ card: typeof first }>();
   const request = expectDefined(page.request.getMockImplementation(), "request implementation");
-  page.request.mockImplementation((method, params) =>
-    method === "workboard.cards.update" ? firstWrite.promise : request(method, params),
+  page.request.mockImplementation((name, params) =>
+    name === method ? pending.promise : request(name, params),
   );
   page.cards([first, second]);
+  if (scoped) {
+    page.fixture.host.agents.setScope("writer");
+  }
   page.fixture.connection.connected = true;
   page.fixture.notify();
   await vi.waitFor(() => expect(state.loaded).toBe(true));
   state.selectedCardIds = new Set([first.id, second.id]);
   state.query = "unmatched";
   state.statusFilter = new Set(["done"]);
+  const writes = () => page.request.mock.calls.filter(([name]) => name === method);
+  return { page, state, first, second, pending, writes };
+}
+
+it("stops a bulk assignment after board scope changes while the first write is pending", async () => {
+  const { page, state, first, second, pending, writes } =
+    await mountPendingSelection("workboard.cards.update");
   page.workboard.notify();
   const picker = await vi.waitFor(() =>
     expectDefined(
@@ -43,55 +53,32 @@ it("stops a bulk assignment after board scope changes while the first write is p
   );
   expect(state.selectedCardIds).toEqual(new Set([first.id, second.id]));
   picker.onSelect("main");
-  await vi.waitFor(() =>
-    expect(
-      page.request.mock.calls.filter(([method]) => method === "workboard.cards.update"),
-    ).toHaveLength(1),
-  );
+  await vi.waitFor(() => expect(writes()).toHaveLength(1));
   expect(state.bulkSaving).toBe(true);
   page.navigate("two");
   await vi.waitFor(() => expect(state.selectedCardIds.size).toBe(0));
   expect(state.bulkDialog).toBeNull();
   page.navigate("one");
   await vi.waitFor(() => expect(state.boardFilter).toBe("one"));
-  firstWrite.resolve({ card: { ...first, agentId: "main", updatedAt: first.updatedAt + 1 } });
+  pending.resolve({ card: { ...first, agentId: "main", updatedAt: first.updatedAt + 1 } });
   await vi.waitFor(() => expect(state.bulkSaving).toBe(false));
-  expect(page.request.mock.calls.filter(([method]) => method === "workboard.cards.update")).toEqual(
+  expect(writes()).toEqual([
     [
-      [
-        "workboard.cards.update",
-        { id: first.id, expectedUpdatedAt: first.updatedAt, patch: { agentId: "main" } },
-      ],
+      "workboard.cards.update",
+      { id: first.id, expectedUpdatedAt: first.updatedAt, patch: { agentId: "main" } },
     ],
-  );
+  ]);
   expect(state.cards.find((card) => card.id === first.id)?.agentId).toBe("main");
   expect(state.cards.find((card) => card.id === second.id)?.agentId).toBe("writer");
   expect(state.selectedCardIds.size).toBe(0);
 });
 
 it("drops a selected card made ineligible by agent scope while bulk work is pending", async () => {
-  const page = mountPage({ boardId: "one" });
-  const state = page.workboard.state;
-  const first = createWorkboardCard({
-    id: "first",
-    agentId: "writer",
-    metadata: { automation: { boardId: "one" } },
-  });
-  const second = createWorkboardCard({ ...first, id: "second", position: 2000 });
-  const outside = { ...second, agentId: "main", updatedAt: second.updatedAt + 1 };
-  const pending = createDeferred<{ card: typeof first }>();
-  const request = expectDefined(page.request.getMockImplementation(), "request implementation");
-  page.request.mockImplementation((method, params) =>
-    method === "workboard.cards.archive" ? pending.promise : request(method, params),
+  const { page, state, first, second, pending, writes } = await mountPendingSelection(
+    "workboard.cards.archive",
+    true,
   );
-  page.cards([first, second]);
-  page.fixture.host.agents.setScope("writer");
-  page.fixture.connection.connected = true;
-  page.fixture.notify();
-  await vi.waitFor(() => expect(state.loaded).toBe(true));
-  state.selectedCardIds = new Set([first.id, second.id]);
-  state.query = "unmatched";
-  state.statusFilter = new Set(["done"]);
+  const outside = { ...second, agentId: "main", updatedAt: second.updatedAt + 1 };
   setWorkboardCards(state, [first, outside]);
   page.workboard.notify();
   await vi.waitFor(() => expect(state.selectedCardIds).toEqual(new Set([first.id])));
@@ -107,11 +94,7 @@ it("drops a selected card made ineligible by agent scope while bulk work is pend
     ),
   );
   archive.click();
-  await vi.waitFor(() =>
-    expect(
-      page.request.mock.calls.filter(([method]) => method === "workboard.cards.archive"),
-    ).toHaveLength(1),
-  );
+  await vi.waitFor(() => expect(writes()).toHaveLength(1));
   setWorkboardCards(state, [first, outside]);
   page.workboard.notify();
   await vi.waitFor(() => expect(state.selectedCardIds).toEqual(new Set([first.id])));
@@ -119,9 +102,7 @@ it("drops a selected card made ineligible by agent scope while bulk work is pend
     card: { ...first, metadata: { ...first.metadata, archivedAt: first.updatedAt + 1 } },
   });
   await vi.waitFor(() => expect(state.bulkSaving).toBe(false));
-  expect(
-    page.request.mock.calls.filter(([method]) => method === "workboard.cards.archive"),
-  ).toHaveLength(1);
+  expect(writes()).toHaveLength(1);
   expect(state.cards.find((card) => card.id === second.id)).toEqual(outside);
   expect(state.selectedCardIds.size).toBe(0);
 });

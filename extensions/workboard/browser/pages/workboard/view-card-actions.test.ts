@@ -4,7 +4,6 @@ import { render } from "@solidjs/web";
 import { createComponent, createSignal, flush } from "solid-js";
 import { describe, expect, it, onTestFinished, vi } from "vitest";
 import { getWorkboardState } from "../../lib/workboard/runtime.ts";
-import type { WorkboardSessionResolution } from "../../lib/workboard/session-resolution.ts";
 import {
   createGatewaySession,
   createWorkboardCard,
@@ -46,26 +45,29 @@ function renderDetails(card: WorkboardCard, overrides: Partial<WorkboardProps> =
     dispose();
     container.remove();
   });
-  return { state, props, container };
+  const button = (selector: string) =>
+    expectDefined(container.querySelector<HTMLButtonElement>(selector), selector);
+  return { state, props, container, button };
 }
 
 describe("Workboard card execution actions", () => {
   it.each([
-    { key: "agent:writer:existing", status: "unknown", canOpen: true },
-    { key: "agent:writer:existing", status: "unavailable", canOpen: true },
-    { key: "subagent:workboard-default-card-1", status: "unknown", canOpen: false },
-    { key: "subagent:workboard-default-card-1", status: "ambiguous", canOpen: false },
-    { key: "global", status: "unknown", canOpen: false },
-    { key: "unknown", status: "unknown", canOpen: false },
+    ["agent:writer:existing", "unknown", true],
+    ["agent:writer:existing", "unavailable", true],
+    ["subagent:workboard-default-card-1", "unknown", false],
+    ["subagent:workboard-default-card-1", "ambiguous", false],
+    ["global", "unknown", false],
+    ["unknown", "unknown", false],
   ] as const)(
-    "keeps Edit recovery without replacement Start for $status link $key",
-    ({ key, status, canOpen }) => {
+    "keeps Edit recovery without replacement Start for %s (%s)",
+    (key, status, canOpen) => {
       const card = createWorkboardCard({ sessionKey: key });
-      const resolution: WorkboardSessionResolution = { key, status };
-      const { container, state, props } = renderDetails(card, { sessionResolution: resolution });
+      const { container, state, props, button } = renderDetails(card, {
+        sessionResolution: { key, status },
+      });
       const open =
         Array.from(container.querySelectorAll<HTMLButtonElement>("button")).find(
-          (button) => button.textContent?.trim() === "Open session",
+          (candidate) => candidate.textContent?.trim() === "Open session",
         ) ?? null;
       if (canOpen) {
         expectDefined(open, "canonical session action").click();
@@ -73,12 +75,8 @@ describe("Workboard card execution actions", () => {
       } else {
         expect(open).toBeNull();
       }
-      expectDefined(
-        container.querySelector<HTMLButtonElement>('button[aria-label="Edit card"]'),
-        "link recovery action",
-      ).click();
-      expect(state.draftOpen).toBe(true);
-      expect(state.draftSessionKey).toBe(key);
+      button('button[aria-label="Edit card"]').click();
+      expect(state).toMatchObject({ draftOpen: true, draftSessionKey: key });
       expect(container.querySelectorAll(".workboard-card__start")).toHaveLength(0);
     },
   );
@@ -92,10 +90,8 @@ describe("Workboard card execution actions", () => {
   ])(
     "stops the resolved $key owner after the card is reassigned",
     async ({ key, sessionKey, agentId }) => {
-      const session = createGatewaySession({
-        key: sessionKey,
-        ...(agentId ? { agentId } : {}),
-      });
+      const owner = { sessionKey, ...(agentId ? { agentId } : {}) };
+      const session = createGatewaySession({ key: sessionKey, ...(agentId ? { agentId } : {}) });
       const card = createWorkboardCard({
         agentId: "main",
         sessionKey: key,
@@ -114,24 +110,20 @@ describe("Workboard card execution actions", () => {
         }
         throw new Error(`Unexpected request: ${method}`);
       });
-      const { container, state } = renderDetails(card, {
+      const { button, state } = renderDetails(card, {
         client,
         sessionResolution: { key, status: "resolved", session },
       });
 
-      expectDefined(
-        container.querySelector<HTMLButtonElement>('button[aria-label="Stop session"]'),
-        "resolved execution stop action",
-      ).click();
+      button('button[aria-label="Stop session"]').click();
       await waitForFast(() => expect(state.cards[0]?.status).toBe("blocked"));
 
       expect(client.request).toHaveBeenNthCalledWith(1, "chat.abort", {
-        sessionKey: session.key,
-        ...(agentId ? { agentId } : {}),
+        ...owner,
         runId: "writer-run",
       });
       if (agentId) {
-        expect(client.request).toHaveBeenNthCalledWith(2, "chat.abort", { sessionKey, agentId });
+        expect(client.request).toHaveBeenNthCalledWith(2, "chat.abort", owner);
       }
       expect(state.error).toBeNull();
     },
@@ -147,14 +139,9 @@ describe("Workboard card execution actions", () => {
       const client = createWorkboardTestClient(() => {
         throw new Error("A retained action cannot operate on the replacement card");
       });
-      const { container, state } = renderDetails(card, { client, sessions: [session] });
-      const button = expectDefined(
-        container.querySelector<HTMLButtonElement>(
-          action === "start"
-            ? ".workboard-card__start--manual"
-            : 'button[aria-label="Stop session"]',
-        ),
-        "original card action",
+      const { button, state } = renderDetails(card, { client, sessions: [session] });
+      const retained = button(
+        action === "start" ? ".workboard-card__start--manual" : 'button[aria-label="Stop session"]',
       );
       const successor = {
         ...card,
@@ -162,7 +149,7 @@ describe("Workboard card execution actions", () => {
         sessionKey: "agent:writer:replacement",
       };
       state.cards = [successor];
-      button.click();
+      retained.click();
       await waitForFast(() => expect(state.error).toBeTruthy());
 
       expect(client.request).not.toHaveBeenCalled();

@@ -3,7 +3,7 @@ import { expectDefined } from "@openclaw/normalization-core";
 import { createDeferred } from "openclaw/plugin-sdk/concurrency-runtime";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createWorkboardCard } from "../../lib/workboard/test/index-helpers.ts";
-import { afterWorkboardUpdate } from "../../test/settle.ts";
+import { afterWorkboardUpdate as settle } from "../../test/settle.ts";
 import { mountPage } from "./workboard-page.test-support.ts";
 
 beforeEach(() => vi.useFakeTimers());
@@ -36,6 +36,7 @@ function mountAutomation(
   return {
     ...page,
     heading: () => page.container.querySelector(".workboard-heading__automation-name"),
+    expectText: (text: string) => settle(() => expect(page.container.textContent).toContain(text)),
   };
 }
 
@@ -46,9 +47,7 @@ describe("Workboard automation lifecycle", () => {
       schedule: { kind: "event", source: "mcp-events", options: { name: "comment.created" } },
       state: {},
     }));
-    await afterWorkboardUpdate(() =>
-      expect(page.heading()?.textContent).toContain("Review incoming events"),
-    );
+    await settle(() => expect(page.heading()?.textContent).toContain("Review incoming events"));
     const info = page.container.querySelector(".workboard-automation-info");
     expect(info?.textContent).toContain("Event: mcp-events");
     expect(info?.textContent).toContain("Waiting for event");
@@ -59,7 +58,7 @@ describe("Workboard automation lifecycle", () => {
     const page = mountAutomation([{ id: "planning" }], () =>
       automationJob("job-planning", "Planning job"),
     );
-    await afterWorkboardUpdate(() => expect(page.workboard.state.loaded).toBe(true));
+    await settle(() => expect(page.workboard.state.loaded).toBe(true));
     expect(page.heading()).toBeNull();
   });
 
@@ -70,27 +69,25 @@ describe("Workboard automation lifecycle", () => {
       loads += 1;
       return loads === 1 ? earlier.promise : automationJob("job-planning", `Revision ${loads}`);
     });
-    await afterWorkboardUpdate(() => expect(loads).toBe(1));
+    await settle(() => expect(loads).toBe(1));
     page.fixture.emit("cron", { jobId: "other-job", action: "updated" });
-    await afterWorkboardUpdate(() => expect(loads).toBe(1));
+    await settle(() => expect(loads).toBe(1));
     page.fixture.emit("cron", { jobId: "job-planning", action: "updated" });
-    await afterWorkboardUpdate(() => expect(page.container.textContent).toContain("Revision 2"));
+    await page.expectText("Revision 2");
     expect(page.heading()).toBeInstanceOf(HTMLAnchorElement);
     expect(page.heading()?.getAttribute("href")).toBe("/automations?job=job-planning");
     earlier.resolve(automationJob("job-planning", "Stale revision"));
     await earlier.promise;
-    await afterWorkboardUpdate(() =>
-      expect(page.container.textContent).not.toContain("Stale revision"),
-    );
+    await settle(() => expect(page.container.textContent).not.toContain("Stale revision"));
     page.present(false);
-    await afterWorkboardUpdate(() => expect(page.heading()).toBeNull());
+    await settle(() => expect(page.heading()).toBeNull());
     page.fixture.emit("cron", { jobId: "job-planning", action: "finished" });
-    await afterWorkboardUpdate(() => expect(loads).toBe(2));
+    await settle(() => expect(loads).toBe(2));
     page.present(true);
-    await afterWorkboardUpdate(() => expect(page.container.textContent).toContain("Revision 3"));
+    await page.expectText("Revision 3");
     page.dispose();
     page.fixture.emit("cron", { jobId: "job-planning", action: "updated" });
-    await afterWorkboardUpdate(() => expect(loads).toBe(3));
+    await settle(() => expect(loads).toBe(3));
   });
 
   it("shares board and detail automation loading and ignores an earlier visit's late response", async () => {
@@ -117,37 +114,29 @@ describe("Workboard automation lifecycle", () => {
       },
       [card],
     );
-    await afterWorkboardUpdate(() => expect(planningLoads).toBe(1));
+    await settle(() => expect(planningLoads).toBe(1));
     page.workboard.state.detailCardId = card.id;
     page.workboard.notify();
-    await afterWorkboardUpdate(() =>
-      expect(page.container.querySelector(".workboard-detail")).not.toBeNull(),
-    );
+    await settle(() => expect(page.container.querySelector(".workboard-detail")).not.toBeNull());
     expect(planningLoads).toBe(1);
     page.navigate("operations");
-    await afterWorkboardUpdate(() =>
-      expect(page.container.textContent).toContain("Operations job"),
-    );
+    await page.expectText("Operations job");
     page.navigate("planning");
-    await afterWorkboardUpdate(() => expect(planningLoads).toBe(2));
+    await settle(() => expect(planningLoads).toBe(2));
     page.workboard.state.detailCardId = card.id;
     page.workboard.notify();
-    current.resolve(automationJob("job-planning", "Current planning job"));
-    await afterWorkboardUpdate(() => {
+    const expectCurrent = () => {
       expect(page.heading()?.textContent).toContain("Current planning job");
       expect(page.container.querySelector(".workboard-detail")?.textContent).toContain(
         "Current planning job",
       );
-    });
+    };
+    current.resolve(automationJob("job-planning", "Current planning job"));
+    await settle(expectCurrent);
     earlier.resolve(automationJob("job-planning", "Stale planning job"));
     await earlier.promise;
-    await afterWorkboardUpdate(() =>
-      expect(page.container.textContent).not.toContain("Stale planning job"),
-    );
-    expect(page.heading()?.textContent).toContain("Current planning job");
-    expect(page.container.querySelector(".workboard-detail")?.textContent).toContain(
-      "Current planning job",
-    );
+    await settle(() => expect(page.container.textContent).not.toContain("Stale planning job"));
+    expectCurrent();
     expect(planningLoads).toBe(2);
   });
 });
