@@ -51,7 +51,7 @@ it("keeps an unbound direct route available while thread bindings are disabled",
       }),
     ).toEqual({ kind: "agent", agentId: route.agentId });
     const resolved = await resolveRuntimeConversationBindingRouteAsync({ route, conversation });
-    expect(resolved).toEqual({
+    expect({ ...resolved, route: Object.fromEntries(Object.entries(resolved.route)) }).toEqual({
       bindingOwnerAvailable: true,
       bindingRecord: null,
       route,
@@ -77,13 +77,15 @@ it("keeps only the current disabled owner available and refuses work after retir
     unbindSupported: false,
     placements: [],
   });
-  await expect(service.inspectByConversationAsync(conversation)).resolves.toEqual({
+  const available = await service.inspectByConversationAsync(conversation);
+  expect(Object.fromEntries(Object.entries(available))).toEqual({
     status: "available",
     binding: null,
   });
   await current.stop();
   await current.stop();
-  await expect(service.inspectByConversationAsync(conversation)).resolves.toEqual({
+  const unavailable = await service.inspectByConversationAsync(conversation);
+  expect(Object.fromEntries(Object.entries(unavailable))).toEqual({
     status: "unavailable",
   });
   await expect(service.resolveByConversationAsync(conversation)).rejects.toMatchObject({

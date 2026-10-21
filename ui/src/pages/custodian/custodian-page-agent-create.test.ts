@@ -37,7 +37,7 @@ async function mountPage(context: ApplicationContext) {
   return page;
 }
 
-let request: ReturnType<typeof vi.fn>;
+let request: Parameters<typeof createCustodianContext>[0];
 let harness: ReturnType<typeof createContext>;
 const response = {
   sessionId: "control-ui-onboarding-00000000-0000-4000-8000-000000000001",
