@@ -9,49 +9,35 @@ import {
 } from "./systemd-unit.js";
 
 const values = ["plain", 'mix \\ and " here', "trailing\\", "apostrophe's", "'quoted'"];
-const execStart = (unit: string) =>
+const directives = (unit: string, key: string) =>
   unit
     .split("\n")
-    .find((line) => line.startsWith("ExecStart="))
-    ?.slice("ExecStart=".length) ?? "";
+    .filter((line) => line.startsWith(`${key}=`))
+    .map((line) => line.slice(key.length + 1));
+const execStart = (unit: string) => directives(unit, "ExecStart")[0] ?? "";
 const build = (
   programArguments: string[],
   options: Omit<Parameters<typeof buildSystemdUnit>[0], "programArguments"> = {},
 ) => buildSystemdUnit({ programArguments, ...options });
 
-it("preserves comments, escaped backslashes, and continuation boundaries for LF and CRLF", () => {
-  const command = "ExecStart=/usr/bin/openclaw gateway run";
-  const cases = [
-    [
-      ["# note \\", "; note \\", command],
-      ["# note \\", "; note \\", command],
-    ],
-    [
-      ['Environment="SETTING=one\\', " # note \\", " ; note", '  two"'],
-      ['Environment="SETTING=one   two"'],
-    ],
-    [
-      ["Environment=SETTING=one\\\\", command],
-      ["Environment=SETTING=one\\\\", command],
-    ],
-    [
-      ["Environment=SETTING=one\\", "", command],
-      ["Environment=SETTING=one ", command],
-    ],
-    [["Environment=SETTING=one\\", " # note"], ["Environment=SETTING=one "]],
-  ] as const;
-  for (const [input, expected] of cases) {
-    for (const separator of ["\n", "\r\n"]) {
-      expect(splitSystemdLogicalLines(input.join(separator))).toEqual(expected);
-    }
+const command = "ExecStart=run";
+it.each([
+  [`# \\\n; \\\n${command}`, ["# \\", "; \\", command]],
+  ['Environment="X=1\\\n # \\\n ;\n  2"', ['Environment="X=1   2"']],
+  [`Environment=X=1\\\\\n${command}`, ["Environment=X=1\\\\", command]],
+  [`Environment=X=1\\\n\n${command}`, ["Environment=X=1 ", command]],
+  ["Environment=X=1\\\n #", ["Environment=X=1 "]],
+] as const)("preserves LF and CRLF boundaries in %j", (input, expected) => {
+  for (const separator of ["\n", "\r\n"]) {
+    expect(splitSystemdLogicalLines(input.replaceAll("\n", separator))).toEqual(expected);
   }
 });
 
 it("round-trips escaped and quoted Environment values", () => {
   for (const value of values) {
-    expect(parseSystemdEnvAssignments(renderSystemdEnvAssignment("OPENCLAW_TOKEN", value))).toEqual(
-      [{ key: "OPENCLAW_TOKEN", value }],
-    );
+    expect(parseSystemdEnvAssignments(renderSystemdEnvAssignment("TOKEN", value))).toEqual([
+      { key: "TOKEN", value },
+    ]);
   }
 });
 
@@ -72,19 +58,15 @@ it("preserves explicit NODE_OPTIONS while omitting other empty values", () => {
     const unit = build(programArguments, {
       environment: { NODE_OPTIONS: nodeOptions, UNUSED: "", MISSING: undefined },
     });
-    expect(
-      unit
-        .split("\n")
-        .filter((line) => line.startsWith("Environment="))
-        .flatMap((line) => parseSystemdEnvAssignments(line.slice("Environment=".length))),
-    ).toEqual([{ key: "NODE_OPTIONS", value: nodeOptions }]);
+    expect(directives(unit, "Environment").flatMap(parseSystemdEnvAssignments)).toEqual([
+      { key: "NODE_OPTIONS", value: nodeOptions },
+    ]);
     expect(parseSystemdExecStart(execStart(unit))).toEqual(programArguments);
   }
 });
 
 it("renders the gateway unit with safe lifecycle policy and ordered environment directives", () => {
   const unit = build(["/usr/bin/openclaw", "gateway", "--name", "My Bot"], {
-    description: "OpenClaw Gateway",
     environmentFiles: ["/home/test/.openclaw/.env"],
     environment: { OPENCLAW_GATEWAY_PORT: "18789" },
   });
@@ -117,39 +99,24 @@ it("rejects environment values with line breaks", () => {
   ).toThrow(/CR or LF/);
 });
 
-it("splits command arguments using the platform's escaping rules", () => {
-  const cases = [
-    ['openclaw --name "My Bot"', "none", ["openclaw", "--name", "My Bot"]],
-    [
-      'openclaw --name "My \\"Bot\\"" --foo bar',
-      "backslash",
-      ["openclaw", "--name", 'My "Bot"', "--foo", "bar"],
-    ],
-    [
-      'openclaw --path "C:\\\\Program Files\\\\OpenClaw"',
-      "backslash-quote-only",
-      ["openclaw", "--path", "C:\\\\Program Files\\\\OpenClaw"],
-    ],
-    [
-      'openclaw --label "My \\"Quoted\\" Name"',
-      "backslash-quote-only",
-      ["openclaw", "--label", 'My "Quoted" Name'],
-    ],
-  ] as const;
-  for (const [input, escapeMode, expected] of cases) {
-    expect(
-      splitArgsPreservingQuotes(input, escapeMode === "none" ? undefined : { escapeMode }),
-    ).toEqual(expected);
-  }
+it.each([
+  ['run "a b"', "none", ["run", "a b"]],
+  ['run "a \\"b\\"" c', "backslash", ["run", 'a "b"', "c"]],
+  ['run "C:\\\\a b\\\\c"', "backslash-quote-only", ["run", "C:\\\\a b\\\\c"]],
+  ['run "a \\"b\\" c"', "backslash-quote-only", ["run", 'a "b" c']],
+] as const)("splits %s using %s escaping", (input, escapeMode, expected) => {
+  expect(
+    splitArgsPreservingQuotes(input, escapeMode === "none" ? undefined : { escapeMode }),
+  ).toEqual(expected);
 });
 
 it("parses quoted assignments while preserving unquoted apostrophes", () => {
-  expect(parseSystemdEnvAssignments("'TOKEN=single quoted token' FOO=bar")).toEqual([
-    { key: "TOKEN", value: "single quoted token" },
+  expect(parseSystemdEnvAssignments("'TOKEN=a b' FOO=bar")).toEqual([
+    { key: "TOKEN", value: "a b" },
     { key: "FOO", value: "bar" },
   ]);
-  expect(parseSystemdEnvAssignments("FOO=can't OPENCLAW_GATEWAY_TOKEN=token")).toEqual([
+  expect(parseSystemdEnvAssignments("FOO=can't TOKEN=token")).toEqual([
     { key: "FOO", value: "can't" },
-    { key: "OPENCLAW_GATEWAY_TOKEN", value: "token" },
+    { key: "TOKEN", value: "token" },
   ]);
 });

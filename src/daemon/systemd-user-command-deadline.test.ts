@@ -1,4 +1,3 @@
-// Discovery and command dispatch share the caller's monotonic deadline and custody.
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 const exec = vi.hoisted(() => vi.fn<typeof import("./exec-file.js").execFileUtf8>());
 vi.mock("./exec-file.js", () => ({ execFileUtf8: exec }));
@@ -18,11 +17,19 @@ const unavailable = {
   stderr: "Failed to connect to bus: No medium found",
 };
 const success = (stdout: string) => ({ code: 0, termination: "exit" as const, stdout, stderr: "" });
-const guard = (active: boolean, operation: string) => {
-  if (!active) {
-    throw new Error(`original ${operation} owner retired`);
-  }
-};
+function fallback(spent: number, onProbe = () => {}) {
+  const clock = { elapsed: 0 };
+  vi.spyOn(performance, "now").mockImplementation(() => clock.elapsed);
+  exec.mockImplementation(async (_command, args) => {
+    if (args.includes("--machine")) {
+      return success(args.includes("Version") ? 's "252.39"' : "native result");
+    }
+    clock.elapsed += spent;
+    onProbe();
+    return unavailable;
+  });
+  return clock;
+}
 beforeEach(() => {
   vi.spyOn(process, "platform", "get").mockReturnValue("linux");
   vi.spyOn(process, "geteuid").mockReturnValue(1001);
@@ -31,15 +38,7 @@ beforeEach(() => {
 afterEach(() => vi.restoreAllMocks());
 
 it.each([450, 500])("does not give fallback a new deadline after %s ms", async (spent) => {
-  let elapsed = 0;
-  vi.spyOn(performance, "now").mockImplementation(() => elapsed);
-  exec.mockImplementation(async (_command, args) => {
-    if (!args.includes("--machine")) {
-      elapsed += spent;
-      return unavailable;
-    }
-    return success(args.includes("Version") ? 's "252.39"' : "native result");
-  });
+  fallback(spent);
   const result = await execBusctlUser(
     environment(`budget-${spent}`),
     ["--auto-start=no", "call", "org.freedesktop.systemd1"],
@@ -47,10 +46,8 @@ it.each([450, 500])("does not give fallback a new deadline after %s ms", async (
   );
   expect(exec.mock.calls[0]?.[2]?.timeout).toBe(166);
   if (spent === 450) {
-    expect(exec).toHaveBeenCalledTimes(3);
     expect(exec.mock.calls[1]?.[1]).toContain("owned@");
-    expect(exec.mock.calls[1]?.[2]?.timeout).toBe(25);
-    expect(exec.mock.calls[2]?.[2]?.timeout).toBe(50);
+    expect(exec.mock.calls.map((call) => call[2]?.timeout)).toEqual([166, 25, 50]);
     expect(result.code).toBe(0);
   } else {
     expect(exec).toHaveBeenCalledTimes(1);
@@ -59,66 +56,40 @@ it.each([450, 500])("does not give fallback a new deadline after %s ms", async (
   }
 });
 
-it("does not dispatch machine fallback after the original stop owner retires", async () => {
-  let active = true;
-  exec.mockImplementation(async () => {
-    active = false;
-    return unavailable;
-  });
-  await expect(
-    execSystemctlUser(environment("retired-stop"), ["stop", "openclaw-gateway.service"], 500, () =>
-      guard(active, "stop"),
-    ),
-  ).rejects.toThrow("original stop owner retired");
-  expect(exec).toHaveBeenCalledTimes(1);
-});
-
-it.each(["current", "retired", "slow-guard"] as const)(
-  "LoadUnit fallback retains the original %s authority and budget",
+it.each(["current", "retired", "slow-guard", "stop"] as const)(
+  "%s fallback retains the original authority and budget",
   async (mode) => {
     let active = true;
-    let elapsed = 0;
-    let firstProbeCompleted = false;
-    vi.spyOn(performance, "now").mockImplementation(() => elapsed);
-    exec.mockImplementation(async (_command, args) => {
-      if (!args.includes("--machine")) {
-        elapsed = 50;
-        active = mode !== "retired";
-        firstProbeCompleted = true;
-        return unavailable;
-      }
-      return success(args.includes("Version") ? 's "252.39"' : "loaded unit");
+    const retired = mode === "retired" || mode === "stop";
+    const operation = mode === "stop" ? "stop" : "load";
+    const clock = fallback(50, () => {
+      active = !retired;
     });
-    const result = execBusctlUser(
-      environment(`load-${mode}`),
-      [
-        "--auto-start=no",
-        "call",
-        ":1.42",
-        "/org/freedesktop/systemd1",
-        "org.freedesktop.systemd1.Manager",
-        "LoadUnit",
-        "s",
-        "openclaw-gateway.service",
-      ],
-      500,
-      () => {
-        guard(active, "load");
-        if (mode === "slow-guard" && firstProbeCompleted) {
-          elapsed = 500;
-        }
-      },
-    );
-    if (mode === "retired") {
-      await expect(result).rejects.toThrow("original load owner retired");
+    const run = mode === "stop" ? execSystemctlUser : execBusctlUser;
+    const args =
+      mode === "stop"
+        ? ["stop", "openclaw-gateway.service"]
+        : (
+            "--auto-start=no call :1.42 /org/freedesktop/systemd1 " +
+            "org.freedesktop.systemd1.Manager LoadUnit s openclaw-gateway.service"
+          ).split(" ");
+    const result = run(environment(`load-${mode}`), args, 500, () => {
+      if (!active) {
+        throw new Error(`original ${operation} owner retired`);
+      }
+      if (mode === "slow-guard" && clock.elapsed > 0) {
+        clock.elapsed = 500;
+      }
+    });
+    if (retired) {
+      await expect(result).rejects.toThrow(`original ${operation} owner retired`);
     } else {
       const outcome = await result;
-      expect(outcome.termination).toBe("exit");
-      expect(outcome.inspectionReason).toBeUndefined();
+      expect([outcome.termination, outcome.inspectionReason]).toEqual(["exit", undefined]);
     }
-    expect(exec).toHaveBeenCalledTimes(mode === "retired" ? 1 : 3);
+    expect(exec).toHaveBeenCalledTimes(retired ? 1 : 3);
     expect(exec.mock.calls.filter((call) => call[1].includes("LoadUnit"))).toHaveLength(
-      mode === "retired" ? 0 : 1,
+      retired ? 0 : 1,
     );
   },
 );
