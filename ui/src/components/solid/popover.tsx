@@ -24,6 +24,9 @@ export interface PopoverProps {
   label: string;
   anchor?: HTMLElement;
   trigger?: JSX.Element;
+  triggerId?: string;
+  triggerClass?: JSX.HTMLAttributes<HTMLButtonElement>["class"];
+  triggerTitle?: string;
   children?: JSX.Element;
   class?: JSX.HTMLAttributes<HTMLDivElement>["class"];
   open?: boolean;
@@ -87,10 +90,14 @@ export function Popover(props: PopoverProps): JSX.Element {
             trigger = node;
           }}
           type="button"
+          id={props.triggerId}
+          class={props.triggerClass}
+          title={props.triggerTitle}
           disabled={props.disabled}
           aria-label={props.label}
           aria-haspopup="dialog"
           aria-controls={initialIdentity.id}
+          aria-expanded="false"
           onClick={() => overlay.request(!overlay.open)}
         >
           {props.trigger ?? props.label}
