@@ -6,7 +6,6 @@ import {
   createMemo,
   createSignal,
   lazy,
-  onCleanup,
   onSettled,
   type Element,
 } from "solid-js";
@@ -511,16 +510,14 @@ export function ChatDetails(props: ChatDetailsViewProps) {
       props.setRef(undefined);
       layout.disconnect();
       stop.forEach((dispose) => dispose());
+      hide();
+      const frame = props.elements?.frame;
+      frame?.style.removeProperty("--chat-details-space");
+      frame?.style.removeProperty("--chat-details-frame-width");
+      frame?.removeAttribute("data-details-instant");
+      frame?.removeAttribute("data-details-restoring");
+      surface.remove();
     };
-  });
-  onCleanup(() => {
-    hide();
-    const frame = props.elements?.frame;
-    frame?.style.removeProperty("--chat-details-space");
-    frame?.style.removeProperty("--chat-details-frame-width");
-    frame?.removeAttribute("data-details-instant");
-    frame?.removeAttribute("data-details-restoring");
-    surface.remove();
   });
   return (
     <openclaw-chat-details

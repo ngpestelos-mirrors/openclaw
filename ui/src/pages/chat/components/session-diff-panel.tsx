@@ -1,4 +1,4 @@
-import { createMemo, createSignal, onCleanup, onSettled, Show } from "solid-js";
+import { createMemo, createSignal, onSettled, Show } from "solid-js";
 import type { SessionsDiffResult } from "../../../../../packages/gateway-protocol/src/index.js";
 import { nativeGatewaysCapability } from "../../../app/native-gateways.runtime.ts";
 import { Icon } from "../../../components/solid/icon.tsx";
@@ -163,11 +163,13 @@ export function SessionDiffPanel(props: SessionDiffProps) {
   const expandingGaps = new WeakSet<DiffLine>();
   let disposed = false;
   const nativeGateways = nativeGatewaysCapability();
-  // Dismiss the menu at native-owner replacement before another menu action can run.
-  const unsubscribe = nativeGateways?.subscribe(() => setMenu(null));
-  onCleanup(() => {
-    disposed = true;
-    unsubscribe?.();
+  onSettled(() => {
+    // Dismiss the menu at native-owner replacement before another menu action can run.
+    const unsubscribe = nativeGateways?.subscribe(() => setMenu(null));
+    return () => {
+      disposed = true;
+      unsubscribe?.();
+    };
   });
 
   function RequestLifetime(requestProps: { request: ReturnType<typeof request> }) {

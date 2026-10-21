@@ -1,4 +1,4 @@
-import { Show, onSettled, onCleanup, type Element } from "solid-js";
+import { Show, onSettled, type Element } from "solid-js";
 import { isIncognitoSessionKey } from "../../../../../src/shared/incognito-session-key.js";
 import { beginNativeWindowDrag } from "../../../app/native-window-drag.ts";
 import { NAV_DRAWER_TOGGLE_REGISTRATION } from "../../../app/navigation-surface.ts";
@@ -76,8 +76,8 @@ export function ChatPaneHeader(props: ChatPaneHeaderProps) {
   );
   onSettled(() => {
     props.setDashboardControls?.(dashboardControls);
+    return () => props.setDashboardControls?.(undefined);
   });
-  onCleanup(() => props.setDashboardControls?.(undefined));
   const incognito = () =>
     (props.incognito ?? props.session?.incognito) || isIncognitoSessionKey(props.session?.key);
   const Details = (detailsProps: {
