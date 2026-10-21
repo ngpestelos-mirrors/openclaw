@@ -14,6 +14,10 @@ const execStart = (unit: string) =>
     .split("\n")
     .find((line) => line.startsWith("ExecStart="))
     ?.slice("ExecStart=".length) ?? "";
+const build = (
+  programArguments: string[],
+  options: Omit<Parameters<typeof buildSystemdUnit>[0], "programArguments"> = {},
+) => buildSystemdUnit({ programArguments, ...options });
 
 it("preserves comments, escaped backslashes, and continuation boundaries for LF and CRLF", () => {
   const command = "ExecStart=/usr/bin/openclaw gateway run";
@@ -53,26 +57,19 @@ it("round-trips escaped and quoted Environment values", () => {
 
 it("round-trips escaped and quoted ExecStart arguments", () => {
   const programArguments = ["/usr/bin/openclaw", "gateway", ...values];
-  const unit = buildSystemdUnit({
-    description: "OpenClaw Gateway",
-    programArguments,
-    environment: {},
-  });
+  const unit = build(programArguments);
   expect(parseSystemdExecStart(execStart(unit))).toEqual(programArguments);
 });
 
 it("quotes empty ExecStart arguments without shifting later arguments", () => {
-  const unit = buildSystemdUnit({
-    programArguments: ["/usr/bin/node", "gateway", "--label", "", "--port", "18789", ""],
-  });
+  const unit = build(["/usr/bin/node", "gateway", "--label", "", "--port", "18789", ""]);
   expect(execStart(unit)).toBe('/usr/bin/node gateway --label "" --port 18789 ""');
 });
 
 it("preserves explicit NODE_OPTIONS while omitting other empty values", () => {
   for (const nodeOptions of ["", "--max-old-space-size=24576"]) {
     const programArguments = ["/usr/bin/node", "--max-old-space-size=16384", "gateway.js"];
-    const unit = buildSystemdUnit({
-      programArguments,
+    const unit = build(programArguments, {
       environment: { NODE_OPTIONS: nodeOptions, UNUSED: "", MISSING: undefined },
     });
     expect(
@@ -86,28 +83,27 @@ it("preserves explicit NODE_OPTIONS while omitting other empty values", () => {
 });
 
 it("renders the gateway unit with safe lifecycle policy and ordered environment directives", () => {
-  const unit = buildSystemdUnit({
+  const unit = build(["/usr/bin/openclaw", "gateway", "--name", "My Bot"], {
     description: "OpenClaw Gateway",
-    programArguments: ["/usr/bin/openclaw", "gateway", "--name", "My Bot"],
     environmentFiles: ["/home/test/.openclaw/.env"],
     environment: { OPENCLAW_GATEWAY_PORT: "18789" },
   });
-  for (const directive of [
-    'ExecStart=/usr/bin/openclaw gateway --name "My Bot"',
-    "KillMode=mixed",
-    "TimeoutStopSec=330",
-    "TimeoutStartSec=30",
-    "SuccessExitStatus=0 143",
-    "OOMPolicy=continue",
-    "StartLimitBurst=10",
-    "StartLimitIntervalSec=300",
-    "RestartSec=5",
-    "RestartPreventExitStatus=78",
-    "EnvironmentFile=-/home/test/.openclaw/.env",
-    "Environment=OPENCLAW_GATEWAY_PORT=18789",
-  ]) {
-    expect(unit.split("\n")).toContain(directive);
-  }
+  expect(unit.split("\n")).toEqual(
+    expect.arrayContaining([
+      'ExecStart=/usr/bin/openclaw gateway --name "My Bot"',
+      "KillMode=mixed",
+      "TimeoutStopSec=330",
+      "TimeoutStartSec=30",
+      "SuccessExitStatus=0 143",
+      "OOMPolicy=continue",
+      "StartLimitBurst=10",
+      "StartLimitIntervalSec=300",
+      "RestartSec=5",
+      "RestartPreventExitStatus=78",
+      "EnvironmentFile=-/home/test/.openclaw/.env",
+      "Environment=OPENCLAW_GATEWAY_PORT=18789",
+    ]),
+  );
   expect(unit.indexOf("EnvironmentFile=-/home/test/.openclaw/.env")).toBeLessThan(
     unit.indexOf("Environment=OPENCLAW_GATEWAY_PORT=18789"),
   );
@@ -115,9 +111,7 @@ it("renders the gateway unit with safe lifecycle policy and ordered environment 
 
 it("rejects environment values with line breaks", () => {
   expect(() =>
-    buildSystemdUnit({
-      description: "OpenClaw Gateway",
-      programArguments: ["/usr/bin/openclaw", "gateway", "start"],
+    build(["/usr/bin/openclaw", "gateway", "start"], {
       environment: { INJECT: "ok\nExecStartPre=/bin/touch /tmp/oc15789_rce" },
     }),
   ).toThrow(/CR or LF/);
@@ -125,11 +119,7 @@ it("rejects environment values with line breaks", () => {
 
 it("splits command arguments using the platform's escaping rules", () => {
   const cases = [
-    [
-      '/usr/bin/openclaw gateway start --name "My Bot"',
-      "none",
-      ["/usr/bin/openclaw", "gateway", "start", "--name", "My Bot"],
-    ],
+    ['openclaw --name "My Bot"', "none", ["openclaw", "--name", "My Bot"]],
     [
       'openclaw --name "My \\"Bot\\"" --foo bar',
       "backslash",
@@ -154,10 +144,8 @@ it("splits command arguments using the platform's escaping rules", () => {
 });
 
 it("parses quoted assignments while preserving unquoted apostrophes", () => {
-  expect(
-    parseSystemdEnvAssignments("'OPENCLAW_GATEWAY_TOKEN=single quoted token' FOO=bar"),
-  ).toEqual([
-    { key: "OPENCLAW_GATEWAY_TOKEN", value: "single quoted token" },
+  expect(parseSystemdEnvAssignments("'TOKEN=single quoted token' FOO=bar")).toEqual([
+    { key: "TOKEN", value: "single quoted token" },
     { key: "FOO", value: "bar" },
   ]);
   expect(parseSystemdEnvAssignments("FOO=can't OPENCLAW_GATEWAY_TOKEN=token")).toEqual([

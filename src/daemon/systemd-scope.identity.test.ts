@@ -9,6 +9,13 @@ const findServices = vi.hoisted(() =>
 vi.mock("./inspect.js", () => ({ findSystemGatewayServices: () => findServices() }));
 const HOME = "/tmp/openclaw-test-home";
 const systemPath = (name: string) => `/etc/systemd/system/${name}.service`;
+const userPath = (name: string) => `${HOME}/.config/systemd/user/${name}.service`;
+const findScope = (profile?: string, override?: string) =>
+  findInstalledSystemdGatewayScope({
+    HOME,
+    OPENCLAW_PROFILE: profile,
+    OPENCLAW_SYSTEMD_UNIT: override,
+  });
 let files: string[];
 
 function marker(name: string) {
@@ -41,10 +48,7 @@ it.each([
   ["system", "EACCES"],
   ["system", "EIO"],
 ])("reports %s unit inspection failure %s instead of absence", async (scope, code) => {
-  const unitPath =
-    scope === "user"
-      ? `${HOME}/.config/systemd/user/openclaw-gateway.service`
-      : systemPath("openclaw-gateway");
+  const unitPath = (scope === "user" ? userPath : systemPath)("openclaw-gateway");
   const inspectionError = Object.assign(new Error("unit inspection failed"), { code });
   vi.spyOn(fs, "access").mockImplementation(async (file) => {
     throw String(file) === unitPath
@@ -52,34 +56,28 @@ it.each([
       : Object.assign(new Error("ENOENT"), { code: "ENOENT" });
   });
 
-  await expect(findInstalledSystemdGatewayScope({ HOME })).rejects.toBe(inspectionError);
+  await expect(findScope()).rejects.toBe(inspectionError);
 });
 
 it("selects marker-owned, legacy, and explicitly requested units (openclaw#119648)", async () => {
   const cases = [
-    { profile: undefined, override: undefined, name: "openclaw", discovered: true },
-    { profile: "lisa", override: undefined, name: "openclaw-lisa", discovered: false },
-    { profile: "lisa", override: "openclaw-node", name: "openclaw-node", discovered: false },
-    {
-      profile: "lisa",
-      override: "openclaw-gateway-lisa",
-      name: "openclaw-gateway-lisa",
-      user: true,
-    },
-  ];
-  for (const { profile, override, name, discovered, user } of cases) {
-    const unitPath = user ? `${HOME}/.config/systemd/user/${name}.service` : systemPath(name);
-    files = discovered ? [] : [unitPath];
-    if (discovered) {
+    [undefined, undefined, "openclaw", "marker"],
+    ["lisa", undefined, "openclaw-lisa", "system"],
+    ["lisa", "openclaw-node", "openclaw-node", "system"],
+    ["lisa", "openclaw-gateway-lisa", "openclaw-gateway-lisa", "user"],
+  ] as const;
+  for (const [profile, override, name, source] of cases) {
+    const scope = source === "user" ? "user" : "system";
+    const unitPath = (scope === "user" ? userPath : systemPath)(name);
+    files = source === "marker" ? [] : [unitPath];
+    if (source === "marker") {
       marker(name);
     }
-    await expect(
-      findInstalledSystemdGatewayScope({
-        HOME,
-        OPENCLAW_PROFILE: profile,
-        OPENCLAW_SYSTEMD_UNIT: override,
-      }),
-    ).resolves.toEqual({ scope: user ? "user" : "system", unitName: `${name}.service`, unitPath });
+    await expect(findScope(profile, override)).resolves.toEqual({
+      scope,
+      unitName: `${name}.service`,
+      unitPath,
+    });
   }
 });
 
@@ -95,24 +93,14 @@ it("refuses marker units outside the selected profile or explicit identity", asy
   ] as const;
   for (const [profile, override, name] of cases) {
     marker(name);
-    await expect(
-      findInstalledSystemdGatewayScope({
-        HOME,
-        OPENCLAW_PROFILE: profile,
-        OPENCLAW_SYSTEMD_UNIT: override,
-      }),
-    ).resolves.toBeNull();
+    await expect(findScope(profile, override)).resolves.toBeNull();
   }
 });
 
 it("rejects legacy aliases that collide with Node or another canonical profile", async () => {
-  files = ["openclaw-node", "openclaw-gateway", "openclaw-gateway-lisa"].map(
-    (name) => `${HOME}/.config/systemd/user/${name}.service`,
-  );
+  files = ["openclaw-node", "openclaw-gateway", "openclaw-gateway-lisa"].map(userPath);
   for (const profile of ["node", "gateway", "gateway-lisa"]) {
-    await expect(
-      findInstalledSystemdGatewayScope({ HOME, OPENCLAW_PROFILE: profile }),
-    ).resolves.toBeNull();
+    await expect(findScope(profile)).resolves.toBeNull();
   }
 });
 
@@ -131,12 +119,7 @@ it.each(["disk", "marker"])(
     } else {
       marker("openclaw@");
     }
-    await expect(
-      findInstalledSystemdGatewayScope({
-        HOME,
-        OPENCLAW_SYSTEMD_UNIT: "openclaw@gateway.service",
-      }),
-    ).resolves.toEqual({
+    await expect(findScope(undefined, "openclaw@gateway.service")).resolves.toEqual({
       scope: "system",
       unitName: "openclaw@gateway.service",
       unitPath: systemPath("openclaw@"),

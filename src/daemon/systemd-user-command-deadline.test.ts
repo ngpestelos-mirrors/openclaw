@@ -1,5 +1,5 @@
 // Discovery and command dispatch share the caller's monotonic deadline and custody.
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, expect, it, vi } from "vitest";
 const exec = vi.hoisted(() => vi.fn<typeof import("./exec-file.js").execFileUtf8>());
 vi.mock("./exec-file.js", () => ({ execFileUtf8: exec }));
 import { execBusctlUser, execSystemctlUser } from "./systemd-exec.js";
@@ -18,6 +18,11 @@ const unavailable = {
   stderr: "Failed to connect to bus: No medium found",
 };
 const success = (stdout: string) => ({ code: 0, termination: "exit" as const, stdout, stderr: "" });
+const guard = (active: boolean, operation: string) => {
+  if (!active) {
+    throw new Error(`original ${operation} owner retired`);
+  }
+};
 beforeEach(() => {
   vi.spyOn(process, "platform", "get").mockReturnValue("linux");
   vi.spyOn(process, "geteuid").mockReturnValue(1001);
@@ -25,35 +30,33 @@ beforeEach(() => {
 });
 afterEach(() => vi.restoreAllMocks());
 
-describe("systemd user routing deadline", () => {
-  it.each([450, 500])("does not give fallback a new deadline after %s ms", async (spent) => {
-    let elapsed = 0;
-    vi.spyOn(performance, "now").mockImplementation(() => elapsed);
-    exec.mockImplementation(async (_command, args) => {
-      if (!args.includes("--machine")) {
-        elapsed += spent;
-        return unavailable;
-      }
-      return success(args.includes("Version") ? 's "252.39"' : "native result");
-    });
-    const result = await execBusctlUser(
-      environment(`budget-${spent}`),
-      ["--auto-start=no", "call", "org.freedesktop.systemd1"],
-      500,
-    );
-    expect(exec.mock.calls[0]?.[2]?.timeout).toBe(166);
-    if (spent === 450) {
-      expect(exec).toHaveBeenCalledTimes(3);
-      expect(exec.mock.calls[1]?.[1]).toContain("owned@");
-      expect(exec.mock.calls[1]?.[2]?.timeout).toBe(25);
-      expect(exec.mock.calls[2]?.[2]?.timeout).toBe(50);
-      expect(result.code).toBe(0);
-    } else {
-      expect(exec).toHaveBeenCalledTimes(1);
-      expect(result.termination).toBe("timeout");
-      expect(result.code).not.toBe(0);
+it.each([450, 500])("does not give fallback a new deadline after %s ms", async (spent) => {
+  let elapsed = 0;
+  vi.spyOn(performance, "now").mockImplementation(() => elapsed);
+  exec.mockImplementation(async (_command, args) => {
+    if (!args.includes("--machine")) {
+      elapsed += spent;
+      return unavailable;
     }
+    return success(args.includes("Version") ? 's "252.39"' : "native result");
   });
+  const result = await execBusctlUser(
+    environment(`budget-${spent}`),
+    ["--auto-start=no", "call", "org.freedesktop.systemd1"],
+    500,
+  );
+  expect(exec.mock.calls[0]?.[2]?.timeout).toBe(166);
+  if (spent === 450) {
+    expect(exec).toHaveBeenCalledTimes(3);
+    expect(exec.mock.calls[1]?.[1]).toContain("owned@");
+    expect(exec.mock.calls[1]?.[2]?.timeout).toBe(25);
+    expect(exec.mock.calls[2]?.[2]?.timeout).toBe(50);
+    expect(result.code).toBe(0);
+  } else {
+    expect(exec).toHaveBeenCalledTimes(1);
+    expect(result.termination).toBe("timeout");
+    expect(result.code).not.toBe(0);
+  }
 });
 
 it("does not dispatch machine fallback after the original stop owner retires", async () => {
@@ -63,15 +66,8 @@ it("does not dispatch machine fallback after the original stop owner retires", a
     return unavailable;
   });
   await expect(
-    execSystemctlUser(
-      environment("retired-stop"),
-      ["stop", "openclaw-gateway.service"],
-      500,
-      () => {
-        if (!active) {
-          throw new Error("original stop owner retired");
-        }
-      },
+    execSystemctlUser(environment("retired-stop"), ["stop", "openclaw-gateway.service"], 500, () =>
+      guard(active, "stop"),
     ),
   ).rejects.toThrow("original stop owner retired");
   expect(exec).toHaveBeenCalledTimes(1);
@@ -107,9 +103,7 @@ it.each(["current", "retired", "slow-guard"] as const)(
       ],
       500,
       () => {
-        if (!active) {
-          throw new Error("original load owner retired");
-        }
+        guard(active, "load");
         if (mode === "slow-guard" && firstProbeCompleted) {
           elapsed = 500;
         }
