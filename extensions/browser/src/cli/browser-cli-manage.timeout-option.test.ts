@@ -22,6 +22,18 @@ const fixedBudgetRequests = [
   { args: ["import-profile"], path: "/profiles/import" },
 ];
 
+function run(...args: string[]) {
+  return createBrowserManageProgram({ withParentTimeout: true }).parseAsync(["browser", ...args], {
+    from: "user",
+  });
+}
+
+function expectBudget(path: string, timeoutMs: number) {
+  const request = findBrowserManageCall(path);
+  expect(request?.[1].timeout).toBe(String(timeoutMs + 130_000));
+  expect(request?.[2].timeoutMs).toBe(timeoutMs);
+}
+
 describe("browser manage timeout option", () => {
   beforeEach(() => {
     getBrowserManageGatewayMock().mockClear();
@@ -32,47 +44,29 @@ describe("browser manage timeout option", () => {
     { args: ["reset-profile"], path: "/reset-profile" },
     { args: ["create-profile", "--name", "work"], path: "/profiles/create" },
   ])("inherits parent --timeout for $path", async ({ args, path }) => {
-    const program = createBrowserManageProgram({ withParentTimeout: true });
-    await program.parseAsync(["browser", "--timeout", "60000", "--json", ...args], {
-      from: "user",
-    });
-
-    const request = findBrowserManageCall(path);
-    expect(request?.[1]).toEqual(expect.objectContaining({ timeout: "190000" }));
-    expect(request?.[2].timeoutMs).toBe(60000);
+    await run("--timeout", "60000", "--json", ...args);
+    expectBudget(path, 60000);
   });
 
   it("combines browser profile with browser start --headless", async () => {
-    const program = createBrowserManageProgram({ withParentTimeout: true });
-    await program.parseAsync(
-      ["browser", "--timeout", "60000", "--browser-profile", "work", "start", "--headless"],
-      { from: "user" },
-    );
-
-    const startCall = findBrowserManageCall("/start");
-    expect(startCall?.[2].query).toEqual({ profile: "work", headless: "true" });
-    expect(startCall?.[1].timeout).toBe("190000");
-    expect(startCall?.[2].timeoutMs).toBe(60000);
+    await run("--timeout", "60000", "--browser-profile", "work", "start", "--headless");
+    expect(findBrowserManageCall("/start")?.[2].query).toEqual({
+      profile: "work",
+      headless: "true",
+    });
+    expectBudget("/start", 60000);
     expect(findBrowserManageCall("/")?.[2].timeoutMs).toBe(60000);
   });
 
   it.each(fixedBudgetRequests)("honors the authored budget for $args", async ({ args, path }) => {
-    const program = createBrowserManageProgram({ withParentTimeout: true });
-    await program.parseAsync(["browser", "--timeout", "30000", "--json", ...args], {
-      from: "user",
-    });
-
-    const request = findBrowserManageCall(path);
-    expect(request?.[2].timeoutMs).toBe(30000);
-    expect(request?.[1].timeout).toBe("160000");
+    await run("--timeout", "30000", "--json", ...args);
+    expectBudget(path, 30000);
   });
 
   it("rejects invalid authored timeouts before dispatch", async () => {
-    const program = createBrowserManageProgram({ withParentTimeout: true });
-
-    await expect(
-      program.parseAsync(["browser", "tabs", "--timeout", "0"], { from: "user" }),
-    ).rejects.toThrow("--timeout must be a positive integer.");
+    await expect(run("tabs", "--timeout", "0")).rejects.toThrow(
+      "--timeout must be a positive integer.",
+    );
     expect(getBrowserManageGatewayMock()).not.toHaveBeenCalled();
   });
 
@@ -85,16 +79,9 @@ describe("browser manage timeout option", () => {
       .mockResolvedValueOnce({ profiles: [] })
       .mockResolvedValueOnce({ tabs: [] })
       .mockResolvedValueOnce({ format: "aria", nodes: [{}] });
-    const program = createBrowserManageProgram({ withParentTimeout: true });
-    await program.parseAsync(["browser", "--json", "--timeout", "60000", "doctor", "--deep"], {
-      from: "user",
-    });
-
+    await run("--json", "--timeout", "60000", "doctor", "--deep");
     for (const route of ["/doctor", "/profiles", "/tabs", "/snapshot"]) {
-      const request = findBrowserManageCall(route);
-      const timeoutMs = route === "/snapshot" ? 10000 : 60000;
-      expect(request?.[2].timeoutMs).toBe(timeoutMs);
-      expect(request?.[1].timeout).toBe(String(timeoutMs + 130_000));
+      expectBudget(route, route === "/snapshot" ? 10000 : 60000);
     }
     expect(
       getBrowserManageGatewayMock().mock.calls.filter((call) => call[2].path === "/snapshot"),
@@ -102,13 +89,9 @@ describe("browser manage timeout option", () => {
   });
 
   it("honors the authored budget on both stop and its status readback", async () => {
-    const program = createBrowserManageProgram({ withParentTimeout: true });
-    await program.parseAsync(["browser", "--timeout", "60000", "stop"], { from: "user" });
-
+    await run("--timeout", "60000", "stop");
     for (const route of ["/stop", "/"]) {
-      const request = findBrowserManageCall(route);
-      expect(request?.[2].timeoutMs).toBe(60000);
-      expect(request?.[1].timeout).toBe("190000");
+      expectBudget(route, 60000);
     }
   });
 });
