@@ -37,51 +37,42 @@ const request: MemoryWorkspaceWatchRequest = {
 };
 let state: Awaited<ReturnType<typeof createOpenClawTestState>>;
 const peers: { client: MessagePort; server: Promise<void> }[] = [];
+const barriers: Array<ReturnType<typeof createDeferred<void>>> = [];
+function barrier() {
+  const deferred = createDeferred<void>();
+  barriers.push(deferred);
+  return deferred;
+}
 
 function createPeer(signal: AbortSignal) {
   const { port1, port2 } = new MessageChannel();
   const events: LocalWatchEvent[] = [];
-  const pending = new Set<{
-    accepts: (event: LocalWatchEvent) => boolean;
-    resolve: (event: LocalWatchEvent) => void;
-  }>();
-  port1.on("message", (event: LocalWatchEvent) => {
-    events.push(event);
-    for (const waiter of pending) {
-      if (waiter.accepts(event)) {
-        pending.delete(waiter);
-        waiter.resolve(event);
-      }
-    }
-  });
+  port1.on("message", (event: LocalWatchEvent) => events.push(event));
   const server = serveLocalMemoryWatches(port2);
-  let finished = false;
-  void server.then(
-    () => {
-      finished = true;
-    },
-    () => {
-      finished = true;
-    },
-  );
+  const finished = vi.fn();
+  void server.then(finished, finished);
   const peer = {
     client: port1,
     server,
     events,
-    get finished() {
-      return finished;
-    },
+    finished,
     send(command: LocalWatchCommand) {
       port1.postMessage(command);
     },
     waitFor(match: (event: LocalWatchEvent) => boolean, after = 0) {
-      const event = events.slice(after).find(match);
-      if (event) {
-        return Promise.resolve(event);
+      const existing = events.slice(after).find(match);
+      if (existing) {
+        return Promise.resolve(existing);
       }
       return withinTest(
         new Promise<LocalWatchEvent>((resolve) => {
-          pending.add({ accepts: match, resolve });
+          const listener = (event: LocalWatchEvent) => {
+            if (match(event)) {
+              port1.off("message", listener);
+              resolve(event);
+            }
+          };
+          port1.on("message", listener);
         }),
         signal,
       );
@@ -95,6 +86,10 @@ function createPeer(signal: AbortSignal) {
     open(id: number, workspaceDir = state.workspaceDir): Promise<LocalWatchEvent> {
       peer.send({ type: "open", id, workspaceDir, request });
       return peer.event("started", id);
+    },
+    close(id: number) {
+      peer.send({ type: "close", id });
+      return peer.event("closed", id);
     },
   };
   peers.push(peer);
@@ -122,6 +117,9 @@ beforeEach(async () => {
 });
 
 afterEach(async () => {
+  for (const pending of barriers.splice(0)) {
+    pending.resolve();
+  }
   const active = peers.splice(0);
   for (const peer of active) {
     peer.client.close();
@@ -133,36 +131,27 @@ afterEach(async () => {
   await state.cleanup();
 });
 
-it("joins close during discovery without publishing readiness or admitting an observation", async ({
-  signal,
-}) => {
+it("joins discovery close without readiness or observation admission", async ({ signal }) => {
   const entered = createDeferred<void>();
-  const resume = createDeferred<void>();
+  const resume = barrier();
   discovery.pause = () => {
     entered.resolve();
     return resume.promise;
   };
   const peer = createPeer(signal);
-  try {
-    peer.send({ type: "open", id: 1, workspaceDir: state.workspaceDir, request });
-    await withinTest(entered.promise, signal);
-    peer.send({ type: "close", id: 1 });
-    // A later command's response proves the server processed the blocked close.
-    peer.send({ type: "close", id: 2 });
-    await peer.event("closed", 2);
-    expect(peer.events).not.toContainEqual(expect.objectContaining({ type: "closed", id: 1 }));
-    resume.resolve();
-    await peer.event("closed", 1);
-    expect(peer.events).not.toContainEqual(expect.objectContaining({ type: "started", id: 1 }));
-    expect(observer.observations).toHaveLength(0);
-  } finally {
-    resume.resolve();
-  }
+  peer.send({ type: "open", id: 1, workspaceDir: state.workspaceDir, request });
+  await withinTest(entered.promise, signal);
+  peer.send({ type: "close", id: 1 });
+  // A later command's response proves the server processed the blocked close.
+  await peer.close(2);
+  expect(peer.events).not.toContainEqual(expect.objectContaining({ type: "closed", id: 1 }));
+  resume.resolve();
+  await peer.event("closed", 1);
+  expect(peer.events).not.toContainEqual(expect.objectContaining({ type: "started", id: 1 }));
+  expect(observer.observations).toHaveLength(0);
 });
 
-it("keeps a same-owner, same-root peer active after the first subscription closes", async ({
-  signal,
-}) => {
+it("keeps a shared-root peer active after the first subscription closes", async ({ signal }) => {
   const peer = createPeer(signal);
   await expect(peer.open(1)).resolves.toMatchObject({
     facts: { health: [{ state: "ready", mode: "events" }], capacityDegraded: false },
@@ -170,8 +159,7 @@ it("keeps a same-owner, same-root peer active after the first subscription close
   await peer.open(2);
   expect(observer.observations).toHaveLength(1);
   const entry = observer.observations[0]!;
-  peer.send({ type: "close", id: 1 });
-  await peer.event("closed", 1);
+  await peer.close(1);
   expect(entry.close).not.toHaveBeenCalled();
   const after = peer.events.length;
   entry.dirty();
@@ -179,14 +167,11 @@ it("keeps a same-owner, same-root peer active after the first subscription close
   expect(peer.events.slice(after)).not.toContainEqual({ type: "dirty", id: 1 });
   await vi.advanceTimersByTimeAsync(10);
   await peer.event("change", 2, after);
-  peer.send({ type: "close", id: 2 });
-  await peer.event("closed", 2);
+  await peer.close(2);
   expect(entry.close).toHaveBeenCalledOnce();
 });
 
-it("pushes fallback health and sticky capacity exhaustion without a client read", async ({
-  signal,
-}) => {
+it("pushes fallback health and sticky capacity exhaustion", async ({ signal }) => {
   const peer = createPeer(signal);
   await peer.open(1);
   const entry = observer.observations[0]!;
@@ -224,62 +209,51 @@ it("pushes fallback health and sticky capacity exhaustion without a client read"
 });
 
 it("joins native retirement when the client port disappears", async ({ signal }) => {
-  const physical = createDeferred<void>();
+  const physical = barrier();
   observer.closeBarrier = physical.promise;
   const peer = createPeer(signal);
-  try {
-    await peer.open(1);
-    const entry = observer.observations[0]!;
-    const closing = whenClosing(entry);
-    peer.client.close();
-    await withinTest(closing, signal);
-    expect(peer.finished).toBe(false);
-    physical.resolve();
-    await withinTest(peer.server, signal);
-    expect(entry.close).toHaveBeenCalledOnce();
-  } finally {
-    physical.resolve();
-  }
+  await peer.open(1);
+  const entry = observer.observations[0]!;
+  const closing = whenClosing(entry);
+  peer.client.close();
+  await withinTest(closing, signal);
+  expect(peer.finished).not.toHaveBeenCalled();
+  physical.resolve();
+  await withinTest(peer.server, signal);
+  expect(entry.close).toHaveBeenCalledOnce();
 });
 
-it("retains a failed close for shutdown and waits for every other subscription", async ({
-  signal,
-}) => {
-  const failed = createDeferred<void>();
-  const physical = createDeferred<void>();
+it("retains close failures and joins every subscription on shutdown", async ({ signal }) => {
+  const failed = barrier();
+  const physical = barrier();
   const peer = createPeer(signal);
-  try {
-    observer.closeBarrier = failed.promise;
-    await peer.open(1);
-    observer.closeBarrier = physical.promise;
-    const otherWorkspace = state.path("peer", "workspace");
-    await fs.mkdir(path.join(otherWorkspace, "memory"), { recursive: true });
-    await peer.open(2, otherWorkspace);
-    expect(observer.observations).toHaveLength(2);
-    const [first, second] = observer.observations;
-    const firstClosing = whenClosing(first!);
-    const secondClosing = whenClosing(second!);
-    peer.send({ type: "close", id: 1 });
-    await withinTest(firstClosing, signal);
-    failed.reject(new Error("physical teardown failed"));
-    await expect(peer.event("closed", 1)).resolves.toMatchObject({
-      error: "AggregateError: Memory watcher cleanup failed",
-    });
-    peer.send({ type: "shutdown" });
-    await withinTest(secondClosing, signal);
-    expect(peer.finished).toBe(false);
-    expect(peer.events).not.toContainEqual(expect.objectContaining({ type: "shutdown" }));
-    physical.resolve();
-    await expect(peer.event("shutdown")).resolves.toMatchObject({
-      error: "AggregateError: Local Memory watcher retirement failed",
-    });
-    await expect(withinTest(peer.server, signal)).rejects.toThrow(
-      "Local Memory watcher retirement failed",
-    );
-    expect(first!.close).toHaveBeenCalledOnce();
-    expect(second!.close).toHaveBeenCalledOnce();
-  } finally {
-    failed.resolve();
-    physical.resolve();
-  }
+  observer.closeBarrier = failed.promise;
+  await peer.open(1);
+  observer.closeBarrier = physical.promise;
+  const otherWorkspace = state.path("peer", "workspace");
+  await fs.mkdir(path.join(otherWorkspace, "memory"), { recursive: true });
+  await peer.open(2, otherWorkspace);
+  expect(observer.observations).toHaveLength(2);
+  const [first, second] = observer.observations;
+  const firstClosing = whenClosing(first!);
+  const secondClosing = whenClosing(second!);
+  const closed = peer.close(1);
+  await withinTest(firstClosing, signal);
+  failed.reject(new Error("physical teardown failed"));
+  await expect(closed).resolves.toMatchObject({
+    error: "AggregateError: Memory watcher cleanup failed",
+  });
+  peer.send({ type: "shutdown" });
+  await withinTest(secondClosing, signal);
+  expect(peer.finished).not.toHaveBeenCalled();
+  expect(peer.events).not.toContainEqual(expect.objectContaining({ type: "shutdown" }));
+  physical.resolve();
+  await expect(peer.event("shutdown")).resolves.toMatchObject({
+    error: "AggregateError: Local Memory watcher retirement failed",
+  });
+  await expect(withinTest(peer.server, signal)).rejects.toThrow(
+    "Local Memory watcher retirement failed",
+  );
+  expect(first!.close).toHaveBeenCalledOnce();
+  expect(second!.close).toHaveBeenCalledOnce();
 });
