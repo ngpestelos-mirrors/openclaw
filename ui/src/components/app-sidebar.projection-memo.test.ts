@@ -176,7 +176,9 @@ describe("sidebar projection memo", () => {
     const owner = getAppSidebarOwner(sidebar.hostElement)!;
     vi.spyOn(owner, "sidebarSnapshotSettled").mockReturnValue(false);
     const rows = snapshotSessions(
-      [initial, deleted].map((row) => sidebar.getSessionNavigationState().toSidebarSession(row)),
+      [initial, deleted].map((entry) =>
+        sidebar.getSessionNavigationState().toSidebarSession(entry),
+      ),
     );
     owner.restoreSidebarSnapshot({
       ...sidebarBootSnapshot(captureBootRoster(sessions.sessions.state)),
