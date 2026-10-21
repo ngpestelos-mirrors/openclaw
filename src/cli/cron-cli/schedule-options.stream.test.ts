@@ -39,17 +39,14 @@ describe("resolveCronCreateScheduleFromArgs --stream-command", () => {
     });
   });
 
-  it("requires a valid argv array and match expression when requested", () => {
-    expect(() => createSchedule({ streamCommand: "node events.mjs" })).toThrow("JSON array");
-    expect(() => createSchedule({ streamCommand, streamMode: "match" })).toThrow(
-      "--stream-match is required",
-    );
-  });
-
-  it("rejects stream-only options without a stream command", () => {
-    expect(() => createSchedule({ every: "1m", streamBatchMs: "250" })).toThrow(
-      "require --stream-command",
-    );
+  it.each([
+    [createSchedule, { streamCommand: "node events.mjs" }, "JSON array"],
+    [createSchedule, { streamCommand, streamMode: "match" }, "--stream-match is required"],
+    [createSchedule, { every: "1m", streamBatchMs: "250" }, "require --stream-command"],
+    [editSchedule, { streamBatchMs: "100", tz: "UTC" }, "not valid with stream schedule edits"],
+    [editSchedule, { streamMode: "line", exact: true }, "not valid with stream schedule edits"],
+  ] as const)("rejects invalid schedule options %#", (resolve, options, message) => {
+    expect(() => resolve(options)).toThrow(message);
   });
 
   it("patches an existing stream back to line mode without restating argv", () => {
@@ -74,14 +71,5 @@ describe("resolveCronCreateScheduleFromArgs --stream-command", () => {
     });
 
     expect(() => editSchedule({ streamCommand: replacement, streamMode: "match" })).not.toThrow();
-  });
-
-  it("rejects time-schedule modifiers mixed into stream metadata edits", () => {
-    expect(() => editSchedule({ streamBatchMs: "100", tz: "UTC" })).toThrow(
-      "not valid with stream schedule edits",
-    );
-    expect(() => editSchedule({ streamMode: "line", exact: true })).toThrow(
-      "not valid with stream schedule edits",
-    );
   });
 });
