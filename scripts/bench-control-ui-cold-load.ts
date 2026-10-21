@@ -926,12 +926,18 @@ try {
     }
   }
   async function expandSidebar() {
-    if (!values["sidebar-expanded"]) return;
+    if (!values["sidebar-expanded"]) {
+      return;
+    }
     const expansionSaved = async () => {
       const database = await new Promise<IDBDatabase>((resolve, reject) => {
         const request = indexedDB.open("openclaw-chat-snapshots");
-        request.onsuccess = () => resolve(request.result);
-        request.onerror = () => reject(request.error);
+        request.addEventListener("success", () => resolve(request.result), { once: true });
+        request.addEventListener(
+          "error",
+          () => reject(request.error ?? new Error("Could not open sidebar snapshots")),
+          { once: true },
+        );
       });
       try {
         const records = await new Promise<
@@ -943,8 +949,12 @@ try {
             .transaction("sidebarSnapshots")
             .objectStore("sidebarSnapshots")
             .getAll();
-          request.onsuccess = () => resolve(request.result);
-          request.onerror = () => reject(request.error);
+          request.addEventListener("success", () => resolve(request.result), { once: true });
+          request.addEventListener(
+            "error",
+            () => reject(request.error ?? new Error("Could not read sidebar snapshots")),
+            { once: true },
+          );
         });
         const visibleKeys = [
           ...document.querySelectorAll(".sidebar-session-content .sidebar-recent-session"),

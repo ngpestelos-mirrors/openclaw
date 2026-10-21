@@ -426,7 +426,7 @@ describe("sidebar snapshot lifecycle", () => {
     const test = await warmFixture();
     test.foreground.foregroundReady = false;
     test.publish();
-    test.settle();
+    void test.settle();
     test.snapshotOwner.synchronize();
     expect(test.host.sidebarSnapshot).toEqual(model);
     expect(idle).not.toHaveBeenCalled();
@@ -446,7 +446,7 @@ describe("sidebar snapshot lifecycle", () => {
       const test = await warmFixture();
       test.foreground.foregroundReady = false;
       test.publish();
-      test.settle();
+      void test.settle();
       test.snapshotOwner.synchronize();
       await vi.advanceTimersByTimeAsync(1799);
       expect(test.host.sidebarSnapshot).toEqual(model);

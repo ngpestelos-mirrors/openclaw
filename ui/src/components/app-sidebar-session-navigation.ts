@@ -481,8 +481,8 @@ export abstract class AppSidebarSessionNavigationElement extends AppSidebarBase 
         () => personalSidebarZone(this, []),
       );
     }
-    rows ??= this.selectedAgentSessionRows(this.getSessionNavigationState());
-    return personalSidebarZone(this, rows);
+    const liveRows = rows ?? this.selectedAgentSessionRows(this.getSessionNavigationState());
+    return personalSidebarZone(this, liveRows);
   }
 
   /** Explicit personal unpins remove a reference, never shared session metadata. */

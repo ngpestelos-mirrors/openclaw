@@ -285,10 +285,10 @@ function installColdLoadProbes(
     capture(host: WeakKey, owner: unknown) {
       if (sidebarRegistration.matches(host, owner) && owner !== solidSidebarOwner) {
         solidSidebarOwner = owner;
-        const release = owner.releaseSidebarSnapshot;
-        owner.releaseSidebarSnapshot = function () {
+        const release = owner.releaseSidebarSnapshot.bind(owner);
+        owner.releaseSidebarSnapshot = () => {
           const atMs = performance.now();
-          release.call(this);
+          release();
           const handoff: { atMs: number; durationMs: number; frameMs?: number } = {
             atMs,
             durationMs: performance.now() - atMs,
@@ -402,6 +402,7 @@ function installColdLoadProbes(
         if (!(event instanceof MessageEvent) || typeof event.data !== "string") {
           return dispatch(event);
         }
+        let deliveredEvent = event;
         const frame = JSON.parse(event.data);
         const responseBytes = new TextEncoder().encode(event.data).length;
         const liveEvent = eventStream.emitting;
@@ -419,7 +420,7 @@ function installColdLoadProbes(
             frame.payload.snapshot.presence = presence.filter(
               (entry) => entry.instanceId !== instanceId,
             );
-            event = new MessageEvent("message", { data: JSON.stringify(frame) });
+            deliveredEvent = new MessageEvent("message", { data: JSON.stringify(frame) });
           }
         }
         const query = queuedRequest?.params;
@@ -475,7 +476,7 @@ function installColdLoadProbes(
             if (responseMark) {
               performance.mark(`${responseMark}:start`);
             }
-            frameProbe.withDelivery(delivery, () => dispatch(event));
+            frameProbe.withDelivery(delivery, () => dispatch(deliveredEvent));
             if (request) {
               rpcs[rpcIndex]!.dispatchMs = performance.now() - dispatchStarted;
               performance.mark(`${responseMark}:end`);
