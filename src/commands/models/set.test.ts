@@ -45,9 +45,9 @@ vi.mock("../runtime-plugin-install.js", () => ({
 
 import { modelsSetCommand } from "./set.js";
 
-function configWithModels(
-  models: NonNullable<NonNullable<OpenClawConfig["agents"]>["defaults"]>["models"],
-): OpenClawConfig {
+type ModelEntries = NonNullable<NonNullable<OpenClawConfig["agents"]>["defaults"]>["models"];
+
+function configWithModels(models: ModelEntries): OpenClawConfig {
   return { agents: { defaults: { models: structuredClone(models) } } };
 }
 
@@ -61,11 +61,7 @@ function mockSnapshot(sourceConfig: OpenClawConfig, runtimeConfig = sourceConfig
   });
 }
 
-async function expectSelection(
-  input: string,
-  primary: string,
-  models: NonNullable<NonNullable<OpenClawConfig["agents"]>["defaults"]>["models"],
-) {
+async function expectSelection(input: string, primary: string, models: ModelEntries) {
   const runtime = createTestRuntime();
   await modelsSetCommand(input, runtime);
   expect(mocks.replaceConfigFile).toHaveBeenCalledOnce();

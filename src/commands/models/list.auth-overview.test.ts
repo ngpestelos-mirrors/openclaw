@@ -1,13 +1,13 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { beforeEach, expect, it, vi } from "vitest";
 import {
   createApiKeyCredential,
-  createAuthProfileStoreFixture,
   createOAuthRefreshCredential,
 } from "../../agents/auth-profiles/credential-fixtures.test-support.js";
 import {
   createConfigResolutionFacts,
   setConfigResolutionFacts,
 } from "../../config/resolution-facts.js";
+import type { ModelProviderConfig } from "../../config/types.models.js";
 import { withEnv } from "../../test-utils/env.js";
 import {
   formatProviderAuthProfileCounts,
@@ -17,183 +17,146 @@ import {
 const persistedStores = vi.hoisted(() => new Map<string, { profiles: Record<string, unknown> }>());
 
 vi.mock("../../agents/auth-profiles/display.js", () => ({
-  resolveAuthProfileDisplayLabel: vi.fn(({ profileId }: { profileId: string }) => profileId),
+  resolveAuthProfileDisplayLabel: ({ profileId }: { profileId: string }) => profileId,
 }));
 
 vi.mock("../../agents/auth-profiles/persisted.js", () => ({
-  loadPersistedAuthProfileStore: vi.fn((agentDir?: string) =>
-    persistedStores.get(agentDir ?? "__main__"),
-  ),
+  loadPersistedAuthProfileStore: (agentDir?: string) => persistedStores.get(agentDir ?? "__main__"),
 }));
 
 vi.mock("../../agents/auth-profiles/paths.js", () => ({
-  resolveAuthStorePathForDisplay: vi.fn((agentDir?: string) =>
+  resolveAuthStorePathForDisplay: (agentDir?: string) =>
     agentDir ? `${agentDir}/auth-profiles.json` : "/tmp/auth-profiles.json",
-  ),
 }));
 
 vi.mock("../../agents/auth-profiles/profiles.js", () => ({
-  listProfilesForProvider: vi.fn(
-    (store: { profiles?: Record<string, { provider?: string }> }, provider: string) =>
-      Object.keys(store.profiles ?? {}).filter(
-        (profileId) => store.profiles?.[profileId]?.provider === provider,
-      ),
-  ),
+  listProfilesForProvider: (store: OverviewParams["store"], provider: string) =>
+    Object.keys(store.profiles).filter((id) => store.profiles[id]?.provider === provider),
 }));
 
 vi.mock("../../agents/auth-profiles/usage.js", () => ({
-  resolveProfileUnusableUntilForDisplay: vi.fn(() => undefined),
+  resolveProfileUnusableUntilForDisplay: () => undefined,
 }));
 
 type OverviewParams = Parameters<typeof resolveProviderAuthOverview>[0];
-function resolveOverview(params: Pick<OverviewParams, "provider"> & Partial<OverviewParams>) {
-  return resolveProviderAuthOverview({
-    cfg: {},
-    store: { version: 1, profiles: {} },
-    modelsPath: "/tmp/models.json",
-    ...params,
-  });
-}
-
-function providerConfig(
+function resolveOverview(
   provider: string,
-  entry: NonNullable<NonNullable<OverviewParams["cfg"]["models"]>["providers"]>[string],
+  profiles: OverviewParams["store"]["profiles"],
+  cfg: OverviewParams["cfg"] = {},
+  agentDir?: string,
 ) {
-  return { models: { providers: { [provider]: entry } } };
-}
-
-function resolveOpenAiOverview(apiKey: string) {
-  return resolveOverview({
-    provider: "openai",
-    cfg: providerConfig("openai", {
-      baseUrl: "https://api.openai.com/v1",
-      api: "openai-completions",
-      apiKey,
-      models: [],
-    }),
+  return resolveProviderAuthOverview({
+    provider,
+    cfg,
+    store: { version: 1, profiles },
+    modelsPath: `${agentDir ?? "/tmp"}/models.json`,
+    agentDir,
   });
 }
 
-describe("resolveProviderAuthOverview", () => {
-  beforeEach(() => {
-    persistedStores.clear();
-  });
+function providerConfig(provider: string, entry: Omit<ModelProviderConfig, "models">) {
+  return { models: { providers: { [provider]: { ...entry, models: [] } } } };
+}
 
-  it("labels token profiles that only have tokenRef", () => {
-    const result = resolveOverview({
+beforeEach(() => persistedStores.clear());
+
+it("labels token profiles that only have tokenRef", () => {
+  const result = resolveOverview("github-copilot", {
+    "github-copilot:default": {
+      type: "token",
       provider: "github-copilot",
-      store: createAuthProfileStoreFixture({
-        "github-copilot:default": {
-          type: "token",
-          provider: "github-copilot",
-          tokenRef: { source: "env", provider: "default", id: "GITHUB_TOKEN" },
-        },
-      }),
-    });
-
-    expect(result.profiles.labels[0]).toContain("token:ref(env:GITHUB_TOKEN)");
+      tokenRef: { source: "env", provider: "default", id: "GITHUB_TOKEN" },
+    },
   });
 
-  it("reports an explicit provider env SecretRef ahead of stored profiles", () => {
-    const cfg = providerConfig("custom", {
-      apiKey: "current-provider-key",
-      baseUrl: "https://models.example/v1",
-      models: [],
-    });
-    setConfigResolutionFacts(
+  expect(result.profiles.labels[0]).toContain("token:ref(env:GITHUB_TOKEN)");
+});
+
+it("reports an explicit provider env SecretRef ahead of stored profiles", () => {
+  const cfg = providerConfig("custom", {
+    apiKey: "current-provider-key",
+    baseUrl: "https://models.example/v1",
+  });
+  const envRefs = new Map([["models.providers.custom.apiKey", "CUSTOM_PROVIDER_KEY"]]);
+  setConfigResolutionFacts(cfg, createConfigResolutionFacts([], new Map(), undefined, envRefs));
+  const result = withEnv({ CUSTOM_PROVIDER_KEY: "current-provider-key" }, () =>
+    resolveOverview(
+      "custom",
+      {
+        "custom:models-json": createApiKeyCredential("custom", "stale-provider-key"),
+      },
       cfg,
-      createConfigResolutionFacts(
-        [],
-        new Map(),
-        undefined,
-        new Map([["models.providers.custom.apiKey", "CUSTOM_PROVIDER_KEY"]]),
-      ),
-    );
-    const result = withEnv({ CUSTOM_PROVIDER_KEY: "current-provider-key" }, () =>
-      resolveOverview({
-        provider: "custom",
-        cfg,
-        store: createAuthProfileStoreFixture({
-          "custom:models-json": createApiKeyCredential("custom", "stale-provider-key"),
-        }),
-      }),
-    );
+    ),
+  );
 
-    expect(result.effective).toEqual({
-      kind: "env",
-      detail: expect.not.stringContaining("current-provider-key"),
-    });
-    expect(result.profiles.count).toBe(1);
+  expect(result.effective).toEqual({
+    kind: "env",
+    detail: expect.not.stringContaining("current-provider-key"),
   });
+  expect(result.profiles.count).toBe(1);
+});
 
-  it.each([
-    ["api-key", "models.json"],
-    [undefined, "profiles"],
-  ] as const)("reports the credential inference selects with auth %s", (auth, kind) => {
-    const result = resolveOverview({
-      provider: "ollama-2",
-      cfg: providerConfig("ollama-2", {
-        baseUrl: "http://127.0.0.1:11434",
-        api: "ollama",
-        ...(auth ? { auth } : {}),
-        apiKey: "configured-key",
-        models: [],
-      }),
-      store: createAuthProfileStoreFixture({
-        "ollama-2:ambient": createApiKeyCredential("ollama-2", "ambient-key"),
-      }),
-    });
+it.each([
+  ["api-key", "models.json"],
+  [undefined, "profiles"],
+] as const)("reports the credential inference selects with auth %s", (auth, kind) => {
+  const result = resolveOverview(
+    "ollama-2",
+    {
+      "ollama-2:ambient": createApiKeyCredential("ollama-2", "ambient-key"),
+    },
+    providerConfig("ollama-2", {
+      baseUrl: "http://127.0.0.1:11434",
+      api: "ollama",
+      ...(auth ? { auth } : {}),
+      apiKey: "configured-key",
+    }),
+  );
 
-    expect(result.effective.kind).toBe(kind);
-  });
+  expect(result.effective.kind).toBe(kind);
+});
 
-  it("reports the main auth store for inherited profiles", () => {
-    persistedStores.set("__main__", { profiles: { "openai:peter@example.test": {} } });
-    const result = resolveOverview({
-      provider: "openai",
-      store: createAuthProfileStoreFixture({
-        "openai:peter@example.test": createOAuthRefreshCredential(),
-      }),
-      modelsPath: "/tmp/openclaw-agent-custom/models.json",
-      agentDir: "/tmp/openclaw-agent-custom",
-    });
+it("reports the main auth store for inherited profiles", () => {
+  const profileId = "openai:peter@example.test";
+  persistedStores.set("__main__", { profiles: { [profileId]: {} } });
+  const result = resolveOverview(
+    "openai",
+    { [profileId]: createOAuthRefreshCredential() },
+    {},
+    "/tmp/openclaw-agent-custom",
+  );
 
-    expect(result.effective).toEqual({
-      kind: "profiles",
-      detail: "/tmp/auth-profiles.json",
-    });
-  });
-
-  it("treats OAuth delegation markers as effective models.json auth", () => {
-    const overview = withEnv({ OPENAI_API_KEY: undefined }, () =>
-      resolveOpenAiOverview("oauth:openai"),
-    );
-
-    expect(overview.effective).toEqual({
-      kind: "models.json",
-      detail: "marker(oauth:openai)",
-    });
-    expect(overview.modelsJson?.value).toBe("marker(oauth:openai)");
-  });
-
-  it("keeps env-var-shaped models.json values masked to avoid accidental plaintext exposure", () => {
-    const overview = withEnv({ OPENAI_API_KEY: undefined }, () =>
-      resolveOpenAiOverview("OPENAI_API_KEY"),
-    );
-
-    expect(overview.effective).toEqual({ kind: "missing", detail: "missing" });
-    expect(overview.modelsJson?.value).not.toContain("marker(");
-    expect(overview.modelsJson?.value).not.toContain("OPENAI_API_KEY");
+  expect(result.effective).toEqual({
+    kind: "profiles",
+    detail: "/tmp/auth-profiles.json",
   });
 });
 
-describe("formatProviderAuthProfileCounts", () => {
-  it("renders the exact count line and survives console secret redaction", async () => {
-    const { redactSensitiveText } = await import("../../logging/redact.js");
-    const line = formatProviderAuthProfileCounts({ count: 2, oauth: 1, token: 1, apiKey: 0 });
-    expect(line).toBe("2 (1 oauth, 1 token, 0 api-key)");
-    // Regression: `token=1, api_key=0)` matched the console redactor's
-    // key=value secret patterns and printed as `token=*** api_key=*** |`.
-    expect(redactSensitiveText(`profiles=${line}`)).toBe(`profiles=${line}`);
-  });
+const marker = "marker(oauth:openai)";
+const masked = expect.not.stringMatching(/marker\(|OPENAI_API_KEY/);
+it.each([
+  ["oauth:openai", { kind: "models.json", detail: marker }, marker],
+  ["OPENAI_API_KEY", { kind: "missing", detail: "missing" }, masked],
+] as const)("displays %s without exposing credentials", (apiKey, effective, value) => {
+  const result = withEnv({ OPENAI_API_KEY: undefined }, () =>
+    resolveOverview(
+      "openai",
+      {},
+      providerConfig("openai", {
+        apiKey,
+        baseUrl: "https://api.openai.com/v1",
+        api: "openai-completions",
+      }),
+    ),
+  );
+  expect(result.effective).toEqual(effective);
+  expect(result.modelsJson).toMatchObject({ value });
+});
+
+it("renders the exact profile count line and survives console secret redaction", async () => {
+  const { redactSensitiveText } = await import("../../logging/redact.js");
+  const line = formatProviderAuthProfileCounts({ count: 2, oauth: 1, token: 1, apiKey: 0 });
+  expect(line).toBe("2 (1 oauth, 1 token, 0 api-key)");
+  // key=value counts used to be mistaken for credentials by the console redactor.
+  expect(redactSensitiveText(`profiles=${line}`)).toBe(`profiles=${line}`);
 });
