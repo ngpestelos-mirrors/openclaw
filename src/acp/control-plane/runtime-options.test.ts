@@ -81,26 +81,20 @@ describe("validateRuntimeOptionPatch", () => {
 });
 
 describe("mergeRuntimeOptions", () => {
-  it("clears backend extras when a patch explicitly clears them", () => {
-    expect(
-      mergeRuntimeOptions({
-        current: {
-          model: "claude-sonnet-4.6",
-          backendExtras: { provider: "anthropic", profile: "work" },
-        },
-        patch: { backendExtras: undefined } as Partial<AcpSessionRuntimeOptions>,
-      }),
-    ).toEqual({ model: "claude-sonnet-4.6" });
-  });
-
-  it("keeps merging backend extras when a patch provides new entries", () => {
-    expect(
-      mergeRuntimeOptions({
-        current: { backendExtras: { provider: "anthropic" } },
-        patch: { backendExtras: { profile: "work" } },
-      }),
-    ).toEqual({ backendExtras: { provider: "anthropic", profile: "work" } });
-  });
+  const current = { model: "claude-sonnet-4.6", backendExtras: { provider: "anthropic" } };
+  it.each([
+    ["clears", undefined, { model: "claude-sonnet-4.6" }],
+    [
+      "merges",
+      { profile: "work" },
+      { model: "claude-sonnet-4.6", backendExtras: { provider: "anthropic", profile: "work" } },
+    ],
+  ] as const)(
+    "%s backend extras without changing the model",
+    (_action, backendExtras, expected) => {
+      expect(mergeRuntimeOptions({ current, patch: { backendExtras } })).toEqual(expected);
+    },
+  );
 });
 
 describe("buildRuntimeConfigOptionPairs timeout advertisement", () => {

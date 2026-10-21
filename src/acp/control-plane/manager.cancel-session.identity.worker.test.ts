@@ -17,8 +17,8 @@ import { stopAcpControllerTurns } from "./manager.controller-test-support.js";
 
 it.each(["owner", "lifecycle"] as const)(
   "preserves successor metadata after %s replacement during cancelled-turn identity reconciliation",
-  async (replacement) => {
-    await withAcpCancellationFixture(async (f) => {
+  (replacement) =>
+    withAcpCancellationFixture(async (f) => {
       const entered = createDeferred();
       const status = createGate("Cancellation ended before final identity observation.");
       let signal: AbortSignal | undefined;
@@ -37,21 +37,14 @@ it.each(["owner", "lifecycle"] as const)(
         }
         return { summary: "ready" };
       });
-      const turn = startTurn(f, "identity-worker", { text: "first" });
-      const turnResult = Promise.allSettled([turn]);
-      await awaitGateBeforeSettlement(
-        entered.promise,
-        turnResult,
-        "Turn ended before runtime entry.",
-      );
+      const turnResult = Promise.allSettled([startTurn(f, "identity-worker", { text: "first" })]);
+      await awaitGateBeforeSettlement(entered.promise, turnResult, "Turn ended before entry.");
       let sql = observeHostDataSql();
-      const cancellation = stopAcpControllerTurns(f.target);
-      const result = Promise.allSettled([cancellation, turn]);
+      const result = Promise.allSettled([stopAcpControllerTurns(f.target), turnResult]);
       try {
         await status.reached(result);
         sql.restore();
         expect(sql.queries).toEqual([]);
-        // The replacement producer uses its existing native API while getStatus is held.
         await replaceSessionEntry(f.target, {
           sessionId: "cancellation-session",
           lifecycleRevision:
@@ -81,8 +74,7 @@ it.each(["owner", "lifecycle"] as const)(
       } finally {
         sql.restore();
         status.open();
-        await Promise.allSettled([result, turnResult]);
+        await result;
       }
-    });
-  },
+    }),
 );
