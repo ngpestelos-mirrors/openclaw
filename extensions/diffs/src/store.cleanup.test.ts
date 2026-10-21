@@ -20,8 +20,11 @@ describe("DiffArtifactStore bulk cleanup", () => {
     await fixture.cleanup();
   });
 
+  const artifactPath = (id: string, ...parts: string[]) => path.join(fixture.rootDir, id, ...parts);
+  const readPreview = (id: string) => fs.readFile(artifactPath(id, "preview.png"), "utf8");
+
   async function file(id: string, old = false) {
-    const directory = path.join(fixture.rootDir, id);
+    const directory = artifactPath(id);
     await fs.mkdir(directory, { recursive: true });
     await fs.writeFile(path.join(directory, "preview.png"), id);
     if (old) {
@@ -51,9 +54,7 @@ describe("DiffArtifactStore bulk cleanup", () => {
         await fixture.store.cleanupExpired();
 
         expect(await fs.readdir(fixture.rootDir)).toEqual([live]);
-        expect(await fs.readFile(path.join(fixture.rootDir, live, "preview.png"), "utf8")).toBe(
-          live,
-        );
+        expect(await readPreview(live)).toBe(live);
         expect((await fixture.blobStore.entries()).map((entry) => entry.key)).toEqual([live]);
       } finally {
         // Also drain the unfixed implementation during the negative control.
@@ -69,7 +70,7 @@ describe("DiffArtifactStore bulk cleanup", () => {
     for (const id of [heldId, failedId]) {
       await file(id, true);
     }
-    const heldDirectory = path.join(fixture.rootDir, heldId);
+    const heldDirectory = artifactPath(heldId);
     const started = createDeferred<void>();
     const release = createDeferred<void>();
     const failure = new Error("fixture Blob lookup failed");
@@ -90,21 +91,17 @@ describe("DiffArtifactStore bulk cleanup", () => {
     });
     const warn = vi.fn();
     const store = new DiffArtifactStore({
-      rootDir: fixture.rootDir,
-      blobStore: fixture.blobStore,
+      ...fixture,
       logger: { info: vi.fn(), warn, error: vi.fn() },
     });
     const joinedSettled = vi.fn<() => void>();
     const stopped = vi.fn<() => void>();
     store.scheduleCleanup();
     const stopping = store.stopCleanup().then(stopped);
-    const joined = store.cleanupExpired().then(
-      () => joinedSettled(),
-      (error: unknown) => {
-        joinedSettled();
-        return error;
-      },
-    );
+    const joined = store
+      .cleanupExpired()
+      .catch((error: unknown) => error)
+      .finally(joinedSettled);
     try {
       await started.promise;
       await new Promise<void>((resolve) => {
@@ -118,9 +115,7 @@ describe("DiffArtifactStore bulk cleanup", () => {
       await stopping;
       expect(warn).toHaveBeenCalledWith(expect.stringContaining(failure.message));
       await expect(fs.stat(heldDirectory)).rejects.toMatchObject({ code: "ENOENT" });
-      expect(await fs.readFile(path.join(fixture.rootDir, failedId, "preview.png"), "utf8")).toBe(
-        failedId,
-      );
+      expect(await readPreview(failedId)).toBe(failedId);
     } finally {
       release.resolve();
       await Promise.allSettled([joined, stopping]);
