@@ -78,7 +78,7 @@ export function ChatGPTUsageLimit(props: { presented: boolean; kind: "business" 
                 class="btn primary chatgpt-usage-limit__action"
                 type="button"
                 disabled={copying()}
-                onClick={copy}
+                onClick={() => void copy()}
               >
                 {t("chat.usageLimit.copy")}
               </button>
