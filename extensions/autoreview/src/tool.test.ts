@@ -8,6 +8,33 @@ import { createAutoReviewTool } from "./tool.js";
 type Host = Parameters<typeof createAutoReviewTool>[0];
 type Command = Host["runtime"]["system"]["runCommandWithTimeout"];
 const params = { mode: "local" as const };
+const report = {
+  findings: [{ title: "[P2] Keep the threshold inclusive" }],
+  verdict: "request_changes",
+};
+const emptyTools = { allow: [], alsoAllow: [] };
+const restrictedTools = (provider: string) => ({
+  ...emptyTools,
+  byProvider: { [provider]: emptyTools },
+  sandbox: { tools: emptyTools },
+});
+const scope = (signal: AbortSignal, model = "fixture/preferred") => ({
+  model,
+  agentId: "caller",
+  signal,
+  assertCurrent: () => signal.throwIfAborted(),
+});
+const rootTools = {
+  allow: ["exec"],
+  byProvider: { FIXTURE: { alsoAllow: ["process"] } },
+  sandbox: { tools: { allow: ["read"] } },
+};
+const callerTools = {
+  alsoAllow: ["autoreview"],
+  byProvider: { "Fixture/Preferred": { allow: ["write"] } },
+  sandbox: { tools: { alsoAllow: ["process"] } },
+  codeMode: { enabled: true },
+};
 
 function fixture(
   overrides: {
@@ -41,11 +68,7 @@ function fixture(
     engine_timeout_seconds: null,
     ...overrides.extraRequestFields,
   };
-  const report = JSON.stringify({
-    findings: [{ title: "[P2] Keep the threshold inclusive" }],
-    verdict: "request_changes",
-  });
-  let finish: ((value: { code: number; stdout: string; stderr: string }) => void) | undefined;
+  const helper = Promise.withResolvers<{ code: number; stdout: string; stderr: string }>();
   let response:
     | { pass: number; status: string; output: string | null; model: string | null }
     | undefined;
@@ -81,39 +104,16 @@ function fixture(
     signal,
   ) => {
     admitted(selection);
-    const result = await action({
-      model: selection.model ?? "fixture/default",
-      agentId: "caller",
-      signal: signal ?? new AbortController().signal,
-      assertCurrent() {
-        signal?.throwIfAborted();
-      },
-    });
+    const result = await action(
+      scope(signal ?? new AbortController().signal, selection.model ?? "fixture/default"),
+    );
     signal?.throwIfAborted();
     return result;
   };
   const context: OpenClawPluginToolContext<2> = {
     assertInvocationCurrent() {},
     assertCompleteResult() {},
-    runtimeConfig: {
-      tools: {
-        allow: ["exec"],
-        byProvider: { FIXTURE: { alsoAllow: ["process"] } },
-        sandbox: { tools: { allow: ["read"] } },
-      },
-      agents: {
-        entries: {
-          caller: {
-            tools: {
-              alsoAllow: ["autoreview"],
-              byProvider: { "Fixture/Preferred": { allow: ["write"] } },
-              sandbox: { tools: { alsoAllow: ["process"] } },
-              codeMode: { enabled: true },
-            },
-          },
-        },
-      },
-    },
+    runtimeConfig: { tools: rootTools, agents: { entries: { caller: { tools: callerTools } } } },
     modelExecution: { cliEntryPath: "/host/openclaw/openclaw.mjs", run },
     sandbox: {
       workspaceDir: "/guest/current-repo",
@@ -121,23 +121,21 @@ function fixture(
       async run({ argv, input, signal }) {
         if (argv.includes("--native-handoff")) {
           helperArgv = argv;
-          return new Promise((resolve, reject) => {
-            finish = resolve;
-            signal?.addEventListener(
-              "abort",
-              () => reject(new DOMException("Cancelled", "AbortError")),
-              { once: true },
-            );
-          });
+          signal?.addEventListener(
+            "abort",
+            () => helper.reject(new DOMException("Cancelled", "AbortError")),
+            { once: true },
+          );
+          return helper.promise;
         }
         if (argv.includes("--native-submit")) {
           response = JSON.parse(input!);
           if (response?.status !== "done" || response.pass === request.passes) {
-            finish?.({
+            helper.resolve({
               code: response?.status === "done" ? 1 : 2,
               stdout: JSON.stringify({
                 code: 1,
-                report: overrides.helperFailure ? null : JSON.parse(report),
+                report: overrides.helperFailure ? null : report,
                 status: overrides.helperFailure
                   ? null
                   : { report_produced: true, effective_models: [reviewModel] },
@@ -160,20 +158,21 @@ function fixture(
     },
   };
   const host: Host = { runtime: { system: { runCommandWithTimeout: command } } };
+  const tool = createAutoReviewTool(host, context)!;
   return {
     host,
     context,
     command,
     admitted,
-    tool: createAutoReviewTool(host, context)!,
+    execute: (input: Parameters<typeof tool.execute>[1] = params, signal?: AbortSignal) =>
+      tool.execute("review", input, signal),
     response: () => response,
     cwd: () => cwd,
     helperArgv: () => helperArgv,
-    report,
   };
 }
 
-it("uses canonical settings for an ordinary target-only call and transfers complete output", async () => {
+it("uses canonical settings and transfers complete output", async () => {
   const output = JSON.stringify({
     ok: true,
     status: "ok",
@@ -190,12 +189,12 @@ it("uses canonical settings for an ordinary target-only call and transfers compl
       agent_override: { skills: ["private-host-skill"] },
     },
   });
-  const result = await test.tool.execute("review", params);
+  const result = await test.execute();
   expect(result.content).toEqual([
     {
       type: "text",
       text: JSON.stringify({
-        report: JSON.parse(test.report),
+        report,
         status: { report_produced: true, effective_models: ["fixture/preferred"] },
       }),
     },
@@ -215,10 +214,7 @@ it("uses canonical settings for an ordinary target-only call and transfers compl
   expect(overrides).toEqual([
     {
       tools: {
-        allow: [],
-        alsoAllow: [],
-        byProvider: { FIXTURE: { allow: [], alsoAllow: [] } },
-        sandbox: { tools: { allow: [], alsoAllow: [] } },
+        ...restrictedTools("FIXTURE"),
         deny: ["*"],
         toolSearch: false,
         codeMode: { enabled: false },
@@ -231,12 +227,7 @@ it("uses canonical settings for an ordinary target-only call and transfers compl
             contextInjection: "never",
             nativeRuntimeConsent: [],
             model: { primary: "fixture/preferred", fallbacks: [] },
-            tools: {
-              allow: [],
-              alsoAllow: [],
-              byProvider: { "Fixture/Preferred": { allow: [], alsoAllow: [] } },
-              sandbox: { tools: { allow: [], alsoAllow: [] } },
-            },
+            tools: restrictedTools("Fixture/Preferred"),
           },
         },
       },
@@ -246,9 +237,9 @@ it("uses canonical settings for an ordinary target-only call and transfers compl
   await expect(fs.stat(path.dirname(test.cwd()!))).rejects.toMatchObject({ code: "ENOENT" });
 });
 
-it("picks up changed helper defaults and forwards only requested overrides", async () => {
+it("uses changed defaults and forwards requested overrides", async () => {
   const test = fixture({ settingsModel: "fixture/new-default", settingsThinking: "high" });
-  await test.tool.execute("review", {
+  await test.execute({
     ...params,
     maxPriority: "P2",
     passes: 12,
@@ -258,45 +249,42 @@ it("picks up changed helper defaults and forwards only requested overrides", asy
     model: "fixture/new-default",
     explicit: false,
   });
-  expect(test.helperArgv()).toEqual(
-    expect.arrayContaining([
-      "--max-priority",
-      "P2",
-      "--max-review-passes",
-      "12",
-      "--engine-timeout-seconds",
-      "900",
-    ]),
-  );
+  for (const pair of [
+    ["--max-priority", "P2"],
+    ["--max-review-passes", "12"],
+    ["--engine-timeout-seconds", "900"],
+  ]) {
+    expect(test.helperArgv()).toEqual(expect.arrayContaining(pair));
+  }
   expect(test.command.mock.calls[0]![0]).toEqual(expect.arrayContaining(["--thinking", "high"]));
 });
 
 it.each([{ model: "fixture/substituted" }, { passes: 3 }])(
-  "rejects a later request that changes the bound plan: %j",
+  "rejects a substituted later plan: %j",
   async (secondPass) => {
     const test = fixture({ passes: 2, secondPass });
-    await expect(test.tool.execute("review", params)).rejects.toThrow("substituted prepared pass");
+    await expect(test.execute()).rejects.toThrow("substituted prepared pass");
     expect(test.command).toHaveBeenCalledOnce();
   },
 );
 
-it("rejects an old helper or a substituted explicit model before execution", async () => {
+it("rejects old helpers and substituted explicit models", async () => {
   const old = fixture({ extraRequestFields: { admitted_model: undefined } });
-  await expect(old.tool.execute("review", params)).rejects.toThrow("update the Auto Review skill");
+  await expect(old.execute()).rejects.toThrow("update the Auto Review skill");
   expect(old.command).not.toHaveBeenCalled();
   const changed = fixture({ model: "fixture/substituted" });
-  await expect(
-    changed.tool.execute("review", { ...params, model: "fixture/preferred" }),
-  ).rejects.toThrow("substituted prepared pass");
+  await expect(changed.execute({ ...params, model: "fixture/preferred" })).rejects.toThrow(
+    "substituted prepared pass",
+  );
   expect(changed.command).not.toHaveBeenCalled();
 });
 
-it("submits a failed CLI result as failure with bounded redacted diagnostics", async () => {
+it("reports CLI failures with bounded redacted diagnostics", async () => {
   const test = fixture({
     exitCode: 1,
     stderr: `${"x".repeat(5000)}\nAuthorization: Bearer unrelated-fake-secret-token`,
   });
-  const failure = await test.tool.execute("review", params).catch((error: unknown) => error);
+  const failure = await test.execute().catch((error: unknown) => error);
   if (!(failure instanceof Error)) {
     throw new Error("Expected reviewer failure");
   }
@@ -308,15 +296,13 @@ it("submits a failed CLI result as failure with bounded redacted diagnostics", a
   expect(test.command).toHaveBeenCalledOnce();
 });
 
-it("preserves the canonical diagnostic when no report is produced", async () => {
+it("preserves helper diagnostics without a report", async () => {
   const diagnostic =
     "source changed after the review bundle was created; rerun autoreview against the updated tree";
-  await expect(
-    fixture({ helperFailure: diagnostic }).tool.execute("review", params),
-  ).rejects.toThrow(diagnostic);
+  await expect(fixture({ helperFailure: diagnostic }).execute()).rejects.toThrow(diagnostic);
 });
 
-it("withholds the tool without protected installation or current authority", () => {
+it("requires protected installation and model authority", () => {
   const test = fixture();
   expect(
     createAutoReviewTool(test.host, {
@@ -333,7 +319,7 @@ it.each([{ passes: 0 }, { timeoutSeconds: 0 }, { openclawBin: "/untrusted" }])(
   "rejects invalid arguments before execution: %j",
   async (override) => {
     const test = fixture();
-    await expect(test.tool.execute("review", { ...params, ...override })).rejects.toThrow(
+    await expect(test.execute({ ...params, ...override })).rejects.toThrow(
       "Invalid Auto Review arguments",
     );
     expect(test.command).not.toHaveBeenCalled();
@@ -347,7 +333,7 @@ it.each([null, 900.25])(
       passes: 2,
       extraRequestFields: { engine_timeout_seconds: timeoutSeconds },
     });
-    await test.tool.execute("review", params);
+    await test.execute();
     expect(test.command).toHaveBeenCalledTimes(2);
     for (const [argv, options] of test.command.mock.calls) {
       if (timeoutSeconds === null) {
@@ -361,7 +347,7 @@ it.each([null, 900.25])(
   },
 );
 
-it("reports an owned reviewer timeout as failure rather than a completed review", async () => {
+it("reports reviewer timeouts as failures", async () => {
   const test = fixture();
   const run = test.command.getMockImplementation()!;
   test.command.mockImplementation(async (...args) => ({
@@ -370,9 +356,7 @@ it("reports an owned reviewer timeout as failure rather than a completed review"
     killed: true,
     termination: "timeout",
   }));
-  await expect(test.tool.execute("review", params)).rejects.toThrow(
-    "Reviewer command failed (exit none, timeout",
-  );
+  await expect(test.execute()).rejects.toThrow("Reviewer command failed (exit none, timeout");
   expect(test.response()).toMatchObject({ status: "failed", output: null });
   expect(test.command).toHaveBeenCalledOnce();
 });
@@ -389,12 +373,7 @@ it.each(["caller", "model authority"])(
     let cwd: string | undefined;
     if (owner === "model authority") {
       test.context.modelExecution!.run = async (_selection, action) =>
-        await action({
-          agentId: "caller",
-          model: "fixture/preferred",
-          signal: model.signal,
-          assertCurrent: () => model.signal.throwIfAborted(),
-        });
+        await action(scope(model.signal));
     }
     test.command.mockImplementation(async (_argv, options) => {
       if (typeof options === "number") {
@@ -409,7 +388,7 @@ it.each(["caller", "model authority"])(
       });
       return await cancelled.promise;
     });
-    const result = test.tool.execute("review", params, caller.signal);
+    const result = test.execute(params, caller.signal);
     const rejected = expect(result).rejects.toThrow("Review cancelled");
     await started.promise;
     (owner === "caller" ? caller : model).abort(cancellation);
