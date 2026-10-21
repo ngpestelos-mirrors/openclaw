@@ -63,7 +63,7 @@ describe("WhatsApp QA scenario environment", () => {
         return { config: { messages: baseMessages }, hash: "config-hash" };
       }
       if (method === "config.patch") {
-        const { raw } = _params as { raw: string };
+        const { raw, replacePaths } = _params as { raw: string; replacePaths: string[] };
         const cfg = JSON.parse(raw) as OpenClawConfig;
         const validation = validateJsonSchemaValue({
           schema: WhatsAppChannelConfigSchema.schema,
@@ -80,6 +80,8 @@ describe("WhatsApp QA scenario environment", () => {
               }
             : baseMessages,
         );
+        expect(replacePaths).toContain("channels.whatsapp.accounts.work.allowFrom");
+        expect(replacePaths).not.toContain("channels.whatsapp.accounts.sut.allowFrom");
         return { noop: true };
       }
       if (method === "channels.status") {
@@ -102,27 +104,14 @@ describe("WhatsApp QA scenario environment", () => {
     });
     await prepareWhatsAppFlowFixture(id, gatewayCall);
 
-    const patchCall = gatewayCall.mock.calls.find(([method]) => method === "config.patch");
-    if (!patchCall) {
-      throw new Error("config.patch was not called");
-    }
-    expect(patchCall[1]).toMatchObject({
-      replacePaths: expect.arrayContaining(["channels.whatsapp.accounts.work.allowFrom"]),
-    });
-    expect((patchCall[1] as { replacePaths?: string[] }).replacePaths).not.toContain(
-      "channels.whatsapp.accounts.sut.allowFrom",
-    );
+    expect(gatewayCall.mock.calls.map(([method]) => method)).toContain("config.patch");
   });
 
   it("leaves generic declarative flows to their own config preparation", async () => {
     const gatewayCall = vi.fn();
-    const prepared = await prepareWhatsAppFlowFixture(
-      "whatsapp-access-control-dm-disabled",
-      gatewayCall,
-    );
-    expect(prepared.whatsappScenarioContext.scenario.id).toBe(
-      "whatsapp-access-control-dm-disabled",
-    );
+    const id = "whatsapp-access-control-dm-disabled";
+    const prepared = await prepareWhatsAppFlowFixture(id, gatewayCall);
+    expect(prepared.whatsappScenarioContext.scenario.id).toBe(id);
     expect(gatewayCall).not.toHaveBeenCalled();
   });
 });

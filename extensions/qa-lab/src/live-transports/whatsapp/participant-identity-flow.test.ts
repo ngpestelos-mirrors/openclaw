@@ -1,4 +1,5 @@
-import { describe, expect, it } from "vitest";
+import assert from "node:assert/strict";
+import { expect, it } from "vitest";
 import { createQaBusState } from "../../bus-state.js";
 import { readQaScenarioById } from "../../scenario-catalog.js";
 import { runLoadedScenarioFlow } from "../../scenario-flow-runner.test-support.js";
@@ -38,9 +39,7 @@ async function runIdentityFlow(failure?: Failure) {
           state.addInboundMessage({ ...input, senderId: driverPhone }),
         waitForOutbound: async () => {
           const inbound = state.getSnapshot().messages.at(-1);
-          if (!inbound || inbound.direction !== "inbound") {
-            throw new Error("identity proof must send a transport turn before inspecting it");
-          }
+          assert(inbound?.direction === "inbound", "Expected an inbound turn before inspection");
           const isGroup = inbound.conversation.kind === "group";
           expect(inbound.text.startsWith("openclawqa ")).toBe(isGroup);
           admittedRuns.push(isGroup ? "group-run" : "dm-run");
@@ -48,9 +47,7 @@ async function runIdentityFlow(failure?: Failure) {
             admittedRuns.push("unrelated-new-run");
           }
           const marker = inbound.text.split("Reply exactly: ")[1];
-          if (!marker) {
-            throw new Error("identity proof must request an exact reply marker");
-          }
+          assert(marker, "Missing exact reply marker");
           return state.addOutboundMessage({
             accountId: "sut",
             to: `${isGroup ? "group" : "dm"}:${inbound.conversation.id}`,
@@ -81,9 +78,7 @@ async function runIdentityFlow(failure?: Failure) {
         }
         const exact = args.includes("--execution");
         const selector = args[args.indexOf(exact ? "--execution" : "--run") + 1];
-        if (!selector) {
-          throw new Error("identity proof must select a run or execution");
-        }
+        assert(selector, "Missing run or execution selector");
         const runId = exact ? selector.replace("execution-", "") : selector;
         expect(admittedRuns).toContain(runId);
         expect(runId).not.toBe("previous-run");
@@ -96,30 +91,26 @@ async function runIdentityFlow(failure?: Failure) {
             : "Invoker [present]\nDecisions";
         }
         const isGroup = runId === "group-run";
-        return {
-          identity: {
-            state: "present",
-            context: {
-              contextId: `context-${runId}`,
-              executionId:
-                failure === "wrong-execution" && exact
-                  ? "unrelated-execution"
-                  : `execution-${runId}`,
-              runId: failure === "wrong-run" ? "unrelated-run" : runId,
-              invoker: {
-                state: failure === "unknown-person" ? "unknown" : "present",
-                principal: {
-                  kind: failure === "room-principal" ? "service" : "person",
-                  principalRef:
-                    (failure === "different-person" && isGroup) ||
-                    (failure === "changed-after-restart" && restarted)
-                      ? "principal:other-person"
-                      : "principal:driver",
-                },
-              },
-              ingress: { kind: "channel", state: "present" },
+        const context = {
+          contextId: `context-${runId}`,
+          executionId:
+            failure === "wrong-execution" && exact ? "unrelated-execution" : `execution-${runId}`,
+          runId: failure === "wrong-run" ? "unrelated-run" : runId,
+          invoker: {
+            state: failure === "unknown-person" ? "unknown" : "present",
+            principal: {
+              kind: failure === "room-principal" ? "service" : "person",
+              principalRef:
+                (failure === "different-person" && isGroup) ||
+                (failure === "changed-after-restart" && restarted)
+                  ? "principal:other-person"
+                  : "principal:driver",
             },
           },
+          ingress: { kind: "channel", state: "present" },
+        };
+        return {
+          identity: { state: "present", context },
           decisionDisplays: [
             {
               action: { family: "decision", operation: "record" },
@@ -137,25 +128,23 @@ async function runIdentityFlow(failure?: Failure) {
   return { result, inspectedExecutions, restarted };
 }
 
-describe("WhatsApp participant identity executable flow", () => {
-  it("selects the real transport lane and inspects both executions across restart", async () => {
-    const scenario = readQaScenarioById(scenarioId);
-    expect(scenario.execution).toMatchObject({
-      kind: "flow",
-      channel: "whatsapp",
-      suiteIsolation: "isolated",
-      config: { requiredChannelDriver: "live", requiredProviderMode: "mock-openai" },
-    });
-    expect(scenario.gatewayConfigPatch).toMatchObject({
-      logging: { audit: { executionIdentity: true } },
-    });
-    const proof = await runIdentityFlow();
-    expect(proof.result.status).toBe("pass");
-    expect(proof.inspectedExecutions).toEqual(new Set(["execution-dm-run", "execution-group-run"]));
-    expect(proof.restarted).toBe(true);
+it("selects the real transport lane and inspects both executions across restart", async () => {
+  const scenario = readQaScenarioById(scenarioId);
+  expect(scenario.execution).toMatchObject({
+    kind: "flow",
+    channel: "whatsapp",
+    suiteIsolation: "isolated",
+    config: { requiredChannelDriver: "live", requiredProviderMode: "mock-openai" },
   });
+  expect(scenario.gatewayConfigPatch).toMatchObject({
+    logging: { audit: { executionIdentity: true } },
+  });
+  const proof = await runIdentityFlow();
+  expect(proof.result.status).toBe("pass");
+  expect(proof.inspectedExecutions).toEqual(new Set(["execution-dm-run", "execution-group-run"]));
+  expect(proof.restarted).toBe(true);
+});
 
-  it.each(invalidEvidence)("rejects %s evidence", async (failure, error) => {
-    await expect(runIdentityFlow(failure)).rejects.toThrow(error);
-  });
+it.each(invalidEvidence)("rejects %s evidence", async (failure, error) => {
+  await expect(runIdentityFlow(failure)).rejects.toThrow(error);
 });
