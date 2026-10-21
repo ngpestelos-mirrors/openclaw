@@ -21,13 +21,7 @@ export function registerStatusTimeoutTests(params: {
   auditGatewayServiceConfig: Mock<(opts?: unknown) => Promise<ServiceConfigAudit>>;
   makeTempDir: () => string;
 }): void {
-  const {
-    gatherStatus,
-    serviceIsLoaded,
-    serviceReadRuntime,
-    serviceReadCommand,
-    auditGatewayServiceConfig,
-  } = params;
+  const { gatherStatus, serviceReadRuntime } = params;
 
   it.each([undefined, "10000"])(
     "keeps the Windows native budget independent of RPC for timeout %s",
@@ -68,27 +62,14 @@ export function registerStatusTimeoutTests(params: {
             };
           });
         serviceReadRuntime.mockImplementationOnce((env, options) =>
-          readScheduledTaskRuntime(
-            {
-              ...env,
-              OPENCLAW_STATE_DIR: stateDir,
-            },
-            options,
-          ),
+          readScheduledTaskRuntime({ ...env, OPENCLAW_STATE_DIR: stateDir }, options),
         );
         try {
           const status = await gatherStatus({ rpc: { timeout } });
           expect(status.rpc?.ok).toBe(true);
-          expect(callGatewayStatusProbe).toHaveBeenCalledWith(
-            expect.objectContaining({
-              timeoutMs: timeout === undefined ? 10_000 : Number(timeout),
-            }),
-          );
-          expect(auditGatewayServiceConfig).toHaveBeenCalledWith(
-            expect.objectContaining({
-              timeoutMs: timeout === undefined ? 10_000 : Number(timeout),
-            }),
-          );
+          const rpcBudget = expect.objectContaining({ timeoutMs: 10_000 });
+          expect(callGatewayStatusProbe).toHaveBeenCalledWith(rpcBudget);
+          expect(params.auditGatewayServiceConfig).toHaveBeenCalledWith(rpcBudget);
           if (timeout === "10000") {
             expect(status.service.runtime).toMatchObject({
               status: "unknown",
@@ -112,16 +93,12 @@ export function registerStatusTimeoutTests(params: {
       }),
   );
 
-  it.each(["bogus"])(
-    "rejects invalid status timeout %s before reading service state",
-    async (timeout) => {
-      await expect(gatherStatus({ rpc: { timeout } })).rejects.toThrow(
-        `Invalid --timeout. Use a positive millisecond value, e.g. --timeout 30000. Received: "${timeout}".`,
-      );
-
-      expect(serviceReadCommand).not.toHaveBeenCalled();
-      expect(serviceIsLoaded).not.toHaveBeenCalled();
-      expect(serviceReadRuntime).not.toHaveBeenCalled();
-    },
-  );
+  it("rejects invalid status timeout before reading service state", async () => {
+    await expect(gatherStatus({ rpc: { timeout: "bogus" } })).rejects.toThrow(
+      'Invalid --timeout. Use a positive millisecond value, e.g. --timeout 30000. Received: "bogus".',
+    );
+    expect(params.serviceReadCommand).not.toHaveBeenCalled();
+    expect(params.serviceIsLoaded).not.toHaveBeenCalled();
+    expect(serviceReadRuntime).not.toHaveBeenCalled();
+  });
 }

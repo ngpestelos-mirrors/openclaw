@@ -1,4 +1,3 @@
-// Daemon status tests cover service status gathering and CLI responses.
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { fetchNpmPackageTargetStatus } from "../../infra/update-check-package-target.js";
 import { createCliRuntimeCapture } from "../test-runtime-capture.js";
@@ -64,6 +63,21 @@ vi.mock("./status.projection.js", () => ({
 }));
 
 const { runDaemonStatus } = await import("./status.js");
+
+async function expectJsonFailure(
+  options: Partial<Parameters<typeof runDaemonStatus>[0]>,
+  message: string | ReturnType<typeof expect.stringContaining>,
+) {
+  await expect(runDaemonStatus({ ...statusOptions, ...options, json: true })).rejects.toThrow(
+    "__exit__:1",
+  );
+  expect(defaultRuntime.writeJson).toHaveBeenCalledWith({
+    ok: false,
+    error: { type: "cli_error", message },
+  });
+  expect(defaultRuntime.error).not.toHaveBeenCalled();
+  expect(defaultRuntime.exit).toHaveBeenCalledTimes(1);
+}
 
 describe("runDaemonStatus", () => {
   beforeEach(() => {
@@ -134,38 +148,19 @@ describe("runDaemonStatus", () => {
     expect(defaultRuntime.exit).not.toHaveBeenCalled();
   });
 
-  it("renders disabled-probe validation failures as JSON in JSON mode", async () => {
-    await expect(
-      runDaemonStatus({ ...statusOptions, probe: false, requireRpc: true, json: true }),
-    ).rejects.toThrow("__exit__:1");
-
+  it.each([
+    {
+      options: { probe: false },
+      message: "--require-rpc needs checking enabled. Remove --no-probe or drop --require-rpc.",
+    },
+    {
+      options: { runtimeIntentOnly: true },
+      message: "--runtime-intent-only cannot be combined with --require-rpc.",
+    },
+  ])("rejects invalid RPC options: $message", async ({ options, message }) => {
+    await expectJsonFailure({ ...options, requireRpc: true }, `Gateway status failed: ${message}`);
     expect(gatherDaemonStatus).not.toHaveBeenCalled();
-    expect(defaultRuntime.writeJson).toHaveBeenCalledWith({
-      ok: false,
-      error: {
-        type: "cli_error",
-        message:
-          "Gateway status failed: --require-rpc needs checking enabled. Remove --no-probe or drop --require-rpc.",
-      },
-    });
-    expect(defaultRuntime.error).not.toHaveBeenCalled();
-    expect(defaultRuntime.exit).toHaveBeenCalledTimes(1);
-  });
-
-  it("rejects an RPC requirement for local-only runtime inspection", async () => {
-    await expect(
-      runDaemonStatus({ ...statusOptions, runtimeIntentOnly: true, requireRpc: true, json: true }),
-    ).rejects.toThrow("__exit__:1");
     expect(readDaemonServiceStatus).not.toHaveBeenCalled();
-    expect(gatherDaemonStatus).not.toHaveBeenCalled();
-    expect(defaultRuntime.writeJson).toHaveBeenCalledWith({
-      ok: false,
-      error: {
-        type: "cli_error",
-        message:
-          "Gateway status failed: --runtime-intent-only cannot be combined with --require-rpc.",
-      },
-    });
   });
 
   it("renders service-inspection failures as JSON in JSON mode", async () => {
@@ -174,20 +169,13 @@ describe("runDaemonStatus", () => {
     error.name = "ServiceManagerError";
     gatherDaemonStatus.mockRejectedValueOnce(error);
 
-    await expect(runDaemonStatus({ ...statusOptions, json: true })).rejects.toThrow("__exit__:1");
-
+    await expectJsonFailure(
+      {},
+      expect.stringContaining("Gateway status failed: service manager unavailable"),
+    );
     expect(printDaemonStatus).not.toHaveBeenCalled();
-    expect(defaultRuntime.writeJson).toHaveBeenCalledWith({
-      ok: false,
-      error: {
-        type: "cli_error",
-        message: expect.stringContaining("Gateway status failed: service manager unavailable"),
-      },
-    });
     expect(JSON.stringify(defaultRuntime.writeJson.mock.calls)).not.toContain(error.name);
     expect(JSON.stringify(defaultRuntime.writeJson.mock.calls)).not.toContain(secret);
-    expect(defaultRuntime.error).not.toHaveBeenCalled();
-    expect(defaultRuntime.exit).toHaveBeenCalledTimes(1);
   });
 
   it("exits only once after printing a failed required RPC probe", async () => {
