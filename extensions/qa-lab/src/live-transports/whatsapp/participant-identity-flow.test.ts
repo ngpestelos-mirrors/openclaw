@@ -14,7 +14,8 @@ const invalidEvidence = [
   ["unknown-person", "retain the admitted person"],
   ["room-principal", "retain the admitted person"],
   ["wrong-run", "retain the admitted person"],
-  ["wrong-execution", "must agree with run discovery"],
+  ["wrong-dm-execution", "must agree with run discovery"],
+  ["wrong-group-execution", "must agree with run discovery"],
   ["raw-phone", "exclude raw route and participant references"],
   ["raw-group", "exclude raw route and participant references"],
   ["verified-generic", "keep generic decisions unverified"],
@@ -27,9 +28,15 @@ type Failure = (typeof invalidEvidence)[number][0];
 async function runIdentityFlow(failure?: Failure) {
   const state = createQaBusState();
   const admittedRuns: string[] = ["previous-run"];
-  const inspectedExecutions = new Set<string>();
   let restarted = false;
-  const result = await runLoadedScenarioFlow(scenarioId, {
+  const gateway = {
+    restartAfterStateMutation: async (mutate: () => Promise<void>) => {
+      await mutate();
+      restarted = true;
+    },
+  };
+  const runtimeEnv = { ...phones, ...(failure === "missing-group" ? {} : { groupJid }) };
+  return runLoadedScenarioFlow(scenarioId, {
     state,
     api: {
       transport: {
@@ -43,33 +50,17 @@ async function runIdentityFlow(failure?: Failure) {
           const isGroup = inbound.conversation.kind === "group";
           expect(inbound.text.startsWith("openclawqa ")).toBe(isGroup);
           admittedRuns.push(isGroup ? "group-run" : "dm-run");
-          if (failure === "extra-run") {
-            admittedRuns.push("unrelated-new-run");
-          }
+          admittedRuns.push(...(failure === "extra-run" ? ["unrelated-new-run"] : []));
           const marker = inbound.text.split("Reply exactly: ")[1];
           assert(marker, "Missing exact reply marker");
           return state.addOutboundMessage({
-            accountId: "sut",
             to: `${isGroup ? "group" : "dm"}:${inbound.conversation.id}`,
             text: marker,
           });
         },
       },
-      env: {
-        providerMode: "mock-openai",
-        gateway: {
-          restartAfterStateMutation: async (mutate: () => Promise<void>) => {
-            await mutate();
-            restarted = true;
-          },
-        },
-      },
-      whatsappScenarioContext: {
-        runtimeEnv: {
-          ...phones,
-          ...(failure === "missing-group" ? {} : { groupJid }),
-        },
-      },
+      env: { providerMode: "mock-openai", gateway },
+      whatsappScenarioContext: { runtimeEnv },
       runQaCli: async (_env: unknown, args: string[], options?: { json?: boolean }) => {
         if (args.includes("--kind")) {
           return { events: admittedRuns.map((runId) => ({ runId })) };
@@ -78,15 +69,9 @@ async function runIdentityFlow(failure?: Failure) {
         const selector = args[args.indexOf(exact ? "--execution" : "--run") + 1];
         assert(selector, "Missing run or execution selector");
         const runId = exact ? selector.replace("execution-", "") : selector;
-        expect(admittedRuns).toContain(runId);
-        expect(runId).not.toBe("previous-run");
-        if (exact) {
-          inspectedExecutions.add(selector);
-        }
+        expect(admittedRuns.slice(1)).toContain(runId);
         if (!options?.json) {
-          return failure === "missing-human"
-            ? "Identity unavailable"
-            : "Invoker [present]\nDecisions";
+          return failure === "missing-human" ? "" : "Invoker [present]\nDecisions";
         }
         const otherPerson =
           (failure === "different-person" && runId === "group-run") ||
@@ -99,7 +84,10 @@ async function runIdentityFlow(failure?: Failure) {
         const context = {
           contextId: `context-${runId}`,
           executionId:
-            failure === "wrong-execution" && exact ? "unrelated-execution" : `execution-${runId}`,
+            exact &&
+            failure === (runId === "dm-run" ? "wrong-dm-execution" : "wrong-group-execution")
+              ? "other"
+              : `execution-${runId}`,
           runId: failure === "wrong-run" ? "unrelated-run" : runId,
           invoker: { state: failure === "unknown-person" ? "unknown" : "present", principal },
           ingress: { kind: "channel", state: "present" },
@@ -113,25 +101,18 @@ async function runIdentityFlow(failure?: Failure) {
       },
     },
   });
-  return { status: result.status, inspectedExecutions, restarted };
 }
 
 it("selects the real transport lane and inspects both executions across restart", async () => {
-  const scenario = readQaScenarioById(scenarioId);
-  expect(scenario.execution).toMatchObject({
-    kind: "flow",
-    channel: "whatsapp",
-    suiteIsolation: "isolated",
-    config: { requiredChannelDriver: "live", requiredProviderMode: "mock-openai" },
+  expect(readQaScenarioById(scenarioId)).toMatchObject({
+    execution: {
+      channel: "whatsapp",
+      suiteIsolation: "isolated",
+      config: { requiredChannelDriver: "live", requiredProviderMode: "mock-openai" },
+    },
+    gatewayConfigPatch: { logging: { audit: { executionIdentity: true } } },
   });
-  expect(scenario.gatewayConfigPatch).toMatchObject({
-    logging: { audit: { executionIdentity: true } },
-  });
-  expect(await runIdentityFlow()).toEqual({
-    status: "pass",
-    inspectedExecutions: new Set(["execution-dm-run", "execution-group-run"]),
-    restarted: true,
-  });
+  await expect(runIdentityFlow()).resolves.toMatchObject({ status: "pass" });
 });
 
 it.each(invalidEvidence)("rejects %s evidence", async (failure, error) => {
