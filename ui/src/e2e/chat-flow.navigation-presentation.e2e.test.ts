@@ -322,6 +322,9 @@ suite.define(() => {
       );
     }
 
+    // Leave the sidebar hover target before activating the pane behind its hovercard.
+    await page.mouse.move(0, 0);
+    await expectCount(page.locator('.session-progress-hovercard[data-open="true"]'), 0);
     await panes.first().click({ position: { x: 20, y: 80 } });
     await expect.poll(() => cells.first().getAttribute("class")).toContain("--active");
     await expect.poll(visibleActionLabels).toEqual([activeActions, ["Details"]]);
