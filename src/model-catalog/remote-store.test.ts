@@ -148,27 +148,14 @@ describe("remote model catalog store", () => {
       checked_at: 4,
     };
     await write(updated);
-    const retained = await write({
-      ...updated,
-      bundle_json: '{"schemaVersion":1,"older":true}',
-      generated_at: 2,
-      min_version: null,
-      etag: '"older"',
-      checked_at: 5,
-    });
-    expect(retained).toMatchObject({ status: "retained-newer", row: { generated_at: 3 } });
-    expect(
-      await write({
-        ...updated,
-        bundle_json: '{"schemaVersion":1,"sameGenerationDifferentBody":true}',
-        min_version: null,
-        etag: '"different"',
-        checked_at: 5,
-      }),
-    ).toMatchObject({
-      status: "retained-newer",
-      row: { bundle_json: expect.stringContaining("updated") },
-    });
+    for (const candidate of [
+      { generated_at: 2, bundle_json: '{"schemaVersion":1,"older":true}', etag: '"older"' },
+      { generated_at: 3, bundle_json: '{"sameGenerationDifferentBody":true}', etag: '"different"' },
+    ]) {
+      expect(
+        await write({ ...updated, ...candidate, min_version: null, checked_at: 5 }),
+      ).toMatchObject({ status: "retained-newer", row: updated });
+    }
     // An unused older client's malformed bytes must not block a current-generation check.
     writeConfigMachineState("modelCatalog.remote.v2", null, options);
     runOpenClawStateWriteTransaction(({ db }) => {
