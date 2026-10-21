@@ -12,13 +12,12 @@ const skip: DiffLine = { kind: "skip", text: "" };
 const source = (count: number, prefix = "line") =>
   Array.from({ length: count }, (_, index) => `${prefix} ${index}`);
 const context = (texts: string[]): DiffLine[] => texts.map((text) => ({ kind: "ctx", text }));
+type DiffResult = ReturnType<typeof computeLineDiff>;
+const complete = (lines: DiffLine[], added = 0, removed = 0) =>
+  ({ kind: "complete", lines, stat: { added, removed } }) satisfies DiffResult;
 function expectUnchanged(texts: string[], lines = context(texts)) {
   const body = texts.join("\n");
-  expect(computeLineDiff(body, body)).toEqual({
-    kind: "complete",
-    lines,
-    stat: { added: 0, removed: 0 },
-  });
+  expect(computeLineDiff(body, body)).toEqual(complete(lines));
 }
 function changeAt(count: number, index: number, text: string) {
   const before = source(count),
@@ -30,23 +29,17 @@ function changeAt(count: number, index: number, text: string) {
 describe("parseDiffDetailsString", () => {
   it("parses numbered add/del/ctx lines and skip markers", () => {
     const diff = " 455 before\n-456 old line\n+456 new line\n    ...\n 460 after";
-    expect(parseDiffDetailsString(diff)).toEqual({
-      kind: "complete",
-      lines: [
-        { kind: "ctx", lineNo: 455, text: "before" },
-        { kind: "del", lineNo: 456, text: "old line" },
-        { kind: "add", lineNo: 456, text: "new line" },
-        skip,
-        { kind: "ctx", lineNo: 460, text: "after" },
-      ],
-      stat: { added: 1, removed: 1 },
-    });
+    const lines: DiffLine[] = [
+      { kind: "ctx", lineNo: 455, text: "before" },
+      { kind: "del", lineNo: 456, text: "old line" },
+      { kind: "add", lineNo: 456, text: "new line" },
+      skip,
+      { kind: "ctx", lineNo: 460, text: "after" },
+    ];
+    expect(parseDiffDetailsString(diff)).toEqual(complete(lines, 1, 1));
   });
 
-  it.each([
-    ["whitespace-only input", "   \n  "],
-    ["no added or removed lines", " 1 only context\n 2 more context"],
-  ])("returns null for %s", (_label, diff) => {
+  it.each(["   \n  ", " 1 only context\n 2 more context"])("returns null for %j", (diff) => {
     expect(parseDiffDetailsString(diff)).toBeNull();
   });
 
@@ -55,8 +48,7 @@ describe("parseDiffDetailsString", () => {
 
     const lines = parseDiffDetailsString(diff);
 
-    expect(lines).toMatchObject({ kind: "truncated" });
-    expect(lines?.lines).toHaveLength(402);
+    expect(lines).toMatchObject({ kind: "truncated", lines: { length: 402 } });
     expect(lines?.lines.at(-1)).toEqual(skip);
   });
 });
@@ -67,8 +59,7 @@ describe("computeLineDiff", () => {
     const newText = source(600, "new").join("\n");
     const result = computeLineDiff(oldText, newText);
     expect(result).toMatchObject({ kind: "complete", stat: { added: 600, removed: 600 } });
-    expect(result.lines).toHaveLength(401);
-    expect(result.lines.at(-1)).toEqual(skip);
+    expect([result.lines.length, result.lines.at(-1)]).toEqual([401, skip]);
   });
 
   it("reports an incomplete comparison when the only change is beyond the work budget", () => {
@@ -104,15 +95,7 @@ it("joinDiffSections separates non-empty sections with skip lines and drops empt
   const first: DiffLine[] = [{ kind: "del", text: "old" }];
   const second: DiffLine[] = [{ kind: "add", text: "new" }];
 
-  expect(
-    joinDiffSections([
-      { kind: "complete", lines: first, stat: { added: 0, removed: 1 } },
-      { kind: "complete", lines: [], stat: { added: 0, removed: 0 } },
-      { kind: "complete", lines: second, stat: { added: 1, removed: 0 } },
-    ]),
-  ).toEqual({
-    kind: "complete",
-    lines: [...first, skip, ...second],
-    stat: { added: 1, removed: 1 },
-  });
+  expect(joinDiffSections([complete(first, 0, 1), complete([]), complete(second, 1)])).toEqual(
+    complete([...first, skip, ...second], 1, 1),
+  );
 });
