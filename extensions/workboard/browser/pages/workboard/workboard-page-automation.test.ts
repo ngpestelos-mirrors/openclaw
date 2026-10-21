@@ -19,16 +19,7 @@ function mountAutomation(
   const request = expectDefined(page.request.getMockImplementation(), "request implementation");
   page.request.mockImplementation(async (method, params) => {
     if (method === "workboard.cards.list") {
-      return {
-        cards,
-        boards: boards.map((board) => ({
-          total: cards.length,
-          active: cards.length,
-          archived: 0,
-          byStatus: {},
-          ...board,
-        })),
-      };
+      return { cards, boards };
     }
     return method === "cron.get" ? loadJob(params) : request(method);
   });
@@ -43,7 +34,7 @@ function mountAutomation(
 
 it("renders an event-backed board without assuming a stream command or timed next run", async () => {
   const page = mountAutomation([{ id: "planning", automationJobId: "job-events" }], () => ({
-    ...automationJob("job-events", "Review incoming events"),
+    ...automationJob("Review incoming events"),
     schedule: { kind: "event", source: "mcp-events", options: { name: "comment.created" } },
     state: {},
   }));
@@ -55,9 +46,7 @@ it("renders an event-backed board without assuming a stream command or timed nex
 });
 
 it("omits the automation link when none is attached", async () => {
-  const page = mountAutomation([{ id: "planning" }], () =>
-    automationJob("job-planning", "Planning job"),
-  );
+  const page = mountAutomation([{ id: "planning" }], () => automationJob("Planning job"));
   await settle(() => expect(page.workboard.state.loaded).toBe(true));
   expect(page.heading()).toBeNull();
 });
@@ -67,7 +56,7 @@ it("refreshes active automation on cron events and defers hidden updates until r
   let loads = 0;
   const page = mountAutomation([{ id: "planning", automationJobId: "job-planning" }], () => {
     loads += 1;
-    return loads === 1 ? earlier.promise : automationJob("job-planning", `Revision ${loads}`);
+    return loads === 1 ? earlier.promise : automationJob(`Revision ${loads}`);
   });
   await settle(() => expect(loads).toBe(1));
   page.fixture.emit("cron", { jobId: "other-job", action: "updated" });
@@ -76,8 +65,7 @@ it("refreshes active automation on cron events and defers hidden updates until r
   await page.expectText("Revision 2");
   expect(page.heading()).toBeInstanceOf(HTMLAnchorElement);
   expect(page.heading()?.getAttribute("href")).toBe("/automations?job=job-planning");
-  earlier.resolve(automationJob("job-planning", "Stale revision"));
-  await earlier.promise;
+  earlier.resolve(automationJob("Stale revision"));
   await settle(() => expect(page.container.textContent).not.toContain("Stale revision"));
   page.present(false);
   await settle(() => expect(page.heading()).toBeNull());
@@ -98,11 +86,10 @@ it("shares board and detail automation loading and ignores an earlier visit's la
   const page = mountAutomation(
     ["planning", "operations"].map((id) => ({ id, automationJobId: `job-${id}` })),
     (params) => {
-      if (isRecord(params) && params.id === "job-planning") {
-        planningLoads += 1;
-        return planningLoads === 1 ? earlier.promise : current.promise;
+      if (!isRecord(params) || params.id !== "job-planning") {
+        return automationJob("Operations job");
       }
-      return automationJob("job-operations", "Operations job");
+      return ++planningLoads === 1 ? earlier.promise : current.promise;
     },
     [card],
   );
@@ -118,27 +105,21 @@ it("shares board and detail automation loading and ignores an earlier visit's la
   page.workboard.state.detailCardId = card.id;
   page.workboard.notify();
   const expectCurrent = () => {
-    expect(page.heading()?.textContent).toContain("Current planning job");
-    expect(page.container.querySelector(".workboard-detail")?.textContent).toContain(
-      "Current planning job",
-    );
+    expect(page.heading()?.textContent).toContain("Current");
+    expect(page.container.querySelector(".workboard-detail")?.textContent).toContain("Current");
   };
-  current.resolve(automationJob("job-planning", "Current planning job"));
+  current.resolve(automationJob("Current"));
   await settle(expectCurrent);
-  earlier.resolve(automationJob("job-planning", "Stale planning job"));
-  await earlier.promise;
+  earlier.resolve(automationJob("Stale planning job"));
   await settle(() => expect(page.container.textContent).not.toContain("Stale planning job"));
   expectCurrent();
   expect(planningLoads).toBe(2);
 });
 
-function automationJob(id: string, name: string) {
-  return {
-    id,
-    name,
-    enabled: true,
-    updatedAtMs: 2,
-    schedule: { kind: "every", everyMs: 86400000 },
-    state: { nextRunAtMs: 100000 },
-  };
-}
+const automationJob = (name: string) => ({
+  name,
+  enabled: true,
+  updatedAtMs: 2,
+  schedule: { kind: "every", everyMs: 86400000 },
+  state: { nextRunAtMs: 100000 },
+});

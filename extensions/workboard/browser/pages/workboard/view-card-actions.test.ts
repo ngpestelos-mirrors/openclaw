@@ -1,55 +1,36 @@
 import "../../test/dom.setup.ts";
 import { expectDefined } from "@openclaw/normalization-core";
-import { render } from "@solidjs/web";
-import { createComponent, createSignal, flush } from "solid-js";
-import { expect, it, onTestFinished, vi } from "vitest";
-import { getWorkboardState } from "../../lib/workboard/runtime.ts";
+import { expect, it, vi } from "vitest";
 import {
   createGatewaySession,
   createWorkboardCard,
   createWorkboardTestClient,
 } from "../../lib/workboard/test/index-helpers.ts";
 import type { WorkboardCard } from "../../lib/workboard/types.ts";
-import { workboardTestHost } from "../../test/host.setup.ts";
 import { waitForFast } from "../../test/wait-for.ts";
-import { CardDetailsPanel } from "./view-card-details.tsx";
 import type { WorkboardProps } from "./view-helpers.tsx";
-import { buttonByLabel, createWorkboardRenderProps } from "./view.test-support.ts";
+import { buttonByLabel, createWorkboardView } from "./view.test-support.ts";
+
+const provisional = "subagent:workboard-default-card-1";
+const canonical = "agent:writer:existing";
 
 function renderDetails(card: WorkboardCard, overrides: Partial<WorkboardProps> = {}) {
-  const host = {};
-  const state = getWorkboardState(host);
-  Object.assign(state, { loaded: true, cards: [card], detailCardId: card.id });
-  const [revision, setRevision] = createSignal(0);
-  const props: WorkboardProps = {
-    ...createWorkboardRenderProps(host),
-    get revision() {
-      return revision();
-    },
-    onRequestUpdate: () => setRevision((previous) => previous + 1),
-    canWrite: true,
-    onOpenSession: vi.fn(),
-    ...overrides,
-  };
-  const container = document.createElement("div");
-  document.body.append(container);
-  workboardTestHost().connection.connected = true;
-  const dispose = render(() => createComponent(CardDetailsPanel, props), container);
-  flush();
-  onTestFinished(() => {
-    dispose();
-    container.remove();
-  });
+  const props = { canWrite: true, onOpenSession: vi.fn(), ...overrides };
+  const view = createWorkboardView(props);
+  const { state } = view;
+  Object.assign(state, { cards: [card], detailCardId: card.id });
+  view.renderView();
+  const container = expectDefined(view.container.querySelector(".workboard-detail"), "detail");
   const button = (selector: string) =>
     expectDefined(container.querySelector<HTMLButtonElement>(selector), selector);
   return { state, props, container, button };
 }
 
 it.each([
-  ["agent:writer:existing", "unknown", true],
-  ["agent:writer:existing", "unavailable", true],
-  ["subagent:workboard-default-card-1", "unknown", false],
-  ["subagent:workboard-default-card-1", "ambiguous", false],
+  [canonical, "unknown", true],
+  [canonical, "unavailable", true],
+  [provisional, "unknown", false],
+  [provisional, "ambiguous", false],
   ["global", "unknown", false],
   ["unknown", "unknown", false],
 ] as const)("keeps Edit recovery without replacement Start for %s (%s)", (key, status, canOpen) => {
@@ -70,12 +51,8 @@ it.each([
 });
 
 it.each([
-  [
-    "subagent:workboard-default-card-1",
-    "agent:writer:subagent:workboard-default-card-1",
-    undefined,
-  ],
-  ["agent:writer:existing", "agent:writer:existing", "writer"],
+  [provisional, `agent:writer:${provisional}`, undefined],
+  [canonical, canonical, "writer"],
 ] as const)("stops %s's resolved owner after reassignment", async (key, sessionKey, agentId) => {
   const owner = { sessionKey, ...(agentId ? { agentId } : {}) };
   const session = createGatewaySession({ key: sessionKey, ...(agentId ? { agentId } : {}) });
@@ -105,10 +82,7 @@ it.each([
   button('button[aria-label="Stop session"]').click();
   await waitForFast(() => expect(state.cards[0]?.status).toBe("blocked"));
 
-  expect(client.request).toHaveBeenNthCalledWith(1, "chat.abort", {
-    ...owner,
-    runId: "run",
-  });
+  expect(client.request).toHaveBeenNthCalledWith(1, "chat.abort", { ...owner, runId: "run" });
   if (agentId) {
     expect(client.request).toHaveBeenNthCalledWith(2, "chat.abort", owner);
   }
