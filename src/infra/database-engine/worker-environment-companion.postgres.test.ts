@@ -1,7 +1,8 @@
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it } from "vitest";
 import { createWorkerEnvironmentStore } from "../../gateway/worker-environments/store.js";
 import { openOpenClawStateDatabase } from "../../state/openclaw-state-db.js";
 import * as operationAdmission from "../sqlite-worker-operation-admission.js";
+import { sqliteWorkerOwnerProbe } from "../sqlite-worker-owner-probe.test-support.js";
 import { withEngineStoreAdmission as admit } from "./admission-scope.js";
 import { mixedAgentConnection, useMixedAgentPair } from "./mixed-agent.conformance.test-support.js";
 
@@ -18,20 +19,23 @@ describe.skipIf(!mixedAgentConnection)("PostgreSQL worker environment companion 
       );
     expect(relation()).toEqual({ relation: null });
 
-    const createAdmission = operationAdmission.createSqliteWorkerOperationAdmission;
-    using _ = vi
-      .spyOn(operationAdmission, "createSqliteWorkerOperationAdmission")
-      .mockImplementationOnce((admitRequest, attachment) =>
-        createAdmission((request, grant) => {
-          if (request.stage === "commit") {
-            throw new Error("companion schema commit refused");
-          }
-          admitRequest(request, grant);
-        }, attachment),
-      );
+    let refusedCommit = false;
+    using refusal = sqliteWorkerOwnerProbe.admission(
+      operationAdmission,
+      (request, grant, admitRequest) => {
+        // Cold opening has its own admission; the inventory commit carries an array of facts.
+        if (request.stage === "commit" && Array.isArray(request.facts)) {
+          refusedCommit = true;
+          throw new Error("companion schema commit refused");
+        }
+        admitRequest(request, grant);
+      },
+    );
     await expect(createWorkerEnvironmentStore({ database })).rejects.toThrow(
       "companion schema commit refused",
     );
+    expect(refusedCommit).toBe(true);
+    refusal.mockRestore();
     expect(relation()).toEqual({ relation: null });
 
     let store = await createWorkerEnvironmentStore({ database });
