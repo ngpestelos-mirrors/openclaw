@@ -1,9 +1,9 @@
 import { expectDefined } from "@openclaw/normalization-core";
 import type { JSX } from "@solidjs/web";
-import { createSignal, Show } from "solid-js";
+import { Show } from "solid-js";
 import { onTestFinished, vi } from "vitest";
 import { registerMcpAppUnmountTarget } from "../../../components/mcp-app-unmount.ts";
-import { mountSolid } from "../../../test-helpers/mount-solid.ts";
+import { mountSolid } from "../../../test-helpers/solid-render.tsx";
 import { flush } from "../../../test-helpers/solid-settle.ts";
 import { createTestTranscript } from "../chat-view.test-helpers.ts";
 import {
@@ -28,7 +28,7 @@ class NativeFixture {
 }
 
 type NativeContent = JSX.Element | NativeFixture;
-const mounts = new WeakMap<HTMLElement, { update(value: NativeContent): void; unmount(): void }>();
+const mounts = new WeakMap<HTMLElement, ReturnType<typeof mountSolid<{ value: NativeContent }>>>();
 
 function Content(props: { value: NativeContent }) {
   const fixture = () => (props.value instanceof NativeFixture ? props.value : undefined);
@@ -61,25 +61,15 @@ export function renderTranscriptSearch(paneId: string) {
 export function render(value: NativeContent, container: HTMLElement): void {
   const existing = mounts.get(container);
   if (value == null) {
-    existing?.unmount();
+    existing?.dispose();
     mounts.delete(container);
     return;
   }
   if (existing) {
-    existing.update(value);
+    existing.update({ value });
   } else {
-    let update!: (next: NativeContent) => void;
-    const view = mountSolid(
-      () => {
-        const [content, setContent] = createSignal<NativeContent>(value);
-        update = (next) => setContent(() => next);
-        return <Content value={content()} />;
-      },
-      { container },
-    );
-    mounts.set(container, { update: (next) => update(next), unmount: view.unmount });
+    mounts.set(container, mountSolid(Content, { value }, container));
   }
-  flush();
 }
 
 export class TranscriptTestHost extends HTMLElement {
