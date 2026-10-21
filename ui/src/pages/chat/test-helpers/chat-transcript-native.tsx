@@ -1,6 +1,6 @@
 import { expectDefined } from "@openclaw/normalization-core";
 import type { JSX } from "@solidjs/web";
-import { createMemo, createSignal, Show } from "solid-js";
+import { createSignal, Show } from "solid-js";
 import { onTestFinished, vi } from "vitest";
 import { registerMcpAppUnmountTarget } from "../../../components/mcp-app-unmount.ts";
 import { mountSolid } from "../../../test-helpers/mount-solid.ts";
@@ -19,42 +19,28 @@ import {
   type TestContentRow,
 } from "../components/chat-transcript.test-support.ts";
 
-class ThreadFixture {
+class NativeFixture {
   constructor(
-    readonly props: ChatThreadProps,
-    readonly transcript: ChatTranscript,
-    readonly search?: boolean,
+    readonly paneId: string,
+    readonly search: boolean,
+    readonly thread?: { props: ChatThreadProps; transcript: ChatTranscript },
   ) {}
 }
 
-class SearchFixture {
-  constructor(readonly paneId: string) {}
-}
-
-type NativeContent = JSX.Element | ThreadFixture | SearchFixture;
+type NativeContent = JSX.Element | NativeFixture;
 const mounts = new WeakMap<HTMLElement, { update(value: NativeContent): void; unmount(): void }>();
 
 function Content(props: { value: NativeContent }) {
-  const thread = () => (props.value instanceof ThreadFixture ? props.value : undefined);
-  const search = createMemo(() => {
-    const value = props.value;
-    return value instanceof SearchFixture
-      ? value
-      : value instanceof ThreadFixture && value.search
-        ? new SearchFixture(value.props.paneId)
-        : undefined;
-  });
+  const fixture = () => (props.value instanceof NativeFixture ? props.value : undefined);
   return (
     <>
-      <Show when={search()}>
+      <Show when={fixture()?.search && fixture()}>
         {(value) => <TranscriptSearch search={getTranscriptState(value().paneId).search} />}
       </Show>
-      <Show when={thread()}>
+      <Show when={fixture()?.thread}>
         {(value) => <ChatThread props={value().props} transcript={value().transcript} />}
       </Show>
-      {props.value instanceof ThreadFixture || props.value instanceof SearchFixture
-        ? undefined
-        : props.value}
+      {props.value instanceof NativeFixture ? undefined : props.value}
     </>
   );
 }
@@ -64,11 +50,11 @@ export function renderChatThread(
   transcript: ChatTranscript,
   options?: { search: boolean },
 ) {
-  return new ThreadFixture(props, transcript, options?.search);
+  return new NativeFixture(props.paneId, options?.search ?? false, { props, transcript });
 }
 
 export function renderTranscriptSearch(paneId: string) {
-  return new SearchFixture(paneId);
+  return new NativeFixture(paneId, true);
 }
 
 /** Retain native components between commits, including moves of session-owned row roots. */
@@ -159,7 +145,12 @@ export async function mountTestTranscript(
     render(
       transcript.renderSession(`agent:main:${paneId}`, (session) => {
         currentSession = session;
-        return session.render(rows, contentOf, null, false);
+        return session.render(
+          rows,
+          (row) => (row.kind === "content" ? row.content : null),
+          null,
+          false,
+        );
       }),
       container,
     );
@@ -187,17 +178,10 @@ export function stubMcpAppLifecycle(
     container.querySelector<HTMLElement>("mcp-app-view"),
     "mounted MCP app",
   );
-  const lifecycle = {
-    restartAfterTeardown: vi.fn(),
-    teardown: vi.fn(teardown),
-  };
+  const lifecycle = { restartAfterTeardown: vi.fn(), teardown: vi.fn(teardown) };
   const target = Object.assign(app, lifecycle);
   onTestFinished(registerMcpAppUnmountTarget(target));
   return { app: target, ...lifecycle };
-}
-
-function contentOf(row: TestContentRow) {
-  return row.kind === "content" ? row.content : null;
 }
 
 export function numberedContentRows(
