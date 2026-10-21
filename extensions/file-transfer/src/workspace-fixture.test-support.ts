@@ -21,18 +21,19 @@ import { createFileTransferNodeInvokePolicy } from "./shared/node-invoke-policy.
 import { createCtx } from "./shared/node-invoke-policy.test-support.js";
 
 const unaryHandlers = {
-  "file.fetch": (params: unknown) =>
-    handleFileFetch(params as Parameters<typeof handleFileFetch>[0]),
-  "file.stat": (params: unknown) => handleFileStat(params as Parameters<typeof handleFileStat>[0]),
-  "file.write": (params: unknown) =>
-    handleFileWrite(params as Parameters<typeof handleFileWrite>[0]),
-  "dir.list": (params: unknown) => handleDirList(params as Parameters<typeof handleDirList>[0]),
+  "file.fetch": handleFileFetch,
+  "file.stat": handleFileStat,
+  "file.write": handleFileWrite,
+  "dir.list": handleDirList,
 };
 
 export async function createWorkspaceFixture(parent: string, unary = false) {
-  let local = path.join(parent, "gateway");
+  const state: {
+    local: string;
+    openDuplex: OpenClawPluginServiceContext["openNodeDuplex"];
+  } = { local: path.join(parent, "gateway"), openDuplex: undefined };
   const remote = path.join(parent, "harness");
-  await fs.mkdir(local);
+  await fs.mkdir(state.local);
   await fs.mkdir(remote);
   const nodePolicy: {
     allowReadPaths: string[];
@@ -69,7 +70,7 @@ export async function createWorkspaceFixture(parent: string, unary = false) {
       if (!handler) {
         throw new Error(`Unexpected command ${request.command}`);
       }
-      return { ok: true, payload: await handler(options.params) };
+      return { ok: true, payload: await handler(options.params as Record<string, unknown>) };
     });
     const result = await createFileTransferNodeInvokePolicy().handle(ctx);
     if (!result.ok) {
@@ -78,27 +79,21 @@ export async function createWorkspaceFixture(parent: string, unary = false) {
     return result;
   });
   let service!: Parameters<OpenClawPluginApi["registerService"]>[0];
-  let openDuplex: OpenClawPluginServiceContext["openNodeDuplex"];
   const scheduler = createTestPluginServiceScheduler();
   const api = createTestPluginApi({
     registrationMode: "full",
     config: { plugins: { entries: { "file-transfer": { config: pluginConfig } } } },
     pluginConfig,
     runtime: {
-      agent: { resolveAgentWorkspaceDir: () => local },
+      agent: { resolveAgentWorkspaceDir: (): string => fixture.local },
       nodes: { invoke },
     } as unknown as OpenClawPluginApi["runtime"],
     registerService: (value) => {
       service = value;
     },
   });
-  return {
-    get local() {
-      return local;
-    },
-    set local(value: string) {
-      local = value;
-    },
+  const fixture = {
+    ...state,
     remote,
     nodePolicy,
     invoke,
@@ -106,28 +101,23 @@ export async function createWorkspaceFixture(parent: string, unary = false) {
     get service() {
       return service;
     },
-    get openDuplex() {
-      return openDuplex;
-    },
-    set openDuplex(value: OpenClawPluginServiceContext["openNodeDuplex"]) {
-      openDuplex = value;
-    },
     scheduler,
     context() {
       return {
         config: api.config,
         logger: api.logger,
-        stateDir: local,
+        stateDir: fixture.local,
         invokeNode: invoke,
-        openNodeDuplex: openDuplex,
+        openNodeDuplex: fixture.openDuplex,
         scheduler,
       };
     },
     async start() {
       await service.start(this.context());
-      return getAgentWorkspaceAccess(local)!;
+      return getAgentWorkspaceAccess(fixture.local)!;
     },
   };
+  return fixture;
 }
 
 export type WorkspaceFixture = Awaited<ReturnType<typeof createWorkspaceFixture>>;
