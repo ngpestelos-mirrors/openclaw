@@ -1,6 +1,6 @@
 import fs from "node:fs/promises";
 import path from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, expect, it } from "vitest";
 import {
   closeOpenClawStateDatabaseForTest,
   openOpenClawStateDatabase,
@@ -41,7 +41,7 @@ afterEach(async () => {
 });
 
 function deleteWorkspaceAttestation(workspaceDir: string): void {
-  const identity = resolveWorkspaceStateIdentity(workspaceDir);
+  const key = resolveWorkspaceStateIdentity(workspaceDir).workspaceKey;
   const db = openOpenClawStateDatabase().db;
   // Mirrors the pre-v13 attestation-row delete: clearing the merged columns
   // must also drop the generated hashes the old FK cascade removed.
@@ -49,10 +49,8 @@ function deleteWorkspaceAttestation(workspaceDir: string): void {
     `UPDATE workspace_setup_state
         SET attested_at_ms = NULL, attestation_updated_at_ms = NULL
       WHERE workspace_key = ?`,
-  ).run(identity.workspaceKey);
-  db.prepare("DELETE FROM workspace_generated_bootstrap_hashes WHERE workspace_key = ?").run(
-    identity.workspaceKey,
-  );
+  ).run(key);
+  db.prepare("DELETE FROM workspace_generated_bootstrap_hashes WHERE workspace_key = ?").run(key);
 }
 
 const seed = (dir: string) => ensureAgentWorkspace({ dir, ensureBootstrapFiles: true });
@@ -73,76 +71,66 @@ async function leaveGeneratedRemnant(dir: string) {
   await fs.writeFile(agentsPath, content);
 }
 
-describe("workspace setup-only SQLite safety", () => {
-  it.each([false, true])(
-    "clears expired state with one generated remnant (attested: %s)",
-    async (attested) => {
-      await seed(tempDir);
-      const identity = resolveWorkspaceStateIdentity(tempDir);
-      const expiredAtMs = Date.now() - 25 * 60 * 60 * 1000;
-      const db = openOpenClawStateDatabase().db;
-      if (attested) {
-        db.prepare(
-          "UPDATE workspace_setup_state SET attested_at_ms = ?, attestation_updated_at_ms = ? WHERE workspace_key = ?",
-        ).run(expiredAtMs, expiredAtMs, identity.workspaceKey);
-      } else {
-        deleteWorkspaceAttestation(tempDir);
-      }
-      db.prepare("UPDATE workspace_setup_state SET updated_at = ? WHERE workspace_key = ?").run(
-        expiredAtMs,
-        identity.workspaceKey,
-      );
-      await leaveGeneratedRemnant(tempDir);
-      await seed(tempDir);
-      await fs.access(bootstrapPath(tempDir));
-      expect((await readWorkspaceStateSnapshot(tempDir)).setup.setupCompletedAt).toBeUndefined();
-    },
+it.each([false, true])("clears expired remnants (attested: %s)", async (attested) => {
+  await seed(tempDir);
+  const key = resolveWorkspaceStateIdentity(tempDir).workspaceKey;
+  const expiredAtMs = Date.now() - 25 * 60 * 60 * 1000;
+  const db = openOpenClawStateDatabase().db;
+  if (attested) {
+    db.prepare(
+      "UPDATE workspace_setup_state SET attested_at_ms = ?, attestation_updated_at_ms = ? WHERE workspace_key = ?",
+    ).run(expiredAtMs, expiredAtMs, key);
+  } else {
+    deleteWorkspaceAttestation(tempDir);
+  }
+  db.prepare("UPDATE workspace_setup_state SET updated_at = ? WHERE workspace_key = ?").run(
+    expiredAtMs,
+    key,
   );
+  await leaveGeneratedRemnant(tempDir);
+  await seed(tempDir);
+  await fs.access(bootstrapPath(tempDir));
+  expect((await readWorkspaceStateSnapshot(tempDir)).setup.setupCompletedAt).toBeUndefined();
+});
 
-  it("refuses an empty recent setup-only workspace when bootstrap creation is disabled", async () => {
-    await mergeWorkspaceSetupState(tempDir, {
-      bootstrapSeededAt: new Date().toISOString(),
-    });
-
-    await expectVanished(ensureAgentWorkspace({ dir: tempDir, ensureBootstrapFiles: false }));
+it.each([false, true])("refuses recent setup-only state (missing: %s)", async (missing) => {
+  await mergeWorkspaceSetupState(tempDir, {
+    bootstrapSeededAt: new Date().toISOString(),
   });
-
-  it("accepts a customized profile with migrated setup-only state", async () => {
-    const identityPath = path.join(tempDir, DEFAULT_IDENTITY_FILENAME);
-    await fs.writeFile(identityPath, "# Existing identity\n");
-    await mergeWorkspaceSetupState(tempDir, {
-      setupCompletedAt: "2026-07-15T10:01:00.000Z",
-    });
-
-    await expect(seed(tempDir)).resolves.toMatchObject({ dir: tempDir });
-    await expect(fs.readFile(identityPath, "utf8")).resolves.toBe("# Existing identity\n");
-  });
-
-  it("refuses to reseed a missing workspace with recent setup-only state", async () => {
-    await mergeWorkspaceSetupState(tempDir, {
-      bootstrapSeededAt: new Date().toISOString(),
-    });
+  if (missing) {
     await fs.rm(tempDir, { recursive: true, force: true });
-
-    await expectVanished(seed(tempDir));
+  }
+  await expectVanished(ensureAgentWorkspace({ dir: tempDir, ensureBootstrapFiles: missing }));
+  if (missing) {
     await expect(fs.access(tempDir)).rejects.toHaveProperty("code", "ENOENT");
+  }
+});
+
+it("accepts a customized profile with migrated setup-only state", async () => {
+  const identityPath = path.join(tempDir, DEFAULT_IDENTITY_FILENAME);
+  await fs.writeFile(identityPath, "# Existing identity\n");
+  await mergeWorkspaceSetupState(tempDir, {
+    setupCompletedAt: "2026-07-15T10:01:00.000Z",
   });
 
-  it("refuses to trust setup-only state after only generated remnants survive", async () => {
-    await seed(tempDir);
-    deleteWorkspaceAttestation(tempDir);
-    await leaveGeneratedRemnant(tempDir);
-    await expectVanished(seed(tempDir));
-    await expectNoBootstrap(tempDir);
-  });
+  await expect(seed(tempDir)).resolves.toMatchObject({ dir: tempDir });
+  await expect(fs.readFile(identityPath, "utf8")).resolves.toBe("# Existing identity\n");
+});
 
-  it("accepts an intact generated workspace with setup-only state", async () => {
-    await seed(tempDir);
-    await fs.rm(bootstrapPath(tempDir));
-    await seed(tempDir);
-    deleteWorkspaceAttestation(tempDir);
+it("refuses to trust setup-only state after only generated remnants survive", async () => {
+  await seed(tempDir);
+  deleteWorkspaceAttestation(tempDir);
+  await leaveGeneratedRemnant(tempDir);
+  await expectVanished(seed(tempDir));
+  await expectNoBootstrap(tempDir);
+});
 
-    await expect(seed(tempDir)).resolves.toMatchObject({ dir: tempDir });
-    await expectNoBootstrap(tempDir);
-  });
+it("accepts an intact generated workspace with setup-only state", async () => {
+  await seed(tempDir);
+  await fs.rm(bootstrapPath(tempDir));
+  await seed(tempDir);
+  deleteWorkspaceAttestation(tempDir);
+
+  await expect(seed(tempDir)).resolves.toMatchObject({ dir: tempDir });
+  await expectNoBootstrap(tempDir);
 });
