@@ -88,6 +88,22 @@ export class AppSidebarOwner extends AppSidebarSessionNavigationElement implemen
   // A connected host retains its pending boot read when Solid recreates the view.
   readonly snapshot = createSidebarSnapshot(this);
 
+  override shouldPublishSessionData(): boolean {
+    this.snapshot.synchronize();
+    return (
+      !this.sidebarSnapshot &&
+      this.sessionProjection.shouldPublishSessionData(this, {
+        sections: () =>
+          this.zonedVisibleSections(this.selectedAgentSessionRows(this.getSessionNavigationState()))
+            .sections,
+        tree: () => this.visibleSessionTreeInOrder(),
+        catalogs: () => this.sidebarSessionCatalogs(),
+        catalogRows: this.catalogLiveRows,
+        ownerOptions: () => this.ownerOptions,
+      })
+    );
+  }
+
   restoreSidebarSnapshot(model: SidebarSnapshotModel): void {
     this.sidebarSnapshot = model;
     this.navigationView = model.navigationView;

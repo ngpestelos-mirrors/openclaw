@@ -120,18 +120,7 @@ export abstract class AppSidebarSessionNavigationElement extends AppSidebarBase 
     };
   }
 
-  shouldPublishSessionData(): boolean {
-    return this.sessionProjection.shouldPublishSessionData(this, {
-      snapshot: Boolean(this.sidebarSnapshot),
-      sections: () =>
-        this.zonedVisibleSections(this.selectedAgentSessionRows(this.getSessionNavigationState()))
-          .sections,
-      tree: () => this.visibleSessionTreeInOrder(),
-      catalogs: () => this.sidebarSessionCatalogs(),
-      catalogRows: this.catalogLiveRows,
-      ownerOptions: () => this.ownerOptions,
-    });
-  }
+  abstract shouldPublishSessionData(): boolean;
 
   private admittedRoster:
     | { context: ApplicationContext; collapsedAgentIds: ReadonlySet<string> }
@@ -250,7 +239,7 @@ export abstract class AppSidebarSessionNavigationElement extends AppSidebarBase 
     return personalSidebarOwnerFilterId(this);
   }
 
-  private ownerOptions: readonly SessionOwnerOption[] = [];
+  protected ownerOptions: readonly SessionOwnerOption[] = [];
 
   get sessionOwnerOptions(): readonly SessionOwnerOption[] {
     this.selectedAgentSessionRows(this.getSessionNavigationState());
@@ -468,7 +457,11 @@ export abstract class AppSidebarSessionNavigationElement extends AppSidebarBase 
   /** Collapsed zones keep full rows for true header counts and status dots. */
   protected zonedVisibleSections(rows: SidebarRecentSession[]): SidebarVisibleSections {
     if (this.sidebarSnapshot) {
-      return restoreSnapshotSections(this.sidebarSnapshot, this.getRouteSessionKey());
+      const model = this.sidebarSnapshot;
+      return this.sectionsMemo.read(
+        () => [model, this.getRouteSessionKey()],
+        () => restoreSnapshotSections(model, this.getRouteSessionKey()),
+      );
     }
     return memoizedSidebarSections(
       this.sectionsMemo,
@@ -479,7 +472,16 @@ export abstract class AppSidebarSessionNavigationElement extends AppSidebarBase 
     );
   }
 
-  reconciledSidebarZone(rows = this.selectedAgentSessionRows(this.getSessionNavigationState())) {
+  private readonly cachedZone = new SidebarProjectionMemo<ReturnType<typeof personalSidebarZone>>();
+
+  reconciledSidebarZone(rows?: SidebarRecentSession[]) {
+    if (this.sidebarSnapshot) {
+      return this.cachedZone.read(
+        () => [this.sidebarSnapshot, this.getRouteSessionKey()],
+        () => personalSidebarZone(this, []),
+      );
+    }
+    rows ??= this.selectedAgentSessionRows(this.getSessionNavigationState());
     return personalSidebarZone(this, rows);
   }
 
@@ -665,8 +667,10 @@ export abstract class AppSidebarSessionNavigationElement extends AppSidebarBase 
     navigationState: SidebarSessionNavigationState,
   ): SidebarRecentSession[] {
     if (this.sidebarSnapshot) {
-      return this.sidebarSnapshot.sessions.map((row) =>
-        restoreSnapshotSession(row, this.getRouteSessionKey()),
+      const model = this.sidebarSnapshot;
+      return this.rowsMemo.read(
+        () => [model, this.getRouteSessionKey()],
+        () => model.sessions.map((row) => restoreSnapshotSession(row, this.getRouteSessionKey())),
       );
     }
     const rows = this.rowsMemo.read(

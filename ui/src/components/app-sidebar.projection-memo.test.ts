@@ -35,6 +35,7 @@ import { SidebarSessionProjection } from "./app-sidebar-session-projection.ts";
 import { getAppSidebarOwner } from "./app-sidebar.tsx";
 import type { SelectPicker } from "./select-picker.ts";
 import type { SidebarSnapshotModel } from "./sidebar-snapshot-model.ts";
+import { snapshotSessions } from "./sidebar-snapshot-model.ts";
 
 type Sidebar = AppSidebarSessionNavigationElement & HTMLElement;
 
@@ -128,6 +129,44 @@ async function expectRowRefresh(sidebar: Sidebar, change: () => void) {
 }
 
 describe("sidebar projection memo", () => {
+  it("keeps cached row and rail projections stable across unrelated live replies", async () => {
+    const initial = session("cached");
+    const { sidebar, row, publish, sessions } = await mount([initial]);
+    const owner = getAppSidebarOwner(sidebar.hostElement)!;
+    vi.spyOn(owner, "sidebarSnapshotSettled").mockReturnValue(false);
+    const rows = snapshotSessions([sidebar.getSessionNavigationState().toSidebarSession(initial)]);
+    owner.restoreSidebarSnapshot({
+      ...sidebarBootSnapshot(captureBootRoster(sessions.sessions.state)),
+      mode: "chip",
+      sessions: rows,
+      entries: [`session:${initial.key}`],
+      sections: [
+        {
+          id: "ungrouped",
+          rows,
+          totalRowCount: 1,
+          visibleRowCount: 1,
+          visibleLimit: 10,
+          collapsedVisibleRowCount: 1,
+          renderHeader: false,
+        },
+      ],
+    });
+    owner.invalidate();
+    await settleLitElement(sidebar);
+    const cachedRow = row(initial.key);
+    const zone = owner.reconciledSidebarZone();
+    publish([initial, session("new-live-row")]);
+    await settleLitElement(sidebar);
+    expect(owner.reconciledSidebarZone()).toBe(zone);
+    expect(row(initial.key)).toBe(cachedRow);
+    expect(row(key("new-live-row"))).toBeNull();
+    owner.releaseSidebarSnapshot();
+    owner.invalidate();
+    await settleLitElement(sidebar);
+    expect(row(key("new-live-row"))).not.toBeNull();
+    expect(row(initial.key)).toBe(cachedRow);
+  });
   it("prepares initially hidden session rows from shell inputs while keeping later owner updates parked", async () => {
     const target = session("question-proof");
     const sessions = createSessionsHarness("main", []);

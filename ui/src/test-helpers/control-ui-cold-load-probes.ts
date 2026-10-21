@@ -229,6 +229,7 @@ function installColdLoadProbes(
     },
   };
   let solidSidebarOwner: ProbeInit.SolidSidebarProbeOwner | undefined;
+  const sidebarHandoffs: Array<{ atMs: number; durationMs: number; frameMs?: number }> = [];
   let originalPublicationGate:
     | ProbeInit.SolidSidebarProbeOwner["shouldPublishSessionData"]
     | undefined;
@@ -282,8 +283,21 @@ function installColdLoadProbes(
       );
     },
     capture(host: WeakKey, owner: unknown) {
-      if (sidebarRegistration.matches(host, owner)) {
+      if (sidebarRegistration.matches(host, owner) && owner !== solidSidebarOwner) {
         solidSidebarOwner = owner;
+        const release = owner.releaseSidebarSnapshot;
+        owner.releaseSidebarSnapshot = function () {
+          const atMs = performance.now();
+          release.call(this);
+          const handoff: { atMs: number; durationMs: number; frameMs?: number } = {
+            atMs,
+            durationMs: performance.now() - atMs,
+          };
+          sidebarHandoffs.push(handoff);
+          requestAnimationFrame(() => {
+            handoff.frameMs = performance.now() - atMs;
+          });
+        };
       }
       if (host instanceof HTMLElement && chatProbe.matches(host, owner)) {
         chatOwners.set(host, {
@@ -619,6 +633,7 @@ function installColdLoadProbes(
         idleMs: performance.now() - lastActivity,
         rpcs,
         longTasks,
+        sidebarHandoffs,
       };
     },
   });

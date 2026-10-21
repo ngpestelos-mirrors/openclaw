@@ -9,6 +9,7 @@ export type SolidSidebarProbeOwner = {
   invalidate(): void;
   prepareRender(): void;
   commitRender(): void;
+  releaseSidebarSnapshot(): void;
 };
 export type SidebarLifecycle = "invalidate" | "prepareRender" | "commitRender";
 export type ProbeMethod = (...args: unknown[]) => unknown;
