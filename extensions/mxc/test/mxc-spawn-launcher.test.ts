@@ -6,29 +6,29 @@ import path from "node:path";
 import { PassThrough } from "node:stream";
 import { describe, expect, it, vi } from "vitest";
 
-const require = createRequire(import.meta.url);
-const { decodePayload, forwardSignals, launchSandbox, signalExitCode } =
-  require("../src/mxc-spawn-launcher.mjs") as {
-    decodePayload: (argv: string[]) => unknown;
-    forwardSignals: (
-      spawned: { kill: (signal: string) => void },
-      options?: {
-        exitGraceMs?: number;
-        setTimeout?: (callback: () => void, ms: number) => { unref?: () => void };
-        clearTimeout?: (timer: unknown) => void;
-      },
-    ) => { exitCode: () => number | undefined; dispose: () => void };
-    launchSandbox: (
-      spawnSandboxFromConfig: (config: unknown, options: unknown) => unknown,
-      config: unknown,
-      options: unknown,
-      bridges?: {
-        child?: (spawned: unknown) => void;
-        pty?: (spawned: unknown) => void;
-      },
-    ) => Promise<void>;
-    signalExitCode: (signal: number | string | undefined) => number;
-  };
+const { decodePayload, forwardSignals, launchSandbox, signalExitCode } = createRequire(
+  import.meta.url,
+)("../src/mxc-spawn-launcher.mjs") as {
+  decodePayload: (argv: string[]) => unknown;
+  forwardSignals: (
+    spawned: { kill: (signal: string) => void },
+    options?: {
+      exitGraceMs?: number;
+      setTimeout?: (callback: () => void, ms: number) => { unref?: () => void };
+      clearTimeout?: (timer: unknown) => void;
+    },
+  ) => { exitCode: () => number | undefined; dispose: () => void };
+  launchSandbox: (
+    spawnSandboxFromConfig: (config: unknown, options: unknown) => unknown,
+    config: unknown,
+    options: unknown,
+    bridges?: {
+      child?: (spawned: unknown) => void;
+      pty?: (spawned: unknown) => void;
+    },
+  ) => Promise<void>;
+  signalExitCode: (signal: number | string | undefined) => number;
+};
 
 describe("mxc-spawn-launcher", () => {
   it("decodes a JSON --payload-file and removes it before spawning", () => {
@@ -39,8 +39,7 @@ describe("mxc-spawn-launcher", () => {
       writeFileSync(payloadFile, JSON.stringify(body), "utf-8");
 
       expect(decodePayload(["--payload-file", payloadFile])).toEqual(body);
-      expect(existsSync(payloadFile)).toBe(false);
-      expect(existsSync(dir)).toBe(false);
+      expect([payloadFile, dir].map(existsSync)).toEqual([false, false]);
     } finally {
       rmSync(dir, { force: true, recursive: true });
     }
@@ -67,19 +66,12 @@ describe("mxc-spawn-launcher", () => {
       child: childBridge,
     });
 
-    expect(ptyBridge).toHaveBeenCalledWith(pty);
-    expect(ptyBridge).not.toHaveBeenCalledWith(spawnResult);
+    expect(ptyBridge.mock.calls).toEqual([[pty]]);
     expect(childBridge).not.toHaveBeenCalled();
   });
 
   it("forwards process termination signals to spawned sandbox children", () => {
-    const listeners = new Map<string, () => void>();
-    const processOn = vi.spyOn(process, "on").mockImplementation((event, listener) => {
-      if (typeof event === "string" && typeof listener === "function") {
-        listeners.set(event, listener as () => void);
-      }
-      return process;
-    });
+    const processOn = vi.spyOn(process, "on").mockReturnValue(process);
     const spawned = { kill: vi.fn() };
     const clearTimeoutMock = vi.fn();
     const timer = { unref: vi.fn() };
@@ -91,12 +83,11 @@ describe("mxc-spawn-launcher", () => {
         clearTimeout: clearTimeoutMock,
       });
 
-      listeners.get("SIGTERM")?.();
-      listeners.get("SIGINT")?.();
+      processOn.mock.calls.find(([event]) => event === "SIGTERM")?.[1]();
+      processOn.mock.calls.find(([event]) => event === "SIGINT")?.[1]();
 
       expect(spawned.kill.mock.calls).toEqual([["SIGTERM"], ["SIGINT"]]);
-      expect(setTimeoutMock).toHaveBeenCalledTimes(1);
-      expect(setTimeoutMock.mock.calls[0]?.[1]).toBe(25);
+      expect(setTimeoutMock.mock.calls).toEqual([[expect.any(Function), 25]]);
       expect(timer.unref).toHaveBeenCalledTimes(1);
 
       setTimeoutMock.mock.calls[0]?.[0]();

@@ -48,8 +48,9 @@ describeOnWindows("MXC SDK wire contract", () => {
     });
     const spec = await handle.buildExecSpec({ command: "echo contract", env: {}, usePty: false });
     try {
+      const file = spec.argv[spec.argv.indexOf("--payload-file") + 1] ?? "";
       const payload: { config: Record<string, unknown>; options: { executablePath: string } } =
-        JSON.parse(readFileSync(spec.argv[spec.argv.indexOf("--payload-file") + 1], "utf-8"));
+        JSON.parse(readFileSync(file, "utf-8"));
       const configBase64 = Buffer.from(JSON.stringify(payload.config)).toString("base64");
       // execFileSync throws on nonzero exit, preserving the wire acceptance assertion.
       expect(
