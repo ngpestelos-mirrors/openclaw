@@ -47,7 +47,6 @@ it.each(["generated", "explicit"] as const)(
           bind: "loopback",
           gatewayPort: 18789,
           gatewayToken: "test-token",
-          providerMode: "mock-openai",
           workspaceDir: path.join(home, "workspace"),
         });
         if (roster !== "generated") {
@@ -57,10 +56,7 @@ it.each(["generated", "explicit"] as const)(
             defaults: { ...base.agents?.defaults, systemAgent: { agentId: "main" } },
             entries: {
               ...base.agents?.entries,
-              main: {
-                identity: { name: "Existing main agent" },
-                model: "mock-openai/custom-main",
-              },
+              main: { identity: { name: "Existing" }, model: "mock-openai/custom" },
             },
           };
         }

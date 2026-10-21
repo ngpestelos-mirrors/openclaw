@@ -3,10 +3,10 @@ import { expect, it } from "vitest";
 import { createQaBusState } from "../../bus-state.js";
 import { readQaScenarioById } from "../../scenario-catalog.js";
 import { runLoadedScenarioFlow } from "../../scenario-flow-runner.test-support.js";
+import { groupJid, phones } from "./runtime.test-support.js";
 
 const scenarioId = "whatsapp-participant-identity-inspection";
-const driverPhone = "+15550000001";
-const groupJid = "120363000000000000@g.us";
+const driverPhone = phones.driverPhoneE164;
 
 const invalidEvidence = [
   ["missing-group", "requires groupJid"],
@@ -64,11 +64,9 @@ async function runIdentityFlow(failure?: Failure) {
           },
         },
       },
-      // The real adapter prepares this from its lease; support tests never acquire one.
       whatsappScenarioContext: {
         runtimeEnv: {
-          driverPhoneE164: driverPhone,
-          sutPhoneE164: "+15550000002",
+          ...phones,
           ...(failure === "missing-group" ? {} : { groupJid }),
         },
       },
@@ -90,42 +88,32 @@ async function runIdentityFlow(failure?: Failure) {
             ? "Identity unavailable"
             : "Invoker [present]\nDecisions";
         }
-        const isGroup = runId === "group-run";
+        const otherPerson =
+          (failure === "different-person" && runId === "group-run") ||
+          (failure === "changed-after-restart" && restarted);
+        const principal = {
+          kind: failure === "room-principal" ? "service" : "person",
+          principalRef: otherPerson ? "principal:other-person" : "principal:driver",
+        };
+        const provenance = { state: failure === "verified-generic" ? "verified" : "unverified" };
         const context = {
           contextId: `context-${runId}`,
           executionId:
             failure === "wrong-execution" && exact ? "unrelated-execution" : `execution-${runId}`,
           runId: failure === "wrong-run" ? "unrelated-run" : runId,
-          invoker: {
-            state: failure === "unknown-person" ? "unknown" : "present",
-            principal: {
-              kind: failure === "room-principal" ? "service" : "person",
-              principalRef:
-                (failure === "different-person" && isGroup) ||
-                (failure === "changed-after-restart" && restarted)
-                  ? "principal:other-person"
-                  : "principal:driver",
-            },
-          },
+          invoker: { state: failure === "unknown-person" ? "unknown" : "present", principal },
           ingress: { kind: "channel", state: "present" },
         };
         return {
           identity: { state: "present", context },
-          decisionDisplays: [
-            {
-              action: { family: "decision", operation: "record" },
-              provenance: {
-                state: failure === "verified-generic" ? "verified" : "unverified",
-              },
-            },
-          ],
+          decisionDisplays: [{ action: { family: "decision" }, provenance }],
           ...(failure === "raw-phone" ? { leakedReference: driverPhone.slice(1) } : {}),
           ...(failure === "raw-group" ? { leakedReference: groupJid } : {}),
         };
       },
     },
   });
-  return { result, inspectedExecutions, restarted };
+  return { status: result.status, inspectedExecutions, restarted };
 }
 
 it("selects the real transport lane and inspects both executions across restart", async () => {
@@ -139,10 +127,11 @@ it("selects the real transport lane and inspects both executions across restart"
   expect(scenario.gatewayConfigPatch).toMatchObject({
     logging: { audit: { executionIdentity: true } },
   });
-  const proof = await runIdentityFlow();
-  expect(proof.result.status).toBe("pass");
-  expect(proof.inspectedExecutions).toEqual(new Set(["execution-dm-run", "execution-group-run"]));
-  expect(proof.restarted).toBe(true);
+  expect(await runIdentityFlow()).toEqual({
+    status: "pass",
+    inspectedExecutions: new Set(["execution-dm-run", "execution-group-run"]),
+    restarted: true,
+  });
 });
 
 it.each(invalidEvidence)("rejects %s evidence", async (failure, error) => {
