@@ -71,10 +71,7 @@ describe("browser action observe commands", () => {
     { label: "JSON truncated prefix", body: "ABC", truncated: true, json: true },
   ])("reports completeness for $label without changing body output", async (testCase) => {
     const result = {
-      ok: true,
       response: {
-        url: "https://example.com/api",
-        status: 200,
         body: testCase.body,
         ...(testCase.truncated === undefined ? {} : { truncated: testCase.truncated }),
       },
