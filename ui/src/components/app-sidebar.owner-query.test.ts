@@ -93,7 +93,7 @@ it.each(["owner", "involving-me"])(
     const replacement = ownedSession("agent:main:replacement", other.id, {
       label: "Replacement session",
       owner: { actor: other },
-      participants: [{ identity: viewer }],
+      participants: [{ identity: { type: "profile", id: viewer.id } }],
     });
     await withOwnerSidebar(
       [mine()],
