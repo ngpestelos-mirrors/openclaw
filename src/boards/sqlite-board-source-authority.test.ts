@@ -14,6 +14,8 @@ import { openOpenClawAgentDatabase } from "../state/openclaw-agent-db.js";
 import { withOpenClawTestState } from "../test-utils/openclaw-test-state.js";
 import { SqliteBoardStore } from "./sqlite-board-store.js";
 
+type Declared = Parameters<SqliteBoardStore["putWidget"]>[0]["declared"];
+
 async function fixture() {
   const cfg = rolePolicyConfig();
   const client = roleClient("view", "board-member");
@@ -40,10 +42,7 @@ async function fixture() {
   expect(result.error).toBeNull();
   const authorization = result.authorization!;
   const options = { assertCurrent: authorization.assertCurrent };
-  const write = (
-    name: string,
-    declared?: Parameters<SqliteBoardStore["putWidget"]>[0]["declared"],
-  ) =>
+  const write = (name: string, declared?: Declared) =>
     store.putWidget({ ...target, name, content: { kind: "html", html: name }, declared }, options);
   return { source, target, store, memberId, authorize, authorization, options, write };
 }
@@ -51,18 +50,16 @@ async function fixture() {
 function withFixture(run: (context: Awaited<ReturnType<typeof fixture>>) => Promise<void>) {
   return withOpenClawTestState({ scenario: "minimal" }, async () => {
     const context = await fixture();
-    try {
-      await run(context);
-    } finally {
-      context.authorization.release?.();
-    }
+    using _ = { [Symbol.dispose]: () => context.authorization.release?.() };
+    await run(context);
   });
 }
 
 it("uses retained source facts for every Board mutation and agrees with cold authorization after revocation", () =>
   withFixture(async ({ source, target, store, memberId, authorize, options, write }) => {
-    const host = observeHostDataSql();
-    try {
+    {
+      const host = observeHostDataSql();
+      using _ = { [Symbol.dispose]: host.restore };
       const put = await write("allowed", { tools: ["health"] });
       await store.applyOps(
         target,
@@ -71,16 +68,13 @@ it("uses retained source facts for every Board mutation and agrees with cold aut
       );
       await store.grant(target, "allowed", "granted", 1, put.widgets[0]?.instanceId, options);
       expect(host.queries).toEqual([]);
-    } finally {
-      host.restore();
     }
     await removeSessionMember(source, memberId);
     await expect(write("denied")).rejects.toThrow();
-    const cold = await authorize();
-    try {
+    {
+      const cold = await authorize();
+      using _ = { [Symbol.dispose]: () => cold.authorization?.release?.() };
       expect(cold.error).not.toBeNull();
-    } finally {
-      cold.authorization?.release?.();
     }
     expect((await store.getSnapshot(target)).widgets).toMatchObject([
       { name: "allowed", sizeW: 8, sizeH: 6, grantState: "granted" },
@@ -90,43 +84,31 @@ it("uses retained source facts for every Board mutation and agrees with cold aut
 it("finishes an admitted cross-database write after source revocation and denies the next write", () =>
   withFixture(async ({ source, target, store, memberId, write }) => {
     let revoked = false;
-    const interception = probe.admission(admission, (request, grant, admit) => {
+    using interception = probe.admission(admission, (request, grant, admit) => {
       if (request.stage === "transaction" && !revoked) {
         revoked = true;
         removeSessionMemberSync(source, memberId);
       }
       admit(request, grant);
     });
-    try {
-      await expect(write("in-flight")).resolves.toMatchObject({ revision: 1 });
-      expect(revoked).toBe(true);
-      interception.mockRestore();
-      await expect(write("denied")).rejects.toThrow();
-      expect((await store.getSnapshot(target)).widgets).toMatchObject([{ name: "in-flight" }]);
-    } finally {
-      interception.mockRestore();
-    }
+    await expect(write("in-flight")).resolves.toMatchObject({ revision: 1 });
+    interception.mockRestore();
+    await expect(write("denied")).rejects.toThrow();
+    expect((await store.getSnapshot(target)).widgets).toMatchObject([{ name: "in-flight" }]);
   }));
 
 it("denies new Board admissions while a source revocation is pending and after unknown settlement", () =>
   withFixture(async ({ source, target, store, write }) => {
     const database = openOpenClawAgentDatabase({ agentId: source.agentId });
-    const identity = readOpenClawAgentDatabaseIdentity(database).identity;
-    if (typeof identity !== "string") {
-      throw new Error("Expected a durable source");
-    }
     const publication = retainSessionEntryWorkerPublication({
       agentId: source.agentId,
       storePath: database.path,
-      databaseIdentity: identity,
+      databaseIdentity: readOpenClawAgentDatabaseIdentity(database).identity,
     });
-    try {
-      publication.begin([source.sessionKey], [source.sessionKey], []);
-      await expect(write("pending")).rejects.toThrow();
-      publication.settle(undefined, true);
-      await expect(write("unknown")).rejects.toThrow();
-      expect((await store.getSnapshot(target)).widgets).toEqual([]);
-    } finally {
-      publication.settle(undefined, false);
-    }
+    using _ = { [Symbol.dispose]: () => publication.settle(undefined, false) };
+    publication.begin([source.sessionKey], [source.sessionKey], []);
+    await expect(write("pending")).rejects.toThrow();
+    publication.settle(undefined, true);
+    await expect(write("unknown")).rejects.toThrow();
+    expect((await store.getSnapshot(target)).widgets).toEqual([]);
   }));

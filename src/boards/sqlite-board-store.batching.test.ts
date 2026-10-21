@@ -2,15 +2,7 @@ import { afterEach, expect, it, onTestFinished } from "vitest";
 import { useSqliteWorkerFault } from "../../test/helpers/sqlite-worker-fault.js";
 import { useAutoCleanupTempDirTracker } from "../../test/helpers/temp-dir.js";
 import { sessionChanges } from "../sessions/session-row-changes.js";
-import {
-  closeOpenClawAgentDatabasesAsync,
-  closeOpenClawAgentDatabasesForTest,
-  openOpenClawAgentDatabase,
-} from "../state/openclaw-agent-db.js";
-import {
-  closeOpenClawStateDatabaseAsync,
-  closeOpenClawStateDatabaseForTest,
-} from "../state/openclaw-state-db.js";
+import { boardFixture, closeBoardDatabases } from "./board-store.fixtures.test-support.js";
 import { createTestBoardStore, readBoardHtml } from "./board-store.test-support.js";
 
 const fault = useSqliteWorkerFault([
@@ -29,12 +21,7 @@ const fault = useSqliteWorkerFault([
 ]);
 
 const tempDirs = useAutoCleanupTempDirTracker(afterEach);
-afterEach(async () => {
-  await closeOpenClawAgentDatabasesAsync();
-  closeOpenClawAgentDatabasesForTest();
-  await closeOpenClawStateDatabaseAsync();
-  closeOpenClawStateDatabaseForTest();
-});
+afterEach(closeBoardDatabases);
 
 const tabIds = Array.from({ length: 130 }, (_, index) => `tab-${index}`);
 const createTabs = tabIds.map((tabId) => ({ kind: "tab_create" as const, tabId, title: tabId }));
@@ -53,16 +40,13 @@ it("round-trips and removes a board with many tabs", async () => {
 
 it("rolls back late board writes and preserves surviving widget documents", async () => {
   const stateDir = tempDirs.make("openclaw-board-batch-rollback-");
-  const env = { OPENCLAW_STATE_DIR: stateDir };
-  const target = { sessionKey: "agent:main:batch-rollback" };
-  const store = createTestBoardStore({ stateDir });
+  const { store, target, database } = boardFixture(stateDir, "agent:main:batch-rollback");
   await store.applyOps(target, createTabs);
   const names = tabIds.slice(0, 48);
   for (const name of names) {
     await store.putWidget({ ...target, name, content: { kind: "html", html: name } });
   }
   const before = await store.getSnapshot(target);
-  const database = openOpenClawAgentDatabase({ agentId: "main", env });
   const readRows = () => ({
     tabs: database.db.prepare("SELECT * FROM board_tabs ORDER BY session_key, tab_id").all(),
     widgets: database.db.prepare("SELECT * FROM board_widgets ORDER BY session_key, name").all(),
