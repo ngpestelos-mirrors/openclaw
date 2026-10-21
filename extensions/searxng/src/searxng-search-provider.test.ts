@@ -49,23 +49,13 @@ describe("searxng web search provider", () => {
   });
 
   it("maps generic tool arguments into SearXNG search params", async () => {
-    const args = {
-      query: "openclaw docs",
-      count: 4,
-      categories: "general,news",
-      language: "en",
-    };
+    const args = { query: "openclaw docs", count: 4, categories: "general,news", language: "en" };
     await createTool().execute(args);
     expect(runSearxngSearch).toHaveBeenCalledWith({ config: {}, ...args });
   });
 
-  it("rejects fractional and out-of-range counts before searching", async () => {
-    const tool = createTool();
-
-    await expect(tool.execute({ query: "openclaw docs", count: 4.5 })).rejects.toThrow(
-      "count must be an integer from 1 to 10.",
-    );
-    await expect(tool.execute({ query: "openclaw docs", count: 11 })).rejects.toThrow(
+  it.each([4.5, 11])("rejects invalid count %s before searching", async (count) => {
+    await expect(createTool().execute({ query: "openclaw docs", count })).rejects.toThrow(
       "count must be an integer from 1 to 10.",
     );
     expect(runSearxngSearch).not.toHaveBeenCalled();
