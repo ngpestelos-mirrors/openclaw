@@ -3,6 +3,7 @@ import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import * as configPaths from "../config/paths.js";
 import * as repairRuntime from "../infra/update-repair-agent.runtime.js";
+import { repairRoute } from "../infra/update-repair-agent.test-support.js";
 import { withOpenClawTestState } from "../test-utils/openclaw-test-state.js";
 import { beginDoctorMaintenance } from "./doctor-maintenance.js";
 import * as doctorPolicy from "./doctor-service-repair-policy.js";
@@ -55,15 +56,9 @@ describe("manual triage repair isolation", () => {
     "repairs synthetic state without Doctor service effects and restores policy (throws=%s)",
     async (throws) => {
       await withOpenClawTestState({ layout: "split" }, async (state) => {
-        // Triage, the repair loop, its environment owner, and Doctor maintenance
-        // run real code; inference, executor, oracle, and service effects are mocked.
+        // Only inference, executor, oracle, and service effects are mocked.
         vi.spyOn(configPaths, "isDefaultInstallIdentity").mockReturnValue(true);
         vi.spyOn(doctorPolicy, "shouldManageGatewayService").mockResolvedValue(true);
-        mocks.serviceStop.mockResolvedValue({
-          inspected: true,
-          serviceUpdateVerdict: { kind: "owned", refreshDefinition: false },
-          stopped: false,
-        });
         const keys = [
           "OPENCLAW_SERVICE_REPAIR_POLICY",
           "OPENCLAW_UPDATE_IN_PROGRESS",
@@ -83,14 +78,8 @@ describe("manual triage repair isolation", () => {
         vi.spyOn(repairRuntime, "prepareUpdateRepairInference").mockResolvedValue({
           ok: true,
           route: {
-            runner: "embedded",
+            ...repairRoute(state.statePath("agents", "repair", "agent"), config),
             agentId: "repair",
-            agentDir: state.statePath("agents", "repair", "agent"),
-            provider: "fixture",
-            model: "repair",
-            modelLabel: "fixture/repair",
-            runConfig: config,
-            sourceConfig: config,
           },
           modelFallbacks: [],
         });
