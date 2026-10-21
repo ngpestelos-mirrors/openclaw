@@ -1,12 +1,6 @@
 /* @vitest-environment jsdom */
 
-import type {
-  ControlUiDialogProps,
-  ControlUiHost,
-  ControlUiPage,
-  ControlUiViewContext,
-} from "openclaw/plugin-sdk/control-ui";
-import { createDeferred } from "openclaw/plugin-sdk/extension-shared";
+import type * as UI from "openclaw/plugin-sdk/control-ui";
 import { expect, it, onTestFinished, vi } from "vitest";
 import plugin from "./control-ui.js";
 
@@ -30,9 +24,8 @@ const button = (label: string) =>
   [...document.querySelectorAll("button")].find((node) => node.textContent === label);
 
 function fixture(responses: unknown[], props: Record<string, string> = {}) {
-  const request = vi.fn();
-  responses.forEach((response) => request.mockResolvedValueOnce(response));
-  const registerPage = vi.fn<(page: ControlUiPage) => () => void>(() => () => {});
+  const request = vi.fn(async () => responses.shift());
+  const registerPage = vi.fn<(page: UI.ControlUiPage) => () => void>(() => () => {});
   const controller = new AbortController();
   const host = {
     locale: "en-US",
@@ -43,24 +36,22 @@ function fixture(responses: unknown[], props: Record<string, string> = {}) {
     subscribe: () => () => {},
     ui: { registerPage },
     components: {
-      mountDialog: (container: HTMLElement, input: ControlUiDialogProps) => {
-        container.append(input.content);
-        return { dispose: () => input.content.remove(), update: () => {} };
+      mountDialog: (container: HTMLElement, { content }: UI.ControlUiDialogProps) => {
+        container.append(content);
+        return { dispose: () => content.remove(), update: () => {} };
       },
     },
-  } as unknown as ControlUiHost;
+  } as unknown as UI.ControlUiHost;
   void plugin.activate(host);
   const [[page]] = registerPage.mock.calls;
-  const container = document.createElement("div");
-  document.body.append(container);
-  const context: ControlUiViewContext = {
+  const context: UI.ControlUiViewContext = {
     host,
     props,
     signal: controller.signal,
     presented: true,
     mountDefault: () => () => {},
   };
-  const view = page.mount(container, context);
+  const view = page.mount(document.body, context);
   onTestFinished(() => {
     controller.abort();
     view?.dispose?.();
@@ -121,7 +112,7 @@ it("escapes app labels and rejects foreign relay continuations", async () => {
 });
 
 it("ignores stale consent responses after navigation", async () => {
-  const previous = createDeferred<unknown>();
+  const previous = Promise.withResolvers<unknown>();
   const { request, navigate } = fixture(
     [grants, previous.promise, grants, { ...consent, clientName: "Current app" }],
     { request: "old" },
