@@ -1,4 +1,4 @@
-// Fal tests cover music generation provider plugin behavior.
+import type { MusicGenerationRequest } from "openclaw/plugin-sdk/music-generation";
 import {
   getProviderHttpMocks,
   installProviderHttpMockCleanup,
@@ -23,11 +23,30 @@ function streamedAudioResponse(bytes: string): Response {
   );
 }
 
-function falMusicJsonResponse(value: unknown) {
-  return {
-    response: Response.json(value),
+function mockAudio(payload: unknown, response: Response) {
+  postJsonRequestMock.mockResolvedValue({
+    response: Response.json(payload),
     release: vi.fn(async () => {}),
-  };
+  });
+  const fetchMock = vi.fn(async () => response);
+  vi.stubGlobal("fetch", fetchMock);
+  return fetchMock;
+}
+
+function generateMusic(overrides: Partial<MusicGenerationRequest>) {
+  return buildFalMusicGenerationProvider().generateMusic({
+    provider: "fal",
+    model: "fal-ai/minimax-music/v2.6",
+    prompt: "city pop chorus",
+    cfg: {},
+    ...overrides,
+  });
+}
+
+function expectRequest(model: string, body: Record<string, unknown>) {
+  const request = requireFirstPostJsonRecordRequest(postJsonRequestMock, "fal music request");
+  expect(request.url).toBe(`https://fal.run/fal-ai/${model}`);
+  expect(request.body).toEqual(body);
 }
 
 describe("fal music generation provider", () => {
@@ -44,74 +63,57 @@ describe("fal music generation provider", () => {
   });
 
   it("submits MiniMax music through fal and downloads the generated track", async () => {
-    postJsonRequestMock.mockResolvedValue(
-      falMusicJsonResponse({
+    const fetchMock = mockAudio(
+      {
         audio: {
           url: "https://v3b.fal.media/files/b/kangaroo/out.mp3",
           content_type: "audio/mpeg",
           file_name: "out.mp3",
         },
+      },
+      new Response(Buffer.from("mp3-bytes"), {
+        headers: { "content-type": "application/octet-stream" },
       }),
     );
-    const fetchMock = vi.fn(
-      async () =>
-        new Response(Buffer.from("mp3-bytes"), {
-          headers: { "content-type": "application/octet-stream" },
-        }),
-    );
-    vi.stubGlobal("fetch", fetchMock);
 
-    const result = await buildFalMusicGenerationProvider().generateMusic({
-      provider: "fal",
+    const result = await generateMusic({
       model: "",
-      prompt: "city pop chorus",
-      cfg: {},
       lyrics: "[Verse]\nNeon rain",
       durationSeconds: 42,
       format: "mp3",
     });
 
-    const request = requireFirstPostJsonRecordRequest(postJsonRequestMock, "fal music request");
-    expect(request.url).toBe("https://fal.run/fal-ai/minimax-music/v2.6");
-    expect(request.body).toEqual({
+    expectRequest("minimax-music/v2.6", {
       prompt: "city pop chorus",
       lyrics: "[Verse]\nNeon rain",
       duration: 42,
-      audio_setting: {
-        sample_rate: 44100,
-        bitrate: 256000,
-        format: "mp3",
-      },
+      audio_setting: { sample_rate: 44100, bitrate: 256000, format: "mp3" },
     });
     expect(fetchMock).toHaveBeenCalledWith(
       "https://v3b.fal.media/files/b/kangaroo/out.mp3",
       expect.objectContaining({ method: "GET" }),
     );
-    expect(result.model).toBe("fal-ai/minimax-music/v2.6");
-    expect(result.tracks[0]?.mimeType).toBe("audio/mpeg");
+    expect(result).toMatchObject({
+      model: "fal-ai/minimax-music/v2.6",
+      metadata: { audioUrl: "https://v3b.fal.media/files/b/kangaroo/out.mp3" },
+    });
+    expect(result.tracks[0]).toMatchObject({
+      mimeType: "audio/mpeg",
+      fileName: "out.mp3",
+    });
     expect(result.tracks[0]?.buffer).toEqual(Buffer.from("mp3-bytes"));
-    expect(result.tracks[0]?.fileName).toBe("out.mp3");
-    expect(result.metadata?.audioUrl).toBe("https://v3b.fal.media/files/b/kangaroo/out.mp3");
   });
 
   it("rejects generated music downloads that exceed the configured media cap", async () => {
-    postJsonRequestMock.mockResolvedValue(
-      falMusicJsonResponse({
-        audio: {
-          url: "https://v3b.fal.media/files/b/out.mp3",
-          content_type: "audio/mpeg",
-        },
-      }),
-    );
-    vi.stubGlobal(
-      "fetch",
-      vi.fn(async () => streamedAudioResponse("too-large")),
+    mockAudio(
+      {
+        audio: { url: "https://v3b.fal.media/files/b/out.mp3", content_type: "audio/mpeg" },
+      },
+      streamedAudioResponse("too-large"),
     );
 
     await expect(
-      buildFalMusicGenerationProvider().generateMusic({
-        provider: "fal",
-        model: "fal-ai/minimax-music/v2.6",
+      generateMusic({
         prompt: "short track",
         cfg: { agents: { defaults: { mediaMaxMb: 0.000001 } } },
       }),
@@ -120,84 +122,37 @@ describe("fal music generation provider", () => {
 
   it("rejects MiniMax lyrics requests that also ask for instrumental output", async () => {
     await expect(
-      buildFalMusicGenerationProvider().generateMusic({
-        provider: "fal",
-        model: "fal-ai/minimax-music/v2.6",
-        prompt: "city pop chorus",
-        cfg: {},
-        lyrics: "[Verse]\nNeon rain",
-        instrumental: true,
-      }),
+      generateMusic({ lyrics: "[Verse]\nNeon rain", instrumental: true }),
     ).rejects.toThrow("fal MiniMax music generation cannot use lyrics when instrumental=true.");
 
     expect(postJsonRequestMock).not.toHaveBeenCalled();
   });
 
-  it("maps ACE-Step duration and instrumental controls", async () => {
-    postJsonRequestMock.mockResolvedValue(
-      falMusicJsonResponse({
+  it.each([
+    {
+      model: "ace-step/prompt-to-audio",
+      prompt: "lofi beach loop",
+      options: { instrumental: true, durationSeconds: 30 },
+      expected: { instrumental: true, duration: 30 },
+      payload: {
         audio: { url: "https://example.com/out.wav", content_type: "audio/wav" },
         seed: 42,
         tags: "lofi, chill",
-      }),
-    );
-    vi.stubGlobal(
-      "fetch",
-      vi.fn(
-        async () =>
-          new Response(Buffer.from("wav-bytes"), {
-            headers: { "content-type": "audio/wav" },
-          }),
-      ),
-    );
-
-    await buildFalMusicGenerationProvider().generateMusic({
-      provider: "fal",
-      model: "fal-ai/ace-step/prompt-to-audio",
-      prompt: "lofi beach loop",
-      cfg: {},
-      instrumental: true,
-      durationSeconds: 30,
-    });
-
-    const request = requireFirstPostJsonRecordRequest(postJsonRequestMock, "fal music request");
-    expect(request.url).toBe("https://fal.run/fal-ai/ace-step/prompt-to-audio");
-    expect(request.body).toEqual({
-      prompt: "lofi beach loop",
-      instrumental: true,
-      duration: 30,
-    });
-  });
-
-  it("maps Stable Audio duration controls", async () => {
-    postJsonRequestMock.mockResolvedValue(
-      falMusicJsonResponse({
-        audio: "https://example.com/stable.wav",
-      }),
-    );
-    vi.stubGlobal(
-      "fetch",
-      vi.fn(
-        async () =>
-          new Response(Buffer.from("wav-bytes"), {
-            headers: { "content-type": "audio/wav" },
-          }),
-      ),
-    );
-
-    await buildFalMusicGenerationProvider().generateMusic({
-      provider: "fal",
-      model: "fal-ai/stable-audio-25/text-to-audio",
+      },
+    },
+    {
+      model: "stable-audio-25/text-to-audio",
       prompt: "orchestral hit",
-      cfg: {},
-      durationSeconds: 12,
-    });
-
-    const request = requireFirstPostJsonRecordRequest(postJsonRequestMock, "fal music request");
-    expect(request.url).toBe("https://fal.run/fal-ai/stable-audio-25/text-to-audio");
-    expect(request.body).toEqual({
-      prompt: "orchestral hit",
-      seconds_total: 12,
-    });
-  });
+      options: { durationSeconds: 12 },
+      expected: { seconds_total: 12 },
+      payload: { audio: "https://example.com/stable.wav" },
+    },
+  ])(
+    "maps $model duration and instrumental controls",
+    async ({ model, prompt, options, expected, payload }) => {
+      mockAudio(payload, new Response("wav-bytes", { headers: { "content-type": "audio/wav" } }));
+      await generateMusic({ model: `fal-ai/${model}`, prompt, ...options });
+      expectRequest(model, { prompt, ...expected });
+    },
+  );
 });

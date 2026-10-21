@@ -18,21 +18,29 @@ function sourceImage(buffer: string) {
 }
 
 function mockGeneratedImage() {
-  fetchWithSsrFGuardMock
-    .mockResolvedValueOnce({
-      response: Response.json({ images: [{ url: "https://v3.fal.media/out.webp" }] }),
-      release: vi.fn(async () => {}),
-    })
-    .mockResolvedValueOnce({
-      response: new Response(Buffer.from("image"), {
-        headers: { "content-type": "image/webp" },
-      }),
-      release: vi.fn(async () => {}),
-    });
+  for (const response of [
+    Response.json({ images: [{ url: "https://v3.fal.media/out.webp" }] }),
+    new Response("image", { headers: { "content-type": "image/webp" } }),
+  ]) {
+    fetchWithSsrFGuardMock.mockResolvedValueOnce({ response, release: vi.fn(async () => {}) });
+  }
 }
 
 describe("fal GPT Image 2.5", () => {
   let provider: ReturnType<typeof buildFalImageGenerationProvider>;
+  const defaults = () => ({ cfg: {}, prompt: "A sticker" });
+  function generate(
+    overrides: Partial<Parameters<typeof generateImage>[0]>,
+    log?: { warn: () => void },
+  ) {
+    return generateImage(
+      { ...defaults(), ...overrides },
+      { getProvider: () => provider, listProviders: () => [provider], log },
+    );
+  }
+  function requestBody() {
+    return JSON.parse(String(fetchWithSsrFGuardMock.mock.calls[0]?.[0].init.body));
+  }
 
   beforeEach(() => {
     fetchWithSsrFGuardMock.mockReset();
@@ -55,30 +63,22 @@ describe("fal GPT Image 2.5", () => {
     ["4:5", 1232, 1536],
     ["2.35:1", 1536, 656],
     ["21:9", 1536, 656],
-  ] as const)(
-    "maps aspect ratio %s to valid generation and edit dimensions",
-    async (aspectRatio, width, height) => {
-      for (const variant of ["flare", "sunburst"]) {
-        fetchWithSsrFGuardMock.mockReset();
-        mockGeneratedImage();
-        await generateImage(
-          {
-            cfg: {},
-            modelOverride: `fal/openai/gpt-image-2.5/${variant}/text-to-image`,
-            prompt: "A sticker",
-            aspectRatio,
-            ...(variant === "sunburst"
-              ? { inputImages: [sourceImage("reference")], inferredResolution: "4K" as const }
-              : {}),
-          },
-          { getProvider: () => provider, listProviders: () => [provider] },
-        );
-        const body = JSON.parse(String(fetchWithSsrFGuardMock.mock.calls[0]?.[0].init.body));
-        expect(body.image_size).toEqual({ width, height });
-        expect(body).not.toHaveProperty("resolution");
-      }
-    },
-  );
+  ] as const)("maps %s to generation and edit dimensions", async (aspectRatio, width, height) => {
+    for (const variant of ["flare", "sunburst"]) {
+      fetchWithSsrFGuardMock.mockReset();
+      mockGeneratedImage();
+      await generate({
+        modelOverride: `fal/openai/gpt-image-2.5/${variant}/text-to-image`,
+        aspectRatio,
+        ...(variant === "sunburst"
+          ? { inputImages: [sourceImage("reference")], inferredResolution: "4K" as const }
+          : {}),
+      });
+      const body = requestBody();
+      expect(body.image_size).toEqual({ width, height });
+      expect(body).not.toHaveProperty("resolution");
+    }
+  });
 
   it.each(["flare", "sunburst"])("generates and edits %s through runtime", async (variant) => {
     const model = `openai/gpt-image-2.5/${variant}/text-to-image`;
@@ -88,19 +88,15 @@ describe("fal GPT Image 2.5", () => {
       mockGeneratedImage();
       const selectedModel =
         mode === "explicit-edit" ? model.replace("/text-to-image", "/edit") : model;
-      const result = await generateImage(
-        {
-          cfg: {},
-          modelOverride: `fal/${selectedModel}`,
-          prompt: "A transparent sticker",
-          quality: variant === "flare" ? "xhigh" : "max",
-          outputFormat: "webp",
-          background: "transparent",
-          size: mode === "generate" ? "1536x864" : "auto",
-          ...(mode !== "generate" ? { inputImages: refs, inferredResolution: "4K" as const } : {}),
-        },
-        { getProvider: () => provider, listProviders: () => [provider] },
-      );
+      const result = await generate({
+        modelOverride: `fal/${selectedModel}`,
+        prompt: "A transparent sticker",
+        quality: variant === "flare" ? "xhigh" : "max",
+        outputFormat: "webp",
+        background: "transparent",
+        size: mode === "generate" ? "1536x864" : "auto",
+        ...(mode !== "generate" ? { inputImages: refs, inferredResolution: "4K" as const } : {}),
+      });
       const request = fetchWithSsrFGuardMock.mock.calls[0]?.[0];
       expect(request.url).toBe(
         `https://fal.run/${mode === "generate" ? model : model.replace("/text-to-image", "/edit")}`,
@@ -111,7 +107,7 @@ describe("fal GPT Image 2.5", () => {
       const headers = new Headers(request.init.headers);
       expect(headers.get("authorization")).toBe("Key fal-test-key");
       expect(headers.get("content-type")).toBe("application/json");
-      expect(JSON.parse(String(request.init.body))).toEqual({
+      expect(requestBody()).toEqual({
         prompt: "A transparent sticker",
         num_images: 1,
         quality: variant === "flare" ? "xhigh" : "max",
@@ -119,11 +115,7 @@ describe("fal GPT Image 2.5", () => {
         background: "transparent",
         image_size: mode === "generate" ? { width: 1536, height: 864 } : "auto",
         ...(mode !== "generate"
-          ? {
-              image_urls: refs.map(
-                (image) => `data:image/png;base64,${image.buffer.toString("base64")}`,
-              ),
-            }
+          ? { image_urls: Array.from({ length: 16 }, () => "data:image/png;base64,cmVmZXJlbmNl") }
           : {}),
       });
       expect(result.ignoredOverrides).toEqual([]);
@@ -131,14 +123,9 @@ describe("fal GPT Image 2.5", () => {
     }
     fetchWithSsrFGuardMock.mockReset();
     await expect(
-      generateImage(
-        {
-          cfg: {},
-          modelOverride: `fal/${model}`,
-          prompt: "Too many references",
-          inputImages: [...refs, sourceImage("extra")],
-        },
-        { getProvider: () => provider, listProviders: () => [provider], log: { warn: vi.fn() } },
+      generate(
+        { modelOverride: `fal/${model}`, inputImages: [...refs, sourceImage("extra")] },
+        { warn: vi.fn() },
       ),
     ).rejects.toThrow("16");
     expect(fetchWithSsrFGuardMock).not.toHaveBeenCalled();
@@ -158,8 +145,7 @@ describe("fal GPT Image 2.5", () => {
       provider.generateImage({
         provider: "fal",
         model: "openai/gpt-image-2.5/flare/text-to-image",
-        cfg: {},
-        prompt: "A sticker",
+        ...defaults(),
         ...geometry,
       }),
     ).rejects.toThrow(/fal GPT Image 2.5.*size/);
@@ -170,12 +156,11 @@ describe("fal GPT Image 2.5", () => {
     mockGeneratedImage();
     await provider.generateImage({
       provider: "fal",
-      cfg: {},
+      ...defaults(),
       model: "openai/gpt-image-2.5/sunburst/text-to-image",
-      prompt: "A sticker",
       inputImages: [sourceImage("reference")],
     });
-    const body = JSON.parse(String(fetchWithSsrFGuardMock.mock.calls[0]?.[0].init.body));
+    const body = requestBody();
     expect(body).not.toHaveProperty("image_size");
     expect(body).not.toHaveProperty("resolution");
   });
