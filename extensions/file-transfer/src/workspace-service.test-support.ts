@@ -53,7 +53,8 @@ export function createNodeWorkspaceTestTransport(
       params: request.params as Record<string, unknown>,
       pluginConfig: api.config.plugins!.entries!["file-transfer"]!.config,
     });
-    invokeNode.mockImplementation(async ({ params } = {}) => {
+    invokeNode.mockImplementation(async (options = {}) => {
+      const { params } = options;
       request.assertCurrent?.();
       signal.throwIfAborted();
       let payload: unknown;
