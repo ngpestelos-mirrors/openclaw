@@ -82,18 +82,17 @@ it(
       route: { deliveryMode: "session" },
     });
 
-    const handler = createHandler(
-      harness.createBaseSignalEventHandlerDeps({
-        cfg: {
-          channels: { signal: { allowFrom: ["+15550001111"] } },
-          approvals: { exec: { enabled: true, mode: "session" } },
-        },
-      }),
-    );
     const monitor = await startSignalIngressMonitor({
       accountId: "default",
       queue,
-      dispatch: handler,
+      dispatch: createHandler(
+        harness.createBaseSignalEventHandlerDeps({
+          cfg: {
+            channels: { signal: { allowFrom: ["+15550001111"] } },
+            approvals: { exec: { enabled: true, mode: "session" } },
+          },
+        }),
+      ),
       runtime: { error: vi.fn(), log: vi.fn() },
     });
     const reactionEvent = harness.createSignalReceiveEvent({

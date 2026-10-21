@@ -1,21 +1,11 @@
-import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { beforeAll, beforeEach, expect, it, vi } from "vitest";
 
 const rpcMock = vi.fn();
 
 vi.mock("./accounts.js", () => ({
   resolveSignalAccount: () => ({
-    accountId: "default",
-    enabled: true,
     baseUrl: "http://signal.local",
-    transport: {
-      kind: "managed-native",
-      baseUrl: "http://signal.local",
-      cliPath: "signal-cli",
-      httpHost: "127.0.0.1",
-      httpPort: 8080,
-      startupTimeoutMs: 30_000,
-    },
-    configured: true,
+    transport: { kind: "managed-native" },
     config: { account: "+15550001111" },
   }),
 }));
@@ -39,70 +29,68 @@ function expectRpc(params: Record<string, unknown>) {
   });
 }
 
-describe("sendReactionSignal", () => {
-  beforeAll(async () => {
-    ({ sendReactionSignal, removeReactionSignal } = await import("./send-reactions.js"));
+beforeAll(async () => {
+  ({ sendReactionSignal, removeReactionSignal } = await import("./send-reactions.js"));
+});
+
+beforeEach(() => {
+  rpcMock.mockClear().mockResolvedValue({ timestamp: 123 });
+});
+
+it.each([
+  ["mixed-case Signal and UUID prefixes", `  SiGnAl:  UuId:${uuid}  `, uuid],
+  ["Signal-prefixed phone number", " SiGnAl: +15551230000 ", "+15551230000"],
+])("uses recipients and targetAuthor for %s DMs", async (_name, recipient, expectedRecipient) => {
+  await sendReactionSignal(recipient, 123, "🔥", { cfg: SIGNAL_TEST_CFG });
+  expectRpc({
+    emoji: "🔥",
+    targetTimestamp: 123,
+    targetAuthor: expectedRecipient,
+    recipients: [expectedRecipient],
+    account: "+15550001111",
+  });
+});
+
+it("uses groupIds array and maps targetAuthorUuid", async () => {
+  await sendReactionSignal("", 123, "✅", {
+    cfg: SIGNAL_TEST_CFG,
+    groupId: "group-id",
+    targetAuthorUuid: ` SiGnAl: UuId:${uuid} `,
+  });
+  expectRpc({
+    emoji: "✅",
+    targetTimestamp: 123,
+    account: "+15550001111",
+    groupIds: ["group-id"],
+    targetAuthor: uuid,
+  });
+});
+
+it("honors an explicit container endpoint override", async () => {
+  await sendReactionSignal("+15551230000", 123, "✅", {
+    cfg: SIGNAL_TEST_CFG,
+    baseUrl: "http://container:8080",
+    transportKind: "container",
   });
 
-  beforeEach(() => {
-    rpcMock.mockClear().mockResolvedValue({ timestamp: 123 });
-  });
-
-  it.each([
-    ["mixed-case Signal and UUID prefixes", `  SiGnAl:  UuId:${uuid}  `, uuid],
-    ["Signal-prefixed phone number", " SiGnAl: +15551230000 ", "+15551230000"],
-  ])("uses recipients and targetAuthor for %s DMs", async (_name, recipient, expectedRecipient) => {
-    await sendReactionSignal(recipient, 123, "🔥", { cfg: SIGNAL_TEST_CFG });
-    expectRpc({
-      emoji: "🔥",
-      targetTimestamp: 123,
-      targetAuthor: expectedRecipient,
-      recipients: [expectedRecipient],
-      account: "+15550001111",
-    });
-  });
-
-  it("uses groupIds array and maps targetAuthorUuid", async () => {
-    await sendReactionSignal("", 123, "✅", {
-      cfg: SIGNAL_TEST_CFG,
-      groupId: "group-id",
-      targetAuthorUuid: ` SiGnAl: UuId:${uuid} `,
-    });
-    expectRpc({
-      emoji: "✅",
-      targetTimestamp: 123,
-      account: "+15550001111",
-      groupIds: ["group-id"],
-      targetAuthor: uuid,
-    });
-  });
-
-  it("honors an explicit container endpoint override", async () => {
-    await sendReactionSignal("+15551230000", 123, "✅", {
-      cfg: SIGNAL_TEST_CFG,
+  expect(rpcMock).toHaveBeenCalledWith(
+    "sendReaction",
+    expect.any(Object),
+    expect.objectContaining({
       baseUrl: "http://container:8080",
       transportKind: "container",
-    });
+    }),
+  );
+});
 
-    expect(rpcMock).toHaveBeenCalledWith(
-      "sendReaction",
-      expect.any(Object),
-      expect.objectContaining({
-        baseUrl: "http://container:8080",
-        transportKind: "container",
-      }),
-    );
-  });
-
-  it("defaults targetAuthor to recipient for removals", async () => {
-    await removeReactionSignal("+15551230000", 456, "❌", { cfg: SIGNAL_TEST_CFG });
-    expectRpc({
-      emoji: "❌",
-      targetTimestamp: 456,
-      account: "+15550001111",
-      recipients: ["+15551230000"],
-      targetAuthor: "+15551230000",
-      remove: true,
-    });
+it("defaults targetAuthor to recipient for removals", async () => {
+  await removeReactionSignal("+15551230000", 456, "❌", { cfg: SIGNAL_TEST_CFG });
+  expectRpc({
+    emoji: "❌",
+    targetTimestamp: 456,
+    account: "+15550001111",
+    recipients: ["+15551230000"],
+    targetAuthor: "+15551230000",
+    remove: true,
   });
 });

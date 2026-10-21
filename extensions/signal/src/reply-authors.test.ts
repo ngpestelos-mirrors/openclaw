@@ -1,5 +1,4 @@
 import { DatabaseSync } from "node:sqlite";
-import type { PluginStateKeyedStore } from "openclaw/plugin-sdk/plugin-state-runtime";
 import { createPluginStateKeyedStoreV2ForTests as openStore } from "openclaw/plugin-sdk/plugin-state-test-runtime";
 import { createPluginRuntimeMock } from "openclaw/plugin-sdk/plugin-test-runtime";
 import {
@@ -8,7 +7,7 @@ import {
 } from "openclaw/plugin-sdk/sqlite-runtime-testing";
 import { useAutoCleanupTempDirTracker } from "openclaw/plugin-sdk/test-env";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
-import type { SignalReplyContextRecord } from "./reply-authors-state.js";
+import type { SignalReplyContextRecord as ReplyContext } from "./reply-authors-state.js";
 import {
   registerSignalReplyContext as registerContext,
   resolveSignalReplyContextWithPersistence as resolveContext,
@@ -18,7 +17,7 @@ import * as runtimeModule from "./runtime.js";
 
 const reply = { to: "signal:+15555550123", replyToId: "1700000000001" };
 const input = { ...reply, author: "+15555550123", body: "new", sourceTimestamp: 200 };
-const record: SignalReplyContextRecord = {
+const record: ReplyContext = {
   kind: "resolved",
   accountId: "default",
   conversationKey: "+15555550123",
@@ -38,7 +37,6 @@ const dirs = useAutoCleanupTempDirTracker((cleanup) =>
 );
 
 beforeEach(resetSignalReplyAuthorsForTests);
-
 const register = (overrides: Partial<Parameters<typeof registerContext>[0]> = {}) =>
   registerContext({ ...input, ...overrides });
 
@@ -47,54 +45,7 @@ async function expectReloaded(expected: Awaited<ReturnType<typeof resolveContext
   await expect(resolveContext(key)).resolves.toEqual(expected);
 }
 
-function installStore() {
-  const unexpectedOperation = async () => {
-    throw new Error("unexpected storage operation");
-  };
-  const store = {
-    observe: vi.fn(unexpectedOperation),
-    compareAndApply: vi.fn(unexpectedOperation),
-    register: vi.fn(),
-    registerIfAbsent: vi.fn(),
-    lookup: vi.fn().mockResolvedValue(undefined),
-    consume: vi.fn(),
-    delete: vi.fn(),
-    entries: vi.fn(),
-    clear: vi.fn(),
-    lookupMany: vi.fn(unexpectedOperation),
-    deleteIfEqual: vi.fn(unexpectedOperation),
-    entriesInKeyRange: vi.fn(unexpectedOperation),
-    moveEntriesFrom: vi.fn(unexpectedOperation),
-    count: vi.fn(unexpectedOperation),
-  } satisfies PluginStateKeyedStore<unknown, 2>;
-  const runtime = createPluginRuntimeMock();
-  const logger = runtime.logging.getChildLogger({});
-  vi.spyOn(runtime.logging, "getChildLogger").mockReturnValue(logger);
-  vi.spyOn(runtime.state, "openKeyedStoreV2").mockReturnValue(store);
-  vi.spyOn(runtimeModule, "getOptionalSignalRuntime").mockReturnValue(runtime);
-  return { store, runtime };
-}
-
-it.each(["lookup", "register"] as const)(
-  "keeps best-effort memory after %s rejects without retrying",
-  async (failureStage) => {
-    const { store, runtime } = installStore();
-    store.lookup.mockResolvedValue(record);
-    store[failureStage].mockRejectedValue(new Error("storage unavailable"));
-    await register();
-    expect(store[failureStage]).toHaveBeenCalledTimes(1);
-    await expect(resolveContext(reply)).resolves.toEqual({
-      author: input.author,
-      body: failureStage === "lookup" ? "new" : "stored",
-    });
-    expect(runtime.logging.getChildLogger({}).warn).toHaveBeenCalledWith(
-      "Signal persistent reply author state failed",
-      { error: "Error: storage unavailable" },
-    );
-  },
-);
-
-it("persists and reloads merged reply context with zero parent-thread SQL", async () => {
+function installRuntime() {
   const env = { ...process.env, OPENCLAW_STATE_DIR: dirs.make("signal-reply-worker-") };
   const runtime = createPluginRuntimeMock({
     state: {
@@ -102,7 +53,31 @@ it("persists and reloads merged reply context with zero parent-thread SQL", asyn
         openStore<T>("signal", { ...options, env }, { assertCurrent() {} }),
     },
   });
+  const logger = runtime.logging.getChildLogger({});
+  vi.spyOn(runtime.logging, "getChildLogger").mockReturnValue(logger);
   vi.spyOn(runtimeModule, "getOptionalSignalRuntime").mockReturnValue(runtime);
+  return { runtime, logger };
+}
+
+it.each(["lookup", "register"] as const)("retains memory after %s fails", async (stage) => {
+  const { runtime, logger } = installRuntime();
+  const store = runtime.state.openKeyedStoreV2({ namespace: "failures" });
+  vi.spyOn(runtime.state, "openKeyedStoreV2").mockReturnValue(store);
+  vi.spyOn(store, "lookup").mockResolvedValue(record);
+  vi.spyOn(store, stage).mockRejectedValue(new Error("storage unavailable"));
+  await register();
+  expect(store[stage]).toHaveBeenCalledTimes(1);
+  await expect(resolveContext(reply)).resolves.toEqual({
+    author: input.author,
+    body: stage === "lookup" ? "new" : "stored",
+  });
+  expect(logger.warn).toHaveBeenCalledWith("Signal persistent reply author state failed", {
+    error: "Error: storage unavailable",
+  });
+});
+
+it("persists and reloads merged reply context with zero parent-thread SQL", async () => {
+  const { runtime } = installRuntime();
   const { calls: counters } = observeHostDataSql();
   const calibration = new DatabaseSync(":memory:");
   try {
@@ -114,9 +89,7 @@ it("persists and reloads merged reply context with zero parent-thread SQL", asyn
     expect(counters.every((counter) => counter.mock.calls.length > 0)).toBe(true);
   } finally {
     calibration.close();
-    for (const counter of counters) {
-      counter.mockClear();
-    }
+    counters.forEach((counter) => counter.mockClear());
   }
   const failOpen = () => {
     throw new Error("store temporarily unavailable");
