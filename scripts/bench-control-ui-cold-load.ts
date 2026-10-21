@@ -927,19 +927,7 @@ try {
   }
   async function expandSidebar() {
     if (!values["sidebar-expanded"]) return;
-    const rows = page.locator(".sidebar-session-content .sidebar-recent-session");
-    if ((await rows.count()) > 10) return;
-    await page
-      .locator(".sidebar-session-content .sidebar-session-pagination__button")
-      .filter({ hasText: "Show more" })
-      .first()
-      .click();
-    await page.waitForFunction(
-      () =>
-        document.querySelectorAll(".sidebar-session-content .sidebar-recent-session").length > 10,
-    );
-    // The saved marker may still describe the previous write until capture runs.
-    await page.waitForFunction(async () => {
+    const expansionSaved = async () => {
       const database = await new Promise<IDBDatabase>((resolve, reject) => {
         const request = indexedDB.open("openclaw-chat-snapshots");
         request.onsuccess = () => resolve(request.result);
@@ -973,7 +961,23 @@ try {
       } finally {
         database.close();
       }
-    });
+    };
+    // Sticky live rows can exceed ten without an explicit Show more selection.
+    if (!(await page.evaluate(expansionSaved))) {
+      await page
+        .locator(".sidebar-session-content .sidebar-session-pagination__button")
+        .filter({ hasText: "Show more" })
+        .first()
+        .click();
+    }
+    // waitForFunction treats an async predicate's Promise as truthy.
+    const deadline = Date.now() + 30_000;
+    while (!(await page.evaluate(expansionSaved))) {
+      if (Date.now() >= deadline) {
+        throw new Error("Expanded sidebar membership was not persisted");
+      }
+      await page.evaluate(() => new Promise(requestAnimationFrame));
+    }
   }
   const warmStates: Array<Awaited<ReturnType<typeof persistColdLoadWarmState>>["storage"]> = [];
   const snapshotSaves: Array<
