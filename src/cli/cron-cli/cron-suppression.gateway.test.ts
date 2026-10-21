@@ -9,6 +9,7 @@ import { createDeferred, withinTest } from "../../../test/helpers/promise.js";
 import { prepareAgentRunTerminalReply } from "../../agents/agent-run-terminal-reply.js";
 import { resolveCronDeliveryPlan } from "../../cron/delivery-plan.js";
 import { dispatchCronDelivery } from "../../cron/isolated-agent/delivery-dispatch.js";
+import { makeBaseParams } from "../../cron/isolated-agent/delivery-dispatch.test-fixtures.js";
 import { readCronRunHistoryPageForTests } from "../../cron/run-history.test-support.js";
 import { CronService, type CronEvent } from "../../cron/service.js";
 import { createNoopLogger } from "../../cron/service.test-harness.js";
@@ -48,13 +49,21 @@ vi.mock("../../runtime.js", async () => {
 });
 
 const { registerCronCli } = await import("../cron-cli.js");
+const announce = { mode: "announce", channel: "telegram", to: "123456" } as const;
+const phases = [
+  "silent",
+  "delivery-error",
+  "required-delivery-error",
+  "execution-error",
+  "silent",
+  "not-requested",
+] as const;
 
 async function runCli(args: string[]) {
   for (const mock of Object.values(mocks.runtime)) {
     mock.mockClear();
   }
-  const program = new Command();
-  program.exitOverride();
+  const program = new Command().exitOverride();
   registerCronCli(program);
   let exitCode: number | undefined;
   try {
@@ -116,12 +125,7 @@ describe("cron CLI delivery suppression readback", () => {
         const storePath = state.statePath("cron", "jobs.json");
         const events: CronEvent[] = [];
         let runReleased: Promise<"settled" | "reset"> | undefined;
-        let phase:
-          | "silent"
-          | "delivery-error"
-          | "required-delivery-error"
-          | "execution-error"
-          | "not-requested" = "silent";
+        let phase: (typeof phases)[number] = "silent";
         const runIsolatedAgentJob: CronServiceDeps["runIsolatedAgentJob"] = async ({
           job,
           abortSignal,
@@ -143,18 +147,16 @@ describe("cron CLI delivery suppression readback", () => {
           const sessionId = randomUUID();
           const sessionKey = `agent:main:cron:${job.id}:run:${sessionId}`;
           const now = Date.now();
+          const base = makeBaseParams({ synthesizedText: text, runStartedAt: now });
           const dispatch = await dispatchCronDelivery({
+            ...base,
             deliveryAttemptFence,
-            cfgWithAgentDefaults: {},
-            deps: {},
             job,
-            agentId: "main",
             agentSessionKey: sessionKey,
             runSessionKey: sessionKey,
             sessionId,
             lifecycleRevision: randomUUID(),
             sessionUpdatedAt: now,
-            runStartedAt: now,
             timeoutMs: 5_000,
             resolvedDelivery:
               phase === "delivery-error" || phase === "required-delivery-error"
@@ -163,31 +165,10 @@ describe("cron CLI delivery suppression readback", () => {
                     mode: "explicit",
                     error: new Error("fixture delivery route unavailable"),
                   }
-                : {
-                    ok: true,
-                    mode: "explicit",
-                    channel: "telegram",
-                    to: "123",
-                    sessionRoute: {
-                      sessionKey: "agent:main:telegram:direct:123",
-                      baseSessionKey: "agent:main:telegram:direct:123",
-                      peer: { kind: "direct", id: "123" },
-                      chatType: "direct",
-                      from: "telegram:123",
-                      to: "123",
-                    },
-                  },
+                : base.resolvedDelivery,
             deliveryPlan: resolveCronDeliveryPlan(job),
             deliveryRequested: phase !== "not-requested",
-            undeliveredRunStatus: "ok",
             skipDelivery: prepared.terminalReply.disposition === "silent" ? "silent" : undefined,
-            spawnOnlyHandoff: false,
-            sourceDeliveryOutcome: {
-              visibleDeliveries: [],
-              verifiedMessageToolDelivery: false,
-              satisfiesSourceDelivery: false,
-              unverifiedMessageToolDelivery: false,
-            },
             deliveryBestEffort: job.delivery?.bestEffort === true,
             deliveryPayloads: text ? [{ text }] : [],
             synthesizedText: text,
@@ -237,27 +218,15 @@ describe("cron CLI delivery suppression readback", () => {
             sessionTarget: "isolated",
             wakeMode: "next-heartbeat",
             payload: { kind: "agentTurn", message: "Check for work; reply NO_REPLY when idle." },
-            delivery: { mode: "announce", channel: "telegram", to: "123" },
+            delivery: announce,
           });
-          for (const nextPhase of [
-            "silent",
-            "delivery-error",
-            "required-delivery-error",
-            "execution-error",
-            "silent",
-            "not-requested",
-          ] as const) {
+          for (const nextPhase of phases) {
             phase = nextPhase;
             await cron.update(job.id, {
               delivery:
                 phase === "not-requested"
                   ? { mode: "none" }
-                  : {
-                      mode: "announce",
-                      channel: "telegram",
-                      to: "123",
-                      bestEffort: phase === "delivery-error",
-                    },
+                  : { ...announce, bestEffort: phase === "delivery-error" },
             });
             runReleased = undefined;
             const run = await runCli([
@@ -328,11 +297,6 @@ describe("cron CLI delivery suppression readback", () => {
                   : "fixture delivery route unavailable",
               );
             }
-            expect(events.at(-1)?.deliverySuppressionReason).toBe(reason);
-            expect(
-              (run.json as { run: { deliverySuppressionReason?: string } }).run
-                .deliverySuppressionReason,
-            ).toBe(reason);
             const get = (await runCli(["get", job.id])).json as CronJob & {
               deliverySuppressionReason?: string;
             };
@@ -341,8 +305,13 @@ describe("cron CLI delivery suppression readback", () => {
             const compact = (await invoke("cron.list", { compact: true })) as {
               jobs: Array<{ deliverySuppressionReason?: string }>;
             };
-            expect(compact.jobs[0]?.deliverySuppressionReason).toBe(reason);
             const listJson = (await runCli(["list", "--json"])).json as { jobs: CronJob[] };
+            expect(events.at(-1)?.deliverySuppressionReason).toBe(reason);
+            expect(
+              (run.json as { run: { deliverySuppressionReason?: string } }).run
+                .deliverySuppressionReason,
+            ).toBe(reason);
+            expect(compact.jobs[0]?.deliverySuppressionReason).toBe(reason);
             expect(listJson.jobs[0]?.state.deliverySuppressionReason).toBe(reason);
             const list = await runCli(["list"]);
             const show = await runCli(["show", job.id]);
@@ -358,20 +327,17 @@ describe("cron CLI delivery suppression readback", () => {
               expect.soft(list.text).toContain(`${expectedAnsi}${expectedStatus}`);
             }
             if (phase === "silent") {
-              expect.soft(list.text).toMatch(/silent|suppressed/i);
-              expect.soft(show.text).toMatch(/silent|suppressed/i);
-              expect.soft(list.text).not.toContain("ok (not delivered)");
-              expect.soft(show.text).not.toContain("ok (not delivered)");
+              for (const text of [list.text, show.text]) {
+                expect.soft(text).toMatch(/silent|suppressed/i);
+                expect.soft(text).not.toContain("ok (not delivered)");
+              }
             } else if (phase === "delivery-error") {
               expect(list.text).toContain("ok (not delivered)");
               expect(show.text).toContain(
                 "last delivery error: fixture delivery route unavailable",
               );
-            } else if (failed) {
-              expect(show.text).toContain("status: error");
-              expect(show.text).not.toContain("ok (not delivered)");
             } else {
-              expect(show.text).toContain("status: ok");
+              expect(show.text).toContain(`status: ${expectedStatus}`);
               expect(show.text).not.toContain("ok (not delivered)");
             }
           }

@@ -3,14 +3,10 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { CRON_JOB_SCRATCH_MAX_BYTES } from "../../cron/scratch-contract.js";
 import { defaultRuntime } from "../../runtime.js";
 
-const callGatewayFromCli = vi.fn();
+const { callGatewayFromCli } = vi.hoisted(() => ({ callGatewayFromCli: vi.fn() }));
 vi.mock("../gateway-rpc.js", async () => {
   const actual = await vi.importActual<typeof import("../gateway-rpc.js")>("../gateway-rpc.js");
-  return {
-    ...actual,
-    callGatewayFromCli: (...args: Parameters<typeof actual.callGatewayFromCli>) =>
-      callGatewayFromCli(...args),
-  };
+  return { ...actual, callGatewayFromCli };
 });
 const { registerCronScratchCommand } = await import("./register.cron-scratch.js");
 async function run(args: string[]) {
@@ -19,19 +15,29 @@ async function run(args: string[]) {
   await program.parseAsync(["scratch", "job-1", ...args], { from: "user" });
 }
 const result = { ok: true, scratch: null, currentRevision: 3, maxBytes: 1024 };
+const scratch = { content: "note", revision: 2, updatedAtMs: 1 };
 beforeEach(() => {
-  callGatewayFromCli.mockReset().mockImplementation(async (method: string) =>
-    method === "cron.scratch.get"
-      ? {
-          scratch: { content: "note", revision: 2, updatedAtMs: 1 },
-          currentRevision: 2,
-          maxBytes: 1024,
-        }
-      : result,
-  );
+  callGatewayFromCli
+    .mockReset()
+    .mockImplementation(async (method: string) =>
+      method === "cron.scratch.get" ? { scratch, currentRevision: 2, maxBytes: 1024 } : result,
+    );
   vi.spyOn(defaultRuntime, "error").mockImplementation(() => {});
 });
 afterEach(() => vi.restoreAllMocks());
+
+function expectRpc(method: "get" | "set", params: Record<string, unknown>) {
+  expect(callGatewayFromCli).toHaveBeenCalledExactlyOnceWith(
+    `cron.scratch.${method}`,
+    expect.anything(),
+    { id: "job-1", ...params },
+  );
+}
+
+async function expectFailure(args: string[], message: string) {
+  await expect(run(args)).rejects.toMatchObject({ name: "ExitError", code: 1 });
+  expect(defaultRuntime.error).toHaveBeenCalledWith(expect.stringContaining(message));
+}
 
 describe("cron scratch", () => {
   it("uses the read revision for an implicit CAS write and prints JSON", async () => {
@@ -52,18 +58,11 @@ describe("cron scratch", () => {
   });
 
   it("rejects non-decimal revisions after reading but before writing", async () => {
-    await expect(run(["--set", "x", "--expected-revision", "0x2"])).rejects.toMatchObject({
-      name: "ExitError",
-      code: 1,
-    });
-    expect(defaultRuntime.error).toHaveBeenCalledWith(
-      expect.stringContaining("--expected-revision must be a non-negative integer"),
+    await expectFailure(
+      ["--set", "x", "--expected-revision", "0x2"],
+      "--expected-revision must be a non-negative integer",
     );
-    expect(callGatewayFromCli).toHaveBeenCalledExactlyOnceWith(
-      "cron.scratch.get",
-      expect.anything(),
-      { id: "job-1" },
-    );
+    expectRpc("get", {});
   });
 
   it.each([
@@ -71,11 +70,7 @@ describe("cron scratch", () => {
     ["42", ["--unset", "--json"], null],
   ] as const)("writes at explicit revision %s without a read", async (revision, args, content) => {
     await run([...args, "--expected-revision", revision]);
-    expect(callGatewayFromCli).toHaveBeenCalledExactlyOnceWith(
-      "cron.scratch.set",
-      expect.anything(),
-      { id: "job-1", content, expectedRevision: Number(revision) },
-    );
+    expectRpc("set", { content, expectedRevision: Number(revision) });
   });
 
   it("reports revision conflicts without rereading or retrying", async () => {
@@ -84,18 +79,11 @@ describe("cron scratch", () => {
       reason: "revision-conflict",
       currentRevision: 43,
     });
-    await expect(run(["--unset", "--expected-revision", "42"])).rejects.toMatchObject({
-      name: "ExitError",
-      code: 1,
-    });
-    expect(defaultRuntime.error).toHaveBeenCalledWith(
-      expect.stringContaining("cron scratch changed concurrently (current revision 43)"),
+    await expectFailure(
+      ["--unset", "--expected-revision", "42"],
+      "cron scratch changed concurrently (current revision 43)",
     );
-    expect(callGatewayFromCli).toHaveBeenCalledExactlyOnceWith(
-      "cron.scratch.set",
-      expect.anything(),
-      { id: "job-1", content: null, expectedRevision: 42 },
-    );
+    expectRpc("set", { content: null, expectedRevision: 42 });
   });
 
   it.each([
@@ -107,14 +95,7 @@ describe("cron scratch", () => {
     ],
   ])("reports Gateway errors before consuming %s", async (_label, args) => {
     callGatewayFromCli.mockRejectedValue(new Error("Gateway unavailable"));
-    await expect(run(args)).rejects.toMatchObject({ name: "ExitError", code: 1 });
-    expect(defaultRuntime.error).toHaveBeenCalledWith(
-      expect.stringContaining("Gateway unavailable"),
-    );
-    expect(callGatewayFromCli).toHaveBeenCalledExactlyOnceWith(
-      "cron.scratch.get",
-      expect.anything(),
-      { id: "job-1" },
-    );
+    await expectFailure(args, "Gateway unavailable");
+    expectRpc("get", {});
   });
 });
