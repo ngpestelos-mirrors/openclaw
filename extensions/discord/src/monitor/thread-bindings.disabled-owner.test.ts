@@ -33,33 +33,25 @@ afterEach(() => {
 });
 
 it("keeps an unbound direct route available while thread bindings are disabled", async () => {
-  const scenario = {
-    kind: "direct" as const,
-    peerId: "100000000000000009",
-    conversationId: "user:100000000000000009",
-  };
+  const peerId = "100000000000000009";
+  const conversation = { channel: "discord", accountId: "work", conversationId: `user:${peerId}` };
   const manager = createNoopThreadBindingManager("work");
   try {
-    const conversation = {
-      channel: "discord",
-      accountId: "work",
-      conversationId: scenario.conversationId,
-    };
     const route = resolveAgentRoute({
       cfg,
       channel: "discord",
       accountId: "work",
-      peer: { kind: scenario.kind, id: scenario.peerId },
+      peer: { kind: "direct", id: peerId },
     });
     expect(
       await inspectDiscordConversationRouteOwner({
         cfg,
         accountId: "work",
-        conversation: { kind: scenario.kind, peerId: scenario.peerId },
+        conversation: { kind: "direct", peerId },
       }),
     ).toEqual({ kind: "agent", agentId: route.agentId });
     const resolved = await resolveRuntimeConversationBindingRouteAsync({ route, conversation });
-    expect({ ...resolved, route: Object.fromEntries(Object.entries(resolved.route)) }).toEqual({
+    expect(resolved).toEqual({
       bindingOwnerAvailable: true,
       bindingRecord: null,
       route,
@@ -85,15 +77,13 @@ it("keeps only the current disabled owner available and refuses work after retir
     unbindSupported: false,
     placements: [],
   });
-  const available = await service.inspectByConversationAsync(conversation);
-  expect(Object.fromEntries(Object.entries(available))).toEqual({
+  await expect(service.inspectByConversationAsync(conversation)).resolves.toEqual({
     status: "available",
     binding: null,
   });
   await current.stop();
   await current.stop();
-  const unavailable = await service.inspectByConversationAsync(conversation);
-  expect(Object.fromEntries(Object.entries(unavailable))).toEqual({
+  await expect(service.inspectByConversationAsync(conversation)).resolves.toEqual({
     status: "unavailable",
   });
   await expect(service.resolveByConversationAsync(conversation)).rejects.toMatchObject({
