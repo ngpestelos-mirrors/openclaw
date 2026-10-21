@@ -118,16 +118,12 @@ export class AppSidebarOwner extends AppSidebarSessionNavigationElement implemen
     if (snapshot) {
       this.pinnedSessions.seed(snapshot.pinnedSessions);
       // Newer pagination choices override the saved view, independently per mode.
-      for (const { id, visibleLimit } of snapshot.sections) {
-        for (const limits of [
-          this.sessionData.visibleSessionLimits,
-          this.rosterVisibleSessionLimits,
-        ]) {
-          if (!limits.has(id)) {
-            limits.set(id, visibleLimit);
-          }
-        }
-      }
+      const limits = snapshot.sections.map(({ id, visibleLimit }) => [id, visibleLimit] as const);
+      this.sessionData.visibleSessionLimits = new Map([
+        ...limits,
+        ...this.sessionData.visibleSessionLimits,
+      ]);
+      this.rosterVisibleSessionLimits = new Map([...limits, ...this.rosterVisibleSessionLimits]);
     }
     this.sidebarPluginSnapshot =
       snapshot && this.context.plugins.registryStatus !== "complete"

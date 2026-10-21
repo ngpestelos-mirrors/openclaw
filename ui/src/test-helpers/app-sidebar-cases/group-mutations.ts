@@ -339,7 +339,7 @@ describe("AppSidebar group mutation collapsed state", () => {
       const gatewayHarness = createGatewayHarness(client);
       const harness = createSessionsHarness("main", ["agent:main:main"]);
       const { sidebar } = await mountSidebar(gatewayHarness.gateway, harness.sessions);
-      harness.sessions.state.groupSettings = [{ name: "Alpha", cwd: "/repos/client" }];
+      harness.sessions.state.groupSettings = [{ name: "Alpha", position: 0, cwd: "/repos/client" }];
       const opened =
         deferred<Parameters<typeof groupDefaultsDialog.showSessionGroupDefaultsDialog>[0]>();
       vi.spyOn(groupDefaultsDialog, "showSessionGroupDefaultsDialog").mockImplementation(
