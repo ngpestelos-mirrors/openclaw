@@ -48,16 +48,8 @@ vi.mock("./src/browser-control-state.js", async () => {
 
 it("loads browser close runtimes only for owned tabs", async () => {
   await withOpenClawTestState({ scenario: "minimal" }, async (state) => {
-    const config = {
-      browser: {
-        profiles: {
-          remote: {
-            driver: "existing-session" as const,
-            cdpUrl: "http://127.0.0.1:9222",
-          },
-        },
-      },
-    };
+    const remote = { driver: "existing-session" as const, cdpUrl: "http://127.0.0.1:9222" };
+    const config = { browser: { profiles: { remote } } };
     await state.writeConfig(config);
     setRuntimeConfigSnapshot(config);
     const { initializeBrowserSessionTabStore, getBrowserSessionTabStore } =
@@ -71,40 +63,34 @@ it("loads browser close runtimes only for owned tabs", async () => {
     const { trackSessionBrowserTab, untrackSessionBrowserTab } =
       await import("./src/browser/session-tab-registry.js");
     const sessionKey = "agent:main:browser-cleanup";
+    const close = () => closeTrackedBrowserTabsForSessions({ sessionKeys: [sessionKey] });
+    const tabDefaults = { sessionKey, profile: "remote", now: 1_000 };
     try {
-      await expect(closeTrackedBrowserTabsForSessions({ sessionKeys: [sessionKey] })).resolves.toBe(
-        0,
-      );
+      await expect(close()).resolves.toBe(0);
       expect.soft(runtime.loaded).toEqual([]);
       expect.soft(runtime.coldImports).toEqual([]);
 
       const volatileTab = {
-        sessionKey,
+        ...tabDefaults,
         targetId: "volatile-tab",
-        profile: "remote",
         route: { kind: "browser-control" as const, baseUrl: "http://127.0.0.1:9999" },
       };
-      await trackSessionBrowserTab({ ...volatileTab, now: 1_000 });
+      await trackSessionBrowserTab(volatileTab);
       runtime.onClientLoad = async () => {
         await untrackSessionBrowserTab(volatileTab);
-        await trackSessionBrowserTab({ ...volatileTab, now: 1_000 });
+        await trackSessionBrowserTab(volatileTab);
       };
-      await expect(closeTrackedBrowserTabsForSessions({ sessionKeys: [sessionKey] })).resolves.toBe(
-        0,
-      );
+      await expect(close()).resolves.toBe(0);
       expect(runtime.closeVolatile).not.toHaveBeenCalled();
-      await expect(closeTrackedBrowserTabsForSessions({ sessionKeys: [sessionKey] })).resolves.toBe(
-        1,
-      );
+      await expect(close()).resolves.toBe(1);
       expect.soft(runtime.loaded).toEqual(["client"]);
       expect(runtime.closeVolatile).toHaveBeenCalledWith("http://127.0.0.1:9999", "volatile-tab", {
         profile: "remote",
       });
 
       const durableTab = {
-        sessionKey,
+        ...tabDefaults,
         targetId: "durable-tab",
-        profile: "remote",
         ownership: {
           status: "durable" as const,
           nativeTargetId: "native-tab",
@@ -112,18 +98,14 @@ it("loads browser close runtimes only for owned tabs", async () => {
           browserInstanceFingerprint: "browser-fingerprint",
         },
       };
-      await trackSessionBrowserTab({ ...durableTab, now: 1_000 });
+      await trackSessionBrowserTab(durableTab);
       runtime.onControlLoad = async () => {
         await trackSessionBrowserTab({ ...durableTab, now: 2_000 });
       };
-      await expect(closeTrackedBrowserTabsForSessions({ sessionKeys: [sessionKey] })).resolves.toBe(
-        0,
-      );
+      await expect(close()).resolves.toBe(0);
       expect(runtime.closeDurable).not.toHaveBeenCalled();
       expect(await getBrowserSessionTabStore().entries()).toHaveLength(1);
-      await expect(closeTrackedBrowserTabsForSessions({ sessionKeys: [sessionKey] })).resolves.toBe(
-        1,
-      );
+      await expect(close()).resolves.toBe(1);
       expect(runtime.loaded.toSorted()).toEqual(["cdp", "client", "control"]);
       expect(runtime.coldImports).toContain("browser-config-resolution");
       expect(runtime.closeDurable).toHaveBeenCalledWith(
@@ -136,9 +118,7 @@ it("loads browser close runtimes only for owned tabs", async () => {
         }),
       );
       expect(await getBrowserSessionTabStore().entries()).toEqual([]);
-      await expect(closeTrackedBrowserTabsForSessions({ sessionKeys: [sessionKey] })).resolves.toBe(
-        0,
-      );
+      await expect(close()).resolves.toBe(0);
       expect(runtime.closeVolatile).toHaveBeenCalledOnce();
       expect(runtime.closeDurable).toHaveBeenCalledOnce();
     } finally {

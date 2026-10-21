@@ -41,6 +41,7 @@ it("closes owned tabs over their transports and rechecks claims after runtime lo
     });
     const ws = new WebSocketServer({ server });
     ws.on("connection", (socket) => {
+      const reply = (id: number, result: unknown) => socket.send(JSON.stringify({ id, result }));
       socket.on("message", (data) => {
         const message = JSON.parse(rawDataToString(data)) as {
           id: number;
@@ -48,18 +49,13 @@ it("closes owned tabs over their transports and rechecks claims after runtime lo
           params?: { targetId?: string };
         };
         if (message.method === "Target.getTargets") {
-          socket.send(
-            JSON.stringify({
-              id: message.id,
-              result: { targetInfos: [...targets].map((targetId) => ({ targetId, type: "page" })) },
-            }),
-          );
+          reply(message.id, {
+            targetInfos: [...targets].map((targetId) => ({ targetId, type: "page" })),
+          });
         } else if (message.method === "Target.closeTarget") {
           const targetId = message.params?.targetId ?? "";
           closedTargets.push(targetId);
-          socket.send(
-            JSON.stringify({ id: message.id, result: { success: targets.delete(targetId) } }),
-          );
+          reply(message.id, { success: targets.delete(targetId) });
         }
       });
     });
@@ -78,25 +74,21 @@ it("closes owned tabs over their transports and rechecks claims after runtime lo
       },
     });
     const sessionKey = "agent:main:transport-cleanup";
-    try {
-      await registry.trackSessionBrowserTab({
-        sessionKey,
-        targetId: "volatile",
-        profile: "remote",
-        route: { kind: "browser-control", baseUrl: cdpUrl },
+    const close = () => closeTrackedBrowserTabsForSessions({ sessionKeys: [sessionKey] });
+    const forget = () =>
+      registry.closeTrackedBrowserTabsForSessions({
+        sessionKeys: [sessionKey],
+        closeTab: async () => {},
       });
-      await expect(closeTrackedBrowserTabsForSessions({ sessionKeys: [sessionKey] })).resolves.toBe(
-        1,
-      );
+    const route = { kind: "browser-control" as const, baseUrl: cdpUrl };
+    const tabDefaults = { sessionKey, profile: "remote" };
+    try {
+      await registry.trackSessionBrowserTab({ ...tabDefaults, targetId: "volatile", route });
+      await expect(close()).resolves.toBe(1);
       expect(requests).toEqual(["DELETE /tabs/volatile?targetIdMode=raw&profile=remote"]);
 
       for (const firstKind of ["sweep", "lifecycle"] as const) {
-        const joined = {
-          sessionKey,
-          targetId: `joined-${firstKind}`,
-          profile: "remote",
-          route: { kind: "browser-control" as const, baseUrl: cdpUrl },
-        };
+        const joined = { ...tabDefaults, targetId: `joined-${firstKind}`, route };
         await registry.trackSessionBrowserTab({ ...joined, now: 1_000 });
         const lifecycle = () =>
           registry.closeTrackedBrowserTabsForSessions({ sessionKeys: [sessionKey] });
@@ -112,10 +104,7 @@ it("closes owned tabs over their transports and rechecks claims after runtime lo
         expect
           .soft(requests.slice(before))
           .toEqual([`DELETE /tabs/joined-${firstKind}?targetIdMode=raw&profile=remote`]);
-        await registry.closeTrackedBrowserTabsForSessions({
-          sessionKeys: [sessionKey],
-          closeTab: async () => {},
-        });
+        await forget();
       }
 
       const ownership = await resolveCdpTabOwnership({
@@ -124,7 +113,7 @@ it("closes owned tabs over their transports and rechecks claims after runtime lo
         nativeTargetId: "owned",
       });
       expect(ownership.status).toBe("durable");
-      const tab = { sessionKey, targetId: "owned", profile: "remote", ownership };
+      const tab = { ...tabDefaults, targetId: "owned", ownership };
       await registry.trackSessionBrowserTab({ ...tab, now: 1_000 });
       const resolved = resolveBrowserConfig(config.browser, config);
       const entered = createDeferred<void>();
@@ -150,22 +139,15 @@ it("closes owned tabs over their transports and rechecks claims after runtime lo
       expect(retained).toHaveLength(1);
       expect(retained[0]?.value).not.toHaveProperty("cleanupAttemptToken");
 
-      await expect(closeTrackedBrowserTabsForSessions({ sessionKeys: [sessionKey] })).resolves.toBe(
-        1,
-      );
+      await expect(close()).resolves.toBe(1);
       expect(closedTargets).toEqual(["owned"]);
       expect([...targets]).toEqual(["user"]);
       expect(await getBrowserSessionTabStore().entries()).toEqual([]);
-      await expect(closeTrackedBrowserTabsForSessions({ sessionKeys: [sessionKey] })).resolves.toBe(
-        0,
-      );
+      await expect(close()).resolves.toBe(0);
       expect(requests).toHaveLength(3);
       expect(closedTargets).toHaveLength(1);
     } finally {
-      await registry.closeTrackedBrowserTabsForSessions({
-        sessionKeys: [sessionKey],
-        closeTab: async () => {},
-      });
+      await forget();
       resetPluginStateStoreForTests();
       for (const client of ws.clients) {
         client.terminate();
