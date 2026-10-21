@@ -9,6 +9,18 @@ type MakeTempDir = () => string;
 
 type BundleFixtureFormat = "agent" | "codex" | "claude" | "cursor";
 
+function writeFixtureFile(rootDir: string, name: string, content: string | object) {
+  const filePath = path.join(rootDir, name);
+  fs.mkdirSync(path.dirname(filePath), { recursive: true });
+  fs.writeFileSync(
+    filePath,
+    typeof content === "string" ? content : JSON.stringify(content),
+    "utf8",
+  );
+}
+
+const skillSource = "---\ndescription: fixture\n---\n";
+
 type PluginArtifactInstallMockParams = {
   onBeforePluginArtifactCommit?: PluginInstallArtifactConsentHandler;
   mode?: "install" | "update";
@@ -63,46 +75,27 @@ export function createBundleInstallFixtureFactory(makeTempDir: MakeTempDir) {
     const stateDir = path.join(caseDir, "state");
     const pluginDir = path.join(caseDir, "plugin-src");
     fs.mkdirSync(stateDir, { recursive: true });
-    fs.mkdirSync(path.join(pluginDir, "skills"), { recursive: true });
     const manifestRelativePath =
       params.bundleFormat === "agent"
         ? "plugin.json"
-        : path.join(
-            params.bundleFormat === "codex"
-              ? ".codex-plugin"
-              : params.bundleFormat === "cursor"
-                ? ".cursor-plugin"
-                : ".claude-plugin",
-            "plugin.json",
-          );
-    fs.mkdirSync(path.dirname(path.join(pluginDir, manifestRelativePath)), { recursive: true });
-    fs.writeFileSync(
-      path.join(pluginDir, manifestRelativePath),
-      JSON.stringify({
-        ...(params.bundleFormat === "agent"
-          ? { $schema: "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json" }
-          : {}),
-        name: params.name,
-        description: `${params.bundleFormat} bundle fixture`,
-        ...(params.bundleFormat === "codex" ? { skills: "skills" } : {}),
-      }),
-      "utf-8",
-    );
+        : path.join(`.${params.bundleFormat}-plugin`, "plugin.json");
+    writeFixtureFile(pluginDir, manifestRelativePath, {
+      ...(params.bundleFormat === "agent"
+        ? { $schema: "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json" }
+        : {}),
+      name: params.name,
+      description: `${params.bundleFormat} bundle fixture`,
+      ...(params.bundleFormat === "codex" ? { skills: "skills" } : {}),
+    });
     if (params.bundleFormat === "cursor") {
-      fs.mkdirSync(path.join(pluginDir, ".cursor", "commands"), { recursive: true });
-      fs.writeFileSync(
-        path.join(pluginDir, ".cursor", "commands", "review.md"),
-        "---\ndescription: fixture\n---\n",
-        "utf-8",
-      );
+      writeFixtureFile(pluginDir, ".cursor/commands/review.md", skillSource);
     }
     const skillDir = path.join(
       pluginDir,
       "skills",
       ...(params.bundleFormat === "agent" ? ["fixture"] : []),
     );
-    fs.mkdirSync(skillDir, { recursive: true });
-    fs.writeFileSync(path.join(skillDir, "SKILL.md"), "---\ndescription: fixture\n---\n", "utf-8");
+    writeFixtureFile(skillDir, "SKILL.md", skillSource);
     return { pluginDir, extensionsDir: path.join(stateDir, "extensions") };
   };
 }
@@ -112,45 +105,23 @@ export function createDualFormatInstallFixtureFactory(makeTempDir: MakeTempDir) 
     const caseDir = makeTempDir();
     const stateDir = path.join(caseDir, "state");
     const pluginDir = path.join(caseDir, "plugin-src");
-    fs.mkdirSync(path.join(pluginDir, "dist"), { recursive: true });
-    fs.mkdirSync(path.join(pluginDir, "skills"), { recursive: true });
-    const manifestDir = path.join(
-      pluginDir,
-      params.bundleFormat === "codex" ? ".codex-plugin" : ".claude-plugin",
-    );
-    fs.mkdirSync(manifestDir, { recursive: true });
-    fs.writeFileSync(
-      path.join(pluginDir, "package.json"),
-      JSON.stringify({
-        name: "@openclaw/native-dual",
-        version: "0.0.1",
-        openclaw: { extensions: ["./dist/index.js"] },
-        dependencies: { "left-pad": "1.3.0" },
-      }),
-      "utf-8",
-    );
-    fs.writeFileSync(
-      path.join(pluginDir, "openclaw.plugin.json"),
-      JSON.stringify({
-        id: "native-dual",
-        configSchema: { type: "object", properties: {} },
-        skills: ["skills"],
-      }),
-      "utf-8",
-    );
-    fs.writeFileSync(path.join(pluginDir, "dist", "index.js"), "export {};", "utf-8");
-    fs.writeFileSync(
-      path.join(pluginDir, "skills", "SKILL.md"),
-      "---\ndescription: fixture\n---\n",
-    );
-    fs.writeFileSync(
-      path.join(manifestDir, "plugin.json"),
-      JSON.stringify({
-        name: "Bundle Fallback",
-        ...(params.bundleFormat === "codex" ? { skills: "skills" } : {}),
-      }),
-      "utf-8",
-    );
+    writeFixtureFile(pluginDir, "package.json", {
+      name: "@openclaw/native-dual",
+      version: "0.0.1",
+      openclaw: { extensions: ["./dist/index.js"] },
+      dependencies: { "left-pad": "1.3.0" },
+    });
+    writeFixtureFile(pluginDir, "openclaw.plugin.json", {
+      id: "native-dual",
+      configSchema: { type: "object", properties: {} },
+      skills: ["skills"],
+    });
+    writeFixtureFile(pluginDir, "dist/index.js", "export {};");
+    writeFixtureFile(pluginDir, "skills/SKILL.md", skillSource);
+    writeFixtureFile(pluginDir, `.${params.bundleFormat}-plugin/plugin.json`, {
+      name: "Bundle Fallback",
+      ...(params.bundleFormat === "codex" ? { skills: "skills" } : {}),
+    });
     return { pluginDir, extensionsDir: path.join(stateDir, "extensions") };
   };
 }
