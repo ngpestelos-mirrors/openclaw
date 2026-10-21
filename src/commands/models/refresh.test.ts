@@ -30,42 +30,31 @@ function runtime() {
   };
 }
 
+function expectNoFailureOutput(commandRuntime: ReturnType<typeof runtime>) {
+  expect(commandRuntime.log).not.toHaveBeenCalled();
+  expect(commandRuntime.error).not.toHaveBeenCalled();
+  expect(commandRuntime.exit).not.toHaveBeenCalled();
+}
+
 beforeEach(() => mocks.refresh.mockReset());
 
 describe("models refresh", () => {
-  it("prints updated, fresh, and disabled human results", async () => {
-    const updatedRuntime = runtime();
-    mocks.refresh.mockResolvedValueOnce({
-      status: "updated",
-      providers: 2,
-      models: 3,
-      generatedAt: 1_753_500_000_000,
-    });
-    await modelsRefreshCommand({}, updatedRuntime);
-    expect(updatedRuntime.log).toHaveBeenLastCalledWith(
-      expect.stringContaining("Remote catalog refresh: updated"),
+  it.each(["updated", "fresh", "disabled"] as const)("prints %s human results", async (status) => {
+    const commandRuntime = runtime();
+    mocks.refresh.mockResolvedValueOnce(
+      status === "disabled"
+        ? { status, providers: 0, models: 0 }
+        : { status, providers: 2, models: 3, generatedAt: 1_753_500_000_000 },
     );
-
-    const freshRuntime = runtime();
-    mocks.refresh.mockResolvedValueOnce({
-      status: "fresh",
-      providers: 2,
-      models: 3,
-      generatedAt: 1_753_500_000_000,
-    });
-    await modelsRefreshCommand({}, freshRuntime);
-    expect(freshRuntime.log).toHaveBeenCalledWith(expect.stringContaining("refresh: fresh"));
-
-    const disabledRuntime = runtime();
-    mocks.refresh.mockResolvedValueOnce({ status: "disabled", providers: 0, models: 0 });
-    await modelsRefreshCommand({}, disabledRuntime);
-    expect(disabledRuntime.log).toHaveBeenCalledWith(
-      "Remote catalog refresh is disabled (models.catalogRefresh.enabled=false)",
+    await modelsRefreshCommand({}, commandRuntime);
+    expect(commandRuntime.log).toHaveBeenLastCalledWith(
+      status === "disabled"
+        ? "Remote catalog refresh is disabled (models.catalogRefresh.enabled=false)"
+        : expect.stringContaining(`Remote catalog refresh: ${status}`),
     );
   });
 
   it("delegates refresh failures to the canonical CLI error owner", async () => {
-    const options = { json: true };
     const commandRuntime = runtime();
     mocks.refresh.mockResolvedValueOnce({
       status: "error",
@@ -74,7 +63,7 @@ describe("models refresh", () => {
       error: "boom",
     });
 
-    const execution = modelsRefreshCommand(options, commandRuntime);
+    const execution = modelsRefreshCommand({ json: true }, commandRuntime);
 
     await expect(execution).rejects.toBeInstanceOf(ExpectedCliError);
     await expect(execution).rejects.toMatchObject({
@@ -83,9 +72,7 @@ describe("models refresh", () => {
       machineOutput: "Remote catalog refresh failed: boom",
     });
     expect(commandRuntime.writeJson).not.toHaveBeenCalled();
-    expect(commandRuntime.log).not.toHaveBeenCalled();
-    expect(commandRuntime.error).not.toHaveBeenCalled();
-    expect(commandRuntime.exit).not.toHaveBeenCalled();
+    expectNoFailureOutput(commandRuntime);
   });
 
   it("preserves the JSON domain payload", async () => {
@@ -102,8 +89,6 @@ describe("models refresh", () => {
     await modelsRefreshCommand({ json: true }, commandRuntime);
 
     expect(commandRuntime.writeJson).toHaveBeenCalledWith(result, 0);
-    expect(commandRuntime.log).not.toHaveBeenCalled();
-    expect(commandRuntime.error).not.toHaveBeenCalled();
-    expect(commandRuntime.exit).not.toHaveBeenCalled();
+    expectNoFailureOutput(commandRuntime);
   });
 });
