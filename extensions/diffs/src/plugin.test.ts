@@ -21,20 +21,11 @@ afterAll(() => {
 
 describe("diffs plugin language-pack discovery", () => {
   it("skips runtime registration while collecting CLI metadata", () => {
-    const registerTool = vi.fn();
-    const registerHttpRoute = vi.fn();
-    const on = vi.fn();
-    const api = createTestPluginApi({
-      registrationMode: "cli-metadata",
-      registerTool,
-      registerHttpRoute,
-      on,
-    });
-
-    expect(() => registerDiffsPlugin(api)).not.toThrow();
-    expect(registerTool).not.toHaveBeenCalled();
-    expect(registerHttpRoute).not.toHaveBeenCalled();
-    expect(on).not.toHaveBeenCalled();
+    const hooks = { registerTool: vi.fn(), registerHttpRoute: vi.fn(), on: vi.fn() };
+    registerDiffsPlugin(createTestPluginApi({ registrationMode: "cli-metadata", ...hooks }));
+    for (const hook of Object.values(hooks)) {
+      expect(hook).not.toHaveBeenCalled();
+    }
   });
 
   it.each(["assets", "dist/assets"])(
@@ -42,19 +33,17 @@ describe("diffs plugin language-pack discovery", () => {
     (assetDir) => {
       const root = fs.mkdtempSync(join(os.tmpdir(), "openclaw-diffs-language-pack-"));
       try {
-        const diffsRoot = join(root, "diffs");
         const languagePackRoot = join(root, "diffs-language-pack");
-        fs.mkdirSync(diffsRoot, { recursive: true });
         fs.mkdirSync(languagePackRoot, { recursive: true });
         fs.writeFileSync(
           join(languagePackRoot, "openclaw.plugin.json"),
           '{"id":"diffs-language-pack"}\n',
         );
         const config = { plugins: {} };
-        const openBlobStore = vi.fn(() => createBlobStoreStub());
+        const openBlobStore = vi.fn(() => ({}));
         const registerTool = vi.fn<OpenClawPluginApi["registerTool"]>();
         const api = createTestPluginApi({
-          rootDir: diffsRoot,
+          rootDir: join(root, "diffs"),
           config,
           runtime: {
             config: { current: () => config },
@@ -75,15 +64,8 @@ describe("diffs plugin language-pack discovery", () => {
         if (typeof factory !== "function") {
           throw new Error("expected diffs tool factory");
         }
-        const context = {
-          agentId: "main",
-          sessionId: "session-1",
-          messageChannel: "test",
-          agentAccountId: "default",
-        };
-
         const checkAvailability = (languagePackAvailable: boolean) => {
-          factory(context);
+          factory({});
           expect(createDiffsToolMock).toHaveBeenLastCalledWith(
             expect.objectContaining({ languagePackAvailable }),
           );
@@ -101,16 +83,3 @@ describe("diffs plugin language-pack discovery", () => {
     },
   );
 });
-
-function createBlobStoreStub() {
-  return {
-    register: vi.fn(),
-    registerIfAbsent: vi.fn(),
-    registerIfAbsentWithReceipt: vi.fn(),
-    lookup: vi.fn(),
-    entries: vi.fn(),
-    delete: vi.fn(),
-    deleteExpired: vi.fn(),
-    clear: vi.fn(),
-  };
-}
