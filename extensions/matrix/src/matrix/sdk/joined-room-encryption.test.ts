@@ -1,3 +1,4 @@
+import { once } from "node:events";
 import { setImmediate } from "node:timers/promises";
 import {
   createClient,
@@ -123,16 +124,8 @@ describe("joined-room recovery with the installed Matrix SDK", () => {
       if (signals.length === 4) {
         allStarted.resolve();
       }
-      return await new Promise<Response>((_resolve, reject) => {
-        signal.addEventListener(
-          "abort",
-          () =>
-            reject(
-              signal.reason instanceof Error ? signal.reason : new Error("SDK request aborted"),
-            ),
-          { once: true },
-        );
-      });
+      await once(signal, "abort");
+      throw signal.reason instanceof Error ? signal.reason : new Error("SDK request aborted");
     };
     const recovery = reconcileJoinedRoomEncryption(client, abort.signal, () => undefined);
     const rejected = expect(recovery).rejects.toThrow("cancel recovery");

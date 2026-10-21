@@ -1,43 +1,36 @@
 import "fake-indexeddb/auto";
 import { indexedDB as snapshotFactory } from "fake-indexeddb";
-import { toErrorObject } from "openclaw/plugin-sdk/error-runtime";
 import { createDeferred } from "openclaw/plugin-sdk/extension-shared";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { requestResult } from "./idb-persistence.test-helpers.js";
 import { beginMatrixSdkIndexedDbSession } from "./indexeddb-session.js";
 
 const databases = new Set<string>();
 async function open(factory: IDBFactory, name: string, version = 1): Promise<IDBDatabase> {
   databases.add(name);
-  return await new Promise((resolve, reject) => {
-    const request = factory.open(name, version);
-    request.addEventListener("upgradeneeded", () => request.result.createObjectStore("keys"));
-    request.addEventListener("success", () => resolve(request.result));
-    request.addEventListener("error", () =>
-      reject(toErrorObject(request.error, "IndexedDB request failed")),
-    );
-  });
+  const request = factory.open(name, version);
+  request.addEventListener("upgradeneeded", () => request.result.createObjectStore("keys"));
+  return await requestResult(request);
+}
+
+async function fixture(label: string) {
+  const prefix = `matrix-session-${label}`;
+  const name = `${prefix}::matrix-sdk-crypto`;
+  const session = beginMatrixSdkIndexedDbSession(prefix);
+  return { prefix, name, session, connection: await open(globalThis.indexedDB, name) };
 }
 
 afterEach(async () => {
   vi.restoreAllMocks();
   for (const name of databases) {
-    await new Promise<void>((resolve, reject) => {
-      const request = snapshotFactory.deleteDatabase(name);
-      request.addEventListener("success", () => resolve());
-      request.addEventListener("error", () =>
-        reject(toErrorObject(request.error, "IndexedDB request failed")),
-      );
-    });
+    await requestResult(snapshotFactory.deleteDatabase(name));
   }
   databases.clear();
 });
 
 describe("Matrix SDK IndexedDB session retirement", () => {
   it("admits a successor through a fresh module while captured generation cleanup stays retired", async () => {
-    const prefix = "matrix-session-reloaded-module";
-    const first = beginMatrixSdkIndexedDbSession(prefix);
-    const name = `${prefix}::matrix-sdk-crypto`;
-    const connection = await open(globalThis.indexedDB, name);
+    const { prefix, name, session: first, connection } = await fixture("reloaded-module");
     await first.retire();
     vi.resetModules();
     const freshModule = await import("./indexeddb-session.js");
@@ -51,10 +44,7 @@ describe("Matrix SDK IndexedDB session retirement", () => {
   });
 
   it("settles writes and rejects old connections while allowing snapshot export and another account", async () => {
-    const prefix = "matrix-session-write";
-    const session = beginMatrixSdkIndexedDbSession(prefix);
-    const name = `${prefix}::matrix-sdk-crypto`;
-    const connection = await open(globalThis.indexedDB, name);
+    const { prefix, name, session, connection } = await fixture("write");
     const transaction = connection.transaction("keys", "readwrite");
     transaction.objectStore("keys").put("saved", "key");
     await session.retire();
@@ -62,13 +52,7 @@ describe("Matrix SDK IndexedDB session retirement", () => {
     expect(() => globalThis.indexedDB.open(name)).toThrow();
     const snapshot = await open(snapshotFactory, name);
     const request = snapshot.transaction("keys").objectStore("keys").get("key");
-    const saved = await new Promise((resolve, reject) => {
-      request.addEventListener("success", () => resolve(request.result));
-      request.addEventListener("error", () =>
-        reject(toErrorObject(request.error, "IndexedDB request failed")),
-      );
-    });
-    expect(saved).toBe("saved");
+    expect(await requestResult(request)).toBe("saved");
     snapshot.close();
     const other = beginMatrixSdkIndexedDbSession(`${prefix}-other`);
     const unrelated = await open(globalThis.indexedDB, `${prefix}-other::matrix-sdk-crypto`);
@@ -107,10 +91,7 @@ describe("Matrix SDK IndexedDB session retirement", () => {
   });
 
   it("keeps failed connection retirement closed and refuses a replacement generation", async () => {
-    const prefix = "matrix-session-failed-close";
-    const session = beginMatrixSdkIndexedDbSession(prefix);
-    const name = `${prefix}::matrix-sdk-crypto`;
-    const connection = await open(globalThis.indexedDB, name);
+    const { prefix, session, connection } = await fixture("failed-close");
     const close = connection.close.bind(connection);
     vi.spyOn(connection, "close").mockImplementation(() => {
       throw new Error("simulated close failure");
