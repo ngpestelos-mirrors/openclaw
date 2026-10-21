@@ -11,11 +11,18 @@ import {
 } from "./bundle.js";
 
 const tempDirs = useAutoCleanupTempDirTracker(afterEach);
+const file = (filePath: string, content = "x") => ({ path: filePath, content });
 const markdown = {
   path: "SKILL.md",
   content: "---\nname: demo\ndescription: Test procedure\n---\n# Demo\n",
 };
 const resource = { path: "scripts/test.sh", content: "#!/bin/sh\nprintf hello", executable: true };
+
+async function makeTree(prefix: string) {
+  const directory = await fs.realpath(tempDirs.make(prefix));
+  await fs.writeFile(path.join(directory, "SKILL.md"), markdown.content);
+  return directory;
+}
 
 describe("portable complete skill revision identity", () => {
   it("hashes file paths, exact bytes, and executability independently of enumeration order", () => {
@@ -33,14 +40,11 @@ describe("portable complete skill revision identity", () => {
       expect(prepareSkillLibraryBundle([markdown, changed]).revision).not.toBe(original.revision);
     }
   });
-  it.each(["---\nname: demo\n---\n# Demo\n"])(
-    "keeps publication metadata required for managed skills: %s",
-    (content) => {
-      expect(() => prepareSkillLibraryBundle([{ path: "SKILL.md", content }])).toThrow(
-        "requires name and description",
-      );
-    },
-  );
+  it("keeps publication metadata required for managed skills", () => {
+    expect(() =>
+      prepareSkillLibraryBundle([{ path: "SKILL.md", content: "---\nname: demo\n---\n# Demo\n" }]),
+    ).toThrow("requires name and description");
+  });
   it.each(["../escape", "/absolute", "a\\b", "LPT³", "node_modules/a"])(
     "rejects non-portable %s",
     (badPath) => {
@@ -51,22 +55,15 @@ describe("portable complete skill revision identity", () => {
   );
   it("rejects case collisions, file/directory collisions, and oversized files", () => {
     for (const files of [
-      [
-        { path: "a", content: "x" },
-        { path: "A", content: "y" },
-      ],
-      [
-        { path: "a", content: "x" },
-        { path: "a/b", content: "y" },
-      ],
-      [{ path: "big", content: "x".repeat(1024 * 1024 + 1) }],
+      [file("a"), file("A", "y")],
+      [file("a"), file("a/b", "y")],
+      [file("big", "x".repeat(1024 * 1024 + 1))],
     ]) {
       expect(() => prepareSkillLibraryBundle([markdown, ...files])).toThrow();
     }
   });
   it.runIf(process.platform !== "win32")("rejects symlink and hardlink imports", async () => {
-    const directory = await fs.realpath(tempDirs.make("skill-links-"));
-    await fs.writeFile(path.join(directory, "SKILL.md"), markdown.content);
+    const directory = await makeTree("skill-links-");
     await fs.symlink("SKILL.md", path.join(directory, "linked"));
     await expect(readSkillLibraryTree(directory)).rejects.toThrow();
     await fs.unlink(path.join(directory, "linked"));
@@ -140,9 +137,8 @@ describe("portable complete skill revision identity", () => {
   it.runIf(process.platform !== "win32")(
     "keeps unreadable nested directories fail-closed with path diagnostics",
     async () => {
-      const directory = await fs.realpath(tempDirs.make("skill-unreadable-"));
+      const directory = await makeTree("skill-unreadable-");
       const nested = path.join(directory, "private");
-      await fs.writeFile(path.join(directory, "SKILL.md"), markdown.content);
       await fs.mkdir(nested);
       await fs.chmod(nested, 0);
       try {
@@ -156,8 +152,7 @@ describe("portable complete skill revision identity", () => {
     },
   );
   it("rejects a tree beyond the path depth limit instead of silently omitting its files", async () => {
-    const directory = await fs.realpath(tempDirs.make("skill-depth-"));
-    await fs.writeFile(path.join(directory, "SKILL.md"), markdown.content);
+    const directory = await makeTree("skill-depth-");
     const nested = path.join(directory, ...Array<string>(16).fill("nested"));
     await fs.mkdir(nested, { recursive: true });
     await fs.writeFile(path.join(nested, "data.bin"), Buffer.from([0, 255, 128]));
