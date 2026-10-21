@@ -21,12 +21,7 @@ export async function clearAllIndexedDbState(params?: { databasePrefix?: string 
         (name) =>
           new Promise<void>((resolve, reject) => {
             const req = indexedDB.deleteDatabase(name);
-            req.addEventListener("success", () => resolve(), { once: true });
-            req.addEventListener(
-              "error",
-              () => reject(toErrorObject(req.error, "Non-Error rejection")),
-              { once: true },
-            );
+            void requestResult(req).then(() => resolve(), reject);
             req.addEventListener("blocked", () => resolve(), { once: true });
           }),
       ),
