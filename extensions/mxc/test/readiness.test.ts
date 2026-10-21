@@ -15,6 +15,7 @@ function setPlatform(platform: NodeJS.Platform) {
 beforeEach(() => {
   setPlatform("win32");
   vi.mocked(execFileSync).mockReset();
+  vi.spyOn(console, "warn").mockImplementation(() => {});
 });
 afterEach(() => {
   Object.defineProperty(process, "platform", originalPlatform);
@@ -27,6 +28,8 @@ const SYSTEM32 = path.win32.join(
 );
 const ICACLS = path.win32.join(SYSTEM32, "icacls.exe");
 const MXC_EXE = "C:\\mxc\\bin\\x64\\wxc-exec.exe";
+const unpreparedAcl = "C:\\ BUILTIN\\Administrators:(OI)(CI)(F)\n";
+const assertReady = () => assertMxcReadiness({ executablePath: MXC_EXE });
 
 function probeOutput(result: Record<string, unknown>): string {
   return JSON.stringify({ warnings: [], probes: {}, ...result });
@@ -35,9 +38,8 @@ function probeOutput(result: Record<string, unknown>): string {
 // The fake has no sc.exe: only the selected MXC executable answers --probe.
 function mockProbe(params: { probe?: string | Error; systemDriveAcl?: string } = {}) {
   const probe = params.probe ?? probeOutput({ tier: "base-container" });
-  const systemDriveAcl =
-    params.systemDriveAcl ?? "C:\\ BUILTIN\\Administrators:(OI)(CI)(F)\n    S-1-15-2-1:(R)\n";
-  const exec = vi.mocked(execFileSync).mockImplementation((command, args = []) => {
+  const systemDriveAcl = params.systemDriveAcl ?? `${unpreparedAcl}    S-1-15-2-1:(R)\n`;
+  return vi.mocked(execFileSync).mockImplementation((command, args = []) => {
     if (command === MXC_EXE && args[0] === "--probe") {
       if (probe instanceof Error) {
         throw probe;
@@ -49,7 +51,6 @@ function mockProbe(params: { probe?: string | Error; systemDriveAcl?: string } =
     }
     throw new Error(`spawn ${command} ENOENT`);
   });
-  return exec;
 }
 
 describe("assertMxcReadiness", () => {
@@ -57,76 +58,62 @@ describe("assertMxcReadiness", () => {
     setPlatform("linux");
     const exec = mockProbe({ probe: new Error("probe must not run") });
 
-    expect(() => assertMxcReadiness({ executablePath: MXC_EXE })).not.toThrow();
+    expect(assertReady).not.toThrow();
     expect(exec).not.toHaveBeenCalled();
   });
 
   test("reports tier degradation without requiring system-drive preparation", () => {
-    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
     mockProbe({
-      systemDriveAcl: "C:\\ BUILTIN\\Administrators:(OI)(CI)(F)\n",
+      systemDriveAcl: unpreparedAcl,
       probe: probeOutput({
         tier: "appcontainer-dacl",
         warnings: ["BaseContainer API is not present on this host"],
       }),
     });
 
-    expect(() => assertMxcReadiness({ executablePath: MXC_EXE })).not.toThrow();
-    expect(warn).toHaveBeenCalledOnce();
-    expect(warn.mock.calls[0]?.[0]).toMatch(
+    expect(assertReady).not.toThrow();
+    expect(console.warn).toHaveBeenCalledOnce();
+    expect(vi.mocked(console.warn).mock.calls[0]?.[0]).toMatch(
       /appcontainer-dacl isolation tier: BaseContainer API is not present/u,
     );
   });
 
-  test("rejects hosts where MXC cannot select an isolation tier", () => {
-    mockProbe({
-      probe: probeOutput({
-        error: "DACL fallback required but fallback.allowDaclMutation is false",
-      }),
-    });
-
-    expect(() => assertMxcReadiness({ executablePath: MXC_EXE })).toThrow(
+  test.each([
+    [
+      "no isolation tier",
+      probeOutput({ error: "DACL fallback required but fallback.allowDaclMutation is false" }),
       /cannot select an isolation tier on this host \(DACL fallback required.*--probe for host details/u,
-    );
-  });
-
-  test("rejects an unsupported tier even if the probe returns success", () => {
-    mockProbe({
-      probe: probeOutput({ tier: "none", error: "isolation unavailable" }),
-    });
-
-    expect(() => assertMxcReadiness({ executablePath: MXC_EXE })).toThrow(
+    ],
+    [
+      "an unsupported tier even with a successful probe",
+      probeOutput({ tier: "none", error: "isolation unavailable" }),
       /host check returned an unexpected result.*--probe for host details/u,
-    );
-  });
-
-  test("rejects a probe that does not report JSON", () => {
-    mockProbe({ probe: "wxc-exec: unknown option --probe" });
-
-    expect(() => assertMxcReadiness({ executablePath: MXC_EXE })).toThrow(
+    ],
+    [
+      "non-JSON output",
+      "wxc-exec: unknown option --probe",
       /host check did not return JSON.*older executor.*unset plugins\.entries\.mxc\.config\.mxcBinaryPath/u,
-    );
+    ],
+  ] as const)("rejects %s", (_name, probe, error) => {
+    mockProbe({ probe });
+    expect(assertReady).toThrow(error);
   });
 });
 
 describe("warnMxcHostPrepIfNeeded", () => {
   test("is a no-op on non-Windows platforms", () => {
     setPlatform("linux");
-    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
     mockProbe();
 
     warnMxcHostPrepIfNeeded();
-    expect(warn).not.toHaveBeenCalled();
+    expect(console.warn).not.toHaveBeenCalled();
   });
 
   test("warns when the system drive lacks AppContainer ACEs", () => {
-    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
-    mockProbe({
-      systemDriveAcl: "C:\\ BUILTIN\\Administrators:(OI)(CI)(F)\n",
-    });
+    mockProbe({ systemDriveAcl: unpreparedAcl });
 
     warnMxcHostPrepIfNeeded();
-    expect(warn).toHaveBeenCalledOnce();
-    expect(warn.mock.calls[0]?.[0]).toMatch(/prepare-system-drive/u);
+    expect(console.warn).toHaveBeenCalledOnce();
+    expect(vi.mocked(console.warn).mock.calls[0]?.[0]).toMatch(/prepare-system-drive/u);
   });
 });
