@@ -2,7 +2,7 @@ import type { AddressInfo } from "node:net";
 import { createDeferred } from "openclaw/plugin-sdk/extension-shared";
 import { resetPluginStateStoreForTests } from "openclaw/plugin-sdk/plugin-state-test-runtime";
 import { withOpenClawTestState } from "openclaw/plugin-sdk/test-state";
-import { expect, it, onTestFinished } from "vitest";
+import { assert, expect, it, onTestFinished } from "vitest";
 import { closeTrackedBrowserTabsForSessions } from "./browser-maintenance.js";
 import { setupMaintenance } from "./browser-maintenance.test-support.js";
 import { resolveCdpTabOwnership } from "./src/browser/cdp.helpers.js";
@@ -21,7 +21,8 @@ it("closes owned tabs over their transports and rechecks claims after runtime lo
       "Target.getTargets": () =>
         cdpResult({ targetInfos: [...targets].map((targetId) => ({ targetId, type: "page" })) }),
       "Target.closeTarget": ({ params }) => {
-        const targetId = String(params?.targetId ?? "");
+        const targetId = params?.targetId;
+        assert(typeof targetId === "string", "expected a string target ID");
         closedTargets.push(targetId);
         return cdpResult({ success: targets.delete(targetId) });
       },

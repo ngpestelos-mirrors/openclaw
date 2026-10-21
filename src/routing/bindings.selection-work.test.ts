@@ -23,6 +23,7 @@ function countRoleVisits<T>(memberRoleIds: string[], read: () => T) {
     for (const role of memberRoleIds.values()) {
       yield visit(role);
     }
+    return undefined;
   });
   try {
     return { value: read(), iterations: iter.mock.calls.length, visits: visit.mock.calls.length };

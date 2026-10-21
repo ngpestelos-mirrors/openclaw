@@ -67,7 +67,13 @@ function registerLifecycle(eager = false, path = "/browser/screencast") {
     start: () => service.start(context),
     stop: () => service.stop?.(context),
   };
-  onTestFinished(() => Promise.resolve(lifecycle.stop()).finally(() => scheduler.stop()));
+  onTestFinished(async () => {
+    try {
+      await lifecycle.stop();
+    } finally {
+      await scheduler.stop();
+    }
+  });
   return lifecycle;
 }
 

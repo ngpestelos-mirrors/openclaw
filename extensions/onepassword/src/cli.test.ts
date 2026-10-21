@@ -40,7 +40,7 @@ async function setupCommands(...rows: Partial<AuditRow>[]) {
   return {
     auditStore,
     write,
-    async run<T = unknown>(...args: string[]): Promise<T> {
+    async run<T = unknown>(this: void, ...args: string[]): Promise<T> {
       await program.parseAsync(["onepassword", ...args], { from: "user" });
       return JSON.parse(String(write.mock.calls[0]?.[0])) as T;
     },

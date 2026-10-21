@@ -58,9 +58,9 @@ it.each(["file", "directory"] as const)("%s metadata requires a matching grant",
     params: { path: target, followSymlinks: true, preflightOnly: true },
     pluginConfig: { nodes: { "node-1": { allowReadPaths: [target], ask: "off" } } },
   });
-  invokeNode.mockImplementation(async ({ params } = {}) => ({
+  invokeNode.mockImplementation(async (options = {}) => ({
     ok: true,
-    payload: await handleFileStat(params as Parameters<typeof handleFileStat>[0]),
+    payload: await handleFileStat(options.params as Parameters<typeof handleFileStat>[0]),
   }));
   const invoke = (params = ctx.params) =>
     createFileTransferNodeInvokePolicy().handle({ ...ctx, params });

@@ -25,7 +25,7 @@ vi.mock("openclaw/plugin-sdk/file-access-runtime", async (original) => {
   };
 });
 
-const fixture = memoryWatchFixture(observer.reset, "local-memory-watch");
+const fixture = memoryWatchFixture(() => observer.reset(), "local-memory-watch");
 
 function createPeer(signal: AbortSignal) {
   const { port1, port2 } = new MessageChannel();

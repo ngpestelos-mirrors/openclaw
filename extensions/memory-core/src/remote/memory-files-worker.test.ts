@@ -14,7 +14,7 @@ vi.mock("openclaw/plugin-sdk/file-access-runtime", async (original) => ({
   ...(await original<typeof import("openclaw/plugin-sdk/file-access-runtime")>()),
   watch: observer.watch,
 }));
-const fixture = memoryWatchFixture(observer.reset, "memory-files-watch");
+const fixture = memoryWatchFixture(() => observer.reset(), "memory-files-watch");
 function start(output: Writable) {
   const input = new PassThrough();
   const worker = serveMemoryFiles({
