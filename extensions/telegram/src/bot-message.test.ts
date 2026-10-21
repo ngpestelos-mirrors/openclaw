@@ -1,7 +1,21 @@
+import path from "node:path";
 // Telegram tests cover bot message plugin behavior.
 import { expectDefined } from "@openclaw/normalization-core";
 import { createDeferred } from "openclaw/plugin-sdk/extension-shared";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { createInboundDebouncer } from "../../../src/auto-reply/inbound-debounce.js";
+import { runPreparedChannelTurn } from "../../../src/channels/turn/execution.js";
+import { enqueueCommandInLane } from "../../../src/process/command-queue.js";
+import {
+  captureGatewayRootWorkReleaseObserver,
+  GatewayDrainingError,
+  getActiveGatewayRootWorkCount,
+  markGatewayRestartDraining,
+  resetGatewayWorkAdmission,
+  tryBeginGatewayRootWorkAdmission,
+  tryBeginGatewaySuspendAdmission,
+} from "../../../src/process/gateway-work-admission.js";
+import { useAutoCleanupTempDirTracker } from "../../../test/helpers/temp-dir.js";
 import type { TelegramMediaRef } from "./bot-message-context.js";
 import { createTelegramMessageProcessor } from "./bot-message.js";
 import {
@@ -83,6 +97,8 @@ vi.mock("openclaw/plugin-sdk/session-store-runtime", async (importOriginal) => (
   resolveAmbientTranscriptWatermarkKey: unexpectedBotDependency,
   resolveStorePath: unexpectedBotDependency,
 }));
+
+const tempDirs = useAutoCleanupTempDirTracker(afterEach);
 
 describe("telegram bot message processor", () => {
   beforeEach(() => {
@@ -375,6 +391,136 @@ describe("telegram bot message processor", () => {
     await expect(replay.deferredWork?.task).resolves.toEqual({ kind: "completed" });
     expect(events).toEqual(["finalizer:adopted", "participant:completed"]);
     expect(finalizeSpooledReplayResult).toHaveBeenCalledTimes(1);
+  });
+
+  it.each(["accepting", "suspended", "restarting"] as const)(
+    "owns spooled post-dispatch cleanup after ingress returns (%s)",
+    async (phase) => {
+      const coreReturned = createDeferred<void>();
+      const execute = createDeferred<void>();
+      const finished = createDeferred<void>();
+      const released = createDeferred<void>();
+      const deliverFallback = vi.fn(async () => {});
+      const storePath = path.join(tempDirs.make("telegram-adopted-"), "sessions.json");
+      let deliveryError: unknown;
+      buildTelegramMessageContext.mockResolvedValue(createMessageContext());
+      dispatchTelegramMessage.mockImplementationOnce(async ({ turnAdoptionLifecycle }) => {
+        const observeRelease = expectDefined(
+          captureGatewayRootWorkReleaseObserver(),
+          "dispatch root observer",
+        );
+        observeRelease(() => released.resolve());
+        try {
+          await runPreparedChannelTurn({
+            channel: "telegram",
+            routeSessionKey: "agent:main:main",
+            storePath,
+            ctxPayload: {
+              Body: "hello",
+              From: "telegram:123",
+              To: "telegram:123",
+              CommandAuthorized: false,
+            },
+            recordInboundSession: vi.fn(async () => {}),
+            runDispatch: async () => {
+              await turnAdoptionLifecycle.onAdopted();
+              return { queuedFinal: true, counts: { tool: 0, block: 0, final: 1 } };
+            },
+          });
+          coreReturned.resolve();
+          // Telegram drains drafts and can deliver a fallback after the core turn returns.
+          await execute.promise;
+          await enqueueCommandInLane("telegram-post-dispatch", deliverFallback);
+          return { kind: "completed" };
+        } catch (error) {
+          deliveryError = error;
+          return { kind: "failed-retryable", error };
+        } finally {
+          finished.resolve();
+        }
+      });
+      const processMessage = createTelegramMessageProcessor(baseDeps);
+      const results: TelegramMessageProcessingResult[] = [];
+      const debouncer = createInboundDebouncer({
+        debounceMs: 0,
+        buildKey: () => "telegram-spooled",
+        onFlush: (_items: string[], createFlush) =>
+          createFlush({
+            dispatch: async () => {
+              results.push(
+                await processSampleMessage(
+                  processMessage,
+                  undefined,
+                  {},
+                  {
+                    spooledReplay: true,
+                    isolateSpooledReplaySettlement: true,
+                  },
+                ),
+              );
+            },
+          }),
+      });
+      const request = expectDefined(
+        tryBeginGatewayRootWorkAdmission("telegram:ingress"),
+        "ingress admission",
+      );
+      try {
+        await request.run(() => debouncer.enqueue("message"));
+        await debouncer.drain();
+        await coreReturned.promise;
+        request.release();
+        expect(results).toEqual([{ kind: "completed" }]);
+        expect(deliverFallback).not.toHaveBeenCalled();
+        expect(getActiveGatewayRootWorkCount()).toBe(1);
+        if (phase === "suspended") {
+          expect(tryBeginGatewaySuspendAdmission(() => {})).not.toBeNull();
+          expect(tryBeginGatewayRootWorkAdmission("new-input")).toBeNull();
+        } else if (phase === "restarting") {
+          markGatewayRestartDraining();
+        }
+        execute.resolve();
+        await finished.promise;
+        await released.promise;
+        if (phase === "restarting") {
+          expect(deliveryError).toBeInstanceOf(GatewayDrainingError);
+          expect(deliverFallback).not.toHaveBeenCalled();
+        } else {
+          expect(deliveryError).toBeUndefined();
+          expect(deliverFallback).toHaveBeenCalledOnce();
+        }
+        expect(getActiveGatewayRootWorkCount()).toBe(0);
+      } finally {
+        request.release();
+        execute.resolve();
+        await finished.promise;
+        await debouncer.drain();
+        resetGatewayWorkAdmission();
+      }
+    },
+  );
+
+  it("settles a spooled participant retryably when restart refuses detached admission", async () => {
+    buildTelegramMessageContext.mockResolvedValue(createMessageContext());
+    const processMessage = createTelegramMessageProcessor(baseDeps);
+    markGatewayRestartDraining();
+    try {
+      await expect(
+        processSampleMessage(
+          processMessage,
+          undefined,
+          {},
+          {
+            spooledReplay: true,
+            isolateSpooledReplaySettlement: true,
+          },
+        ),
+      ).resolves.toEqual({ kind: "failed-retryable", error: expect.any(GatewayDrainingError) });
+      expect(dispatchTelegramMessage).not.toHaveBeenCalled();
+      expect(getActiveGatewayRootWorkCount()).toBe(0);
+    } finally {
+      resetGatewayWorkAdmission();
+    }
   });
 
   it("keeps a spooled replay completed when dispatch fails after adoption", async () => {

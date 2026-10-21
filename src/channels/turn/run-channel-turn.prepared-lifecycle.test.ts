@@ -2,18 +2,8 @@ import path from "node:path";
 import { afterEach, expect, it, vi } from "vitest";
 import { withinTest } from "../../../test/helpers/promise.js";
 import { useAutoCleanupTempDirTracker } from "../../../test/helpers/temp-dir.js";
-import { createInboundDebouncer } from "../../auto-reply/inbound-debounce.js";
 import { withPluginServiceScheduler } from "../../plugins/service-scheduler-binding.js";
 import { createPluginServiceScheduler } from "../../plugins/service-scheduler.js";
-import { enqueueCommandInLane } from "../../process/command-queue.js";
-import {
-  GatewayDrainingError,
-  getActiveGatewayRootWorkCount,
-  markGatewayRestartDraining,
-  resetGatewayWorkAdmission,
-  tryBeginGatewayRootWorkAdmission,
-  tryBeginGatewaySuspendAdmission,
-} from "../../process/gateway-work-admission.js";
 import { createDeferredCore } from "../../shared/deferred.js";
 import {
   assertAgentDatabaseAdmitted as assertAdmitted,
@@ -134,67 +124,6 @@ it("settles prepared resources when observe-only suppresses dispatch", async () 
   expect(hasFinalChannelTurnDispatch(result.dispatchResult)).toBe(false);
   expect(onFinalize).toHaveBeenCalledExactlyOnceWith(result);
 });
-
-it.each(["accepting", "suspended", "restarting"] as const)(
-  "keeps the full channel turn owned after ingress adoption returns (%s)",
-  async (phase) => {
-    const execute = createDeferredCore();
-    const reply = vi.fn(async () => {});
-    let completion: ReturnType<typeof runPreparedChannelTurn> | undefined;
-    const debouncer = createInboundDebouncer({
-      debounceMs: 0,
-      buildKey: () => "spooled-input",
-      onFlush: (_items: string[], createFlush) =>
-        createFlush({
-          dispatch: async (lifecycle) => {
-            const adopted = createDeferredCore();
-            const { turn } = createTurn({
-              runDispatch: async () => {
-                await lifecycle.onAdopted();
-                adopted.resolve();
-                await execute.promise;
-                await enqueueCommandInLane("channel-adopted-turn", reply);
-                return { queuedFinal: true, counts: { tool: 0, block: 0, final: 1 } };
-              },
-            });
-            completion = runPreparedChannelTurn(turn);
-            void completion.catch(() => {});
-            // Telegram's spool participant returns at adoption, before the turn finishes.
-            await adopted.promise;
-          },
-        }),
-    });
-    const request = tryBeginGatewayRootWorkAdmission("channel:ingress");
-    expect(request).not.toBeNull();
-    try {
-      await request!.run(() => debouncer.enqueue("message"));
-      await debouncer.drain();
-      request!.release();
-      expect(reply).not.toHaveBeenCalled();
-      if (phase === "suspended") {
-        expect(tryBeginGatewaySuspendAdmission(() => {})).not.toBeNull();
-        expect(tryBeginGatewayRootWorkAdmission("new-input")).toBeNull();
-      } else if (phase === "restarting") {
-        markGatewayRestartDraining();
-      }
-      execute.resolve();
-      expect(completion).toBeDefined();
-      if (phase === "restarting") {
-        await expect(completion).rejects.toBeInstanceOf(GatewayDrainingError);
-        expect(reply).not.toHaveBeenCalled();
-      } else {
-        await completion;
-        expect(reply).toHaveBeenCalledOnce();
-      }
-      expect(getActiveGatewayRootWorkCount()).toBe(0);
-    } finally {
-      request?.release();
-      execute.resolve();
-      await Promise.allSettled([completion, debouncer.drain()]);
-      resetGatewayWorkAdmission();
-    }
-  },
-);
 
 it.for(["admitted", "failed", "account-stopped", "gateway-stopped"] as const)(
   "keeps replay behind its agent startup admission: %s",
