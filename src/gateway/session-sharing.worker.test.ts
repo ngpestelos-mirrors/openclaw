@@ -4,6 +4,8 @@ import { syncBuiltinESMExports } from "node:module";
 import { expect, it, vi } from "vitest";
 import { createDeferred, withinTest } from "../../test/helpers/promise.js";
 import { observeHostDataSql } from "../../test/helpers/sqlite-statement-execution-counter.js";
+import { finalizeInboundContext } from "../auto-reply/reply/inbound-context.js";
+import { initSessionState } from "../auto-reply/reply/session.js";
 import { prepareQualifiedSessionEntryTarget } from "../config/sessions/session-accessor.entry.js";
 import { replaceSessionEntrySync } from "../config/sessions/session-accessor.sqlite-entry.js";
 import { addSessionMember, removeSessionMember } from "../config/sessions/session-sharing-store.js";
@@ -300,6 +302,77 @@ it("does not replay an authorization consumer after its own effect changes the r
     });
     expect(effect).toHaveBeenCalledOnce();
   }));
+
+it.each(["operator.write", "operator.sessions.write"] as const)(
+  "admits %s chat input after its idle rollover",
+  (scopeName) =>
+    withOpenClawTestState({ scenario: "minimal" }, async (state) => {
+      const cfg = {
+        ...rolePolicyConfig(),
+        agents: { defaults: { workspace: state.workspaceDir } },
+        session: { reset: { mode: "idle" as const, idleMinutes: 1 } },
+      };
+      const client = roleClient("write", "idle-rollover-owner");
+      client.connect.scopes = [scopeName];
+      const scope = { agentId: "main", sessionKey: "agent:main:idle-rollover" };
+      const entry = {
+        sessionId: "idle-rollover-session",
+        lifecycleRevision: "before-idle-rollover",
+        updatedAt: Date.now(),
+        lastInteractionAt: 1,
+        createdActor: createdActor(client.authenticatedUserProfile!.profileId),
+      };
+      replaceSessionEntrySync(scope, entry);
+      const captured = await resolveSessionMutationAuthorizationAsync({
+        client,
+        method: "chat.send",
+        requestParams: scope,
+        sessionScope: scopeName === "operator.sessions.write" ? scopeName : undefined,
+        context: { getRuntimeConfig: () => cfg } as GatewayRequestContext,
+      });
+      expect(captured.error).toBeNull();
+      const authorization = captured.authorization!;
+      using _ = { [Symbol.dispose]: () => authorization.release?.() };
+      const reset = await initSessionState({
+        cfg,
+        commandAuthorized: true,
+        expectedExistingSessionId: entry.sessionId,
+        ctx: finalizeInboundContext({
+          Body: "Continue after the idle interval.",
+          SessionKey: scope.sessionKey,
+          From: "idle-rollover-owner",
+          To: "assistant",
+          Provider: "webchat",
+          Surface: "webchat",
+          ChatType: "direct",
+        }),
+      });
+      expect(reset.isNewSession).toBe(true);
+      expect(reset.resetTriggered).toBe(false);
+      expect(reset.sessionId).toBe(entry.sessionId);
+      expect(reset.sessionEntry.lifecycleRevision).not.toBe(entry.lifecycleRevision);
+      expect(() => authorization.assertCurrent()).toThrow("session changed before chat.send");
+      expect(() => authorization.assertAdmittedInputCurrent!()).not.toThrow();
+      const admitted = authorization.admittedInputAuthority!;
+      await expect(
+        admitted.withCurrent((facts, assertCurrent) =>
+          admitted.withPreparedCurrent(facts, () => "accepted", assertCurrent),
+        ),
+      ).resolves.toBe("accepted");
+      if (scopeName === "operator.sessions.write") {
+        replaceSessionEntrySync(scope, {
+          ...reset.sessionEntry,
+          createdActor: createdActor("another-profile"),
+        });
+        expect(() => authorization.assertAdmittedInputCurrent!()).toThrow(
+          "Session-scoped writes require your own session.",
+        );
+        await expect(admitted.withCurrent(() => "accepted")).rejects.toThrow(
+          "Session-scoped writes require your own session.",
+        );
+      }
+    }),
+);
 
 it.for([false, true])(
   "checks committed chat authority while an unrelated writer is held (revoked=%s)",
