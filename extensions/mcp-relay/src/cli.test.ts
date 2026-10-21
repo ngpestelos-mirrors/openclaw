@@ -38,18 +38,14 @@ describe("MCP relay CLI", () => {
   });
 
   it.each([
-    { args: ["status"], method: "status", params: {}, scope: "operator.read" },
-    { args: ["pair"], method: "pair", params: {}, scope: "operator.admin" },
-    { args: ["grants"], method: "grants", params: {}, scope: "operator.admin" },
-    {
-      args: ["revoke", "gr_fixture"],
-      method: "revoke",
-      params: { grantId: "gr_fixture" },
-      scope: "operator.admin",
-    },
-  ])(
-    "routes $method through the running Gateway with its required scope",
-    async ({ args, method, params, scope }) => {
+    ["status", {}, "operator.read"],
+    ["pair", {}, "operator.admin"],
+    ["grants", {}, "operator.admin"],
+    ["revoke", { grantId: "gr_fixture" }, "operator.admin"],
+  ] as const)(
+    "routes %s through the running Gateway with its required scope",
+    async (method, params, scope) => {
+      const args = method === "revoke" ? [method, "gr_fixture"] : [method];
       await runCli([...args, "--json", "--url", "ws://localhost:19000"]);
 
       expect(mocks.callGatewayFromCli).toHaveBeenCalledWith(
@@ -78,12 +74,12 @@ describe("MCP relay CLI", () => {
   });
 
   it.each([
-    { ui: { available: true, basePath: "/control" }, line: "Control UI: available (/control)" },
-    {
-      ui: { available: false, reason: "Update the relay." },
-      line: "Control UI: unavailable — Update the relay.",
-    },
-  ])("prints UI availability in human status: $line", async ({ ui, line }) => {
+    [{ available: true, basePath: "/control" }, "Control UI: available (/control)"],
+    [
+      { available: false, reason: "Update the relay." },
+      "Control UI: unavailable — Update the relay.",
+    ],
+  ] as const)("prints UI availability in human status: %j", async (ui, line) => {
     mocks.callGatewayFromCli.mockResolvedValue({ connected: true, ui });
     await runCli(["status"]);
     expect(mocks.log).toHaveBeenCalledWith(line);
