@@ -33,33 +33,29 @@ function createFixture() {
 }
 
 describe("Tlon pending approval limit", () => {
-  it.each([
-    { fails: false, requests: 2, notices: 1 },
-    { fails: true, requests: 4, notices: 3 },
-  ])(
-    "bounds overflow notifications when delivery fails=$fails",
-    async ({ fails, requests, notices }) => {
-      const fixture = createFixture();
-      if (fails) {
-        fixture.poke.mockRejectedValue(new Error("owner unavailable"));
-      }
-      for (let index = 0; index < requests; index += 1) {
-        const approval = createApproval(TLON_PENDING_APPROVAL_LIMIT + index);
-        expect(await fixture.queueApprovalRequest(approval)).toBe(false);
-      }
-      expect(fixture.state.pendingApprovals).toEqual(fixture.approvals);
-      expect(fixture.poke).toHaveBeenCalledTimes(notices);
-      expect(fixture.runtime.error).toHaveBeenCalledTimes(fails ? notices : 0);
-      if (!fails) {
-        expect(fixture.poke).toHaveBeenCalledWith(
-          expect.objectContaining({ app: "chat", mark: "chat-dm-action" }),
-        );
-        expect(fixture.runtime.log).toHaveBeenCalledWith(
-          expect.stringContaining("Pending approval limit reached"),
-        );
-      }
-    },
-  );
+  it.each([false, true])("bounds overflow notifications when delivery fails=%s", async (fails) => {
+    const requests = fails ? 4 : 2;
+    const notices = fails ? 3 : 1;
+    const fixture = createFixture();
+    if (fails) {
+      fixture.poke.mockRejectedValue(new Error("owner unavailable"));
+    }
+    for (let index = 0; index < requests; index += 1) {
+      const approval = createApproval(TLON_PENDING_APPROVAL_LIMIT + index);
+      expect(await fixture.queueApprovalRequest(approval)).toBe(false);
+    }
+    expect(fixture.state.pendingApprovals).toEqual(fixture.approvals);
+    expect(fixture.poke).toHaveBeenCalledTimes(notices);
+    expect(fixture.runtime.error).toHaveBeenCalledTimes(fails ? notices : 0);
+    if (!fails) {
+      expect(fixture.poke).toHaveBeenCalledWith(
+        expect.objectContaining({ app: "chat", mark: "chat-dm-action" }),
+      );
+      expect(fixture.runtime.log).toHaveBeenCalledWith(
+        expect.stringContaining("Pending approval limit reached"),
+      );
+    }
+  });
 
   it("still updates an existing approval when the queue is full", async () => {
     const fixture = createFixture();

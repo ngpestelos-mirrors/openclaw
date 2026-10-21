@@ -7,15 +7,11 @@ vi.mock("openclaw/plugin-sdk/media-runtime", () => ({
   saveRemoteMedia: vi.fn(),
 }));
 
-const saveRemoteMediaMock = vi.mocked(saveRemoteMedia);
+const saveMedia = vi.mocked(saveRemoteMedia);
 const photoUrl = "https://example.com/photo.png";
 const imageBlock = (src: string) => ({ block: { image: { src } } });
-const savedImage = {
-  id: "photo---uuid.png",
-  path: "/tmp/openclaw/media/inbound/photo---uuid.png",
-  size: 10,
-  contentType: "image/png",
-};
+const attachment = { path: "/tmp/photo.png", contentType: "image/png" };
+const savedImage = { ...attachment, id: "photo", size: 10 };
 
 describe("tlon monitor media", () => {
   beforeEach(() => {
@@ -27,21 +23,17 @@ describe("tlon monitor media", () => {
   afterEach(() => vi.restoreAllMocks());
 
   it("caps downloaded images at eight per message", async () => {
-    const content = Array.from({ length: 10 }, (_, index) =>
-      imageBlock(`https://example.com/${index}.png`),
-    );
-    saveRemoteMediaMock.mockImplementation(async ({ url }) => ({
+    const urls = Array.from({ length: 10 }, (_, index) => `https://example.com/${index}.png`);
+    saveMedia.mockImplementation(async ({ url }) => ({
       ...savedImage,
       id: `photo-${url}.png`,
       path: `/tmp/openclaw/media/inbound/${url.split("/").pop()}`,
     }));
 
-    const result = await downloadMessageImages(content);
+    const result = await downloadMessageImages(urls.map(imageBlock));
 
     expect([result.unavailableCount, result.attachments.length]).toEqual([2, 8]);
-    expect(saveRemoteMediaMock.mock.calls.map(([options]) => options.url)).toEqual(
-      Array.from({ length: 8 }, (_, index) => `https://example.com/${index}.png`),
-    );
+    expect(saveMedia.mock.calls.map(([options]) => options.url)).toEqual(urls.slice(0, 8));
   });
 
   it("keeps the duplicated path projection byte-stable beside ordered facts", () => {
@@ -49,17 +41,13 @@ describe("tlon monitor media", () => {
       { path: "/tmp/a.png", contentType: "image/png" },
       { path: "/tmp/b.jpg", contentType: "image/jpeg" },
     ];
-    expect(buildTlonInboundMediaPrompt("caption", media)).toEqual({
-      body: [
-        "[media attached: /tmp/a.png (image/png) | /tmp/a.png]",
-        "[media attached: /tmp/b.jpg (image/jpeg) | /tmp/b.jpg]",
-        "caption",
-      ].join("\n"),
-      media: [
-        { path: "/tmp/a.png", contentType: "image/png" },
-        { path: "/tmp/b.jpg", contentType: "image/jpeg" },
-      ],
-    });
+    const expected = {
+      body: `[media attached: /tmp/a.png (image/png) | /tmp/a.png]
+[media attached: /tmp/b.jpg (image/jpeg) | /tmp/b.jpg]
+caption`,
+      media: structuredClone(media),
+    };
+    expect(buildTlonInboundMediaPrompt("caption", media)).toEqual(expected);
   });
 
   it.each([
@@ -67,11 +55,10 @@ describe("tlon monitor media", () => {
     [1024, 1024],
     [MAX_IMAGE_BYTES * 2, MAX_IMAGE_BYTES],
   ])("stores fetched media with cap %s as %s bytes", async (maxBytes, expectedMaxBytes) => {
-    saveRemoteMediaMock.mockResolvedValue(savedImage);
+    saveMedia.mockResolvedValue(savedImage);
     const result = await downloadMessageImages([imageBlock(photoUrl)], maxBytes);
 
-    expect(saveRemoteMediaMock).toHaveBeenCalledTimes(1);
-    expect(saveRemoteMediaMock).toHaveBeenCalledWith({
+    expect(saveMedia).toHaveBeenCalledExactlyOnceWith({
       url: photoUrl,
       maxBytes: expectedMaxBytes,
       responseHeaderTimeoutMs: 120_000,
@@ -80,34 +67,26 @@ describe("tlon monitor media", () => {
       requestInit: { method: "GET" },
     });
     expect(result).toEqual({
-      attachments: [{ path: savedImage.path, contentType: savedImage.contentType }],
+      attachments: [attachment],
       unavailableCount: 0,
     });
   });
 
-  it("reports an unavailable image when the fetch exceeds the image cap", async () => {
-    saveRemoteMediaMock.mockRejectedValue(
-      new Error(
-        `Failed to fetch media from ${photoUrl}: payload exceeds maxBytes ${MAX_IMAGE_BYTES}`,
-      ),
-    );
-
-    expect(await downloadMessageImages([imageBlock(photoUrl)])).toEqual({
-      attachments: [],
-      unavailableCount: 1,
-    });
-    expect(console.error).toHaveBeenCalledWith("[tlon-media] Error downloading inbound media");
-    expect(JSON.stringify(vi.mocked(console.error).mock.calls)).not.toContain(photoUrl);
-  });
-
-  it("rejects non-http media without logging its contents", async () => {
-    const url = "data:image/png;base64,private-inbound-image";
+  it.each([
+    [photoUrl, "error", "Error downloading inbound media"],
+    ["data:image/png;base64,private-inbound-image", "warn", "Rejected non-http(s) media URL"],
+  ] as const)("reports unavailable media without exposing %s", async (url, level, message) => {
+    if (level === "error") {
+      saveMedia.mockRejectedValue(new Error(`${url}: exceeds maxBytes ${MAX_IMAGE_BYTES}`));
+    }
     expect(await downloadMessageImages([imageBlock(url)])).toEqual({
       attachments: [],
       unavailableCount: 1,
     });
-    expect(saveRemoteMediaMock).not.toHaveBeenCalled();
-    expect(console.warn).toHaveBeenCalledWith("[tlon-media] Rejected non-http(s) media URL");
-    expect(JSON.stringify(vi.mocked(console.warn).mock.calls)).not.toContain(url);
+    if (level === "warn") {
+      expect(saveMedia).not.toHaveBeenCalled();
+    }
+    expect(console[level]).toHaveBeenCalledWith(`[tlon-media] ${message}`);
+    expect(JSON.stringify(vi.mocked(console[level]).mock.calls)).not.toContain(url);
   });
 });

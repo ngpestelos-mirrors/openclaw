@@ -26,47 +26,29 @@ const baseAccount: TlonResolvedAccount = {
   ownerShip: "~marzod",
 };
 
-function allowlistMigrationDecisions(currentSettings: Record<string, unknown>) {
-  const allowlistKeys = new Set(["dmAllowlist", "groupInviteAllowlist", "defaultAuthorizedShips"]);
-  return Object.fromEntries(
-    buildTlonSettingsMigrations(baseAccount, currentSettings)
-      .filter((migration) => allowlistKeys.has(migration.key))
-      .map((migration) => [
-        migration.key,
-        shouldMigrateTlonSetting(migration.fileValue, migration.settingsValue),
-      ]),
-  );
-}
-
 const applySettings = (
   currentSettings: Parameters<typeof applyTlonSettingsOverrides>[0]["currentSettings"],
 ) => applyTlonSettingsOverrides({ account: baseAccount, currentSettings });
 
-describe("shouldMigrateTlonSetting", () => {
-  it("does not rehydrate explicit empty-array revocations during startup migration", () => {
-    expect(
-      allowlistMigrationDecisions({
-        dmAllowlist: [],
-        groupInviteAllowlist: [],
-        defaultAuthorizedShips: [],
-      }),
-    ).toEqual({
-      dmAllowlist: false,
-      groupInviteAllowlist: false,
-      defaultAuthorizedShips: false,
+describe("Tlon settings", () => {
+  it.each([false, true])("migrates only missing allowlists (%s)", (missing) => {
+    const value = missing ? undefined : [];
+    const settings = {
+      dmAllowlist: value,
+      groupInviteAllowlist: value,
+      defaultAuthorizedShips: value,
+    };
+    const migrations = buildTlonSettingsMigrations(baseAccount, settings);
+    const decisions = migrations.map(({ key, fileValue, settingsValue }) => [
+      key,
+      shouldMigrateTlonSetting(fileValue, settingsValue),
+    ]);
+    expect(Object.fromEntries(decisions)).toMatchObject({
+      dmAllowlist: missing,
+      groupInviteAllowlist: missing,
+      defaultAuthorizedShips: missing,
     });
   });
-
-  it("still seeds file-config allowlists on first run when settings are missing", () => {
-    expect(allowlistMigrationDecisions({})).toEqual({
-      dmAllowlist: true,
-      groupInviteAllowlist: true,
-      defaultAuthorizedShips: true,
-    });
-  });
-});
-
-describe("applyTlonSettingsOverrides", () => {
   it("treats explicit empty settings allowlists as authoritative deny-all", () => {
     const result = applySettings({ dmAllowlist: [], groupInviteAllowlist: [] });
     expect(result.effectiveDmAllowlist).toStrictEqual([]);
