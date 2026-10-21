@@ -9,6 +9,7 @@ import type { SessionObserverDigest } from "../../../packages/gateway-protocol/s
 import { isSessionRouteId } from "../app-route-paths.ts";
 import type { NativeGatewaysSnapshot } from "../app/native-gateways.runtime.ts";
 import { beginNativeWindowDragFromTopInset } from "../app/native-window-drag.ts";
+import { rosterActivityStore } from "../lib/agents/roster-activity-store.ts";
 import { createIdleImport } from "../lib/idle-import.ts";
 import { t } from "../lib/reactive/i18n.ts";
 import {
@@ -18,7 +19,11 @@ import {
 import type { CatalogProjectGrouping } from "../lib/sessions/catalog-project-grouping.ts";
 import "./sidebar-attention.tsx";
 import "./tooltip.ts";
-import { renderAppSidebarOnline, sidebarOnlineOrder } from "./app-sidebar-online.tsx";
+import {
+  renderAppSidebarOnline,
+  resolveSidebarOnline,
+  sidebarOnlineOrder,
+} from "./app-sidebar-online.tsx";
 import { hidePersonalSidebarCatalog } from "./app-sidebar-personal-navigation.ts";
 import { renderSidebarRail, renderSidebarPages } from "./app-sidebar-rail.tsx";
 import "../styles/app-sidebar.css";
@@ -41,16 +46,13 @@ import {
   type SidebarRecentSession,
   type SidebarToolActivity,
 } from "./app-sidebar-session-types.ts";
+import { hasSidebarListFilter } from "./session-data-events.ts";
 import { SessionOrganizer } from "./session-organizer.ts";
 import { SidebarAgentRoster, renderSidebarPinnedSession } from "./sidebar-agent-roster.tsx";
 import type { createSidebarScroll } from "./sidebar-context-controller.ts";
 import { createSidebarMenus } from "./sidebar-menus.tsx";
 import type { SidebarNavigationCatalog } from "./sidebar-navigation-catalog.ts";
 import { createSidebarPeople, SidebarPeoplePreferences } from "./sidebar-people.ts";
-import {
-  captureSidebarSnapshotModel,
-  isSidebarSnapshotSettled,
-} from "./sidebar-snapshot-capture.ts";
 import type { SidebarSnapshotModel } from "./sidebar-snapshot-model.ts";
 import { createSidebarSnapshot } from "./sidebar-snapshot.ts";
 import { GatewayStatus } from "./solid/gateway-status.tsx";
@@ -123,15 +125,15 @@ export class AppSidebarOwner extends AppSidebarSessionNavigationElement implemen
     const snapshot = this.sidebarSnapshot;
     if (snapshot) {
       this.pinnedSessions.seed(snapshot.pinnedSessions);
-      const limits = snapshot.sections.map(
-        (section) => [section.id, section.visibleLimit] as const,
-      );
-      // Pagination chosen while cached takes precedence over the saved view.
-      this.sessionData.visibleSessionLimits = new Map([
-        ...limits,
-        ...this.sessionData.visibleSessionLimits,
-      ]);
-      this.rosterVisibleSessionLimits = new Map([...limits, ...this.rosterVisibleSessionLimits]);
+      // Newer pagination choices override the saved view, independently per mode.
+      for (const { id, visibleLimit } of snapshot.sections) {
+        for (const limits of [
+          this.sessionData.visibleSessionLimits,
+          this.rosterVisibleSessionLimits,
+        ]) {
+          if (!limits.has(id)) limits.set(id, visibleLimit);
+        }
+      }
     }
     this.sidebarPluginSnapshot =
       snapshot && this.context.plugins.registryStatus !== "complete"
@@ -150,10 +152,44 @@ export class AppSidebarOwner extends AppSidebarSessionNavigationElement implemen
   }
 
   sidebarSnapshotSettled(): boolean {
-    return isSidebarSnapshotSettled(this);
+    const context = this.sessionDataContext;
+    if (!this.connected || !context) {
+      return false;
+    }
+    if (this.navigationView === "pages") {
+      const pages = this.navigationCatalog.dashboards;
+      return pages?.loading === false && (pages.readSucceeded === true || pages.error !== null);
+    }
+    const people = resolveSidebarOnline(this).users;
+    if (
+      people.some((person) => person.identity?.type === "profile") &&
+      this.sessionData.ownerCounts.counts === null &&
+      this.sessionData.ownerCounts.error === null
+    ) {
+      return false;
+    }
+    if (this.sidebarAgentsMode === "roster") {
+      const roster = rosterActivityStore(context).snapshot;
+      return (
+        (roster.membershipReady || roster.error !== null) &&
+        !roster.loading &&
+        roster.involvingMe === this.sidebarSessionOwnerFilter().involvingMe
+      );
+    }
+    if (hasSidebarListFilter(this)) {
+      const query = this.sessionData.sessionListQuery(this.expandedAgentId());
+      const selected = context.sessions.listSnapshot(query);
+      return selected.readSucceeded === true || selected.error !== null;
+    }
+    return (
+      !this.sessionData.sessionsLoading &&
+      (Boolean(this.sessionData.sessionMutationError ?? context.sessions.state.error) ||
+        (Boolean(this.sessionData.sessionsResult) && !context.sessions.presentation.resultCached))
+    );
   }
 
-  captureSidebarSnapshot(): SidebarSnapshotModel | null {
+  async captureSidebarSnapshot(): Promise<SidebarSnapshotModel | null> {
+    const { captureSidebarSnapshotModel } = await import("./sidebar-snapshot-capture.ts");
     const rows = this.selectedAgentSessionRows(this.getSessionNavigationState());
     return captureSidebarSnapshotModel(
       this,
