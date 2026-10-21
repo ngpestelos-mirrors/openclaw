@@ -232,6 +232,9 @@ const { values } = parseArgs({
     "init-script": { type: "string", multiple: true, default: [] },
     "sidebar-list-churn": { type: "boolean", default: false },
     "sidebar-live-churn": { type: "boolean", default: false },
+    "sidebar-avatars": { type: "boolean", default: false },
+    "sidebar-expanded": { type: "boolean", default: false },
+    "omit-hello-self-presence": { type: "boolean", default: false },
     "session-event-churn": { type: "boolean", default: false },
     "session-event-duration-ms": { type: "string", default: "30000" },
     "session-event-ancestor-refs": { type: "boolean", default: false },
@@ -256,6 +259,7 @@ const { values } = parseArgs({
     runs: { type: "string", default: "3" },
     "latency-ms": { type: "string", default: "35" },
     "method-latency-ms": { type: "string", multiple: true, default: [] },
+    "sidebar-query-latency-ms": { type: "string", multiple: true, default: [] },
     face: { type: "string", default: "dashboard" },
     "short-route": { type: "boolean", default: false },
     "full-uuid-route": { type: "boolean", default: false },
@@ -366,19 +370,25 @@ if (
   throw new Error("history-validator-delay-ms requires warm-reload and a delay from 0 to 10000");
 }
 const methodLatencyMs: Record<string, number> = {};
-for (const value of values["method-latency-ms"]) {
-  const [method, delay, ...extra] = value.split("=");
-  const milliseconds = Number(delay);
-  if (
-    !method ||
-    delay === undefined ||
-    extra.length ||
-    !Number.isFinite(milliseconds) ||
-    milliseconds < 0
-  ) {
-    throw new Error("Expected method-latency-ms method=nonnegative-milliseconds");
+const sidebarQueryLatencyMs: Record<string, number> = {};
+for (const [entries, target] of [
+  [values["method-latency-ms"], methodLatencyMs],
+  [values["sidebar-query-latency-ms"], sidebarQueryLatencyMs],
+] as const) {
+  for (const value of entries) {
+    const [method, delay, ...extra] = value.split("=");
+    const milliseconds = Number(delay);
+    if (
+      !method ||
+      delay === undefined ||
+      extra.length ||
+      !Number.isFinite(milliseconds) ||
+      milliseconds < 0
+    ) {
+      throw new Error("Expected method-latency-ms method=nonnegative-milliseconds");
+    }
+    target[method] = milliseconds;
   }
-  methodLatencyMs[method] = milliseconds;
 }
 const face = values.face;
 if (face !== "chat" && face !== "dashboard") {
@@ -541,6 +551,7 @@ const fixture = createControlUiTeamScaleFixture({
   liveRun: values["live-events"] || values["streaming-reply"],
   sidebarListChurn: values["sidebar-list-churn"],
   sidebarLiveChurn: values["sidebar-live-churn"],
+  sidebarAvatars: values["sidebar-avatars"],
   sessionEventChurn: values["session-event-churn"],
   sessionEventDurationMs,
   sessionEventAncestorRefs: values["session-event-ancestor-refs"],
@@ -749,7 +760,7 @@ try {
       return asset ? route.fulfill({ status: 200, ...asset }) : route.fallback();
     });
   }
-  if (values["sidebar-live-churn"] || values["closed-menu-members"]) {
+  if (values["sidebar-live-churn"] || values["sidebar-avatars"] || values["closed-menu-members"]) {
     await page.route("**/api/users/*/avatar?*", async (route) => {
       const asset = fixture.assets.get(new URL(route.request().url()).pathname);
       if (!asset) {
@@ -825,7 +836,7 @@ try {
     ? `\n(${installRotatingBoardTickets.toString()})(${JSON.stringify(fixture.board)}, window.openclawControlUiE2eGateway);`
     : "";
   await page.addInitScript({
-    content: `;(() => { if (window !== window.top) return; const __name = (fn) => fn; (${installWidgetReadiness.toString()})(); ${createControlUiMockGatewayInitScript(prepared.scenario)}\n${rigProbeScript}\nwindow.__teamScaleSidebarLists = { apply: (mutation) => window.__teamScaleMutate(mutation) }; window.openclawControlUiE2eGateway.setRequestHandler("sessions.list", async ({ params, respond }) => respond(await window.__teamScaleList(params))); window.openclawControlUiE2eGateway.setRequestHandler("cron.list", async ({ params, respond }) => respond(await window.__teamScaleCronList(params)));\n${boardTickets}\n${createColdLoadProbeInitScript({ latencyMs, methodLatencyMs, connectNotBeforeMs, frameGapMs, events: fixture.events, liveEvents: fixture.liveEvents, liveHistory: fixture.liveHistory, ownerProbes: !cpuProfile && !allocations && !values["session-event-churn"], sidebarCounters: !cpuProfile })}\n${streamingReply ? createStreamingReplyProbeInitScript() : ""}\n${extraInitScripts.join("\n")}\n${warmProbes} })();`,
+    content: `;(() => { if (window !== window.top) return; const __name = (fn) => fn; (${installWidgetReadiness.toString()})(); ${createControlUiMockGatewayInitScript(prepared.scenario)}\n${rigProbeScript}\nwindow.__teamScaleSidebarLists = { apply: (mutation) => window.__teamScaleMutate(mutation) }; window.openclawControlUiE2eGateway.setRequestHandler("sessions.list", async ({ params, respond }) => respond(await window.__teamScaleList(params))); window.openclawControlUiE2eGateway.setRequestHandler("cron.list", async ({ params, respond }) => respond(await window.__teamScaleCronList(params)));\n${boardTickets}\n${createColdLoadProbeInitScript({ latencyMs, methodLatencyMs, sidebarQueryLatencyMs, omitHelloSelfPresence: values["omit-hello-self-presence"], connectNotBeforeMs, frameGapMs, events: fixture.events, liveEvents: fixture.liveEvents, liveHistory: fixture.liveHistory, ownerProbes: !cpuProfile && !allocations && !values["session-event-churn"], sidebarCounters: !cpuProfile })}\n${streamingReply ? createStreamingReplyProbeInitScript() : ""}\n${extraInitScripts.join("\n")}\n${warmProbes} })();`,
   });
   // Fetch the real public document; the init script selects the synthetic session.
   // Session-entry authorization is outside this static-delivery benchmark.
@@ -914,6 +925,56 @@ try {
       throw error;
     }
   }
+  async function expandSidebar() {
+    if (!values["sidebar-expanded"]) return;
+    const rows = page.locator(".sidebar-session-content .sidebar-recent-session");
+    if ((await rows.count()) > 10) return;
+    await page
+      .locator(".sidebar-session-content .sidebar-session-pagination__button")
+      .filter({ hasText: "Show more" })
+      .first()
+      .click();
+    await page.waitForFunction(
+      () =>
+        document.querySelectorAll(".sidebar-session-content .sidebar-recent-session").length > 10,
+    );
+    // The saved marker may still describe the previous write until capture runs.
+    await page.waitForFunction(async () => {
+      const database = await new Promise<IDBDatabase>((resolve, reject) => {
+        const request = indexedDB.open("openclaw-chat-snapshots");
+        request.onsuccess = () => resolve(request.result);
+        request.onerror = () => reject(request.error);
+      });
+      try {
+        const records = await new Promise<
+          Array<{
+            model: { sections: Array<{ visibleLimit: number; rows: Array<{ key: string }> }> };
+          }>
+        >((resolve, reject) => {
+          const request = database
+            .transaction("sidebarSnapshots")
+            .objectStore("sidebarSnapshots")
+            .getAll();
+          request.onsuccess = () => resolve(request.result);
+          request.onerror = () => reject(request.error);
+        });
+        const visibleKeys = [
+          ...document.querySelectorAll(".sidebar-session-content .sidebar-recent-session"),
+        ].map((row) => row.getAttribute("data-session-key"));
+        return records.some(({ model }) => {
+          const savedKeys = new Set(
+            model.sections.flatMap((section) => section.rows.map((row) => row.key)),
+          );
+          return (
+            model.sections.some(({ visibleLimit }) => visibleLimit > 10) &&
+            visibleKeys.every((key) => key !== null && savedKeys.has(key))
+          );
+        });
+      } finally {
+        database.close();
+      }
+    });
+  }
   const warmStates: Array<Awaited<ReturnType<typeof persistColdLoadWarmState>>["storage"]> = [];
   const snapshotSaves: Array<
     Omit<Awaited<ReturnType<typeof persistColdLoadWarmState>>, "storage">
@@ -943,13 +1004,25 @@ try {
       await page.locator('[data-navigation-view="online"]').click();
     }
     await settle();
+    await expandSidebar();
     if (values["chat-dashboard-route"] || (face === "dashboard" && values["dashboard-widget"])) {
       // Save the operator's dashboard-first layout through its normal action.
-      const menu = page
-        .locator(".chat-pane-cache__pane--active .chat-dashboard-menu")
-        .filter({ visible: true });
-      await menu.getByRole("button", { name: "Dashboard options", exact: true }).click();
-      await menu.getByRole("menuitem", { name: /^Swap / }).click();
+      if (
+        (await page
+          .locator("openclaw-board-view")
+          .first()
+          .evaluate((board) => board.closest("[data-region]")?.getAttribute("data-region"))) !==
+        "main"
+      ) {
+        const menu = page
+          .locator(".chat-pane-cache__pane--active .chat-dashboard-menu")
+          .filter({ visible: true });
+        await menu.getByRole("button", { name: "Dashboard options", exact: true }).click();
+        await menu
+          .getByRole("menuitem", { name: /^Swap / })
+          .or(menu.getByRole("menuitemcheckbox", { name: /^Swap / }))
+          .click();
+      }
       await page.waitForFunction(
         () =>
           document
@@ -981,6 +1054,7 @@ try {
       await selectComparisonBundle(index);
       await page.reload({ waitUntil: "domcontentloaded" });
       await settle();
+      await expandSidebar();
       const { storage, ...saved } = await page.evaluate(persistColdLoadWarmState, warmInput);
       warmStates.push(storage);
       snapshotSaves.push(saved);
@@ -1852,6 +1926,9 @@ try {
         comparisonBundleDirs,
         fixture: fixture.counts,
         sidebarView,
+        sidebarAvatars: values["sidebar-avatars"],
+        sidebarExpanded: values["sidebar-expanded"],
+        omitHelloSelfPresence: values["omit-hello-self-presence"],
         streamingReply: values["streaming-reply"],
         streamingAllocations: values["streaming-allocations"],
         sessionSwitch: values["session-switch"],
@@ -1875,6 +1952,7 @@ try {
           : undefined,
         latencyMs,
         methodLatencyMs,
+        sidebarQueryLatencyMs,
         connectNotBeforeMs,
         dashboardWidget: values["dashboard-widget"],
         face,

@@ -107,6 +107,10 @@ export class AppSidebarOwner extends AppSidebarSessionNavigationElement implemen
     const snapshot = this.sidebarSnapshot;
     if (snapshot) {
       this.pinnedSessions.seed(snapshot.pinnedSessions);
+      this.sessionData.visibleSessionLimits = new Map(
+        snapshot.sections.map((section) => [section.id, section.visibleLimit]),
+      );
+      this.rosterVisibleSessionLimits = new Map(this.sessionData.visibleSessionLimits);
     }
     this.sidebarPluginSnapshot =
       snapshot && this.context.plugins.registryStatus !== "complete"

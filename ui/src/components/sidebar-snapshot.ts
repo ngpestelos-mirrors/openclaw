@@ -145,7 +145,11 @@ export function createSidebarSnapshot(host: SidebarSnapshotHost) {
         ? {
             gatewayScope: gatewayCredentialScope(gateway.connection.gatewayUrl),
             recoveryScope,
-            profileId: snapshot.selfUser?.id ?? null,
+            // Unresolved hello identity does not retire an admitted boot profile.
+            profileId:
+              snapshot.selfUser === undefined
+                ? (scope?.profileId ?? null)
+                : (snapshot.selfUser?.id ?? null),
           }
         : null;
       if (JSON.stringify(next) !== JSON.stringify(scope)) {
@@ -186,6 +190,7 @@ export function createSidebarSnapshot(host: SidebarSnapshotHost) {
       !cleanup.length ||
       pending ||
       !scope ||
+      (scope.profileId !== null && gateway?.snapshot.selfUser === undefined) ||
       host.sidebarSnapshot ||
       !host.sidebarSnapshotSettled()
     ) {

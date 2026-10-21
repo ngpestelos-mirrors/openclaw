@@ -400,6 +400,21 @@ describe("sidebar snapshot lifecycle", () => {
     ).toEqual(live);
   });
 
+  it("keeps admitted rows through unresolved hello and saves only after identity resolves", async () => {
+    const test = await warmFixture();
+    test.publish({ selfUser: undefined });
+    expect(test.host.sidebarSnapshot).toEqual(model);
+    const saved = test.settle();
+    test.snapshotOwner.synchronize();
+    expect(test.host.sidebarSnapshot).toBeNull();
+    await capture(test.snapshotOwner);
+    expect(test.capture).not.toHaveBeenCalled();
+    test.publish();
+    await capture(test.snapshotOwner);
+    await saved;
+    expect(test.capture).toHaveBeenCalledOnce();
+  });
+
   it.each(["idle", "pagehide", "hidden"] as const)(
     "coalesces a burst and persists its latest shape on %s for the next reload",
     async (boundary) => {
@@ -513,14 +528,20 @@ describe("sidebar snapshot lifecycle", () => {
     await saved;
   });
 
-  it.each(["profile", "connection"] as const)(
+  it.each(["profile", "profileless", "connection"] as const)(
     "clears cached display when the %s changes even with the same recovery scope",
     async (change) => {
       const test = await warmFixture();
       if (change === "connection") {
         test.gateway.connectionRevision += 1;
       }
-      test.publish(change === "profile" ? { selfUser: { id: "profile-b" } } : {});
+      test.publish(
+        change === "profile"
+          ? { selfUser: { id: "profile-b" } }
+          : change === "profileless"
+            ? { selfUser: null }
+            : {},
+      );
       expect(test.host.sidebarSnapshot).toBeNull();
       expect(test.snapshotOwner.read().saved).toBe(false);
     },

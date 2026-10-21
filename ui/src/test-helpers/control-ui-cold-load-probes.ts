@@ -32,7 +32,7 @@ function installColdLoadProbes(
       method: string;
       bytes: number;
       at: number;
-      params: unknown;
+      params: Record<string, unknown>;
       stack: string | undefined;
     }
   >();
@@ -394,11 +394,41 @@ function installColdLoadProbes(
         // A single wire delivers one message task at a time, including concurrent RPC replies.
         nextFrameAt = Math.max(performance.now() + input.latencyMs, nextFrameAt + input.frameGapMs);
         const queuedRequest = pending.get(frame.id);
+        if (input.omitHelloSelfPresence && queuedRequest?.method === "connect") {
+          const client = queuedRequest.params.client;
+          const instanceId =
+            client && typeof client === "object" && "instanceId" in client
+              ? client.instanceId
+              : undefined;
+          const presence = frame.payload?.snapshot?.presence;
+          if (Array.isArray(presence)) {
+            frame.payload.snapshot.presence = presence.filter(
+              (entry) => entry.instanceId !== instanceId,
+            );
+            event = new MessageEvent("message", { data: JSON.stringify(frame) });
+          }
+        }
+        const query = queuedRequest?.params;
+        const queryKind =
+          queuedRequest?.method !== "sessions.list"
+            ? undefined
+            : query?.ownerFirst
+              ? "ownerFirst"
+              : query?.involvingMe
+                ? "involvingMe"
+                : query?.includeOwnerSessionCounts
+                  ? "ownerCounts"
+                  : query?.spawnedBy
+                    ? "children"
+                    : undefined;
         // Per-method delay models a queued RPC without holding unrelated replies.
         const deliverAt = Math.max(
           nextFrameAt,
           queuedRequest
-            ? queuedRequest.at + (input.methodLatencyMs?.[queuedRequest.method] ?? 0)
+            ? queuedRequest.at +
+                ((queryKind && input.sidebarQueryLatencyMs?.[queryKind]) ??
+                  input.methodLatencyMs?.[queuedRequest.method] ??
+                  0)
             : 0,
         );
         queued++;
