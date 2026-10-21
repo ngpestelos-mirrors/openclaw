@@ -153,7 +153,7 @@ export function renderPluginCatalogDetail(props: PluginCatalogDetailProps): JSX.
       {props.error ? (
         <div class="callout danger oc-banner oc-banner-error" role="alert">
           <span>{formatUiExternalText(props.error)}</span>
-          <button type="button" class="btn btn--sm" onClick={props.onRetry}>
+          <button type="button" class="btn btn--sm" onClick={() => props.onRetry()}>
             {t("pluginsPage.tryAgain")}
           </button>
         </div>
