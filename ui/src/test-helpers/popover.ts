@@ -19,15 +19,16 @@ export function installPopoverPolyfill(): () => void {
     opened.delete(element);
   };
   const toggle = (element: HTMLElement, open: boolean) => {
+    const connectedPopover = element.isConnected && element.hasAttribute("popover");
     // Removing a native popover (or its attribute) already closes it.
-    if (!open && (!element.isConnected || !element.hasAttribute("popover"))) {
+    if (!open && !connectedPopover) {
       close(element);
       return;
     }
     if (opened.has(element) === open) {
       return;
     }
-    if (!element.isConnected || !element.hasAttribute("popover")) {
+    if (!connectedPopover) {
       throw new DOMException(
         "Popover must be connected and have a popover attribute",
         "InvalidStateError",
@@ -69,46 +70,37 @@ export function installPopoverPolyfill(): () => void {
       return matches.call(this, selector);
     },
   });
-  Object.defineProperties(HTMLElement.prototype, {
-    popover: {
-      configurable: true,
-      get(this: HTMLElement) {
-        const value = this.getAttribute("popover");
-        return value === null || value === "manual" || value === "hint" ? value : "auto";
-      },
-      set(this: HTMLElement, value: string | null) {
-        if (value === null) {
-          this.removeAttribute("popover");
-        } else {
-          this.setAttribute("popover", value);
-        }
-      },
+  const polyfill: Pick<HTMLElement, (typeof methods)[number]> & ThisType<HTMLElement> = {
+    get popover() {
+      const value = this.getAttribute("popover");
+      return value === null || value === "manual" || value === "hint" ? value : "auto";
     },
-    showPopover: {
-      configurable: true,
-      writable: true,
-      value(this: HTMLElement) {
-        toggle(this, true);
-      },
+    set popover(value: string | null) {
+      if (value === null) {
+        this.removeAttribute("popover");
+      } else {
+        this.setAttribute("popover", value);
+      }
     },
-    hidePopover: {
-      configurable: true,
-      writable: true,
-      value(this: HTMLElement) {
-        toggle(this, false);
-      },
+    showPopover() {
+      toggle(this, true);
     },
-    togglePopover: {
-      configurable: true,
-      value(this: HTMLElement, options?: boolean | { force?: boolean }) {
-        toggle(
-          this,
-          (typeof options === "boolean" ? options : options?.force) ?? !opened.has(this),
-        );
-        return opened.has(this);
-      },
+    hidePopover() {
+      toggle(this, false);
     },
-  });
+    togglePopover(options?: boolean | { force?: boolean }) {
+      toggle(this, (typeof options === "boolean" ? options : options?.force) ?? !opened.has(this));
+      return opened.has(this);
+    },
+  };
+  // Preserve the fixture's non-enumerable properties and read-only toggle method.
+  for (const [name, descriptor] of Object.entries(Object.getOwnPropertyDescriptors(polyfill))) {
+    descriptor.enumerable = false;
+    if (name === "togglePopover") {
+      descriptor.writable = false;
+    }
+    Object.defineProperty(HTMLElement.prototype, name, descriptor);
+  }
   return () => {
     Object.defineProperty(Element.prototype, "matches", matchesDescriptor);
     for (const name of methods) {

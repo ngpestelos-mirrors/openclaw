@@ -1,13 +1,13 @@
 import type { PluginDiscoveryEntry, PluginDiscoveryResult } from "../lib/plugins/index.ts";
 
-function installedDisabled(pluginId: string): PluginDiscoveryEntry["local"] {
+function localFacts(pluginId?: string, installed = false): PluginDiscoveryEntry["local"] {
   return {
-    present: true,
-    installed: true,
+    present: pluginId !== undefined,
+    installed,
     enabled: false,
-    state: "disabled",
-    pluginId,
-    action: "manage",
+    state: installed ? "disabled" : "not-installed",
+    ...(pluginId === undefined ? {} : { pluginId }),
+    action: installed ? "manage" : "install",
   };
 }
 
@@ -22,14 +22,22 @@ const memoryDiscoveryPlugin = {
     categories: ["memory"],
     downloads: 1240,
   },
-  local: installedDisabled("memory-plus"),
+  local: localFacts("memory-plus", true),
 } satisfies PluginDiscoveryEntry;
 
-export const matrixDiscoveryPlugin = {
-  ...memoryDiscoveryPlugin,
-  id: "ch_bWF0cml4",
-  catalog: {
-    ...memoryDiscoveryPlugin.catalog,
+function variant(
+  base: PluginDiscoveryEntry,
+  id: string,
+  catalog: Partial<PluginDiscoveryEntry["catalog"]>,
+  local = base.local,
+): PluginDiscoveryEntry {
+  return { id, catalog: { ...base.catalog, ...catalog }, local };
+}
+
+export const matrixDiscoveryPlugin = variant(
+  memoryDiscoveryPlugin,
+  "ch_bWF0cml4",
+  {
     name: "Matrix",
     summary: "Connect agents to Matrix rooms.",
     author: "openclaw",
@@ -38,27 +46,19 @@ export const matrixDiscoveryPlugin = {
     icon: "message-circle",
     official: true,
   },
-  local: {
-    present: false,
-    installed: false,
-    enabled: false,
-    state: "not-installed",
-    action: "install",
-  },
-} satisfies PluginDiscoveryEntry;
+  localFacts(),
+);
 
-const telegramDiscoveryPlugin = {
-  ...matrixDiscoveryPlugin,
-  id: "ch_QG9wZW5jbGF3L3RlbGVncmFt",
-  catalog: {
-    ...matrixDiscoveryPlugin.catalog,
+const telegramDiscoveryPlugin = variant(
+  matrixDiscoveryPlugin,
+  "ch_QG9wZW5jbGF3L3RlbGVncmFt",
+  {
     name: "Telegram",
     summary: "Chat with your agent from Telegram groups and direct messages.",
-    author: "openclaw",
     downloads: 12_847,
   },
-  local: installedDisabled("telegram"),
-} satisfies PluginDiscoveryEntry;
+  localFacts("telegram", true),
+);
 
 export const localOnlyDiscoveryPlugin = {
   id: "local_QG9wZW5jbGF3L2xvY2FsLWNhbGVuZGFy",
@@ -71,29 +71,23 @@ export const localOnlyDiscoveryPlugin = {
     publishedToClawHub: false,
   },
   local: {
-    present: true,
-    installed: false,
-    enabled: false,
-    state: "not-installed",
-    pluginId: "local-calendar",
+    ...localFacts("local-calendar"),
     install: { source: "official", pluginId: "local-calendar" },
-    action: "install",
   },
 } satisfies PluginDiscoveryEntry;
 
 function availableDiscoveryPlugin(index: number, prefix: string): PluginDiscoveryEntry {
-  return {
-    ...matrixDiscoveryPlugin,
-    id: `ch_${prefix.toLowerCase().replaceAll(" ", "-")}_${index}`,
-    catalog: {
-      ...matrixDiscoveryPlugin.catalog,
+  return variant(
+    matrixDiscoveryPlugin,
+    `ch_${prefix.toLowerCase().replaceAll(" ", "-")}_${index}`,
+    {
       name: `${prefix} ${String(index).padStart(2, "0")}`,
       summary: `Catalog fixture ${prefix.toLowerCase()} ${index}.`,
       author: "publisher",
       official: false,
       downloads: 1_000 + index,
     },
-  };
+  );
 }
 
 export const secondDiscoveryPageItems = Array.from({ length: 25 }, (_, index) =>
@@ -101,11 +95,7 @@ export const secondDiscoveryPageItems = Array.from({ length: 25 }, (_, index) =>
 );
 
 export const finalDiscoveryPageItems = [
-  {
-    ...matrixDiscoveryPlugin,
-    id: "ch_c2xhY2s",
-    catalog: { ...matrixDiscoveryPlugin.catalog, name: "Slack" },
-  },
+  variant(matrixDiscoveryPlugin, "ch_c2xhY2s", { name: "Slack" }),
   availableDiscoveryPlugin(0, "Final page"),
 ] satisfies PluginDiscoveryEntry[];
 
@@ -154,16 +144,7 @@ function onOverviewShelves(
   featuredRank: number,
   trendingRank = featuredRank,
 ): PluginDiscoveryEntry {
-  return {
-    ...plugin,
-    catalog: {
-      ...plugin.catalog,
-      featured: true,
-      trending: true,
-      featuredRank,
-      trendingRank,
-    },
-  };
+  return variant(plugin, plugin.id, { featured: true, trending: true, featuredRank, trendingRank });
 }
 
 export const discoveryResult: PluginDiscoveryResult = {
