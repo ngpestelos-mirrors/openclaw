@@ -1,6 +1,9 @@
 import { describe, expect, it, vi } from "vitest";
 import { createWorkspaceMemoryFileClient } from "./workspace-memory-client.js";
 
+const note = "/gateway/memory/note.md";
+const remoteNote = "/harness/memory/note.md";
+
 function fixture() {
   const controller = new AbortController();
   const request = vi.fn(async (_request: string, _signal: AbortSignal) => "{}");
@@ -14,20 +17,20 @@ function fixture() {
     request,
     subscribe,
   });
-  return { controller, request, subscribe, files };
+  return {
+    controller,
+    request,
+    subscribe,
+    files,
+    reply: (result: unknown) => request.mockResolvedValue(JSON.stringify({ result })),
+    sent: (index: number) => JSON.parse(request.mock.calls[index]![0]),
+  };
 }
 
 describe("workspace Memory file client", () => {
   it("maps workspace paths while preserving configured external Memory roots", async () => {
     const f = fixture();
-    f.request.mockResolvedValue(
-      JSON.stringify({
-        result: {
-          files: ["/harness/memory/note.md", "/archive/note.md"],
-          skipped: ["/harness/memory/skip.md"],
-        },
-      }),
-    );
+    f.reply({ files: [remoteNote, "/archive/note.md"], skipped: ["/harness/memory/skip.md"] });
     const skipped = vi.fn();
     expect(
       await f.files.listFiles(
@@ -36,51 +39,40 @@ describe("workspace Memory file client", () => {
         undefined,
         skipped,
       ),
-    ).toEqual(["/gateway/memory/note.md", "/archive/note.md"]);
+    ).toEqual([note, "/archive/note.md"]);
     expect(skipped).toHaveBeenCalledWith("/gateway/memory/skip.md");
-    expect(JSON.parse(f.request.mock.calls[0]![0])).toMatchObject({
+    expect(f.sent(0)).toMatchObject({
       operation: "list",
       extraPaths: ["notes", "/harness/extra", "/archive"],
     });
-    f.request.mockResolvedValue(JSON.stringify({ result: "/harness/memory/note.md" }));
-    expect(await f.files.maintenance!.resolveWritePath("/gateway/memory/note.md")).toBe(
-      "/gateway/memory/note.md",
-    );
-    expect(JSON.parse(f.request.mock.calls[1]![0])).toMatchObject({
+    f.reply(remoteNote);
+    expect(await f.files.maintenance!.resolveWritePath(note)).toBe(note);
+    expect(f.sent(1)).toMatchObject({
       operation: "maintenance",
       method: "resolveWritePath",
-      args: ["/harness/memory/note.md"],
+      args: [remoteNote],
     });
   });
 
   it.each([
+    { failure: "disconnect", reply: undefined },
+    { failure: "truncated reply", reply: '{"result":' },
     {
-      failure: "disconnect",
-      reply: undefined,
-      expected: { publication: "uncertain" },
-      expectedHash: "old",
+      failure: "conflict",
+      error: { message: "content changed", name: "MemoryWriteConflictError", code: "CONFLICT" },
     },
     {
-      failure: "truncated reply",
-      reply: '{"result":',
-      expected: { publication: "uncertain" },
-      expectedHash: "old",
-    },
-    ...[
-      { message: "content changed", name: "MemoryWriteConflictError", code: "CONFLICT" },
-      {
+      failure: "committed write",
+      error: {
         message: "directory sync failed",
         name: "MemoryAtomicPublicationError",
         publication: "committed",
       },
-    ].map((error) => ({
-      failure: error.name,
-      reply: JSON.stringify({ error }),
-      expected: error,
-      expectedHash: undefined,
-    })),
-  ])("preserves the write outcome after $failure", async ({ reply, expected, expectedHash }) => {
+    },
+  ])("preserves the write outcome after $failure", async (outcome) => {
     const f = fixture();
+    const error = "error" in outcome ? outcome.error : undefined;
+    const reply = error ? JSON.stringify({ error }) : outcome.reply;
     if (reply === undefined) {
       f.request.mockRejectedValue(new Error("transport disconnected"));
     } else {
@@ -88,12 +80,12 @@ describe("workspace Memory file client", () => {
     }
     await expect(
       f.files.maintenance!.commitContent({
-        filePath: "/gateway/memory/note.md",
+        filePath: note,
         tempPrefix: "note",
         content: "update",
-        expectedHash,
+        expectedHash: error ? undefined : "old",
       }),
-    ).rejects.toMatchObject(expected);
+    ).rejects.toMatchObject(error ?? { publication: "uncertain" });
   });
 
   it("does not return stale reads or start new requests after its lifetime ends", async () => {
@@ -102,12 +94,8 @@ describe("workspace Memory file client", () => {
       f.controller.abort(new Error("workspace stopped"));
       return JSON.stringify({ result: { content: "obsolete" } });
     });
-    await expect(f.files.readForIndexing("/gateway/memory/note.md")).rejects.toThrow(
-      "workspace stopped",
-    );
-    await expect(f.files.readForIndexing("/gateway/memory/note.md")).rejects.toThrow(
-      "workspace stopped",
-    );
+    await expect(f.files.readForIndexing(note)).rejects.toThrow("workspace stopped");
+    await expect(f.files.readForIndexing(note)).rejects.toThrow("workspace stopped");
     expect(f.request).toHaveBeenCalledOnce();
   });
 

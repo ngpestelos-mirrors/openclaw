@@ -27,8 +27,7 @@ afterEach(() => {
 
 function setup(mode: "all" | "non-main" = "all") {
   const home = fs.realpathSync(tempDirs.make("openclaw-workspace-readiness-"));
-  const envSnapshot = captureEnv(["HOME", "OPENCLAW_HOME", "OPENCLAW_STATE_DIR"]);
-  restoreEnv = () => envSnapshot.restore();
+  restoreEnv = captureEnv(["HOME", "OPENCLAW_HOME", "OPENCLAW_STATE_DIR"]).restore;
   setTestEnvValue("HOME", home);
   setTestEnvValue("OPENCLAW_HOME", home);
   setTestEnvValue("OPENCLAW_STATE_DIR", path.join(home, "state"));
@@ -51,7 +50,6 @@ function setup(mode: "all" | "non-main" = "all") {
   return {
     cfg,
     env,
-    scope,
     databasePath,
     seed(sessionKey: string, required = false) {
       replaceSessionEntrySync(
@@ -59,12 +57,7 @@ function setup(mode: "all" | "non-main" = "all") {
         {
           sessionId: sessionKey,
           updatedAt: 1,
-          ...(required
-            ? {
-                sandbox: "required",
-                createdActor: { type: "human", source: "profile", id: "test-creator" },
-              }
-            : {}),
+          ...(required ? { sandbox: "required", createdActor: creator } : {}),
         },
       );
     },
@@ -78,17 +71,14 @@ function setup(mode: "all" | "non-main" = "all") {
       fs.mkdirSync(layout.sandboxWorkspaceDir, { recursive: true });
       fs.writeFileSync(
         path.join(layout.sandboxWorkspaceDir, "openclaw-workspace-state.json"),
-        JSON.stringify({ version: 1 }),
+        '{"version":1}',
       );
       return layout.sandboxWorkspaceDir;
     },
   };
 }
 
-function observeMainThreadSessionReads() {
-  const prepare = vi.spyOn(DatabaseSync.prototype, "prepare");
-  return () => prepare.mock.calls.filter(([sql]) => /from\s+"session_nodes"/i.test(sql));
-}
+const creator = { type: "human", source: "profile", id: "test-creator" } as const;
 
 describe("Gateway configured workspace readiness", () => {
   it("reports all blocked workspaces without reading sessions on the main thread", async () => {
@@ -99,13 +89,13 @@ describe("Gateway configured workspace readiness", () => {
       return state.addLegacyWorkspace(sessionKey);
     });
     closeOpenClawAgentDatabasesForTest();
-    const reads = observeMainThreadSessionReads();
+    const prepare = vi.spyOn(DatabaseSync.prototype, "prepare");
     const readiness = assertConfiguredWorkspaceStateReady(state);
     await expect(readiness).rejects.toThrow("Legacy workspace setup state requires migration");
     for (const workspace of workspaces) {
       await expect(readiness).rejects.toThrow(workspace);
     }
-    expect(reads()).toEqual([]);
+    expect(prepare.mock.calls.filter(([sql]) => /from\s+"session_nodes"/i.test(sql))).toEqual([]);
   });
 
   it.each([false, true])(
