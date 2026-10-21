@@ -1,26 +1,32 @@
-import { beforeEach, expect, it, vi } from "vitest";
+// Daemon status tests cover service status gathering and CLI responses.
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { fetchNpmPackageTargetStatus } from "../../infra/update-check-package-target.js";
 import { createCliRuntimeCapture } from "../test-runtime-capture.js";
 import type { DaemonStatus } from "./status.gather.js";
 
-const createStatus = (ok = true): DaemonStatus => ({
-  service: {
-    label: "LaunchAgent",
-    loaded: true,
-    loadState: { status: "loaded" },
-    loadedText: "loaded",
-    notLoadedText: "not loaded",
+function createStatus(
+  rpc: DaemonStatus["rpc"] = {
+    ok: true,
+    url: "ws://127.0.0.1:18789",
   },
-  rpc: { ok },
-  extraServices: [],
-});
+): DaemonStatus {
+  return {
+    service: {
+      label: "LaunchAgent",
+      loaded: true,
+      loadState: { status: "loaded" },
+      loadedText: "loaded",
+      notLoadedText: "not loaded",
+    },
+    rpc,
+    extraServices: [],
+  };
+}
 
-const { gather, print, readService, projectRuntime } = vi.hoisted(() => ({
-  gather: vi.fn<(_opts?: unknown) => Promise<DaemonStatus>>(),
-  print: vi.fn(),
-  readService: vi.fn(),
-  projectRuntime: vi.fn(),
-}));
+const gatherDaemonStatus = vi.fn(async (_opts?: unknown) => createStatus());
+const printDaemonStatus = vi.fn();
+const readDaemonServiceStatus = vi.fn();
+const projectDaemonRuntimeStatus = vi.fn();
 const statusOptions = { rpc: {}, probe: true, requireRpc: false, json: false };
 
 vi.mock("../../infra/update-check-package-target.js", () => ({
@@ -29,132 +35,180 @@ vi.mock("../../infra/update-check-package-target.js", () => ({
 
 const { defaultRuntime, resetRuntimeCapture } = createCliRuntimeCapture();
 
-vi.mock("../../runtime.js", () => ({ defaultRuntime }));
-vi.mock("./status.gather.js", () => ({ gatherDaemonStatus: gather }));
-vi.mock("./status.print.js", () => ({ printDaemonStatus: print }));
+vi.mock("../../runtime.js", () => ({
+  defaultRuntime,
+}));
+
+vi.mock("../../../packages/terminal-core/src/theme.js", () => ({
+  colorize: (_rich: boolean, _color: unknown, text: string) => text,
+  isRich: () => false,
+  theme: { error: "error" },
+}));
+
+vi.mock("./status.gather.js", () => ({
+  gatherDaemonStatus: (opts: unknown) => gatherDaemonStatus(opts),
+}));
+
+vi.mock("./status.print.js", () => ({
+  printDaemonStatus: (...args: unknown[]) => printDaemonStatus(...args),
+}));
+
 // mock-isolation: service inspection must not inspect this host's managed services or environment.
-vi.mock("./status.service.js", () => ({ readDaemonServiceStatus: readService }));
+vi.mock("./status.service.js", () => ({
+  readDaemonServiceStatus: (opts: unknown) => readDaemonServiceStatus(opts),
+}));
+
 // mock-isolation: deterministic runtime facts avoid host runtime and configuration probes.
-vi.mock("./status.projection.js", () => ({ projectDaemonRuntimeStatus: projectRuntime }));
+vi.mock("./status.projection.js", () => ({
+  projectDaemonRuntimeStatus: (opts: unknown) => projectDaemonRuntimeStatus(opts),
+}));
 
 const { runDaemonStatus } = await import("./status.js");
 
-async function expectJsonFailure(
-  options: Partial<Parameters<typeof runDaemonStatus>[0]>,
-  message: string | ReturnType<typeof expect.stringContaining>,
-) {
-  await expect(runDaemonStatus({ ...statusOptions, ...options, json: true })).rejects.toThrow(
-    "__exit__:1",
-  );
-  expect(defaultRuntime.writeJson).toHaveBeenCalledWith({
-    ok: false,
-    error: { type: "cli_error", message },
+describe("runDaemonStatus", () => {
+  beforeEach(() => {
+    gatherDaemonStatus.mockReset().mockResolvedValue(createStatus());
+    readDaemonServiceStatus.mockReset();
+    projectDaemonRuntimeStatus.mockReset();
+    vi.mocked(fetchNpmPackageTargetStatus).mockReset();
+    printDaemonStatus.mockClear();
+    defaultRuntime.error.mockClear();
+    defaultRuntime.exit.mockClear();
+    defaultRuntime.writeJson.mockClear();
+    resetRuntimeCapture();
   });
-  expect(defaultRuntime.error).not.toHaveBeenCalled();
-  expect(defaultRuntime.exit).toHaveBeenCalledTimes(1);
-}
 
-beforeEach(() => {
-  gather.mockReset().mockResolvedValue(createStatus());
-  readService.mockReset();
-  projectRuntime.mockReset();
-  vi.mocked(fetchNpmPackageTargetStatus).mockReset();
-  print.mockClear();
-  defaultRuntime.error.mockClear();
-  defaultRuntime.exit.mockClear();
-  defaultRuntime.writeJson.mockClear();
-  resetRuntimeCapture();
-});
+  it("returns local runtime intent while shared-state diagnostics are unavailable", async () => {
+    gatherDaemonStatus.mockRejectedValue(new Error("Shared state is unavailable"));
+    const localService = {
+      service: {},
+      state: { command: null, loadState: { status: "not-loaded" } },
+    };
+    readDaemonServiceStatus.mockResolvedValue(localService);
+    const projection = {
+      cli: { version: "fixture" },
+      runtimeIntent: { runtimeIntent: { status: "known", stored: false, revision: "empty" } },
+    };
+    projectDaemonRuntimeStatus.mockResolvedValue(projection);
 
-it("returns local runtime intent while shared-state diagnostics are unavailable", async () => {
-  gather.mockRejectedValue(new Error("Shared state is unavailable"));
-  const localService = { service: {}, state: { command: null } };
-  readService.mockResolvedValue(localService);
-  const projection = {
-    cli: { version: "1" },
-    runtimeIntent: { runtimeIntent: { status: "known" } },
-  };
-  projectRuntime.mockResolvedValue(projection);
+    await runDaemonStatus({ ...statusOptions, json: true, runtimeIntentOnly: true });
 
-  await runDaemonStatus({ ...statusOptions, json: true, runtimeIntentOnly: true });
-  expect(defaultRuntime.writeJson).toHaveBeenCalledWith({
-    cli: projection.cli,
-    service: projection.runtimeIntent,
+    expect(defaultRuntime.writeJson).toHaveBeenCalledWith({
+      cli: projection.cli,
+      service: projection.runtimeIntent,
+    });
+    expect(projectDaemonRuntimeStatus).toHaveBeenCalledWith({ deep: true, ...localService });
+    expect(gatherDaemonStatus).not.toHaveBeenCalled();
+    expect(printDaemonStatus).not.toHaveBeenCalled();
+    expect(defaultRuntime.exit).not.toHaveBeenCalled();
   });
-  expect(projectRuntime).toHaveBeenCalledWith({ deep: true, ...localService });
-  expect(gather).not.toHaveBeenCalled();
-  expect(print).not.toHaveBeenCalled();
-  expect(defaultRuntime.exit).not.toHaveBeenCalled();
-});
 
-it.each([false, true])("confirms repair targets only for deep status (deep=%s)", async (deep) => {
-  const gathered = await gather();
-  gathered.pluginVersionDrift = {
-    gatewayVersion: "2026.7.1-2",
-    drifts: [
-      {
-        pluginId: "brave",
-        installedVersion: "2026.7.0",
-        gatewayVersion: "2026.7.1-2",
-        source: "npm",
-        spec: "@openclaw/brave-plugin@2026.7.0",
+  it.each([false, true])("confirms repair targets only for deep status (deep=%s)", async (deep) => {
+    const gathered = await gatherDaemonStatus();
+    gathered.pluginVersionDrift = {
+      gatewayVersion: "2026.7.1-2",
+      drifts: [
+        {
+          pluginId: "brave",
+          installedVersion: "2026.7.0",
+          gatewayVersion: "2026.7.1-2",
+          source: "npm",
+          spec: "@openclaw/brave-plugin@2026.7.0",
+        },
+      ],
+    };
+    gatherDaemonStatus.mockResolvedValueOnce(gathered);
+    vi.mocked(fetchNpmPackageTargetStatus).mockResolvedValue({
+      version: null,
+      nodeEngine: null,
+      error: "HTTP 404",
+    });
+
+    await runDaemonStatus({ ...statusOptions, deep });
+
+    expect(fetchNpmPackageTargetStatus).toHaveBeenCalledTimes(deep ? 1 : 0);
+    const printed = printDaemonStatus.mock.calls[0]?.[0] as DaemonStatus;
+    expect(printed.pluginVersionDrift?.drifts[0]?.targetResolution?.status).toBe(
+      deep ? "unresolved" : undefined,
+    );
+    expect(defaultRuntime.exit).not.toHaveBeenCalled();
+  });
+
+  it("renders disabled-probe validation failures as JSON in JSON mode", async () => {
+    await expect(
+      runDaemonStatus({ ...statusOptions, probe: false, requireRpc: true, json: true }),
+    ).rejects.toThrow("__exit__:1");
+
+    expect(gatherDaemonStatus).not.toHaveBeenCalled();
+    expect(defaultRuntime.writeJson).toHaveBeenCalledWith({
+      ok: false,
+      error: {
+        type: "cli_error",
+        message:
+          "Gateway status failed: --require-rpc needs checking enabled. Remove --no-probe or drop --require-rpc.",
       },
-    ],
-  };
-  gather.mockResolvedValueOnce(gathered);
-  vi.mocked(fetchNpmPackageTargetStatus).mockResolvedValue({
-    version: null,
-    nodeEngine: null,
-    error: "HTTP 404",
+    });
+    expect(defaultRuntime.error).not.toHaveBeenCalled();
+    expect(defaultRuntime.exit).toHaveBeenCalledTimes(1);
   });
 
-  await runDaemonStatus({ ...statusOptions, deep });
-  expect(fetchNpmPackageTargetStatus).toHaveBeenCalledTimes(deep ? 1 : 0);
-  const printed = print.mock.calls[0]?.[0] as DaemonStatus;
-  expect(printed.pluginVersionDrift?.drifts[0]?.targetResolution?.status).toBe(
-    deep ? "unresolved" : undefined,
-  );
-  expect(defaultRuntime.exit).not.toHaveBeenCalled();
-});
+  it("rejects an RPC requirement for local-only runtime inspection", async () => {
+    await expect(
+      runDaemonStatus({ ...statusOptions, runtimeIntentOnly: true, requireRpc: true, json: true }),
+    ).rejects.toThrow("__exit__:1");
+    expect(readDaemonServiceStatus).not.toHaveBeenCalled();
+    expect(gatherDaemonStatus).not.toHaveBeenCalled();
+    expect(defaultRuntime.writeJson).toHaveBeenCalledWith({
+      ok: false,
+      error: {
+        type: "cli_error",
+        message:
+          "Gateway status failed: --runtime-intent-only cannot be combined with --require-rpc.",
+      },
+    });
+  });
 
-it.each([
-  {
-    options: { probe: false },
-    message: "--require-rpc needs checking enabled. Remove --no-probe or drop --require-rpc.",
-  },
-  {
-    options: { runtimeIntentOnly: true },
-    message: "--runtime-intent-only cannot be combined with --require-rpc.",
-  },
-])("rejects invalid RPC options: $message", async ({ options, message }) => {
-  await expectJsonFailure({ ...options, requireRpc: true }, `Gateway status failed: ${message}`);
-  expect(gather).not.toHaveBeenCalled();
-  expect(readService).not.toHaveBeenCalled();
-});
+  it("renders service-inspection failures as JSON in JSON mode", async () => {
+    const secret = "sk-abcdefghijklmnopqrstuv";
+    const error = new Error(`service manager unavailable: Authorization: Bearer ${secret}`);
+    error.name = "ServiceManagerError";
+    gatherDaemonStatus.mockRejectedValueOnce(error);
 
-it("renders service-inspection failures as JSON in JSON mode", async () => {
-  const secret = "sk-abcdefghijklmnopqrstuv";
-  const error = new Error(`service manager unavailable: Authorization: Bearer ${secret}`);
-  error.name = "ServiceManagerError";
-  gather.mockRejectedValueOnce(error);
+    await expect(runDaemonStatus({ ...statusOptions, json: true })).rejects.toThrow("__exit__:1");
 
-  await expectJsonFailure(
-    {},
-    expect.stringContaining("Gateway status failed: service manager unavailable"),
-  );
-  expect(print).not.toHaveBeenCalled();
-  expect(JSON.stringify(defaultRuntime.writeJson.mock.calls)).not.toContain(error.name);
-  expect(JSON.stringify(defaultRuntime.writeJson.mock.calls)).not.toContain(secret);
-});
+    expect(printDaemonStatus).not.toHaveBeenCalled();
+    expect(defaultRuntime.writeJson).toHaveBeenCalledWith({
+      ok: false,
+      error: {
+        type: "cli_error",
+        message: expect.stringContaining("Gateway status failed: service manager unavailable"),
+      },
+    });
+    expect(JSON.stringify(defaultRuntime.writeJson.mock.calls)).not.toContain(error.name);
+    expect(JSON.stringify(defaultRuntime.writeJson.mock.calls)).not.toContain(secret);
+    expect(defaultRuntime.error).not.toHaveBeenCalled();
+    expect(defaultRuntime.exit).toHaveBeenCalledTimes(1);
+  });
 
-it("exits only once after printing a failed required RPC probe", async () => {
-  gather.mockResolvedValueOnce(createStatus(false));
+  it("exits only once after printing a failed required RPC probe", async () => {
+    gatherDaemonStatus.mockResolvedValueOnce(
+      createStatus({
+        ok: false,
+        url: "ws://127.0.0.1:18789",
+        error: "gateway closed",
+      }),
+    );
 
-  await expect(runDaemonStatus({ ...statusOptions, requireRpc: true, json: true })).rejects.toThrow(
-    "__exit__:1",
-  );
+    await expect(
+      runDaemonStatus({ ...statusOptions, requireRpc: true, json: true }),
+    ).rejects.toThrow("__exit__:1");
 
-  expect(print.mock.calls).toEqual([[expect.any(Object), { json: true, deep: false }]]);
-  expect(defaultRuntime.error).not.toHaveBeenCalled();
-  expect(defaultRuntime.exit).toHaveBeenCalledTimes(1);
+    expect(printDaemonStatus).toHaveBeenCalledTimes(1);
+    expect(printDaemonStatus).toHaveBeenCalledWith(expect.any(Object), {
+      json: true,
+      deep: false,
+    });
+    expect(defaultRuntime.error).not.toHaveBeenCalled();
+    expect(defaultRuntime.exit).toHaveBeenCalledTimes(1);
+  });
 });
