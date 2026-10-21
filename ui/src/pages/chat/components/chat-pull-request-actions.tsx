@@ -15,7 +15,7 @@ import { sessionPullRequestStateIcons } from "../../../lib/session-pull-request-
 import { ContentPresentation } from "../../../lib/solid/presentation.ts";
 import { showToast } from "../../../lib/toast.ts";
 import {
-  ChecksRow,
+  ChecksRows,
   StatusWarning,
   STATE_LABEL_KEYS,
   type ChatPullRequestsProps,
@@ -125,26 +125,7 @@ export function PullRequestActions(props: {
       <div class="chat-pr-menu__checks-heading">
         <span>{t("chat.pullRequests.checksTitle")}</span>
         <div class="chat-pr-menu__checks-totals">
-          <ChecksRow
-            label={t("chat.pullRequests.checksFailed")}
-            count={checks()?.failed ?? 0}
-            modifier="failed"
-          />
-          <ChecksRow
-            label={t("chat.pullRequests.checksRunning")}
-            count={checks()?.running ?? 0}
-            modifier="running"
-          />
-          <ChecksRow
-            label={t("chat.pullRequests.checksPassed")}
-            count={checks()?.passed ?? 0}
-            modifier="passed"
-          />
-          <ChecksRow
-            label={t("chat.pullRequests.checksSkipped")}
-            count={checks()?.skipped ?? 0}
-            modifier="skipped"
-          />
+          <ChecksRows checks={checks()} runningFirst />
         </div>
       </div>
       <openclaw-chat-ci-details

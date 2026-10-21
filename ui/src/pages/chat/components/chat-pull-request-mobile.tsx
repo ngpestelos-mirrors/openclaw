@@ -10,7 +10,7 @@ import { copyToClipboard } from "../../../lib/clipboard.ts";
 import { t } from "../../../lib/reactive/i18n.ts";
 import { sessionPullRequestStateIcons } from "../../../lib/session-pull-request-presentation.ts";
 import { showToast } from "../../../lib/toast.ts";
-import { ChecksRow } from "./chat-pull-request-shared.tsx";
+import { ChecksRows } from "./chat-pull-request-shared.tsx";
 import { chatPullRequestId } from "./chat-pull-requests.ts";
 import "./chat-pull-request-presenters.css";
 import "./chat-ci-details.ts";
@@ -280,26 +280,7 @@ export function ChatPullRequestMobileDetail(props: ChatPullRequestMobileDetailPr
               >
                 <h3>{t("chat.pullRequests.checksTitle")}</h3>
                 <div class="chat-pr-mobile__group chat-pr-mobile__check-rows">
-                  <ChecksRow
-                    label={t("chat.pullRequests.checksFailed")}
-                    count={pullRequest().checks?.failed ?? 0}
-                    modifier="failed"
-                  />
-                  <ChecksRow
-                    label={t("chat.pullRequests.checksPassed")}
-                    count={pullRequest().checks?.passed ?? 0}
-                    modifier="passed"
-                  />
-                  <ChecksRow
-                    label={t("chat.pullRequests.checksRunning")}
-                    count={pullRequest().checks?.running ?? 0}
-                    modifier="running"
-                  />
-                  <ChecksRow
-                    label={t("chat.pullRequests.checksSkipped")}
-                    count={pullRequest().checks?.skipped ?? 0}
-                    modifier="skipped"
-                  />
+                  <ChecksRows checks={pullRequest().checks} />
                   <Show when={pullRequest().checksUrl}>
                     {(url) => (
                       <a
