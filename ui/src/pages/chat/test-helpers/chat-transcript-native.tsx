@@ -38,13 +38,11 @@ function Content(props: { value: NativeContent }) {
   const thread = () => (props.value instanceof ThreadFixture ? props.value : undefined);
   const search = createMemo(() => {
     const value = props.value;
-    if (value instanceof SearchFixture) {
-      return value;
-    }
-    if (value instanceof ThreadFixture && value.search) {
-      return new SearchFixture(value.props.paneId);
-    }
-    return undefined;
+    return value instanceof SearchFixture
+      ? value
+      : value instanceof ThreadFixture && value.search
+        ? new SearchFixture(value.props.paneId)
+        : undefined;
   });
   return (
     <>
@@ -130,14 +128,12 @@ export class TranscriptTestHost extends HTMLElement {
 
   requestRender() {
     this.pending ??= Promise.resolve().then(() => {
-      if (!this.isConnected) {
-        this.pending = undefined;
-        return true;
-      }
       this.pending = undefined;
-      render(this.renderTranscript(), this.transcriptRoot);
-      this.committedRenders += 1;
-      this.transcript?.update();
+      if (this.isConnected) {
+        render(this.renderTranscript(), this.transcriptRoot);
+        this.committedRenders += 1;
+        this.transcript?.update();
+      }
       return true;
     });
   }
@@ -163,12 +159,7 @@ export async function mountTestTranscript(
     render(
       transcript.renderSession(`agent:main:${paneId}`, (session) => {
         currentSession = session;
-        return session.render(
-          rows,
-          (row) => (row.kind === "content" ? row.content : null),
-          null,
-          false,
-        );
+        return session.render(rows, contentOf, null, false);
       }),
       container,
     );
@@ -205,20 +196,23 @@ export function stubMcpAppLifecycle(
   return { app: target, ...lifecycle };
 }
 
-export function numberedContentRows(length: number): TestContentRow[] {
+function contentOf(row: TestContentRow) {
+  return row.kind === "content" ? row.content : null;
+}
+
+export function numberedContentRows(
+  length: number,
+  content: (index: number) => JSX.Element = (index) => <div>row {index}</div>,
+): TestContentRow[] {
   return Array.from({ length }, (_, index) => ({
     kind: "content",
     key: `row:${index}`,
-    content: <div>row {index}</div>,
+    content: content(index),
   }));
 }
 
 export function mcpRangeRows(appContent: JSX.Element): TestContentRow[] {
-  return Array.from({ length: 24 }, (_, index) => ({
-    kind: "content" as const,
-    key: `row:${index}`,
-    content: index === 23 ? appContent : <div>row {index}</div>,
-  }));
+  return numberedContentRows(24, (index) => (index === 23 ? appContent : <div>row {index}</div>));
 }
 
 export const contact = (identifier: number, target: EventTarget): Touch => ({

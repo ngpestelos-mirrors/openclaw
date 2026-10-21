@@ -38,19 +38,30 @@ const controls = [
     ),
   ],
 ] as const;
+const [input, textarea, editable, select] = controls;
+
+const boundaryKeys = ["Home", "End"];
+const pageKeys = [...boundaryKeys, "PageUp", "PageDown"];
+function keyCases(
+  name: string,
+  content: () => JSX.Element,
+  keys: string[],
+  owned: (key: string) => boolean,
+  fixture: NativeKeyFixture,
+): NativeKeyCase[] {
+  return keys.map((key) => [`${name}${key}`, key, content, owned(key), fixture]);
+}
 
 export const nativeControlNavigationCases: NativeKeyCase[] = [
   ...(
     [
-      ["video", () => <video controls></video>],
-      ["audio", () => <audio controls></audio>],
+      ["video", () => <video controls />],
+      ["audio", () => <audio controls />],
     ] as const
   ).flatMap(([name, content]) =>
     [
-      ...[" ", "ArrowUp", "ArrowDown", "Home", "End", "PageUp", "PageDown"].map(
-        (key) => [key, {}] as const,
-      ),
-      ...["Home", "End"].flatMap((key) =>
+      ...[" ", "ArrowUp", "ArrowDown", ...pageKeys].map((key) => [key, {}] as const),
+      ...boundaryKeys.flatMap((key) =>
         [{ shiftKey: true }, { ctrlKey: true }].map((fixture) => [key, fixture] as const),
       ),
     ].map(([key, fixture]): NativeKeyCase => [
@@ -63,64 +74,44 @@ export const nativeControlNavigationCases: NativeKeyCase[] = [
   ),
   ...["Win32", "Linux x86_64"].flatMap((platform) =>
     controls.flatMap(([name, content]) =>
-      ["Home", "End", "PageUp", "PageDown"].map((key): NativeKeyCase => [
-        `${platform} ${name} ${key}`,
-        key,
+      keyCases(
+        `${platform} ${name} `,
         content,
-        name !== "input" || key === "Home" || key === "End",
+        pageKeys,
+        (key) => name !== "input" || boundaryKeys.includes(key),
         { platform },
-      ]),
-    ),
-  ),
-  ...controls
-    .filter(([name]) => name === "select")
-    .flatMap(([name, content]) =>
-      ["Win32", "Linux x86_64"].flatMap((platform) =>
-        ["Home", "End"].map((key): NativeKeyCase => [
-          `${platform} ${name} Ctrl+${key}`,
-          key,
-          content,
-          false,
-          { platform, ctrlKey: true },
-        ]),
       ),
     ),
-  ...controls.flatMap(([name, content]) =>
-    ["Home", "End"].map((key): NativeKeyCase => [
-      `Mac ${name} Shift+${key}`,
-      key,
-      content,
-      true,
-      { platform: "MacIntel", shiftKey: true },
-    ]),
   ),
-  ...controls
-    .filter(([name]) => name === "input" || name === "select")
-    .flatMap(([name, content]) =>
-      ["Home", "End"].map((key): NativeKeyCase => [
-        `Mac ${name} ${key}`,
+  ...["Win32", "Linux x86_64"].flatMap((platform) =>
+    keyCases(`${platform} select Ctrl+`, select[1], boundaryKeys, () => false, {
+      platform,
+      ctrlKey: true,
+    }),
+  ),
+  ...controls.flatMap(([name, content]) =>
+    keyCases(`Mac ${name} Shift+`, content, boundaryKeys, () => true, {
+      platform: "MacIntel",
+      shiftKey: true,
+    }),
+  ),
+  ...[input, select].flatMap(([name, content]) =>
+    keyCases(`Mac ${name} `, content, boundaryKeys, () => false, { platform: "MacIntel" }),
+  ),
+  ...[textarea, editable].flatMap(([name, content]) =>
+    pageKeys.flatMap((key) =>
+      [true, false].map((inside): NativeKeyCase => [
+        `Mac ${name} ${key} at ${inside ? "inner content" : "inner edge"}`,
         key,
         content,
-        false,
-        { platform: "MacIntel" },
+        inside,
+        {
+          platform: "MacIntel",
+          scrollTop: inside ? 240 : key === "Home" || key === "PageUp" ? 0 : 480,
+        },
       ]),
     ),
-  ...controls
-    .filter(([name]) => name === "textarea" || name === "editable")
-    .flatMap(([name, content]) =>
-      ["Home", "End", "PageUp", "PageDown"].flatMap((key) =>
-        [true, false].map((inside): NativeKeyCase => [
-          `Mac ${name} ${key} at ${inside ? "inner content" : "inner edge"}`,
-          key,
-          content,
-          inside,
-          {
-            platform: "MacIntel",
-            scrollTop: inside ? 240 : key === "Home" || key === "PageUp" ? 0 : 480,
-          },
-        ]),
-      ),
-    ),
+  ),
 ];
 
 export function configureNativeKeyTarget(control: Element, fixture: NativeKeyFixture = {}) {
