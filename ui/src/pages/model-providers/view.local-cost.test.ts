@@ -70,15 +70,12 @@ it.each([
       providerUsage: null,
       costByProvider: aggregates.byProvider,
     });
-    expect(cards).toHaveLength(1);
-    expect(cards[0]?.localCost).toMatchObject({
-      totalTokens: messageCount * 100,
-      totalCost: messageCount,
-    });
+    const totalTokens = messageCount * 100;
+    expect(cards).toMatchObject([{ localCost: { totalTokens, totalCost: messageCount } }]);
     const container = mount(props({ cards }));
     const row = container.querySelector('[data-provider-id="anthropic"]');
     expect(text(row?.querySelector(".model-providers__local-cost-detail") ?? null)).toBe(
-      `${messageCount * 100} tokens · ${messageCount} messages`,
+      `${totalTokens} tokens · ${messageCount} messages`,
     );
   },
 );

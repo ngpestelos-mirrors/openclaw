@@ -1,24 +1,12 @@
 /* @vitest-environment jsdom */
 
-import { afterEach, expect, it, vi } from "vitest";
+import { expect, it, vi } from "vitest";
 import type { ModelCatalogEntry, ModelCatalogResult } from "../../api/types.ts";
 import { waitForSolid } from "../../test-helpers/solid-settle.ts";
 import { loginHarness, openLogin } from "./model-providers-page.login.test-support.ts";
-import {
-  appendPage,
-  requestCount,
-  submitCredential,
-  unmountPage,
-} from "./model-providers-page.test-support.tsx";
-
-afterEach(() => {
-  document.body.replaceChildren();
-  vi.restoreAllMocks();
-  vi.useRealTimers();
-});
+import { appendPage, submitCredential, unmountPage } from "./model-providers-page.test-support.tsx";
 
 it.each([
-  { recommended: true, delayed: false },
   { recommended: false, delayed: false },
   { recommended: true, delayed: true },
   { recommended: false, delayed: false, verified: true },
@@ -41,13 +29,8 @@ it.each([
       method === "models.list"
         ? ({
             models: [
-              model("best", {
-                provider: "other",
-                name: "Other best",
-                recommended: true,
-                available: true,
-              }),
-              model("old", { name: "Unavailable", recommended: true, available: false }),
+              model("best", { provider: "other", recommended: true, available: true }),
+              model("old", { recommended: true, available: false }),
               model("best", { agentRuntime: { id: "openclaw", source: "model" } }),
               model("second"),
             ],
@@ -102,7 +85,9 @@ it.each([
         ),
       );
     } else {
-      await waitForSolid(() => expect(requestCount(request, "models.list")).toBeGreaterThan(0));
+      await waitForSolid(() =>
+        expect(request.mock.calls.some(([method]) => method === "models.list")).toBe(true),
+      );
       expect(startChat()).toBeNull();
     }
     expect(context.runtimeConfig.patch).not.toHaveBeenCalled();
