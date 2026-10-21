@@ -360,10 +360,7 @@ it.each(["operator.write", "operator.sessions.write"] as const)(
         ),
       ).resolves.toBe("accepted");
       if (scopeName === "operator.sessions.write") {
-        replaceSessionEntrySync(scope, {
-          ...reset.sessionEntry,
-          createdActor: createdActor("another-profile"),
-        });
+        client.connect.scopes = [];
         expect(() => authorization.assertAdmittedInputCurrent!()).toThrow(
           "Session-scoped writes require your own session.",
         );
