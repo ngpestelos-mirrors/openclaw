@@ -31,7 +31,7 @@ const read: WorkerTaskHandler<OpenClawStateReadReply> = async function read(
   message,
   channel,
   control,
-) {
+): Promise<OpenClawStateReadReply> {
   // SAFETY: Only the typed state-read pool sends requests on this private worker port.
   const input = message as OpenClawStateReadRequest;
   let sourceAdmitted: true | undefined;
