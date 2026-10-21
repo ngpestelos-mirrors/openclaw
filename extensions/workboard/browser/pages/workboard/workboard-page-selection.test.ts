@@ -1,13 +1,11 @@
 import "../../test/dom.setup.ts";
 import { expectDefined } from "@openclaw/normalization-core";
 import { createDeferred } from "openclaw/plugin-sdk/concurrency-runtime";
-import type { ControlUiComponents } from "openclaw/plugin-sdk/control-ui";
 import { expect, it, vi } from "vitest";
 import { setWorkboardCards } from "../../lib/workboard/card-state.ts";
 import { createWorkboardCard } from "../../lib/workboard/test/index-helpers.ts";
+import { type SelectPicker, requireButton } from "./view.test-support.ts";
 import { mountPage } from "./workboard-page.test-support.ts";
-
-type ControlUiSelectPickerProps = Parameters<ControlUiComponents["mountSelectPicker"]>[1];
 
 async function mountPendingSelection(method: string, scoped = false) {
   const page = mountPage({ boardId: "one" });
@@ -44,7 +42,7 @@ it("stops a bulk assignment after board scope changes while the first write is p
   const picker = await vi.waitFor(() =>
     expectDefined(
       [
-        ...page.container.querySelectorAll<HTMLElement & ControlUiSelectPickerProps>(
+        ...page.container.querySelectorAll<SelectPicker>(
           ".workboard-selection [data-test-select-picker]",
         ),
       ].find((item) => item.accessibleLabel === "Assign agent…"),
@@ -86,11 +84,9 @@ it("drops a selected card made ineligible by agent scope while bulk work is pend
   state.selectedCardIds.add(second.id);
   page.workboard.notify();
   const archive = await vi.waitFor(() =>
-    expectDefined(
-      [...page.container.querySelectorAll<HTMLButtonElement>(".workboard-selection button")].find(
-        (button) => button.textContent?.trim() === "Archive",
-      ),
-      "archive selection",
+    requireButton(
+      expectDefined(page.container.querySelector(".workboard-selection"), "selection"),
+      "Archive",
     ),
   );
   archive.click();

@@ -1,9 +1,6 @@
 import "../../test/dom.setup.ts";
 import { expectDefined } from "@openclaw/normalization-core";
-import type {
-  ControlUiComponents,
-  ControlUiSessionListResult,
-} from "openclaw/plugin-sdk/control-ui";
+import type { ControlUiSessionListResult } from "openclaw/plugin-sdk/control-ui";
 import { afterEach, expect, vi } from "vitest";
 import type { AgentsListResult } from "../../api/types.ts";
 import { createWorkboardCapability } from "../../lib/workboard/capability.ts";
@@ -11,6 +8,7 @@ import { createWorkboardCard } from "../../lib/workboard/test/index-helpers.ts";
 import { workboardTestHost } from "../../test/host.setup.ts";
 import { createViewContext } from "../../test/host.ts";
 import { afterWorkboardUpdate as settle } from "../../test/settle.ts";
+import type { SelectPicker } from "./view.test-support.ts";
 import { createWorkboardPage } from "./workboard-page.tsx";
 
 const cleanup: (() => void)[] = [];
@@ -85,9 +83,7 @@ export function mountPage(
       context = { ...context, presented };
       mounted?.update?.(context);
     },
-    dispose() {
-      mounted?.dispose?.();
-    },
+    dispose: () => mounted?.dispose?.(),
   };
 }
 
@@ -135,10 +131,7 @@ export function visibleToast(container: Element) {
 }
 
 export function sessionPicker(container: Element) {
-  type SelectProps = Parameters<ControlUiComponents["mountSelectPicker"]>[1];
   return [
-    ...container.querySelectorAll<HTMLElement & SelectProps>(
-      ".workboard-draft [data-test-select-picker]",
-    ),
+    ...container.querySelectorAll<SelectPicker>(".workboard-draft [data-test-select-picker]"),
   ].find((picker) => picker.accessibleLabel === "Session");
 }
