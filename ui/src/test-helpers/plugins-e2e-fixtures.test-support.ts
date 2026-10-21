@@ -16,7 +16,6 @@ const memoryDiscoveryPlugin = {
   catalog: {
     name: "Memory Plus",
     summary: "Long-term memory for people and projects.",
-    family: "code-plugin",
     author: "alice",
     official: false,
     categories: ["memory"],

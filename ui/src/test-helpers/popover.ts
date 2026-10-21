@@ -3,10 +3,6 @@ export function installPopoverPolyfill(): () => void {
   if (typeof HTMLElement === "undefined" || "showPopover" in HTMLElement.prototype) {
     return () => {};
   }
-  const methods = ["popover", "showPopover", "hidePopover", "togglePopover"] as const;
-  const descriptors = new Map(
-    methods.map((name) => [name, Object.getOwnPropertyDescriptor(HTMLElement.prototype, name)]),
-  );
   const matchesDescriptor: TypedPropertyDescriptor<Element["matches"]> =
     Object.getOwnPropertyDescriptor(Element.prototype, "matches")!;
   const matches = matchesDescriptor.value!;
@@ -34,16 +30,11 @@ export function installPopoverPolyfill(): () => void {
         "InvalidStateError",
       );
     }
-    const oldState = opened.has(element) ? "open" : "closed";
-    const newState = open ? "open" : "closed";
-    const event = (type: string, cancelable = false) => {
-      const result = new Event(type, { cancelable });
-      Object.defineProperties(result, {
-        oldState: { value: oldState },
-        newState: { value: newState },
+    const event = (type: string, cancelable = false) =>
+      Object.defineProperties(new Event(type, { cancelable }), {
+        oldState: { value: open ? "closed" : "open" },
+        newState: { value: open ? "open" : "closed" },
       });
-      return result;
-    };
     if (!element.dispatchEvent(event("beforetoggle", open))) {
       return;
     }
@@ -70,7 +61,8 @@ export function installPopoverPolyfill(): () => void {
       return matches.call(this, selector);
     },
   });
-  const polyfill: Pick<HTMLElement, (typeof methods)[number]> & ThisType<HTMLElement> = {
+  const polyfill: Pick<HTMLElement, "popover" | "showPopover" | "hidePopover"> &
+    ThisType<HTMLElement> = {
     get popover() {
       const value = this.getAttribute("popover");
       return value === null || value === "manual" || value === "hint" ? value : "auto";
@@ -88,23 +80,16 @@ export function installPopoverPolyfill(): () => void {
     hidePopover() {
       toggle(this, false);
     },
-    togglePopover(options?: boolean | { force?: boolean }) {
-      toggle(this, (typeof options === "boolean" ? options : options?.force) ?? !opened.has(this));
-      return opened.has(this);
-    },
   };
-  // Preserve the fixture's non-enumerable properties and read-only toggle method.
+  const descriptors = new Map<string, PropertyDescriptor | undefined>();
   for (const [name, descriptor] of Object.entries(Object.getOwnPropertyDescriptors(polyfill))) {
+    descriptors.set(name, Object.getOwnPropertyDescriptor(HTMLElement.prototype, name));
     descriptor.enumerable = false;
-    if (name === "togglePopover") {
-      descriptor.writable = false;
-    }
     Object.defineProperty(HTMLElement.prototype, name, descriptor);
   }
   return () => {
     Object.defineProperty(Element.prototype, "matches", matchesDescriptor);
-    for (const name of methods) {
-      const descriptor = descriptors.get(name);
+    for (const [name, descriptor] of descriptors) {
       if (descriptor) {
         Object.defineProperty(HTMLElement.prototype, name, descriptor);
       } else {
