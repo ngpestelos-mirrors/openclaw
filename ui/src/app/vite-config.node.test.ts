@@ -241,7 +241,9 @@ it("selects a polling watcher when the existing environment opt-in is enabled", 
   onTestFinished,
 }) => {
   vi.stubEnv("CHOKIDAR_USEPOLLING", "1");
-  onTestFinished(() => vi.unstubAllEnvs());
+  onTestFinished(() => {
+    vi.unstubAllEnvs();
+  });
   const root = await mkdtemp(path.join(os.tmpdir(), "openclaw-ui-watcher-"));
   onTestFinished(() => rm(root, { recursive: true, force: true }));
   const config = controlUiViteConfig({ command: "serve", buildInfo: resolveBuildInfo() });
