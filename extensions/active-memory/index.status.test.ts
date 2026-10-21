@@ -5,17 +5,12 @@ import type { SessionEntry } from "openclaw/plugin-sdk/session-store-runtime";
 import { describe, expect, it, vi } from "vitest";
 import plugin from "./index.js";
 
-const { unexpectedIo, unexpectedRecallImport } = vi.hoisted(() => ({
-  unexpectedIo: () => {
-    throw new Error("Unexpected memory or transcript I/O in status-only hook");
-  },
-  unexpectedRecallImport: () => {
-    throw new Error("Unexpected model recall module load in status-only hook");
-  },
-}));
+const unexpectedIo = vi.hoisted(() => () => {
+  throw new Error("Unexpected model recall, memory or transcript I/O in status-only hook");
+});
 
 // mock-isolation: Registration and skipped turns must not load model recall execution.
-vi.mock("./recall.js", unexpectedRecallImport);
+vi.mock("./recall.js", unexpectedIo);
 
 // mock-isolation: Status-only hooks must not discover models or boot an agent runtime.
 vi.mock("openclaw/plugin-sdk/agent-runtime", () => ({
@@ -68,6 +63,7 @@ vi.mock("openclaw/plugin-sdk/session-transcript-runtime", () => ({
 }));
 
 type Runtime = OpenClawPluginApi["runtime"];
+type Agent = Runtime["agent"];
 
 function setup(mode: "off" | "escalate" | "always" = "escalate") {
   const otherEntry = { pluginId: "other-plugin", lines: ["Other plugin status"] };
@@ -85,7 +81,7 @@ function setup(mode: "off" | "escalate" | "always" = "escalate") {
     },
   };
   const lookup = vi.fn(async (): Promise<undefined> => undefined);
-  const patch = vi.fn<Runtime["agent"]["session"]["prepareSessionEntryPatch"]>(async (params) => {
+  const patch = vi.fn<Agent["session"]["prepareSessionEntryPatch"]>(async (params) => {
     Object.assign(entry, await params.prepare(entry, { existingEntry: entry }));
     if (!params.preserveActivity) {
       entry.updatedAt = 999;
@@ -116,12 +112,9 @@ function setup(mode: "off" | "escalate" | "always" = "escalate") {
     },
   } satisfies {
     config: Pick<Runtime["config"], "current">;
-    agent: Pick<
-      Runtime["agent"],
-      "resolveCliBackendDispatchEligibilityAsync" | "runEmbeddedAgent"
-    > & {
+    agent: Pick<Agent, "resolveCliBackendDispatchEligibilityAsync" | "runEmbeddedAgent"> & {
       session: Pick<
-        Runtime["agent"]["session"],
+        Agent["session"],
         "resolveStorePath" | "getSessionEntryAsync" | "prepareSessionEntryPatch"
       >;
     };
@@ -194,7 +187,7 @@ describe("Active Memory policy status", () => {
       finishImport.resolve();
       await pending;
       // mock-isolation: Restore the import guard for subsequent status-only hooks.
-      vi.doMock("./recall.js", unexpectedRecallImport);
+      vi.doMock("./recall.js", unexpectedIo);
       vi.useRealTimers();
     }
   });
