@@ -15,10 +15,12 @@ const { mutateConfigMock, prompterMock, readSnapshotMock } = vi.hoisted(() => ({
   },
   readSnapshotMock: vi.fn<typeof readConfigFileSnapshotForWrite>(),
 }));
+// mock-isolation: Migration assertions must not read or write the operator's config.
 vi.mock("openclaw/plugin-sdk/config-mutation", () => ({
   mutateConfigFile: mutateConfigMock,
   readConfigFileSnapshotForWrite: readSnapshotMock,
 }));
+// mock-isolation: Migration decisions use the fixture prompter, never an interactive terminal.
 vi.mock("openclaw/plugin-sdk/setup-runtime", () => ({ createClackPrompter: () => prompterMock }));
 
 import { registerFileTransferCli } from "./cli.js";
