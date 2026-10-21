@@ -1,5 +1,7 @@
 import fs from "node:fs/promises";
 import { Command } from "commander";
+import type { OpenClawConfig } from "openclaw/plugin-sdk/config-contracts";
+import type { readConfigFileSnapshotForWrite } from "openclaw/plugin-sdk/config-mutation";
 import { afterEach, expect, it, vi } from "vitest";
 
 const { mutateConfigMock, prompterMock, readSnapshotMock } = vi.hoisted(() => ({
@@ -11,7 +13,7 @@ const { mutateConfigMock, prompterMock, readSnapshotMock } = vi.hoisted(() => ({
     confirm: vi.fn(),
     outro: vi.fn(),
   },
-  readSnapshotMock: vi.fn(),
+  readSnapshotMock: vi.fn<typeof readConfigFileSnapshotForWrite>(),
 }));
 vi.mock("openclaw/plugin-sdk/config-mutation", () => ({
   mutateConfigFile: mutateConfigMock,
@@ -30,22 +32,41 @@ function prepare({
   action = "",
   confirmed = true,
 } = {}) {
+  const config: OpenClawConfig = {
+    ...(remote ? { gateway: { mode: "remote" as const } } : {}),
+    plugins: {
+      entries: {
+        "file-transfer": { config: { nodes: { [selector]: { allowReadPaths: [path] } } } },
+      },
+    },
+  };
   readSnapshotMock.mockResolvedValue({
     snapshot: {
       valid: true,
+      hash: "hash",
       path: "/tmp/openclaw.json",
+      exists: true,
+      raw: JSON.stringify(config),
+      parsed: config,
+      sourceConfig: config,
+      resolved: config,
+      runtimeConfig: config,
+      config,
+      issues: [],
+      warnings: [],
+      legacyIssues: [],
       includeProvenance: pluginsPath
-        ? [{ path: ["plugins"], kind: "single", targetPath: pluginsPath }]
+        ? [
+            {
+              path: ["plugins"],
+              kind: "single",
+              targetPath: pluginsPath,
+              hasSiblingOverrides: false,
+            },
+          ]
         : undefined,
-      sourceConfig: {
-        gateway: { mode: remote ? "remote" : "local" },
-        plugins: {
-          entries: {
-            "file-transfer": { config: { nodes: { [selector]: { allowReadPaths: [path] } } } },
-          },
-        },
-      },
     },
+    writeOptions: {},
   });
   if (action) {
     prompterMock.select.mockResolvedValue(action);
@@ -111,7 +132,9 @@ it.each(["", "/tmp/included-plugins.json"])(
       expect.stringContaining("restore the adjacent config backup"),
       "Downgrade",
     );
-    expect(mutateConfigMock).toHaveBeenCalledOnce();
+    expect(mutateConfigMock).toHaveBeenCalledExactlyOnceWith(
+      expect.objectContaining({ baseHash: "hash", writeOptions: {} }),
+    );
     if (pluginsPath) {
       expect(vi.mocked(fs.stat).mock.calls).toEqual([
         [`${pluginsPath}.bak`],
