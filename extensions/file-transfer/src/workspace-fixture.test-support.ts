@@ -1,17 +1,8 @@
 import fs from "node:fs/promises";
 import path from "node:path";
-import {
-  getAgentWorkspaceAccess,
-  type AgentWorkspaceAccess,
-} from "openclaw/plugin-sdk/agent-workspace-runtime";
-import type {
-  OpenClawPluginApi,
-  OpenClawPluginServiceContext,
-} from "openclaw/plugin-sdk/plugin-entry";
-import {
-  createTestPluginApi,
-  createTestPluginServiceScheduler,
-} from "openclaw/plugin-sdk/plugin-test-api";
+import * as workspace from "openclaw/plugin-sdk/agent-workspace-runtime";
+import type * as Plugin from "openclaw/plugin-sdk/plugin-entry";
+import * as testApi from "openclaw/plugin-sdk/plugin-test-api";
 import { expect, vi } from "vitest";
 import { handleDirList } from "./node-host/dir-list.js";
 import { handleFileFetch } from "./node-host/file-fetch.js";
@@ -30,7 +21,7 @@ const unaryHandlers = {
 export async function createWorkspaceFixture(parent: string, unary = false) {
   const state: {
     local: string;
-    openDuplex: OpenClawPluginServiceContext["openNodeDuplex"];
+    openDuplex: Plugin.OpenClawPluginServiceContext["openNodeDuplex"];
   } = { local: path.join(parent, "gateway"), openDuplex: undefined };
   const remote = path.join(parent, "harness");
   await fs.mkdir(state.local);
@@ -39,21 +30,18 @@ export async function createWorkspaceFixture(parent: string, unary = false) {
     allowReadPaths: string[];
     allowWritePaths: string[];
     denyPaths?: string[];
-    followSymlinks: boolean;
-    ask: "off";
+    followSymlinks?: boolean;
     maxBytes?: number;
   } = {
     allowReadPaths: [remote, `${remote}/**`],
     allowWritePaths: [],
-    followSymlinks: false,
-    ask: "off",
   };
   const pluginConfig = {
     policyVersion: 2,
     workspaces: { main: { nodeId: "node-1", remoteRoot: remote } },
     nodes: { "node-1": nodePolicy },
   };
-  const invoke = vi.fn<OpenClawPluginApi["runtime"]["nodes"]["invoke"]>(async (request) => {
+  const invoke = vi.fn<Plugin.OpenClawPluginApi["runtime"]["nodes"]["invoke"]>(async (request) => {
     if (!unary) {
       throw new Error("Lifecycle must use the paired stream");
     }
@@ -78,16 +66,15 @@ export async function createWorkspaceFixture(parent: string, unary = false) {
     }
     return result;
   });
-  let service!: Parameters<OpenClawPluginApi["registerService"]>[0];
-  const scheduler = createTestPluginServiceScheduler();
-  const api = createTestPluginApi({
-    registrationMode: "full",
+  let service!: Parameters<Plugin.OpenClawPluginApi["registerService"]>[0];
+  const scheduler = testApi.createTestPluginServiceScheduler();
+  const api = testApi.createTestPluginApi({
     config: { plugins: { entries: { "file-transfer": { config: pluginConfig } } } },
     pluginConfig,
     runtime: {
       agent: { resolveAgentWorkspaceDir: (): string => fixture.local },
       nodes: { invoke },
-    } as unknown as OpenClawPluginApi["runtime"],
+    } as unknown as Plugin.OpenClawPluginApi["runtime"],
     registerService: (value) => {
       service = value;
     },
@@ -102,19 +89,17 @@ export async function createWorkspaceFixture(parent: string, unary = false) {
       return service;
     },
     scheduler,
-    context() {
-      return {
-        config: api.config,
-        logger: api.logger,
-        stateDir: fixture.local,
-        invokeNode: invoke,
-        openNodeDuplex: fixture.openDuplex,
-        scheduler,
-      };
-    },
+    context: () => ({
+      config: api.config,
+      logger: api.logger,
+      stateDir: fixture.local,
+      invokeNode: invoke,
+      openNodeDuplex: fixture.openDuplex,
+      scheduler,
+    }),
     async start() {
       await service.start(this.context());
-      return getAgentWorkspaceAccess(fixture.local)!;
+      return workspace.getAgentWorkspaceAccess(fixture.local)!;
     },
   };
   return fixture;
@@ -125,7 +110,7 @@ export type WorkspaceFixture = Awaited<ReturnType<typeof createWorkspaceFixture>
 export function workspaceSkillRequest(
   local: string,
   includeState = false,
-): Parameters<NonNullable<AgentWorkspaceAccess["loadSkills"]>>[0] {
+): Parameters<NonNullable<workspace.AgentWorkspaceAccess["loadSkills"]>>[0] {
   return {
     sourcePlan: {
       workspaceDir: local,
