@@ -22,10 +22,10 @@ import {
   type WorkspaceCatalogFile,
   type WorkspaceCatalogRow,
 } from "./chat-session-workspace-catalog.ts";
-import { FolderDisclosure } from "./chat-session-workspace-disclosure.tsx";
 import type { SessionWorkspaceFilter } from "./chat-sidebar-content-types.ts";
 import type { SessionWorkspaceProps } from "./chat-sidebar-view-types.ts";
 import { hasTranscriptAttachments } from "./chat-transcript-attachments.ts";
+import { FileDisclosure } from "./file-disclosure.tsx";
 import "../../../styles/session-panel-rail.css";
 import "./chat-session-workspace-desktop.css";
 
@@ -214,7 +214,7 @@ function DirectoryBranch(props: {
         }}
       />
       <Show when={props.row.directory}>
-        <FolderDisclosure open={expanded()} active={active()} instant={instant()}>
+        <FileDisclosure variant="folder" open={expanded()} active={active()} instant={instant()}>
           <Show when={directory()?.loading}>
             <div class="workspace-desktop__notice" role="status">
               {t("chat.workspaceFiles.loading")}
@@ -242,7 +242,7 @@ function DirectoryBranch(props: {
               )}
             </For>
           </div>
-        </FolderDisclosure>
+        </FileDisclosure>
       </Show>
     </div>
   );
@@ -282,9 +282,14 @@ function WorkspaceGroup(props: {
           </div>
         }
       >
-        <FolderDisclosure open={props.expanded} active={props.active !== false} instant={instant()}>
+        <FileDisclosure
+          variant="folder"
+          open={props.expanded}
+          active={props.active !== false}
+          instant={instant()}
+        >
           {props.children}
-        </FolderDisclosure>
+        </FileDisclosure>
       </Show>
     </section>
   );

@@ -5,7 +5,7 @@ import { t } from "../../../lib/reactive/i18n.ts";
 import { createLayoutMeasurement } from "../../../lib/reactive/layout-measurement.ts";
 import { AttachmentFileIcon } from "./chat-attachment-file-icon-solid.tsx";
 import { DiffStatChips } from "./chat-diff-stat.solid.tsx";
-import { ReviewDisclosure } from "./session-diff-disclosure.tsx";
+import { FileDisclosure } from "./file-disclosure.tsx";
 
 type ReviewNode = { key: string; name: string; path: string } & (
   | { kind: "file"; file: SessionDiffFile; children: [] }
@@ -190,9 +190,14 @@ export function SessionDiffTree(props: {
                   </Show>
                 </button>
                 <Show when={!node().file}>
-                  <ReviewDisclosure open={expanded()} active={props.active} instant={props.instant}>
+                  <FileDisclosure
+                    variant="review"
+                    open={expanded()}
+                    active={props.active}
+                    instant={props.instant}
+                  >
                     <Rows nodes={node().children} />
-                  </ReviewDisclosure>
+                  </FileDisclosure>
                 </Show>
               </li>
             );
