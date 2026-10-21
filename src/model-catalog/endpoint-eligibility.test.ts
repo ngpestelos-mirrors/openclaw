@@ -35,6 +35,13 @@ function providerConfig(baseUrl: string): OpenClawConfig {
   return { models: { providers: { fixture: { baseUrl, models: [] } } } };
 }
 
+function plan(
+  baseUrl: string,
+  overrides: Partial<Parameters<typeof planEffectiveModelCatalogRows>[0]> = {},
+) {
+  return planEffectiveModelCatalogRows({ registry, config: providerConfig(baseUrl), ...overrides });
+}
+
 describe("provider endpoint catalog eligibility", () => {
   it.each([
     "https://native.example/v1",
@@ -42,36 +49,21 @@ describe("provider endpoint catalog eligibility", () => {
     "https://us.region.example/v1",
     "MODEL.example/v1/?ignored=1#fragment",
   ])("keeps native catalog rows at the declared endpoint %s", (baseUrl) => {
-    expect(
-      planEffectiveModelCatalogRows({ registry, config: providerConfig(baseUrl) }).rows.map(
-        (row) => row.id,
-      ),
-    ).toEqual(["native-model"]);
+    expect(plan(baseUrl).rows.map((row) => row.id)).toEqual(["native-model"]);
   });
 
   it("excludes native manifest rows for a custom provider endpoint", () => {
-    expect(
-      planEffectiveModelCatalogRows({
-        registry,
-        config: providerConfig("https://proxy.example/v1"),
-      }),
-    ).toMatchObject({ rows: [], entries: [] });
+    expect(plan("https://proxy.example/v1")).toMatchObject({ rows: [], entries: [] });
   });
 
   it("keeps the alias's declared endpoint independent of the target override", () => {
-    const config = providerConfig("https://proxy.example/v1");
-    const aliasedConfig: OpenClawConfig = {
-      models: {
-        providers: {
-          ...config.models?.providers,
-          alternate: { baseUrl: "https://alternate.example/api", models: [] },
-        },
-      },
+    const providers = {
+      ...providerConfig("https://proxy.example/v1").models?.providers,
+      alternate: { baseUrl: "https://alternate.example/api", models: [] },
     };
     expect(
-      planEffectiveModelCatalogRows({
-        registry,
-        config: aliasedConfig,
+      plan("https://proxy.example/v1", {
+        config: { models: { providers } },
         providerFilter: "alternate",
       }).rows.map((row) => row.ref),
     ).toEqual(["alternate/native-model"]);
@@ -116,10 +108,7 @@ describe("provider endpoint catalog eligibility", () => {
       ],
     };
     expect(
-      planEffectiveModelCatalogRows({
-        registry: adapter,
-        config: providerConfig("https://proxy.example/v1"),
-      }).rows.map((row) => row.id),
+      plan("https://proxy.example/v1", { registry: adapter }).rows.map((row) => row.id),
     ).toEqual(["adapter-model"]);
   });
   it.each([
