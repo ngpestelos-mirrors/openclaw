@@ -18,6 +18,23 @@ const config: OnePasswordConfig = {
   },
 };
 
+async function makeAuditStore(...rows: Partial<AuditRow>[]) {
+  const store = new MemoryKeyedStore<AuditRow>();
+  for (const [index, row] of rows.entries()) {
+    await store.register(String(index), {
+      timestampMs: 1000,
+      agentId: "agent-a",
+      sessionKey: "session-a",
+      toolCallId: "call-a",
+      slug: "alpha",
+      reason: "short",
+      outcome: "auto",
+      ...row,
+    });
+  }
+  return store;
+}
+
 function setupCommands(auditStore = new MemoryKeyedStore<AuditRow>()) {
   const program = new Command().exitOverride();
   const write = vi.fn<(message: string) => void>();
@@ -54,25 +71,18 @@ describe("1Password CLI output", () => {
   });
 
   it("audit output is deterministic, limited, truncated, and value-free", async () => {
-    const store = new MemoryKeyedStore<AuditRow>();
-    await store.register("first", {
-      timestampMs: 1000,
-      agentId: "agent-a",
-      sessionKey: "session-a",
-      toolCallId: "call-a",
-      slug: "alpha",
-      reason: "short",
-      outcome: "auto",
-    });
-    await store.register("second", {
-      timestampMs: 2000,
-      agentId: "agent-b",
-      sessionKey: "session-b",
-      toolCallId: "call-b",
-      slug: "beta",
-      reason: `prefix-${"x".repeat(100)}`,
-      outcome: "approved",
-    });
+    const store = await makeAuditStore(
+      {},
+      {
+        timestampMs: 2000,
+        agentId: "agent-b",
+        sessionKey: "session-b",
+        toolCallId: "call-b",
+        slug: "beta",
+        reason: `prefix-${"x".repeat(100)}`,
+        outcome: "approved",
+      },
+    );
     const { run, write } = setupCommands(store);
     await run("audit", "--limit", "1");
     const rows = JSON.parse(String(write.mock.calls[0]?.[0])) as Array<Record<string, unknown>>;
@@ -90,25 +100,10 @@ describe("1Password CLI output", () => {
   });
 
   it("preserves complete surrogate pairs at the audit reason boundary", async () => {
-    const store = new MemoryKeyedStore<AuditRow>();
-    await store.register("split", {
-      timestampMs: 1000,
-      agentId: "agent-a",
-      sessionKey: "session-a",
-      toolCallId: "call-a",
-      slug: "alpha",
-      reason: `${"x".repeat(76)}\u{1f600}tail`,
-      outcome: "auto",
-    });
-    await store.register("fits", {
-      timestampMs: 2000,
-      agentId: "agent-a",
-      sessionKey: "session-a",
-      toolCallId: "call-b",
-      slug: "alpha",
-      reason: `${"x".repeat(75)}\u{1f600}tail`,
-      outcome: "auto",
-    });
+    const store = await makeAuditStore(
+      { reason: `${"x".repeat(76)}\u{1f600}tail` },
+      { timestampMs: 2000, toolCallId: "call-b", reason: `${"x".repeat(75)}\u{1f600}tail` },
+    );
     const { run, write } = setupCommands(store);
 
     await run("audit", "--limit", "2");

@@ -6,68 +6,47 @@ import { MAX_REGISTERED_ITEMS, parseOnePasswordConfig } from "./config.js";
 const manifest = JSON.parse(
   fs.readFileSync(new URL("../openclaw.plugin.json", import.meta.url), "utf8"),
 ) as { configSchema: Record<string, unknown> };
+const schemaAccepts = (value: unknown) =>
+  validateJsonSchemaValue({
+    schema: manifest.configSchema,
+    cacheKey: "onepassword.manifest.config-schema",
+    value,
+  }).ok;
+const parseItems = (items: Record<string, unknown>, vault = "Automation") =>
+  parseOnePasswordConfig({ vault, items });
 
 describe("parseOnePasswordConfig", () => {
   it("allows an empty plugin config for SecretRef-only use", () => {
-    expect(
-      validateJsonSchemaValue({
-        schema: manifest.configSchema,
-        cacheKey: "onepassword.manifest.config-schema",
-        value: {},
-      }).ok,
-    ).toBe(true);
+    expect(schemaAccepts({})).toBe(true);
     expect(parseOnePasswordConfig({})).toBeUndefined();
     expect(
       parseOnePasswordConfig({ defaultPolicy: "approve", cacheTtlSeconds: 300 }),
     ).toBeUndefined();
-    expect(
-      validateJsonSchemaValue({
-        schema: manifest.configSchema,
-        cacheKey: "onepassword.manifest.config-schema",
-        value: { vault: "Automation" },
-      }).ok,
-    ).toBe(false);
-    expect(
-      validateJsonSchemaValue({
-        schema: manifest.configSchema,
-        cacheKey: "onepassword.manifest.config-schema",
-        value: { items: { token: { item: "Token" } } },
-      }).ok,
-    ).toBe(false);
+    expect(schemaAccepts({ vault: "Automation" })).toBe(false);
+    expect(schemaAccepts({ items: { token: { item: "Token" } } })).toBe(false);
   });
 
   it("rejects invalid slug grammar", () => {
-    expect(() =>
-      parseOnePasswordConfig({ vault: "Automation", items: { Bad_Slug: { item: "Token" } } }),
-    ).toThrow("Invalid 1Password item slug");
-    expect(() =>
-      parseOnePasswordConfig({ vault: "Automation", items: { token: { item: "--help" } } }),
-    ).toThrow("must not start with a hyphen");
-    expect(() =>
-      parseOnePasswordConfig({ vault: "-Automation", items: { token: { item: "Token" } } }),
-    ).toThrow("vault must not start with a hyphen");
-    expect(() =>
-      parseOnePasswordConfig({
-        vault: "Automation",
-        items: { token: { item: "Token", vault: "-Other" } },
-      }),
-    ).toThrow("token vault must not start with a hyphen");
-    expect(() =>
-      parseOnePasswordConfig({
-        vault: "Automation",
-        items: { token: { item: "Token", field: "username,password" } },
-      }),
-    ).toThrow("field must not contain commas");
+    expect(() => parseItems({ Bad_Slug: { item: "Token" } })).toThrow(
+      "Invalid 1Password item slug",
+    );
+    expect(() => parseItems({ token: { item: "--help" } })).toThrow("must not start with a hyphen");
+    expect(() => parseItems({ token: { item: "Token" } }, "-Automation")).toThrow(
+      "vault must not start with a hyphen",
+    );
+    expect(() => parseItems({ token: { item: "Token", vault: "-Other" } })).toThrow(
+      "token vault must not start with a hyphen",
+    );
+    expect(() => parseItems({ token: { item: "Token", field: "username,password" } })).toThrow(
+      "field must not contain commas",
+    );
   });
 
   it("applies defaults and item overrides", () => {
     expect(
-      parseOnePasswordConfig({
-        vault: "Automation",
-        items: {
-          token: { item: "Token" },
-          denied: { item: "Denied", vault: "Other", field: "password", policy: "deny" },
-        },
+      parseItems({
+        token: { item: "Token" },
+        denied: { item: "Denied", vault: "Other", field: "password", policy: "deny" },
       }),
     ).toMatchObject({
       defaultPolicy: "approve",
@@ -88,16 +67,9 @@ describe("parseOnePasswordConfig", () => {
         { item: `Token ${index}` },
       ]),
     );
-    expect(() => parseOnePasswordConfig({ vault: "Automation", items: tooMany })).toThrow(
-      `at most ${MAX_REGISTERED_ITEMS}`,
+    expect(() => parseItems(tooMany)).toThrow(`at most ${MAX_REGISTERED_ITEMS}`);
+    expect(() => parseItems({ token: { item: "Token", description: "x".repeat(201) } })).toThrow(
+      "at most 200",
     );
-    expect(() =>
-      parseOnePasswordConfig({
-        vault: "Automation",
-        items: {
-          token: { item: "Token", description: "x".repeat(201) },
-        },
-      }),
-    ).toThrow("at most 200");
   });
 });
