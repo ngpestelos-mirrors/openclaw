@@ -10,7 +10,7 @@ it.each([false, true])("only verifies saved policy (configDirty=%s)", (configDir
   const label = configDirty ? "Old profile exclusion" : "Messaging profile";
   const source = "agents.entries.main.tools.profile";
   const profile = "messaging";
-  const reasons = [{ kind: "profile" as const, label, source, profile }];
+  const reasons = [{ kind: "profile" as const, label, source }];
   const params = createBaseParams({
     configDirty,
     configForm: {
@@ -52,18 +52,13 @@ it.each([false, true])("only verifies saved policy (configDirty=%s)", (configDir
 });
 
 it("keeps session-denied MCP entries out of the tool preview", () => {
-  const tool = {
-    id: "terminal__run",
-    label: "Terminal",
-    description: "Run a terminal command",
-    source: "plugin" as const,
-    defaultProfiles: [],
-  };
+  const id = "terminal__run";
+  const tool = { id, label: id, description: id, source: "plugin" as const, defaultProfiles: [] };
   const deniedTool = {
     ...tool,
     source: "mcp" as const,
     rawDescription: tool.description,
-    deniedBySession: true,
+    deniedBySession: true as const,
   };
   const { container } = mountSolid(
     AgentTools,
@@ -83,8 +78,7 @@ it("keeps session-denied MCP entries out of the tool preview", () => {
   const card = container.querySelector("#agent-tool-terminal__run");
   expect(card?.querySelector("summary")?.textContent).toContain("Off");
   expect(card?.textContent).toContain("Denied by this session’s tool restrictions.");
-  expect(card?.textContent).not.toContain("Listed in preview via");
-  expect(card?.textContent).not.toContain("Included in preview");
+  expect(card?.textContent).not.toMatch(/Listed in preview via|Included in preview/);
   expect(container.querySelector(".agent-tools-runtime-chip")).toBeNull();
   expect(container.textContent).toContain("No tools are listed in this preview.");
 });

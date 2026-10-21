@@ -1,10 +1,13 @@
 import { createComponent, flush } from "solid-js";
 import { afterEach, assert, expect, it, onTestFinished, vi } from "vitest";
 import { page, userEvent } from "vitest/browser";
-import { ApplicationProvider } from "../../lib/reactive/context.ts";
 import { disposeSidebarContextLifecycles } from "../../test-helpers/app-sidebar-context-lifecycle.ts";
 import { createContext, createSessions } from "../../test-helpers/app-sidebar.ts";
-import { createApplicationGateway } from "../../test-helpers/solid-application-context.tsx";
+import { mountSolid as mountWithContext } from "../../test-helpers/mount-solid.ts";
+import {
+  createApplicationGateway,
+  createSolidApplicationContextProvider,
+} from "../../test-helpers/solid-application-context.tsx";
 import { mountSolid } from "../../test-helpers/solid-render.tsx";
 import { createAgentViewTestProps } from "./agents-view.test-helpers.ts";
 import { Agents } from "./view.tsx";
@@ -17,7 +20,8 @@ function createContainer() {
   return container;
 }
 
-function nativeButton(element: Element) {
+function nativeButton(name: string) {
+  const element = page.getByRole("button", { name, exact: true }).element();
   assert(element instanceof HTMLButtonElement, "Expected a native button");
   return element;
 }
@@ -30,21 +34,18 @@ it("opens agent avatar selection from the keyboard and respects the busy state",
   container.style.cssText = "position:fixed;inset:0;overflow:auto";
   const props = createAgentViewTestProps();
   const mounted = mountSolid(Agents, props, container);
-  onTestFinished(mounted.dispose);
-  const editAvatar = page.getByRole("button", { name: "Edit avatar", exact: true });
-  const avatarButton = nativeButton(editAvatar.element());
+  const avatarButton = nativeButton("Edit avatar");
   avatarButton.focus();
   await userEvent.keyboard("{Enter}");
   expect(avatarButton.getAttribute("aria-expanded")).toBe("true");
   expect(avatarButton.hasAttribute("title")).toBe(false);
-  const popover = container.querySelector<HTMLElement>(".agent-identity-editor__popover");
+  const popover = container.querySelector(".agent-identity-editor__popover");
   expect(popover?.matches(":popover-open")).toBe(true);
   await vi.waitFor(() => expect(popover?.getBoundingClientRect().width).toBeGreaterThan(0));
   const anchor = avatarButton.getBoundingClientRect();
   const fields = container.querySelector(".agent-identity-editor__fields")!.getBoundingClientRect();
-  expect(
-    Math.abs(anchor.top + anchor.height / 2 - fields.top - fields.height / 2),
-  ).toBeLessThanOrEqual(1);
+  const midpoint = (rect: DOMRect) => rect.top + rect.height / 2;
+  expect(Math.abs(midpoint(anchor) - midpoint(fields))).toBeLessThanOrEqual(1);
   // Opening the native popover can precede its anchor layout on a busy browser.
   await vi.waitFor(() => {
     const bounds = popover!.getBoundingClientRect();
@@ -54,19 +55,16 @@ it("opens agent avatar selection from the keyboard and respects the busy state",
     expect(beside || verticalGap.some((gap) => gap >= -1 && gap <= 20)).toBe(true);
     expect(bounds.right).toBeLessThanOrEqual(window.innerWidth + 1);
   });
-  expect(
-    [...popover!.querySelectorAll("button")].map((button) => button.textContent?.trim()),
-  ).not.toContain("Reset");
+  const buttons = popover!.querySelectorAll("button");
+  expect(Array.from(buttons, (button) => button.textContent?.trim())).not.toContain("Reset");
   await page.getByRole("button", { name: "Upload", exact: true }).click();
   const input = container.querySelector<HTMLInputElement>('input[type="file"]');
   assert(input, "Missing avatar file input");
   const openPicker = vi.spyOn(input, "click").mockImplementation(() => {});
-  const upload = page.getByRole("button", { name: "Choose image…", exact: true });
-  const button = nativeButton(upload.element());
+  const button = nativeButton("Choose image…");
   button.focus();
   expect(document.activeElement).toBe(button);
-  await userEvent.keyboard("{Enter}");
-  await userEvent.keyboard(" ");
+  await userEvent.keyboard("{Enter} ");
   expect(openPicker).toHaveBeenCalledTimes(2);
 
   mounted.update({ ...props, access: { ...props.access, canUpdateIdentity: false } });
@@ -79,7 +77,6 @@ it("opens agent avatar selection from the keyboard and respects the busy state",
 
 it("keeps avatar editing usable when upload policy changes without remounting", async () => {
   const container = createContainer();
-  const base = createAgentViewTestProps();
   const context = createContext(createApplicationGateway().gateway, createSessions("beta", []));
   onTestFinished(disposeSidebarContextLifecycles);
   const fetchConfig = vi.spyOn(globalThis, "fetch");
@@ -89,32 +86,19 @@ it("keeps avatar editing usable when upload policy changes without remounting", 
     flush();
   };
   await setUploadsEnabled(false);
-  const mounted = mountSolid(
-    () =>
-      createComponent(ApplicationProvider, {
-        value: context,
-        get children() {
-          return createComponent(Agents, base);
-        },
-      }),
-    {},
+  const { wrapper } = createSolidApplicationContextProvider(context);
+  mountWithContext(() => createComponent(Agents, createAgentViewTestProps()), {
     container,
-  );
-  onTestFinished(mounted.dispose);
+    wrapper,
+  });
   const editAvatar = page.getByRole("button", { name: "Edit avatar", exact: true });
   const avatarButton = editAvatar.element();
   await expect.element(editAvatar).toBeDisabled();
-  await setUploadsEnabled(true);
-  await editAvatar.click();
-  const popover = container.querySelector<HTMLElement>(".agent-identity-editor__popover");
-  expect(popover?.matches(":popover-open")).toBe(true);
-
-  await setUploadsEnabled(false);
-  await expect.element(editAvatar).toBeDisabled();
-  expect(popover?.matches(":popover-open")).toBe(false);
-
-  await setUploadsEnabled(true);
-  expect(editAvatar.element()).toBe(avatarButton);
-  await editAvatar.click();
-  expect(popover?.matches(":popover-open")).toBe(true);
+  for (const enabled of [true, false, true]) {
+    await setUploadsEnabled(enabled);
+    expect(editAvatar.element()).toBe(avatarButton);
+    await (enabled ? editAvatar.click() : expect.element(editAvatar).toBeDisabled());
+    const popover = container.querySelector(".agent-identity-editor__popover");
+    expect(popover?.matches(":popover-open")).toBe(enabled);
+  }
 });
