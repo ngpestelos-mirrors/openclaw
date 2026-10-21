@@ -89,50 +89,39 @@ async function runModel(...options: string[]) {
   });
 }
 
+function completion(text: string, stopReason = "stop") {
+  return { role: "assistant", content: [{ type: "text", text }], stopReason };
+}
+
+function expectOutput(output: { text: string; mediaUrl: null | undefined; mediaUrls?: undefined }) {
+  expect(mocks.runtime.exit).not.toHaveBeenCalled();
+  expect(mocks.runtime.writeJson).toHaveBeenCalledExactlyOnceWith(
+    expect.objectContaining({ ok: true, outputs: [output] }),
+    2,
+  );
+}
+
+const target = 'for provider "openai" model "gpt-5.4"';
+const reasoningOnly = `Model returned reasoning but no text output ${target}.`;
+const limitHint =
+  " It stopped at the output token limit while reasoning; a lower --thinking level may leave room for text.";
 it.each([
-  {
-    stopReason: "stop",
-    error: 'Model returned reasoning but no text output for provider "openai" model "gpt-5.4".',
-  },
-  {
-    stopReason: "length",
-    error:
-      'Model returned reasoning but no text output for provider "openai" model "gpt-5.4". It stopped at the output token limit while reasoning; a lower --thinking level may leave room for text.',
-  },
-  {
-    stopReason: "error",
-    errorMessage: "socket hang up",
-    error: 'No text output returned for provider "openai" model "gpt-5.4": socket hang up.',
-  },
-  {
-    stopReason: "aborted",
-    error: 'No text output returned for provider "openai" model "gpt-5.4".',
-  },
-  {
-    stopReason: "error",
-    text: "partial answer",
-    errorMessage: "socket hang up",
-    error: 'Model run failed for provider "openai" model "gpt-5.4": socket hang up.',
-  },
-  {
-    stopReason: "error",
-    text: "partial answer",
-    error: 'Model run failed for provider "openai" model "gpt-5.4".',
-  },
-  {
-    stopReason: "aborted",
-    text: "partial answer",
-    errorMessage: "request cancelled",
-    error: 'Model run aborted for provider "openai" model "gpt-5.4": request cancelled.',
-  },
-  {
-    stopReason: "aborted",
-    text: "partial answer",
-    error: 'Model run aborted for provider "openai" model "gpt-5.4".',
-  },
+  ["stop", " ", undefined, reasoningOnly],
+  ["length", " ", undefined, reasoningOnly + limitHint],
+  ["error", " ", "socket hang up", `No text output returned ${target}: socket hang up.`],
+  ["aborted", " ", undefined, `No text output returned ${target}.`],
+  ["error", "partial answer", "socket hang up", `Model run failed ${target}: socket hang up.`],
+  ["error", "partial answer", undefined, `Model run failed ${target}.`],
+  [
+    "aborted",
+    "partial answer",
+    "request cancelled",
+    `Model run aborted ${target}: request cancelled.`,
+  ],
+  ["aborted", "partial answer", undefined, `Model run aborted ${target}.`],
 ])(
-  "rejects an unsuccessful local model response (stopReason $stopReason, text $text)",
-  async ({ stopReason, text = " ", errorMessage, error }) => {
+  "rejects an unsuccessful local model response (stopReason %s, text %s)",
+  async (stopReason, text, errorMessage, error) => {
     mocks.complete.mockResolvedValueOnce({
       role: "assistant",
       content: [
@@ -152,22 +141,11 @@ it.each([
 it.each(["stop", "length"])(
   "keeps text output successful for stopReason %s",
   async (stopReason) => {
-    mocks.complete.mockResolvedValueOnce({
-      role: "assistant",
-      content: [{ type: "text", text: "complete answer" }],
-      stopReason,
-    });
+    mocks.complete.mockResolvedValueOnce(completion("complete answer", stopReason));
     await runModel();
 
     expect(mocks.runtime.error).not.toHaveBeenCalled();
-    expect(mocks.runtime.exit).not.toHaveBeenCalled();
-    expect(mocks.runtime.writeJson).toHaveBeenCalledExactlyOnceWith(
-      expect.objectContaining({
-        ok: true,
-        outputs: [{ text: "complete answer", mediaUrl: null }],
-      }),
-      2,
-    );
+    expectOutput({ text: "complete answer", mediaUrl: null });
   },
 );
 
@@ -202,14 +180,7 @@ it.each(["ok", "completed"])(
     });
     await runModel("--gateway");
 
-    expect(mocks.runtime.exit).not.toHaveBeenCalled();
-    expect(mocks.runtime.writeJson).toHaveBeenCalledExactlyOnceWith(
-      expect.objectContaining({
-        ok: true,
-        outputs: [{ text: "complete answer", mediaUrl: undefined, mediaUrls: undefined }],
-      }),
-      2,
-    );
+    expectOutput({ text: "complete answer", mediaUrl: undefined, mediaUrls: undefined });
   },
 );
 
@@ -226,11 +197,7 @@ it("rejects --file images for a text-only local model before calling the provide
 });
 
 it("sends --file images to an image-capable local model", async () => {
-  mocks.complete.mockResolvedValueOnce({
-    role: "assistant",
-    content: [{ type: "text", text: "a pixel" }],
-    stopReason: "stop",
-  });
+  mocks.complete.mockResolvedValueOnce(completion("a pixel"));
   const file = await writePngFixture();
 
   await runModel("--local", "--file", file);
