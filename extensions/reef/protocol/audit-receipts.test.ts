@@ -73,10 +73,7 @@ describe("receipts", () => {
     const { signing } = generateIdentity();
     const audit = new MemoryAuditStore(auditKey);
     const accepted = receipt(signing.secretKey);
-    const rejected = receipt(signing.secretKey, {
-      status: "rejected",
-      category: "guard_deny",
-    });
+    const rejected = receipt(signing.secretKey, { status: "rejected", category: "guard_deny" });
     await confirmDelivery(accepted, signing.publicKey, audit);
     await confirmDelivery(rejected, signing.publicKey, audit);
     const entries = await audit.entries();
