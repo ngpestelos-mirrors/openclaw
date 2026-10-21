@@ -1,5 +1,16 @@
 import type { PluginDiscoveryEntry, PluginDiscoveryResult } from "../lib/plugins/index.ts";
 
+function installedDisabled(pluginId: string): PluginDiscoveryEntry["local"] {
+  return {
+    present: true,
+    installed: true,
+    enabled: false,
+    state: "disabled",
+    pluginId,
+    action: "manage",
+  };
+}
+
 const memoryDiscoveryPlugin = {
   id: "ch_bWVtb3J5LXBsdXM",
   catalog: {
@@ -11,14 +22,7 @@ const memoryDiscoveryPlugin = {
     categories: ["memory"],
     downloads: 1240,
   },
-  local: {
-    present: true,
-    installed: true,
-    enabled: false,
-    state: "disabled",
-    pluginId: "memory-plus",
-    action: "manage",
-  },
+  local: installedDisabled("memory-plus"),
 } satisfies PluginDiscoveryEntry;
 
 export const matrixDiscoveryPlugin = {
@@ -53,14 +57,7 @@ const telegramDiscoveryPlugin = {
     author: "openclaw",
     downloads: 12_847,
   },
-  local: {
-    present: true,
-    installed: true,
-    enabled: false,
-    state: "disabled",
-    pluginId: "telegram",
-    action: "manage",
-  },
+  local: installedDisabled("telegram"),
 } satisfies PluginDiscoveryEntry;
 
 export const localOnlyDiscoveryPlugin = {
@@ -151,45 +148,33 @@ export const discoveryCategories = {
 const firstDiscoveryPageItems = Array.from({ length: 22 }, (_, index) =>
   availableDiscoveryPlugin(index, "First page"),
 );
-const additionalOverviewShelfItems: PluginDiscoveryEntry[] = [];
-for (const [index, plugin] of firstDiscoveryPageItems.slice(0, 6).entries()) {
-  additionalOverviewShelfItems.push({
+
+function onOverviewShelves(
+  plugin: PluginDiscoveryEntry,
+  featuredRank: number,
+  trendingRank = featuredRank,
+): PluginDiscoveryEntry {
+  return {
     ...plugin,
     catalog: {
       ...plugin.catalog,
       featured: true,
       trending: true,
-      featuredRank: index + 2,
-      trendingRank: index + 2,
+      featuredRank,
+      trendingRank,
     },
-  });
+  };
 }
 
 export const discoveryResult: PluginDiscoveryResult = {
   items: [
     localOnlyDiscoveryPlugin,
-    {
-      ...memoryDiscoveryPlugin,
-      catalog: {
-        ...memoryDiscoveryPlugin.catalog,
-        featured: true,
-        trending: true,
-        featuredRank: 0,
-        trendingRank: 1,
-      },
-    },
-    {
-      ...matrixDiscoveryPlugin,
-      catalog: {
-        ...matrixDiscoveryPlugin.catalog,
-        featured: true,
-        trending: true,
-        featuredRank: 1,
-        trendingRank: 0,
-      },
-    },
+    onOverviewShelves(memoryDiscoveryPlugin, 0, 1),
+    onOverviewShelves(matrixDiscoveryPlugin, 1, 0),
     telegramDiscoveryPlugin,
-    ...additionalOverviewShelfItems,
+    ...firstDiscoveryPageItems
+      .slice(0, 6)
+      .map((plugin, index) => onOverviewShelves(plugin, index + 2)),
     ...firstDiscoveryPageItems.slice(6),
   ],
   categories: discoveryCategories.categories,
