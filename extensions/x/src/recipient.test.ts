@@ -1,21 +1,7 @@
 import { describe, expect, it } from "vitest";
-import { createXApiClient, type XFetch, type XPost } from "./api.js";
+import type { XPost } from "./api.js";
 import { resolveXRecipient } from "./recipient.js";
-import { createXTestSpend } from "./test-support/spend.js";
-
-function client(fetch: XFetch) {
-  return createXApiClient({
-    spend: createXTestSpend(),
-    clientId: "client",
-    clientSecret: "secret",
-    refreshToken: "seed",
-    saveRefreshToken: async () => {},
-    fetch: (input, init) =>
-      input.endsWith("/oauth2/token")
-        ? Promise.resolve(Response.json({ access_token: "access" }))
-        : fetch(input, init),
-  });
-}
+import { createContextApi } from "./test-support/context-api.js";
 
 describe("X reply recipients", () => {
   it.each([
@@ -26,7 +12,7 @@ describe("X reply recipients", () => {
     "verifies the numeric recipient for %s",
     async (_label, mention, resolvedId, expected, lookups) => {
       let userLookups = 0;
-      const api = client(async (input) => {
+      const api = createContextApi(async (input) => {
         const url = new URL(input);
         if (url.pathname.startsWith("/2/users/by/username/")) {
           userLookups++;
@@ -45,8 +31,7 @@ describe("X reply recipients", () => {
         },
         userId: "9",
       });
-      expect(result?.post.id).toBe(expected);
-      expect(userLookups).toBe(lookups);
+      expect([result?.post.id, userLookups]).toEqual([expected, lookups]);
     },
   );
 
@@ -65,7 +50,7 @@ describe("X reply recipients", () => {
         entities: {},
       };
       const requested: string[] = [];
-      const api = client(async (input) => {
+      const api = createContextApi(async (input) => {
         const url = new URL(input);
         const id = url.searchParams.get("ids")!;
         requested.push(id);
@@ -77,8 +62,7 @@ describe("X reply recipients", () => {
         });
       });
       const result = await resolveXRecipient({ api, post: "20", userId: "9" });
-      expect(result?.post.id).toBe(eligible ? "20" : undefined);
-      expect(requested).toEqual(["20", "10"]);
+      expect([result?.post.id, requested]).toEqual([eligible ? "20" : undefined, ["20", "10"]]);
     },
   );
 });

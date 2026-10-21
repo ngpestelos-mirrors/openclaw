@@ -1,27 +1,14 @@
 import { describe, expect, it, vi } from "vitest";
-import { createXApiClient, type XFetch, type XPost } from "./api.js";
-import { createXTestSpend } from "./test-support/spend.js";
+import type { XPost } from "./api.js";
+import { createContextApi } from "./test-support/context-api.js";
 import { assembleXThread } from "./thread.js";
 
-function client(fetch: XFetch, dailyUsd?: number) {
-  return createXApiClient({
-    spend: createXTestSpend(dailyUsd === undefined ? {} : { dailyUsd }),
-    clientId: "synthetic",
-    clientSecret: "synthetic",
-    refreshToken: "synthetic",
-    saveRefreshToken: async () => {},
-    fetch: (input, init) =>
-      dailyUsd !== 0 && input.endsWith("/oauth2/token")
-        ? Promise.resolve(Response.json({ access_token: "synthetic" }))
-        : fetch(input, init),
-  });
-}
 const trigger: XPost = { id: "11", author_id: "7", conversation_id: "1", text: "Please help" };
 
 describe("X thread context", () => {
   it("preserves the triggering mention when its thread cannot be afforded", async () => {
     const fetch = vi.fn();
-    const context = await assembleXThread({ api: client(fetch, 0), mention: trigger });
+    const context = await assembleXThread({ api: createContextApi(fetch, 0), mention: trigger });
     expect(context.posts).toEqual([trigger]);
     expect(context.bodyForAgent).toContain("[triggering mention]: Please help");
     expect(context.bodyForAgent).toContain("thread context truncated by budget");
@@ -30,7 +17,7 @@ describe("X thread context", () => {
 
   it("stops searching once the configured number of posts is held", async () => {
     let searches = 0;
-    const api = client(async () => {
+    const api = createContextApi(async () => {
       searches++;
       return Response.json({
         data: [trigger, { ...trigger, id: "1", text: "Root" }],
@@ -60,7 +47,7 @@ describe("X thread context", () => {
       { type: "quoted", id: "3" },
     ]);
     const fetched: string[] = [];
-    const api = client(async (input) => {
+    const api = createContextApi(async (input) => {
       const url = new URL(input);
       if (url.pathname.endsWith("/search/recent")) {
         expect(url.searchParams.get("query")).toBe("conversation_id:1");
@@ -75,11 +62,8 @@ describe("X thread context", () => {
         data: [root, parent, quote].filter((value) => ids.includes(value.id)),
       });
     });
-    const {
-      posts,
-      label,
-      bodyForAgent: body,
-    } = await assembleXThread({ api, mention, maxPosts: 5 });
+    const context = await assembleXThread({ api, mention, maxPosts: 5 });
+    const { posts, label, bodyForAgent: body } = context;
     expect(fetched).toEqual(["1", "2", "3"]);
     expect(posts.map((value) => value.id)).toEqual(["1", "3", "5", "6", "7"]);
     expect(label).toBe("@maintainer: root");
