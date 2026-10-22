@@ -15,14 +15,34 @@ export function useIdentityAvatarView(identity: Accessor<IdentityAvatarInput>) {
   const directory = application
     ? projectOwner(profileDirectory(application.gateway), (source) => source)
     : undefined;
+  const input = createMemo(
+    () => {
+      const value = identity();
+      const resolved =
+        value.identity?.type === "profile" && directory
+          ? directory.read().avatarIdentity(value)
+          : value;
+      return {
+        id: resolved.id,
+        name: resolved.name,
+        username: resolved.username,
+        profileAvatarUrl: resolved.profileAvatarUrl,
+        identity: resolved.identity ? { ...resolved.identity } : undefined,
+      };
+    },
+    {
+      equals: (previous, next) =>
+        previous.id === next.id &&
+        previous.name === next.name &&
+        previous.username === next.username &&
+        previous.profileAvatarUrl === next.profileAvatarUrl &&
+        previous.identity?.type === next.identity?.type &&
+        previous.identity?.id === next.identity?.id,
+    },
+  );
   return createMemo(() => {
     gateway();
-    const input = identity();
-    return resolveIdentityAvatarView(
-      input.identity?.type === "profile" && directory
-        ? directory.read().avatarIdentity(input)
-        : input,
-    );
+    return resolveIdentityAvatarView(input());
   });
 }
 

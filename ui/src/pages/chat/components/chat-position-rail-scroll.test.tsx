@@ -100,10 +100,6 @@ it("updates rail and end position without pane renders until the virtual range c
     }
     return host.settleUpdates();
   };
-  const scrollTo = (offset: number) => {
-    container.scrollTop = offset;
-    container.dispatchEvent(new Event("scroll"));
-  };
   const offsets: number[] = [];
   const stop = subscribeTranscriptScroll(container, (observation) => {
     if (observation.type === "offset") {
@@ -128,8 +124,32 @@ it("updates rail and end position without pane renders until the virtual range c
     const computedStyle = vi.spyOn(window, "getComputedStyle");
     for (const observer of resizeObservers) {
       observer.emitTarget(container, 800, 600);
-      observer.emitTarget(marks, 44, 240);
     }
+    const overflow = vi.spyOn(
+      marks.closest<HTMLElement>(".chat-position-rail")!,
+      "toggleAttribute",
+    );
+    readHeight.mockClear();
+    readContentHeight.mockClear();
+    readOffset.mockClear();
+    const observeRail = () => {
+      for (const observer of resizeObservers) {
+        observer.emitTarget(marks, 44, 240);
+      }
+    };
+    observeRail();
+    const overflowWrite = overflow.mock.invocationCallOrder[0]!;
+    expect(overflowWrite).toBeDefined();
+    // Publishing overflow can invalidate layout. Finish all viewport reads first.
+    for (const read of [readHeight, readContentHeight, readOffset]) {
+      expect(read.mock.invocationCallOrder.every((order) => order < overflowWrite)).toBe(true);
+    }
+    overflow.mockRestore();
+    const scrollTo = (offset: number) => {
+      container.scrollTop = offset;
+      container.dispatchEvent(new Event("scroll"));
+      observeRail();
+    };
     scrollTo(50);
     await settleUpdates();
     await settleUpdates(true);
@@ -183,7 +203,11 @@ it("updates rail and end position without pane renders until the virtual range c
     });
     expectNoRailFrameReads();
     offsets.length = 0;
-    scrollTo(55);
+    container.scrollTop = 55;
+    container.dispatchEvent(new Event("scroll"));
+    // Earlier transcript scroll listeners may have committed a new virtual window.
+    expectNoRailFrameReads();
+    observeRail();
     expect(offsets).toEqual([5]);
     clearRailReads();
     await settleUpdates(true);

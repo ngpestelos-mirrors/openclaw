@@ -6,6 +6,8 @@ import { expect, it, onTestFinished, vi } from "vitest";
 import { createDeferred } from "../../../test/helpers/promise.ts";
 import type { GatewaySessionRow, SessionsListResult } from "../api/types.ts";
 import { rosterActivityStore } from "../lib/agents/roster-activity-store.ts";
+import { setAvatarGatewayOrigin } from "../lib/identity-avatar-context.ts";
+import { resolveAvatarImageUrl } from "../lib/identity-avatar-loader.ts";
 import { createTestSessionCapability } from "../lib/sessions/session-capability.test-support.ts";
 import {
   createContext,
@@ -405,6 +407,79 @@ it.each(["owner", "icon"] as const)(
     }
   },
 );
+
+it("reuses owner and participant images when retained rows receive unchanged live identities", async () => {
+  setAvatarGatewayOrigin("https://gateway.example.test", ["avatar-token"]);
+  onTestFinished(() => setAvatarGatewayOrigin(null));
+  const response = createDeferred();
+  const fetchAvatar = vi.spyOn(globalThis, "fetch").mockImplementation(async () => {
+    await response.promise;
+    return new Response(new Uint8Array([1, 2, 3]), { headers: { "content-type": "image/png" } });
+  });
+  let sequence = 0;
+  const createObjectURL = vi
+    .spyOn(URL, "createObjectURL")
+    .mockImplementation(() => `blob:retained-row-${++sequence}`);
+  const revokeObjectURL = vi.spyOn(URL, "revokeObjectURL");
+  const { dom, current, setCurrent } = mountRow({
+    owner: {
+      actor: {
+        type: "human",
+        id: "ada",
+        label: "Ada",
+        identity: { type: "profile", id: "ada" },
+        avatarUrl: "/api/users/ada/avatar?v=1",
+      },
+    },
+    participants: [
+      {
+        identity: { type: "profile", id: "bob" },
+        label: "Bob",
+        avatarUrl: "/api/users/bob/avatar?v=1",
+      },
+    ],
+    participantCount: 1,
+  });
+  const avatars = () => [...dom.all<HTMLImageElement>(".session-owner-stack img")];
+  const republish = () => {
+    const row = current();
+    setCurrent({
+      ...row,
+      updatedAt: (row.updatedAt ?? 0) + 1,
+      owner: {
+        ...row.owner!,
+        actor: { ...row.owner!.actor, identity: { type: "profile", id: "ada" } },
+      },
+      participants: row.participants?.map((person) => ({
+        ...person,
+        identity: { ...person.identity },
+      })),
+    });
+    flush();
+  };
+  const images = avatars();
+  expect(images).toHaveLength(2);
+  expect(fetchAvatar).toHaveBeenCalledTimes(2);
+  republish();
+  expect(avatars().every((image, index) => image === images[index])).toBe(true);
+  expect(fetchAvatar).toHaveBeenCalledTimes(2);
+  const loads = ["ada", "bob"].map((id) => resolveAvatarImageUrl(`/api/users/${id}/avatar?v=1`));
+  response.resolve();
+  await Promise.all(loads);
+  flush();
+  for (const image of images) {
+    image.dispatchEvent(new Event("load"));
+  }
+  flush();
+  const sources = images.map((image) => image.getAttribute("src"));
+  expect(createObjectURL).toHaveBeenCalledTimes(2);
+  republish();
+  expect(avatars().every((image, index) => image === images[index])).toBe(true);
+  expect(avatars().map((image) => image.getAttribute("src"))).toEqual(sources);
+  expect(fetchAvatar).toHaveBeenCalledTimes(2);
+  expect(createObjectURL).toHaveBeenCalledTimes(2);
+  expect(revokeObjectURL).not.toHaveBeenCalled();
+});
 
 it("materializes the archive hint on hover without changing the action name", () => {
   vi.useFakeTimers();

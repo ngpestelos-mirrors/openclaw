@@ -1,6 +1,6 @@
 /* @vitest-environment jsdom */
 import type { JSX } from "@solidjs/web";
-import { createSignal, flush, Show } from "solid-js";
+import { createSignal, createStore, flush, Show } from "solid-js";
 import { afterEach, expect, it, onTestFinished, vi } from "vitest";
 import { resolveThemeBranding } from "../../../packages/gateway-protocol/src/theme.ts";
 import { createDeferred } from "../../../test/helpers/promise.js";
@@ -148,6 +148,73 @@ it("preserves the image across authenticated revision updates", async () => {
   image.dispatchEvent(new Event("load"));
   flush();
   expect(view.frame()?.classList.contains("is-fallback")).toBe(false);
+});
+
+it("reuses avatar presentation for equivalent identities without hiding label, image, or scope changes", async () => {
+  const { fetchAvatar } = mockImages(["blob:first", "blob:updated", "blob:new-scope"]);
+  const original = {
+    ...profile(),
+    identity: { type: "profile" as const, id: "profile-ada" },
+  };
+  const [identity, setIdentity] = createSignal(original);
+  let view!: ReturnType<typeof useIdentityAvatarView>;
+  mountSolid(() => {
+    view = useIdentityAvatarView(identity);
+    return <span>{view().fallback.initials}</span>;
+  });
+  const first = view();
+  setIdentity({ ...original, identity: { ...original.identity } });
+  flush();
+  expect(view()).toBe(first);
+  await first.imageUrl;
+  setIdentity({ ...original, identity: { ...original.identity } });
+  flush();
+  expect(view()).toBe(first);
+  expect(fetchAvatar).toHaveBeenCalledOnce();
+
+  setIdentity({ ...original, name: "Grace Hopper" });
+  flush();
+  const renamed = view();
+  expect(renamed).not.toBe(first);
+  expect(renamed.fallback.initials).toBe("GH");
+  expect(fetchAvatar).toHaveBeenCalledOnce();
+
+  setIdentity({ ...original, profileAvatarUrl: "/api/users/profile-ada/avatar?v=2" });
+  flush();
+  const updated = view();
+  expect(updated).not.toBe(renamed);
+  await expect(updated.imageUrl).resolves.toBe("blob:updated");
+  expect(fetchAvatar).toHaveBeenCalledTimes(2);
+
+  setAvatarGatewayOrigin(gateway, ["replacement-token"]);
+  flush();
+  const replacement = view();
+  expect(replacement).not.toBe(updated);
+  await expect(replacement.imageUrl).resolves.toBe("blob:new-scope");
+  expect(fetchAvatar).toHaveBeenCalledTimes(3);
+});
+
+it("updates avatar presentation from in-place identity store changes", () => {
+  const [identity, setIdentity] = createStore<IdentityAvatarInput>({
+    id: "ada",
+    name: "Ada Lovelace",
+    identity: { type: "profile", id: "ada" },
+  });
+  let view!: ReturnType<typeof useIdentityAvatarView>;
+  mountSolid(() => {
+    view = useIdentityAvatarView(() => identity);
+    return <span>{view().fallback.initials}</span>;
+  });
+  const first = view();
+  setIdentity((value) => {
+    value.name = "Grace Hopper";
+    value.id = "grace";
+    value.identity!.id = "grace";
+  });
+  flush();
+  expect(view()).not.toBe(first);
+  expect(view().fallback.initials).toBe("GH");
+  expect(view().fallback.colorSeed).not.toBe(first.fallback.colorSeed);
 });
 
 it("does not restore retired Gateway images on remount", async () => {

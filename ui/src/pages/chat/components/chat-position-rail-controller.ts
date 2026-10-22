@@ -74,7 +74,6 @@ export function createPositionRail(props: PositionRailParams) {
   let transcriptElement: HTMLElement | undefined;
   let intersectionObserver: IntersectionObserver | undefined;
   let stopTranscriptScroll: (() => void) | undefined;
-  let stopNativeScroll: (() => void) | undefined;
   let stopMessageElements: (() => void) | undefined;
   const observedMessages = new Map<Element, { id: string; messageId: string; visible: boolean }>();
   let visibleIds = new Set<string>();
@@ -117,10 +116,6 @@ export function createPositionRail(props: PositionRailParams) {
     viewportOffset = scroller.scrollTop;
     viewportInset = Number.parseFloat(getComputedStyle(scroller).scrollPaddingTop) || 0;
     viewportResizePending = session?.layout.viewportResizePending ?? false;
-    const root = transcriptElement ?? scroller.closest<HTMLElement>(".chat-thread");
-    if (root) {
-      syncReaderViewport(readTranscriptViewport(root));
-    }
     const visibleMessageIds = new Set(
       [...observedMessages.values()]
         .filter((message) => message.visible)
@@ -131,6 +126,11 @@ export function createPositionRail(props: PositionRailParams) {
       visibleOrder.length ? visibleOrder : positionMessageIds,
     );
     observedActiveId = activeMessageId ? markerIdsByMessageId.get(activeMessageId) : undefined;
+    // Overflow publication can change layout; finish the reader-position reads first.
+    const root = transcriptElement ?? scroller.closest<HTMLElement>(".chat-thread");
+    if (root) {
+      syncReaderViewport(readTranscriptViewport(root));
+    }
     scheduleLayout();
   };
 
@@ -226,8 +226,6 @@ export function createPositionRail(props: PositionRailParams) {
   function disconnectVisibility() {
     stopTranscriptScroll?.();
     stopTranscriptScroll = undefined;
-    stopNativeScroll?.();
-    stopNativeScroll = undefined;
     stopMessageElements?.();
     stopMessageElements = undefined;
     scrollElement?.closest(".chat-position-rail")?.removeAttribute("data-overflow");
@@ -256,7 +254,6 @@ export function createPositionRail(props: PositionRailParams) {
         disconnectVisibility();
       }
       transcriptElement = root;
-      stopNativeScroll = listen(root, "scroll", observeLayout, { passive: true });
       stopTranscriptScroll = subscribeTranscriptScroll(root, (observation) => {
         if (observation.type === "offset") {
           // The reading position can cross a landmark without changing the
