@@ -48,6 +48,7 @@ export function createSidebarSnapshot(host: SidebarSnapshotHost) {
   let handoffTimer: ReturnType<typeof setTimeout> | undefined;
   let handoffIdle: number | undefined;
   let handoffReady = false;
+  let handoffExpired = false;
 
   function subscribe(listener: () => void): () => void {
     publish = listener;
@@ -168,9 +169,15 @@ export function createSidebarSnapshot(host: SidebarSnapshotHost) {
         replaceScope(next);
       }
     }
-    if (host.sidebarSnapshot && host.sidebarSnapshotSettled()) {
+    if (host.sidebarSnapshot && snapshot.phase === "connected") {
+      handoffTimer ??= setTimeout(() => {
+        handoffExpired = true;
+        releaseWhenReady();
+      }, 3000);
+      if (!handoffExpired && !host.sidebarSnapshotSettled()) {
+        return;
+      }
       if (!handoffReady) {
-        handoffTimer ??= setTimeout(releaseWhenReady, 1800);
         if (host.sessionDataContext?.connectionBootstrap.foregroundReady) {
           if (typeof requestIdleCallback === "function") {
             handoffIdle ??= requestIdleCallback(releaseWhenReady, { timeout: 1800 });
@@ -203,6 +210,7 @@ export function createSidebarSnapshot(host: SidebarSnapshotHost) {
     }
     handoffTimer = handoffIdle = undefined;
     handoffReady = false;
+    handoffExpired = false;
   }
 
   function capture(): void {
