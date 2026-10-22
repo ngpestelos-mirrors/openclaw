@@ -4,12 +4,14 @@ import {
   registerAvatarGatewayReset,
 } from "../../lib/identity-avatar-context.ts";
 import { resolveIdentityAvatarView } from "../../lib/identity-avatar-view.ts";
-import type { IdentityAvatarInput } from "../../lib/identity-avatar.ts";
+import { resolveAvatar, type IdentityAvatarInput } from "../../lib/identity-avatar.ts";
 import { profileDirectory } from "../../lib/profile-directory.ts";
 import { useOptionalApplication } from "../../lib/reactive/context.ts";
 import { projectOwner, projectSource } from "../../lib/reactive/projection.ts";
 
 export function useIdentityAvatarView(identity: Accessor<IdentityAvatarInput>) {
+  let latestView: ReturnType<typeof resolveIdentityAvatarView>;
+  let retryOnPublication = false;
   const gateway = useAvatarGatewayContext();
   const application = useOptionalApplication();
   const directory = application
@@ -32,6 +34,7 @@ export function useIdentityAvatarView(identity: Accessor<IdentityAvatarInput>) {
     },
     {
       equals: (previous, next) =>
+        !retryOnPublication &&
         previous.id === next.id &&
         previous.name === next.name &&
         previous.username === next.username &&
@@ -42,7 +45,19 @@ export function useIdentityAvatarView(identity: Accessor<IdentityAvatarInput>) {
   );
   return createMemo(() => {
     gateway();
-    return resolveIdentityAvatarView(input());
+    const value = input();
+    const view = resolveIdentityAvatarView(value);
+    latestView = view;
+    // Failed loads revisit the loader on publication so its retry TTL can expire.
+    retryOnPublication = view.imageUrl === null && resolveAvatar(value).kind === "profile";
+    if (view.imageUrl && typeof view.imageUrl !== "string") {
+      void view.imageUrl.then((url) => {
+        if (latestView === view && url === null) {
+          retryOnPublication = true;
+        }
+      });
+    }
+    return view;
   });
 }
 

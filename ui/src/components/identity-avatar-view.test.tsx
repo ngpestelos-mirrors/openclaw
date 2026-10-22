@@ -217,6 +217,32 @@ it("updates avatar presentation from in-place identity store changes", () => {
   expect(view().fallback.colorSeed).not.toBe(first.fallback.colorSeed);
 });
 
+it.each([false, true])(
+  "retries an unchanged avatar after the failure TTL (cached=%s)",
+  async (cached) => {
+    const clock = vi.spyOn(Date, "now").mockReturnValue(0);
+    const { fetchAvatar } = mockImages("blob:recovered");
+    fetchAvatar.mockResolvedValueOnce(new Response(null, { status: 404 }));
+    const identity = { ...profile(), profileAvatarUrl: "/api/users/profile-ada/avatar" };
+    if (cached) {
+      await resolveAvatarImageUrl(identity.profileAvatarUrl);
+    }
+    const view = mountImage(identity);
+    await resolveAvatarImageUrl(identity.profileAvatarUrl);
+    flush();
+    expect(view.image()?.getAttribute("src")).toBeNull();
+    clock.mockReturnValue(1_000);
+    view.update({ ...identity });
+    expect(fetchAvatar).toHaveBeenCalledOnce();
+    clock.mockReturnValue(60_000);
+    view.update({ ...identity });
+    await resolveAvatarImageUrl(identity.profileAvatarUrl);
+    flush();
+    expect(view.image()?.getAttribute("src")).toBe("blob:recovered");
+    expect(fetchAvatar).toHaveBeenCalledTimes(2);
+  },
+);
+
 it("does not restore retired Gateway images on remount", async () => {
   const { fetchAvatar, revoke } = mockImages("blob:old-gateway", "old-token");
   const view = mountImage({
