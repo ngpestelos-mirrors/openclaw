@@ -102,10 +102,7 @@ describe("DevicesPage gateway lifecycle", () => {
     page.publishConfig();
     const queries = getQueriesForElement(page.container);
     await waitForSolid(() =>
-      expect(queries.getByRole("combobox", { name: "Node" })).toHaveProperty(
-        "disabled",
-        false,
-      ),
+      expect(queries.getByRole("combobox", { name: "Node" })).toHaveProperty("disabled", false),
     );
     const binding = queries.getByRole("combobox", { name: "Node" });
     page.config.configLoading = true;
