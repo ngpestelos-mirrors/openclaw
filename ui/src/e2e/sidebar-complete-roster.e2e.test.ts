@@ -5,7 +5,6 @@ import { asRecord } from "@openclaw/normalization-core/record-coerce";
 import { expect, it } from "vitest";
 import { warmReloadProbe } from "../../../scripts/lib/control-ui-warm-reload-probe.ts";
 import type { GatewaySessionRow } from "../api/types.ts";
-import { CHAT_TRANSCRIPT_LOADING_CHANGED_EVENT } from "../pages/chat/chat-history-events.ts";
 import { evaluateControlUiContext } from "../test-helpers/control-ui-e2e-context.ts";
 import { takeControlUiScreenshotFrame } from "../test-helpers/control-ui-e2e-screenshot.ts";
 import {
@@ -40,9 +39,7 @@ suite.define(() => {
       await suite.withPage(
         { locale: "en-US", serviceWorkers: "block", viewport: { width: 1440, height: 1000 } },
         async ({ page }) => {
-          if (cap || rootLast) {
-            await page.clock.install();
-          }
+          await page.clock.install();
           await page.route("**/__openclaw__/**", async (route) => {
             const asset = fixture.assets.get(new URL(route.request().url()).pathname);
             if (asset) {
@@ -156,14 +153,10 @@ suite.define(() => {
             await gateway.deferNext("sessions.list", { ownerFirst: true });
           }
           await gateway.waitForRequest("connect");
-          if (rootLast) {
-            await pauseVirtualClock(page);
-          }
+          await pauseVirtualClock(page);
           const connectedAt = await page.evaluate(() => performance.now());
           await gateway.resolveDeferred("connect");
-          if (rootLast) {
-            await page.clock.runFor(100);
-          }
+          await page.clock.runFor(100);
           const canonical = await gateway.waitForRequest("sessions.list", {
             match: { ownerFirst: true },
           });
@@ -179,9 +172,7 @@ suite.define(() => {
               match: { involvingMe: true },
             },
           );
-          if (rootLast) {
-            await page.clock.runFor(100);
-          }
+          await page.clock.runFor(100);
           const childRequest = await gateway.waitForRequest("sessions.list", { match: childMatch });
           const childResult = lists.list(asRecord(childRequest.params)!).result;
           let childReleased = false;
@@ -194,74 +185,28 @@ suite.define(() => {
           try {
             if (rootLast) {
               await releaseChildren();
-              await page.clock.runFor(1000);
             }
-            if (!rootLast) {
-              await evaluateControlUiContext(
-                page,
-                (context, eventName) =>
-                  new Promise<void>((resolve, reject) => {
-                    const cleanup = () => {
-                      document.removeEventListener(eventName, changed);
-                      window.removeEventListener("pagehide", abandoned);
-                    };
-                    const changed = () => {
-                      // The loading event precedes the committed foreground update.
-                      queueMicrotask(() => {
-                        if (context.connectionBootstrap.foregroundReady) {
-                          cleanup();
-                          resolve();
-                        }
-                      });
-                    };
-                    const abandoned = () => {
-                      cleanup();
-                      reject(new Error("The foreground route was unloaded before readiness"));
-                    };
-                    document.addEventListener(eventName, changed);
-                    window.addEventListener("pagehide", abandoned, { once: true });
-                    changed();
-                  }),
-                CHAT_TRANSCRIPT_LOADING_CHANGED_EVENT,
-              );
-              await page.evaluate(
-                () =>
-                  new Promise<void>((resolve) => {
-                    requestIdleCallback(() => requestAnimationFrame(() => resolve()));
-                  }),
-              );
-            }
+            await page.clock.runFor(1000);
             // Either roster can remain pending after the foreground is ready.
             const beforeChildren = {
               state: await sidebar.getAttribute("data-snapshot-state"),
               rows: await rowKeys(),
-              ...(rootLast
-                ? await evaluateControlUiContext(
-                    page,
-                    (context, startedAt) => ({
-                      elapsedMs: performance.now() - startedAt,
-                      foregroundReady: context.connectionBootstrap.foregroundReady,
-                      canonicalLoading: context.sessions.state.loading,
-                      canonicalError: context.sessions.state.error,
-                      resultCached: context.sessions.presentation.resultCached,
-                      resultPresent: context.sessions.presentation.result !== null,
-                    }),
-                    connectedAt,
-                  )
-                : {}),
+              ...(await evaluateControlUiContext(
+                page,
+                (context, startedAt) => ({
+                  elapsedMs: performance.now() - startedAt,
+                  foregroundReady: context.connectionBootstrap.foregroundReady,
+                }),
+                connectedAt,
+              )),
             };
-            if (!rootLast) {
-              await capture("pending-children");
-            }
             expect(
               await gateway.getRequests("sessions.list", { ownerFirst: true }),
             ).not.toHaveLength(0);
 
             const readinessDiagnostic = JSON.stringify(beforeChildren);
-            if (rootLast) {
-              expect(beforeChildren.elapsedMs, readinessDiagnostic).toBeLessThan(3000);
-              expect(beforeChildren.foregroundReady, readinessDiagnostic).toBe(true);
-            }
+            expect(beforeChildren.elapsedMs, readinessDiagnostic).toBeLessThan(3000);
+            expect(beforeChildren.foregroundReady, readinessDiagnostic).toBe(true);
             expect(beforeChildren.state, readinessDiagnostic).toBe("cached");
             expect(beforeChildren.rows).toEqual(expected);
             if (cap) {
@@ -368,8 +313,8 @@ suite.define(() => {
                 lists.list(asRecord(canonical.params)!).result,
                 { match: { ownerFirst: true } },
               );
-              await page.clock.resume();
             }
+            await page.clock.resume();
             await saved().waitFor();
             await page.evaluate(
               () =>
