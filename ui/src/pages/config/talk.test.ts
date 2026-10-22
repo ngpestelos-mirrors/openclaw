@@ -532,17 +532,19 @@ describe("Talk device and voice wake settings", () => {
       method === "voicewake.get" ? { triggers: ["openclaw"] } : pending.promise,
     );
     const { page } = createTalkMutationHarness({ voiceWakeRequest });
-    const context = page.context;
     page.remove();
     const notification = createDeferred<undefined>();
     const sendNotification = vi.fn(() => notification.promise);
-    context.nativeNotifications = {
-      snapshot: { permission: "granted", test: null },
-      subscribe: () => () => {},
-      requestPermission: vi.fn(),
-      sendTest: sendNotification,
-      backgroundSessionCompleted: vi.fn(),
-      dispose: vi.fn(),
+    const context: ApplicationContext = {
+      ...page.context,
+      nativeNotifications: {
+        snapshot: { permission: "granted", test: null },
+        subscribe: () => () => {},
+        requestPermission: vi.fn(),
+        sendTest: sendNotification,
+        backgroundSessionCompleted: vi.fn(),
+        dispose: vi.fn(),
+      },
     };
     const view = await mountTalkSettingsRoutes(context);
     await waitForSolid(() =>
