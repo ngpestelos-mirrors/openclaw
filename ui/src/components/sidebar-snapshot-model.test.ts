@@ -36,7 +36,7 @@ it("roundtrips hidden-run child queries without retaining incognito parent keys"
     { ...parent, children: [child], childLoadParentKeys: [parent.key, hiddenRun, incognitoRun] },
   ]);
   expect(captured[0]?.childLoadParentKeys).toEqual([parent.key, hiddenRun]);
-  const saved = parseSidebarSnapshot(JSON.parse(JSON.stringify({ ...model, sessions: captured })));
+  const saved = parseSidebarSnapshot(structuredClone({ ...model, sessions: captured }));
   expect(saved).not.toBeNull();
   const restored = restoreSnapshotSession(saved!.sessions[0]!, parent.key);
   expect(restored.childLoadParentKeys).toEqual([parent.key, hiddenRun]);
