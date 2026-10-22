@@ -20,42 +20,13 @@ import {
   expectVoiceState,
   mountTalkPage,
   mountTalkSettingsRoutes,
+  nativeVoice,
   readVoiceOptions,
   setTalkRealtimeConfig,
 } from "./talk.test-support.tsx";
 
 const ACTIVE_VOICES = ["", "cove", "spruce", "custom-voice"];
 const DEFAULT_VOICES = ["", "marin", "custom-voice"];
-
-function nativeVoice(snapshot: NonNullable<NativeDeviceSettingsCapability["snapshot"]>) {
-  const listeners = new Set<() => void>();
-  const settings = {
-    snapshot,
-    initialSnapshot: Promise.resolve(snapshot),
-    set: vi.fn<NativeDeviceSettingsCapability["set"]>(),
-    subscribe: (listener: Parameters<NativeDeviceSettingsCapability["subscribe"]>[0]) => {
-      const notify = () => listener(snapshot);
-      listeners.add(notify);
-      return () => {
-        listeners.delete(notify);
-      };
-    },
-    requestPermission: vi.fn(),
-    openSystemSettings: vi.fn(),
-    openPanel: vi.fn(),
-    checkForUpdates: vi.fn(),
-    setupChromeExtension: vi.fn(),
-    refresh: vi.fn(),
-    dispose: vi.fn(),
-  } satisfies NativeDeviceSettingsCapability;
-  return {
-    settings,
-    publish: () => {
-      listeners.forEach((notify) => notify());
-      flush();
-    },
-  };
-}
 
 function editTrigger(input: HTMLTextAreaElement, value: string) {
   input.value = value;
@@ -439,7 +410,11 @@ describe("Talk device and voice wake settings", () => {
     ).toEqual(["Voice Wake"]);
     const next = !rows[0]!.querySelector<HTMLInputElement>(".settings-toggle__input")!.checked;
     rows[0]!.click();
-    expect(nativeDeviceSettings.set).toHaveBeenCalledExactlyOnceWith("voice.wakeEnabled", next);
+    expect(nativeDeviceSettings.set).toHaveBeenCalledExactlyOnceWith(
+      "voice.wakeEnabled",
+      next,
+      expect.any(Function),
+    );
     expect(section.querySelector("select, button")).toBeNull();
   });
 
@@ -559,6 +534,16 @@ describe("Talk device and voice wake settings", () => {
     const { page } = createTalkMutationHarness({ voiceWakeRequest });
     const context = page.context;
     page.remove();
+    const notification = createDeferred<undefined>();
+    const sendNotification = vi.fn(() => notification.promise);
+    context.nativeNotifications = {
+      snapshot: { permission: "granted", test: null },
+      subscribe: () => () => {},
+      requestPermission: vi.fn(),
+      sendTest: sendNotification,
+      backgroundSessionCompleted: vi.fn(),
+      dispose: vi.fn(),
+    };
     const view = await mountTalkSettingsRoutes(context);
     await waitForSolid(() =>
       expect(view.container.querySelector("textarea")?.value).toBe("openclaw"),
@@ -570,7 +555,7 @@ describe("Talk device and voice wake settings", () => {
         "#settings-communications-notifications .settings-group",
       );
       expect(bodies, "Notifications body before a write").toHaveLength(1);
-      expect(bodies[0]?.textContent).toContain(t("configView.notifications.browserSupport"));
+      expect(bodies[0]?.textContent).toContain(t("configView.notifications.sendTest"));
       expect(view.container.querySelector("openclaw-config-page")).toBe(configHost);
     });
     await view.navigate("talk");
@@ -594,7 +579,7 @@ describe("Talk device and voice wake settings", () => {
         "#settings-communications-notifications .settings-group",
       );
       expect(bodies, "Notifications body after the held-write departure").toHaveLength(1);
-      expect(bodies[0]?.textContent).toContain(t("configView.notifications.browserSupport"));
+      expect(bodies[0]?.textContent).toContain(t("configView.notifications.sendTest"));
       expect(view.container.querySelector("openclaw-config-page")).toBe(configHost);
       expect(view.container.querySelector("openclaw-talk-settings")).toBeNull();
       expect(view.container.querySelector("textarea")).toBeNull();
@@ -602,6 +587,18 @@ describe("Talk device and voice wake settings", () => {
       return bodies[0];
     };
     const notificationsBody = await waitForSolid(expectNotificationsBody);
+    const send = notificationsBody!.querySelector<HTMLButtonElement>("button")!;
+    send.click();
+    await waitForSolid(() => {
+      expect(sendNotification).toHaveBeenCalledOnce();
+      expect(send.disabled).toBe(true);
+      expect(send.textContent).toContain(t("configView.notifications.sendingTest"));
+    });
+    notification.resolve(undefined);
+    await waitForSolid(() => {
+      expect(send.disabled).toBe(false);
+      expect(send.textContent).toContain(t("configView.notifications.sendTest"));
+    });
 
     pending.resolve({ triggers: ["new phrase"] });
     await vi.advanceTimersByTimeAsync(0);
@@ -758,11 +755,19 @@ describe("Talk device and voice wake settings", () => {
     expectWakeDisabled(true);
     expect(row("Voice Wake").textContent).toContain("macOS 26");
     row("Hold Right Option to talk").click();
-    expect(nativeDeviceSettings.set).toHaveBeenCalledWith("voice.pushToTalkEnabled", false);
+    expect(nativeDeviceSettings.set).toHaveBeenCalledWith(
+      "voice.pushToTalkEnabled",
+      false,
+      expect.any(Function),
+    );
     const microphone = row("Microphone").querySelector("select")!;
     microphone.value = "builtin";
     microphone.dispatchEvent(new Event("change"));
-    expect(nativeDeviceSettings.set).toHaveBeenCalledWith("voice.microphone", "builtin");
+    expect(nativeDeviceSettings.set).toHaveBeenCalledWith(
+      "voice.microphone",
+      "builtin",
+      expect.any(Function),
+    );
     expect(
       [...row("Additional languages").querySelectorAll("option")].map((option) => option.value),
     ).toEqual([""]);
@@ -785,7 +790,11 @@ describe("Talk device and voice wake settings", () => {
     publishSnapshot();
     expectWakeDisabled(false);
     row("Voice Wake").click();
-    expect(nativeDeviceSettings.set).toHaveBeenCalledWith("voice.wakeEnabled", false);
+    expect(nativeDeviceSettings.set).toHaveBeenCalledWith(
+      "voice.wakeEnabled",
+      false,
+      expect.any(Function),
+    );
     snapshot.voice.wakeEnabled = false;
     publishSnapshot();
     expectWakeDisabled(true);

@@ -1,8 +1,9 @@
 import { createRouter } from "@openclaw/uirouter";
 import { createSignal } from "solid-js";
-import { expect, onTestFinished } from "vitest";
+import { expect, onTestFinished, vi } from "vitest";
 import type { SolidRouteProps } from "../../app-route-types.tsx";
 import type { ApplicationContext } from "../../app/context.ts";
+import type { NativeDeviceSettingsCapability } from "../../app/native-device-settings.ts";
 import { mountRouterOutlet } from "../../app/router-outlet.test-support.tsx";
 import type { SelectPicker } from "../../components/select-picker.ts";
 import { t } from "../../i18n/index.ts";
@@ -20,6 +21,36 @@ export type TalkPageElement = HTMLElement & {
   changeModel: (model: string | null) => void;
   changeProvider: (providerId: string | null) => void;
 };
+
+export function nativeVoice(snapshot: NonNullable<NativeDeviceSettingsCapability["snapshot"]>) {
+  const listeners = new Set<() => void>();
+  const settings = {
+    snapshot,
+    initialSnapshot: Promise.resolve(snapshot),
+    set: vi.fn<NativeDeviceSettingsCapability["set"]>(),
+    subscribe: (listener: Parameters<NativeDeviceSettingsCapability["subscribe"]>[0]) => {
+      const notify = () => listener(snapshot);
+      listeners.add(notify);
+      return () => {
+        listeners.delete(notify);
+      };
+    },
+    requestPermission: vi.fn(),
+    openSystemSettings: vi.fn(),
+    openPanel: vi.fn(),
+    checkForUpdates: vi.fn(),
+    setupChromeExtension: vi.fn(),
+    refresh: vi.fn(),
+    dispose: vi.fn(),
+  } satisfies NativeDeviceSettingsCapability;
+  return {
+    settings,
+    publish: () => {
+      listeners.forEach((notify) => notify());
+      flush();
+    },
+  };
+}
 
 export function readVoiceOptions(page: HTMLElement): string[] {
   return [...page.querySelectorAll("select option")].map(
@@ -61,10 +92,11 @@ export function mountTalkPage(context: ApplicationContext, initialConfig: Record
   const [config, setConfig] = createSignal(initialConfig);
   document.body.append(page);
   const provider = createSolidApplicationContextProvider(context);
-  const view = mountSolid(() => <TalkSettingsPage configObject={config()} />, {
-    container: page,
-    wrapper: provider.wrapper,
-  });
+  const retired = new Promise<void>(() => {});
+  const view = mountSolid(
+    () => <TalkSettingsPage configObject={config()} presentationRetired={() => retired} />,
+    { container: page, wrapper: provider.wrapper },
+  );
   const remove = page.remove.bind(page);
   Object.defineProperties(page, {
     context: { value: context },
