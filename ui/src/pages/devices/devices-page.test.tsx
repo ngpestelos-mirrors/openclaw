@@ -101,12 +101,12 @@ describe("DevicesPage gateway lifecycle", () => {
     page.publishConfig();
     const queries = getQueriesForElement(page.container);
     await waitForSolid(() =>
-      expect(queries.getByRole("combobox", { name: "Node", exact: true })).toHaveProperty(
+      expect(queries.getByRole("combobox", { name: "Node" })).toHaveProperty(
         "disabled",
         false,
       ),
     );
-    const binding = queries.getByRole("combobox", { name: "Node", exact: true });
+    const binding = queries.getByRole("combobox", { name: "Node" });
     page.config.configLoading = true;
     const read = beginConfigRead(page.config, client);
     page.publishConfig();
@@ -115,7 +115,7 @@ describe("DevicesPage gateway lifecycle", () => {
     read.completion.resolve({ ok: false, error: "Config failed" });
     page.publishConfig();
     await waitForSolid(() => {
-      expect(queries.getByRole("combobox", { name: "Node", exact: true })).toBe(binding);
+      expect(queries.getByRole("combobox", { name: "Node" })).toBe(binding);
       expect(binding).toHaveProperty("value", "draft-node");
       expect(binding).toHaveProperty("disabled", false);
     });
