@@ -169,7 +169,9 @@ export function createSidebarSnapshot(host: SidebarSnapshotHost) {
         replaceScope(next);
       }
     }
-    if (host.sidebarSnapshot && snapshot.phase === "connected") {
+    if (snapshot.phase !== "connected") {
+      cancelHandoff();
+    } else if (host.sidebarSnapshot) {
       handoffTimer ??= setTimeout(() => {
         handoffExpired = true;
         releaseWhenReady();

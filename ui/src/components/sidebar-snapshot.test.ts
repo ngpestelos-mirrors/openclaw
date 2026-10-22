@@ -461,6 +461,21 @@ describe("sidebar snapshot lifecycle", () => {
     },
   );
 
+  it("starts a new handoff deadline after reconnecting", async () => {
+    const test = await warmFixture();
+    test.publish();
+    await vi.advanceTimersByTimeAsync(2999);
+    test.publish({ phase: "reconnecting" });
+    await vi.advanceTimersByTimeAsync(3001);
+    test.publish();
+    expect(test.host.sidebarSnapshot).toEqual(model);
+    await vi.advanceTimersByTimeAsync(2999);
+    expect(test.host.sidebarSnapshot).toEqual(model);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(test.host.sidebarSnapshot).toBeNull();
+    expect(test.capture).not.toHaveBeenCalled();
+  });
+
   it.each(["idle", "pagehide", "hidden"] as const)(
     "coalesces a burst and persists its latest shape on %s for the next reload",
     async (boundary) => {
