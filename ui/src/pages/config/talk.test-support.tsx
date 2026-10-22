@@ -96,7 +96,7 @@ export async function mountTalkSettingsRoutes(initialContext: ApplicationContext
     ),
   };
   const router = createRouter<ConfigPageId, ApplicationContext, typeof module, ConfigPageRouteData>(
-    { routes: routes.map((route) => ({ ...route, component: () => module })) },
+    { routes: routes.map((route) => Object.assign({}, route, { component: () => module })) },
   );
   Object.assign(context, { router });
   const outlet = mountRouterOutlet({ router, retryContext: context });
