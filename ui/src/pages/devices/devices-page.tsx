@@ -187,11 +187,12 @@ export function DevicesPage(props: { routeData?: DevicesRouteData }) {
   const policyReads = createDevicePolicyReads({
     state: pageData.read,
     config: () => configProjection.read().state,
-    hasConfig: () => bindingConfig() !== null,
+    hasConfig: () => bindingConfig(configRead().state) !== null,
     gateway: gatewayBinding,
     target: () => `${execApprovalsTarget}:${execApprovalsTargetNodeId ?? ""}`,
   });
   const approvalsSnapshot = createMemo(() => pageData.read().execApprovalsSnapshot);
+  const configRead = createMemo(() => configProjection.read());
   const policyActions = createDevicePolicyActions({
     scope: () => ({
       state: pageData.read(),
@@ -606,8 +607,7 @@ export function DevicesPage(props: { routeData?: DevicesRouteData }) {
     policyReads.observeApprovals(state, result);
   }
 
-  function bindingConfig() {
-    const config = configProjection.read().state;
+  function bindingConfig(config: ReturnType<typeof configRead>["state"]) {
     return canRead
       ? (currentConfigObject(config) ??
           (configGateway === gatewayBinding.gateway && configClient === gatewayBinding.client
@@ -618,7 +618,7 @@ export function DevicesPage(props: { routeData?: DevicesRouteData }) {
 
   function viewProps(): DevicesProps {
     const devices = pageData.read();
-    const config = configProjection.read().state;
+    const config = configRead().state;
     const gatewaySnapshot = gatewayBinding.snapshot ?? context.gateway.snapshot;
     return {
       configRead: policyReads.config,
@@ -646,7 +646,7 @@ export function DevicesPage(props: { routeData?: DevicesRouteData }) {
       canPairDevice: canAdmin,
       canManagePairing,
       canAdmin,
-      configForm: bindingConfig(),
+      configForm: bindingConfig(config),
       configLoading: config.configLoading,
       configSaving: config.configSaving,
       configDirty: config.configFormDirty,
