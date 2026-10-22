@@ -44,7 +44,7 @@ import { t, registerEnglishCatalog } from "../../lib/reactive/i18n.ts";
 import { projectMutableSource } from "../../lib/reactive/projection.ts";
 import { useVisiblePoll } from "../../lib/reactive/visible-poll.ts";
 import { canReadSystemInfo, readSystemInfo } from "../../lib/system-info.ts";
-import { createDevicesDialogs, showDeviceRotationOutcome } from "./devices-dialogs.ts";
+import { createDevicesDialogs } from "./devices-dialogs.ts";
 import { createInventoryPresentation } from "./devices-inventory-presentation.ts";
 import { createDevicePolicyActions } from "./devices-policy-actions.ts";
 import { createDevicePolicyReads } from "./devices-policy-reads.ts";
@@ -103,6 +103,9 @@ export function DevicesPage(props: { routeData?: DevicesRouteData }) {
     gatewayUrl: () => context.gateway.connection.gatewayUrl,
     runPageTask,
     runInventoryTask,
+    rotateDevice: (params) =>
+      inventoryActions.run(() => runPageTask((pageState) => rotateDeviceToken(pageState, params)))
+        .result,
     setDevicesError: (message) => {
       dataState.devicesError = message;
       publishData();
@@ -565,34 +568,6 @@ export function DevicesPage(props: { routeData?: DevicesRouteData }) {
     setDesktopEnvironments([]);
   }
 
-  // Always show the replacement or rotation outcome, outside the identity-scoped confirmation:
-  // aborting a shown secret would destroy the only copy the Gateway can hand out.
-  async function reportRotationOutcome(
-    device: { id: string; name: string },
-    role: string,
-    scopes?: string[],
-  ) {
-    if (!canManagePairing) {
-      return;
-    }
-    const { result } = inventoryActions.run(() =>
-      runPageTask((pageState) =>
-        rotateDeviceToken(pageState, {
-          deviceId: device.id,
-          gatewayUrl: context.gateway.connection.gatewayUrl,
-          role,
-          scopes,
-        }),
-      ),
-    );
-    // The sole secret outcome outlives the page presentation and must still be shown.
-    const outcome = await result;
-    if (!outcome) {
-      return;
-    }
-    await showDeviceRotationOutcome(device.name, role, outcome);
-  }
-
   // Confirm before discarding a target's dirty draft. Cancellation retains the target, form,
   // scope, and dirty flag; rendering restores the selector to that retained target.
   async function changeExecApprovalsTarget(kind: "gateway" | "node", nodeId: string | null) {
@@ -702,7 +677,8 @@ export function DevicesPage(props: { routeData?: DevicesRouteData }) {
           void dialogs.confirmInventoryRemoval({ kind: "stale", entries });
         }
       },
-      onDeviceRotate: (device, role, scopes) => void reportRotationOutcome(device, role, scopes),
+      onDeviceRotate: (device, role, scopes) =>
+        void dialogs.reportRotationOutcome(device, role, scopes),
       onDeviceRevoke: (deviceId, role) => void dialogs.confirmTokenRevoke(deviceId, role),
       onDeviceRename: (device) => void dialogs.editAlias(device),
       onLoadConfig: () => void context.runtimeConfig.discardDraft({ reloadOnly: true }),
