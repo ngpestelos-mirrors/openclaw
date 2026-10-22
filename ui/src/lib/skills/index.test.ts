@@ -199,7 +199,7 @@ describe("loadSkills", () => {
             ? state.clawhubVerdictsRead?.completion
             : state.skillCardReads.agentreceipt?.completion;
       let settled = false;
-      void expectDefined(completion).then(() => {
+      void expectDefined(completion, "admitted skill read").then(() => {
         settled = true;
       });
       setSkillsAgentId(state, "research");

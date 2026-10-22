@@ -941,9 +941,9 @@ describe("renderSkills", () => {
     dialogRestores.push(owner.unmount);
     const { dialog } = await getRenderedModalDialog(container);
     await waitForFast(() => expect(normalizeText(dialog)).toContain("Clean"));
-    expectDefined(beginRead)();
+    expectDefined(beginRead, "verdict refresh callback")();
     await waitForFast(() => expect(normalizeText(dialog)).toContain("Refreshing"));
-    expectDefined(selectOther)();
+    expectDefined(selectOther, "skill selection callback")();
     await waitForFast(() => expect(normalizeText(dialog)).toContain("Repo Skill"));
     expect(normalizeText(dialog)).not.toContain("AgentReceipt");
     expect((await getRenderedModalDialog(container)).dialog).toBe(dialog);
@@ -962,7 +962,9 @@ describe("renderSkills", () => {
     const owner = mountSolid(
       () => {
         const [receipt, setReceipt] = createSignal(first.promise);
-        changeRead = setReceipt;
+        changeRead = (next) => {
+          void setReceipt(next);
+        };
         const read = createDeferredRead(() => receipt());
         return (
           <Skills
@@ -983,7 +985,7 @@ describe("renderSkills", () => {
       expect(normalizeText(dialog)).toContain("Verdicts temporarily unavailable"),
     );
     const retry = createDeferred<Record<string, ClawHubSkillSecurityVerdict>>();
-    expectDefined(changeRead)(retry.promise);
+    expectDefined(changeRead, "verdict receipt callback")(retry.promise);
     await waitForFast(() => expect(normalizeText(dialog)).toContain("Refreshing"));
     expect(normalizeText(dialog)).not.toContain("Verdicts temporarily unavailable");
     retry.resolve({});
