@@ -1,4 +1,12 @@
-import { createEffect, createMemo, createSignal, createStore, onSettled, Show } from "solid-js";
+import {
+  createDeferred,
+  createEffect,
+  createMemo,
+  createSignal,
+  createStore,
+  onSettled,
+  Show,
+} from "solid-js";
 import type { GatewayBrowserClient } from "../../api/gateway.ts";
 import type { SkillStatusReport } from "../../api/types.ts";
 import type { SolidRouteProps } from "../../app-route-types.tsx";
@@ -30,6 +38,7 @@ import {
   loadSkillCard,
   loadSkills,
   refreshSkills,
+  retireSkillsReads,
   reconcileSkillsAgentId,
   saveSkillApiKey,
   setSkillsAgentId,
@@ -63,11 +72,12 @@ function createSkillsData(): Omit<SkillsState, "client" | "connected" | "runtime
     clawhubDetailError: null,
     clawhubInstallMessage: null,
     clawhubVerdicts: {},
-    clawhubVerdictsLoading: false,
     clawhubVerdictsError: null,
     skillCardContents: {},
     skillCardContentKeys: {},
-    skillCardLoadingKey: null,
+    skillCardReads: {},
+    skillsRead: null,
+    clawhubVerdictsRead: null,
     skillCardErrors: {},
     clawhubIconUrls: {},
   };
@@ -127,6 +137,19 @@ export function SkillsPage(props: SkillsPageProps) {
     },
   });
   const data = skills.state;
+  const verdictCompletion = createMemo(() => skills.read().clawhubVerdictsRead);
+  const acceptedVerdicts = createMemo(() => skills.read().clawhubVerdicts);
+  // Optional verdict enrichment must not hold independent inventory or detail selection.
+  const readClawHubVerdicts = createDeferred(() => {
+    const receipt = verdictCompletion();
+    const value = acceptedVerdicts();
+    return (receipt?.completion ?? Promise.resolve({ value, error: null })).then((outcome) => {
+      if (outcome.error) {
+        throw new Error(outcome.error);
+      }
+      return outcome.value;
+    });
+  });
   const [detailReceipt, setDetailReceipt] = createSignal<{
     client: GatewayBrowserClient | null;
     epoch: number;
@@ -319,6 +342,7 @@ export function SkillsPage(props: SkillsPageProps) {
     syncIcons();
     return () => {
       active = false;
+      retireSkillsReads(data);
       [stopAgents, ...stopSelections, stopSkills].forEach((stop) => stop());
       clearClawHubSearchTimer();
       searchRequest.cancel();
@@ -368,12 +392,11 @@ export function SkillsPage(props: SkillsPageProps) {
   }
 
   function invalidateSkillRequests() {
+    retireSkillsReads(data);
     setDetailReceipt(null);
     data.skillsAgentRevision++;
     data.skillsLoading = false;
     data.skillOperation = null;
-    data.clawhubVerdictsLoading = false;
-    data.skillCardLoadingKey = null;
     data.clawhubSearchLoading = false;
     searchRequest.cancel();
     clearClawHubSearchTimer();
@@ -382,6 +405,7 @@ export function SkillsPage(props: SkillsPageProps) {
   }
 
   function resetLoadedSkillState() {
+    retireSkillsReads(data);
     setDetailReceipt(null);
     library.reset();
     searchRequest.cancel();
@@ -423,6 +447,7 @@ export function SkillsPage(props: SkillsPageProps) {
       return;
     }
     routeDataEnabled = true;
+    retireSkillsReads(data);
     data.skillsLoading = false;
     data.skillsReport = route.report;
     data.skillsError = route.error;
@@ -584,6 +609,7 @@ export function SkillsPage(props: SkillsPageProps) {
           <Skills
             state={viewState()}
             readClawHubDetail={readClawHubDetail}
+            readClawHubVerdicts={readClawHubVerdicts}
             surface={surface()}
             libraryEntries={library.state.list?.entries ?? []}
             onLibraryOpen={(skillId) => void library.open(skillId)}
