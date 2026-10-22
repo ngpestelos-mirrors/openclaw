@@ -91,8 +91,8 @@ class VoiceWakeSettingsOwner {
     return this.value;
   }
 
-  get readRequest() {
-    return this.voiceWakeRead?.promise;
+  get readReceipt() {
+    return this.voiceWakeRead;
   }
 
   get writeReceipt() {
@@ -119,10 +119,6 @@ class VoiceWakeSettingsOwner {
     } else {
       completion.resolve();
     }
-  }
-
-  get connectionScope() {
-    return this.connection;
   }
 
   private update(nextState: VoiceWakeEditorState) {
@@ -644,8 +640,8 @@ export function TalkSettingsPage(props: TalkSettingsPageProps) {
   const voiceWake = voiceWakeOwner(context.gateway);
   const voiceWakeState = projectOwner(voiceWake, (owner) => owner);
   // Only a new read receipt starts async work; draft and write updates stay synchronous.
-  const voiceWakeRequest = createMemo(() => voiceWakeState.read().readRequest);
-  const voiceWakeRead = createMemo(async () => voiceWakeRequest());
+  const voiceWakeRequest = createMemo(() => voiceWakeState.read().readReceipt);
+  const voiceWakeRead = createMemo(async () => voiceWakeRequest()?.promise);
   const voiceWakeReceipt = createMemo(() => voiceWakeState.read().writeReceipt);
   const voiceWakeResult = createMemo(async () => voiceWakeReceipt()?.promise);
   const [voiceWakeSaving, setVoiceWakeSaving] = createOptimistic(false);
@@ -655,17 +651,21 @@ export function TalkSettingsPage(props: TalkSettingsPageProps) {
     yield completion.catch(() => {});
   });
   let presentedVoiceWakeWrite: Promise<void> | undefined;
-  const presentWrite = (completion: Promise<void> | undefined) => {
+  const presentWrite = (start: () => Promise<void> | undefined) => {
+    const completion = start();
     if (completion && completion !== presentedVoiceWakeWrite) {
       presentedVoiceWakeWrite = completion;
-      void presentVoiceWakeWrite(completion).catch(() => {});
+      // Publish the owner's draft before joining its transition.
+      void Promise.resolve()
+        .then(() => presentVoiceWakeWrite(completion))
+        .catch(() => {});
     }
   };
   const device = context.nativeDeviceSettings
     ? projectNativeDeviceSettings(context.nativeDeviceSettings)
     : undefined;
   onSettled(() => {
-    presentWrite(voiceWake.writeReceipt?.promise);
+    presentWrite(() => voiceWake.writeReceipt?.promise);
     return () => voiceWake.flush();
   });
   return (
@@ -679,12 +679,12 @@ export function TalkSettingsPage(props: TalkSettingsPageProps) {
             return voiceWakeState.read().state;
           },
           get scope() {
-            return voiceWakeState.read().connectionScope;
+            return voiceWakeRequest();
           },
           saving: voiceWakeSaving(),
           readWriteResult: () => voiceWakeResult(),
-          onInput: (text) => presentWrite(voiceWake.edit(text)),
-          onRetry: () => presentWrite(voiceWake.retry()),
+          onInput: (text) => presentWrite(() => voiceWake.edit(text)),
+          onRetry: () => presentWrite(() => voiceWake.retry()),
         }}
         selection={resolveTalkRealtimeSelection(props.configObject ?? {})}
         catalog={settings.catalog()}

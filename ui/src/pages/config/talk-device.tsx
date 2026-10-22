@@ -159,7 +159,7 @@ export function VoiceWakeEditor(props: {
   onInput: (text: string) => void;
   onRetry: () => void;
 }) {
-  // Draft publications must not re-arm the connection's read boundary.
+  // Only an admitted read re-arms loading; reconnecting a retained draft keeps the editor.
   const scope = createMemo(() => props.scope);
   return (
     <SettingsSection title={t("configPage.deviceTalk.triggerWords")}>
@@ -392,15 +392,20 @@ export function DeviceTalk(props: {
   capability?: NativeDeviceSettingsCapability | null;
   snapshot?: NativeDeviceSettingsSnapshot | null;
 }) {
+  // The receipt only gates readiness; live owner publications stay outside this memo.
+  const initialSnapshot = createMemo(() => props.capability?.initialSnapshot ?? null);
   return (
     <>
       {props.capability && (
         <SettingsSection title={t(deviceSettingsGroupLabelKey(props.snapshot))}>
-          {props.snapshot?.voice ? (
-            <DeviceVoiceSettings capability={props.capability} snapshot={props.snapshot} />
-          ) : (
-            <SettingsRow title={t("common.loading")} />
-          )}
+          <Loading on={props.capability} fallback={<SettingsRow title={t("common.loading")} />}>
+            {(props.snapshot ?? initialSnapshot()) && (
+              <DeviceVoiceSettings
+                capability={props.capability}
+                snapshot={(props.snapshot ?? initialSnapshot())!}
+              />
+            )}
+          </Loading>
         </SettingsSection>
       )}
     </>

@@ -1,11 +1,17 @@
+import { createRouter } from "@openclaw/uirouter";
 import { createSignal } from "solid-js";
-import { expect } from "vitest";
+import { expect, onTestFinished } from "vitest";
+import type { SolidRouteProps } from "../../app-route-types.tsx";
 import type { ApplicationContext } from "../../app/context.ts";
+import { mountRouterOutlet } from "../../app/router-outlet.test-support.tsx";
 import type { SelectPicker } from "../../components/select-picker.ts";
 import { t } from "../../i18n/index.ts";
 import { mountSolid } from "../../test-helpers/mount-solid.ts";
 import { createSolidApplicationContextProvider } from "../../test-helpers/solid-application-context.tsx";
 import { flush } from "../../test-helpers/solid-settle.ts";
+import { completeConfigContext } from "./config-page.test-support.ts";
+import type { ConfigPageId, ConfigPageRouteData } from "./config-page.tsx";
+import { pages } from "./route.ts";
 import { TalkSettingsPage } from "./talk-page.tsx";
 
 export type TalkPageElement = HTMLElement & {
@@ -70,4 +76,37 @@ export function mountTalkPage(context: ApplicationContext, initialConfig: Record
   };
   flush();
   return page;
+}
+
+export async function mountTalkSettingsRoutes(initialContext: ApplicationContext) {
+  const context = completeConfigContext(initialContext);
+  type SettingsRoute = Extract<(typeof pages)[number], { id: ConfigPageId }>;
+  const routes = pages.filter(
+    (route): route is SettingsRoute => route.id === "talk" || route.id === "notifications",
+  );
+  const productionModule = await routes[0]!.component();
+  const Provider = createSolidApplicationContextProvider(context).wrapper;
+  const ProductionRender = productionModule.renderSolid;
+  const module = {
+    ...productionModule,
+    renderSolid: (props: SolidRouteProps<ConfigPageRouteData>) => (
+      <Provider>
+        <ProductionRender {...props} />
+      </Provider>
+    ),
+  };
+  const router = createRouter<ConfigPageId, ApplicationContext, typeof module, ConfigPageRouteData>(
+    { routes: routes.map((route) => ({ ...route, component: () => module })) },
+  );
+  Object.assign(context, { router });
+  const outlet = mountRouterOutlet({ router, retryContext: context });
+  onTestFinished(() => {
+    outlet.dispose();
+    router.stop();
+  });
+  await router.navigate("talk", context);
+  return {
+    container: outlet,
+    navigate: (pageId: "talk" | "notifications") => router.navigate(pageId, context),
+  };
 }
