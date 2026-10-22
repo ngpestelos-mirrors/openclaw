@@ -451,8 +451,9 @@ it("reuses owner and participant images when retained rows receive unchanged liv
         actor: { ...row.owner!.actor, identity: { type: "profile", id: "ada" } },
       },
       participants: row.participants?.map((person) => ({
-        ...person,
         identity: { ...person.identity },
+        label: person.label,
+        avatarUrl: person.avatarUrl,
       })),
     });
     flush();
@@ -463,7 +464,9 @@ it("reuses owner and participant images when retained rows receive unchanged liv
   republish();
   expect(avatars().every((image, index) => image === images[index])).toBe(true);
   expect(fetchAvatar).toHaveBeenCalledTimes(2);
-  const loads = ["ada", "bob"].map((id) => resolveAvatarImageUrl(`/api/users/${id}/avatar?v=1`));
+  const loads = ["ada", "bob"].map((id) =>
+    Promise.resolve(resolveAvatarImageUrl(`/api/users/${id}/avatar?v=1`)),
+  );
   response.resolve();
   await Promise.all(loads);
   flush();
