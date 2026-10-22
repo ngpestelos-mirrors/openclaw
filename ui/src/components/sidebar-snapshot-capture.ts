@@ -40,7 +40,9 @@ export function isSidebarSnapshotSettled(host: AppSidebarRenderHost): boolean {
   const rootsSettled =
     !sessions.state.loading &&
     (Boolean(host.sessionData.sessionMutationError ?? sessions.state.error) ||
-      (Boolean(sessions.presentation.result) && !sessions.presentation.resultCached));
+      (sessions.canonicalListReady &&
+        Boolean(sessions.presentation.result) &&
+        !sessions.presentation.resultCached));
   if (host.navigationView === "sessions" && !rootsSettled) {
     return false;
   }
