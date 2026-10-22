@@ -1,7 +1,6 @@
 import { createMemo, createSignal, type Accessor } from "solid-js";
 import {
   currentConfigConnectionEpoch,
-  currentConfigObject,
   currentConfigRead,
   type RuntimeConfigState,
 } from "../../lib/config/config-state-model.ts";
@@ -13,6 +12,7 @@ export type DevicePolicyRead = { scope: Accessor<unknown>; value: Accessor<void>
 export function createDevicePolicyReads(options: {
   state: Accessor<DevicesPageDataState>;
   config: Accessor<RuntimeConfigState>;
+  hasConfig: () => boolean;
   gateway: ReturnType<typeof useGatewayPage>;
   target: () => string;
 }) {
@@ -77,11 +77,7 @@ export function createDevicePolicyReads(options: {
     }
     return Promise.race([read.completion.promise, read.invalidated.promise]).then((result) => {
       // A failed reload must preserve the editable last-good bindings and draft.
-      if (
-        !result.ok &&
-        currentConfigRead(current.state) === read &&
-        !currentConfigObject(current.state)
-      ) {
+      if (!result.ok && currentConfigRead(current.state) === read && !options.hasConfig()) {
         throw new Error(result.error);
       }
     });

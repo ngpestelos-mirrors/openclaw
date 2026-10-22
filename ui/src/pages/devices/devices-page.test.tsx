@@ -92,32 +92,44 @@ describe("DevicesPage gateway lifecycle", () => {
     await waitForSolid(() => expect(page.container.textContent).not.toContain("Config failed"));
   });
 
-  it("retains editable bindings after a failed shared config reload", async () => {
-    const { client } = clientFor();
-    const page = mountPage(gatewayFixture(gatewaySnapshot(client, true, [], ["operator.admin"])), {
-      nodes: [{ nodeId: "draft-node", commands: ["system.run"] }],
-    });
-    page.config.configForm = { tools: { exec: { node: "draft-node" } } };
-    page.config.configFormDirty = true;
-    page.publishConfig();
-    const queries = getQueriesForElement(page.container);
-    await waitForSolid(() =>
-      expect(queries.getByRole("combobox", { name: "Node" })).toHaveProperty("disabled", false),
-    );
-    const binding = queries.getByRole("combobox", { name: "Node" });
-    page.config.configLoading = true;
-    const read = beginConfigRead(page.config, client);
-    page.publishConfig();
-    await waitForSolid(() => expect(binding).toHaveProperty("disabled", true));
-    page.config.configLoading = false;
-    read.completion.resolve({ ok: false, error: "Config failed" });
-    page.publishConfig();
-    await waitForSolid(() => {
-      expect(queries.getByRole("combobox", { name: "Node" })).toBe(binding);
-      expect(binding).toHaveProperty("value", "draft-node");
-      expect(binding).toHaveProperty("disabled", false);
-    });
-  });
+  it.each(["reload", "reconnect"])(
+    "retains editable bindings after a failed %s",
+    async (reason) => {
+      const { client } = clientFor();
+      const snapshot = gatewaySnapshot(client, true, [], ["operator.admin"]);
+      const fixture = gatewayFixture(snapshot);
+      const page = mountPage(fixture, {
+        nodes: [{ nodeId: "draft-node", commands: ["system.run"] }],
+      });
+      page.config.configForm = { tools: { exec: { node: "draft-node" } } };
+      page.config.configFormDirty = true;
+      page.publishConfig();
+      const queries = getQueriesForElement(page.container);
+      await waitForSolid(() =>
+        expect(queries.getByRole("combobox", { name: "Node" })).toHaveProperty("disabled", false),
+      );
+      const binding = queries.getByRole("combobox", { name: "Node" });
+      if (reason === "reconnect") {
+        invalidateConfigConnection(page.config);
+        fixture.emitSnapshot({ ...snapshot, phase: "reconnecting", hello: null });
+        fixture.emitSnapshot(snapshot);
+      }
+      page.config.configLoading = true;
+      const read = beginConfigRead(page.config, client);
+      page.publishConfig();
+      await waitForSolid(() => expect(binding).toHaveProperty("disabled", true));
+      page.config.configLoading = false;
+      read.completion.resolve({ ok: false, error: "Config failed" });
+      page.publishConfig();
+      await waitForSolid(() => {
+        expect(queries.getByRole("combobox", { name: "Node" })).toBe(binding);
+        expect(binding).toHaveProperty("value", "draft-node");
+        expect(binding).toHaveProperty("disabled", false);
+        expect(page.config.configFormDirty).toBe(true);
+        expect(queries.queryByRole("button", { name: t("common.retry") })).toBeNull();
+      });
+    },
+  );
 
   it("preserves matching route data, then clears inventory on provider replacement", async () => {
     const fixture = gatewayFixture(gatewaySnapshot(null, false));
