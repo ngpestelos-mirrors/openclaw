@@ -1,4 +1,5 @@
 import { expectDefined } from "@openclaw/normalization-core";
+import { createRouter, definePage } from "@openclaw/uirouter";
 import { createSignal, flush } from "solid-js";
 import { afterEach, beforeEach, expect, vi } from "vitest";
 import type { GatewayBrowserClient } from "../../api/gateway.ts";
@@ -20,7 +21,7 @@ import { DevicesPage } from "./devices-page.tsx";
 import type { DevicesRouteData } from "./view.types.ts";
 
 export const gatewayPresence: PresenceEntry = { mode: "gateway", host: "Gateway host", ts: 1_000 };
-const pairedDevice = {
+export const pairedDevice = {
   deviceId: "device-1",
   displayName: "MacBook Pro",
   tokens: [{ role: "operator", scopes: [] }],
@@ -109,6 +110,7 @@ export function mountPage(
   fixture: ReturnType<typeof gatewayFixture>,
   initial: Partial<DevicesPageDataState> = {},
   routeOverride?: Partial<DevicesRouteData>,
+  runtimeConfig?: ApplicationContext["runtimeConfig"],
 ) {
   const snapshot = fixture.source.snapshot;
   const routeData: DevicesRouteData = {
@@ -127,21 +129,19 @@ export function mountPage(
   const [presentation, setPresentation] = createSignal({ routeData });
   const configListeners = new Set<() => void>();
   const reloadConfig = vi.fn(async () => undefined);
-  const routeListeners = new Set<() => void>();
+  const router = createRouter({
+    routes: [
+      definePage({ id: "devices", path: "/devices", component: () => ({}) }),
+      definePage({ id: "usage", path: "/usage", component: () => ({}) }),
+    ],
+  });
   const context = {
     get gateway() {
       return currentGateway();
     },
     basePath: "",
-    router: {
-      subscribe: (listener: () => void) => {
-        routeListeners.add(listener);
-        return () => {
-          routeListeners.delete(listener);
-        };
-      },
-    },
-    runtimeConfig: {
+    router,
+    runtimeConfig: runtimeConfig ?? {
       state: { configSnapshot: {}, configForm: {}, configLoading: false, configFormMode: "form" },
       subscribe: (listener: () => void) => {
         configListeners.add(listener);
@@ -168,6 +168,7 @@ export function mountPage(
     }
     disposed = true;
     mounted.unmount();
+    router.stop();
     container.remove();
     flush();
   };
@@ -177,11 +178,10 @@ export function mountPage(
     config: context.runtimeConfig.state,
     reloadConfig,
     publishConfig: () => configListeners.forEach((listener) => listener()),
+    router,
     dispose,
     leaveRoute() {
-      for (const listener of routeListeners) {
-        listener();
-      }
+      void router.navigate("usage", {});
       flush();
     },
     refreshPresentation() {

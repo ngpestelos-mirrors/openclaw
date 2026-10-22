@@ -3,7 +3,7 @@ import type {
   EnvironmentsListResult,
   SystemInfoResult,
 } from "@openclaw/gateway-protocol";
-import { createEffect, createMemo, createSignal, onSettled } from "solid-js";
+import { createEffect, createMemo, createSignal, latest, onSettled } from "solid-js";
 import { GATEWAY_EVENT_DEVICE_PAIR_CHANGED } from "../../../../src/gateway/events.js";
 import type { PresenceEntry } from "../../api/types.ts";
 import { subtitleForRoute, titleForRoute } from "../../app-navigation.ts";
@@ -46,6 +46,7 @@ import { useVisiblePoll } from "../../lib/reactive/visible-poll.ts";
 import { canReadSystemInfo, readSystemInfo } from "../../lib/system-info.ts";
 import { createDevicesDialogs, showDeviceRotationOutcome } from "./devices-dialogs.ts";
 import { createInventoryPresentation } from "./devices-inventory-presentation.ts";
+import { createDevicePolicyActions } from "./devices-policy-actions.ts";
 import { createDevicePolicyReads } from "./devices-policy-reads.ts";
 import {
   createDeviceInventoryRead,
@@ -169,7 +170,8 @@ export function DevicesPage(props: { routeData?: DevicesRouteData }) {
     }
   });
   const gatewayBinding = useGatewayPage({
-    getGateway: () => context.gateway,
+    // Replacement authority must advance while the old save presentation is held.
+    getGateway: () => latest(() => context.gateway),
     onIdentityChange: (change) => {
       configGateway = null;
       configClient = null;
@@ -184,6 +186,29 @@ export function DevicesPage(props: { routeData?: DevicesRouteData }) {
     config: () => configProjection.read().state,
     gateway: gatewayBinding,
     target: () => `${execApprovalsTarget}:${execApprovalsTargetNodeId ?? ""}`,
+  });
+  const approvalsSnapshot = createMemo(() => pageData.read().execApprovalsSnapshot);
+  const configRead = createMemo(() => configProjection.read());
+  const policyActions = createDevicePolicyActions({
+    scope: () => ({
+      state: pageData.read(),
+      gateway: gatewayBinding.gateway,
+      epoch: gatewayBinding.epoch,
+      target: execApprovalsTarget === "node" ? execApprovalsTargetNodeId : null,
+    }),
+    canSave: () => canAdmin && gatewayBinding.connected,
+    canEdit: () => canAdmin,
+    runtimeConfig: () => context.runtimeConfig,
+    isCurrent: (view) =>
+      view.state === dataState &&
+      view.gateway === context.gateway &&
+      view.epoch === gatewayBinding.readEpoch(),
+    read: (kind) => (kind === "bindings" ? configRead : approvalsSnapshot),
+    run: (kind) =>
+      kind === "bindings"
+        ? context.runtimeConfig.save()
+        : runPageTask((pageState) => saveExecApprovals(pageState, resolveExecApprovalsTarget())),
+    publish: () => publishData(),
   });
   const { scope: inventoryScope, read: inventoryRead } = createDeviceInventoryRead({
     scope: () => ({
@@ -208,10 +233,17 @@ export function DevicesPage(props: { routeData?: DevicesRouteData }) {
   }
   onSettled(() => {
     syncConfigCustody();
-    const stopRoute = context.router.subscribe(inventoryActions.retire);
     // Config receipts record which connection owns the accepted policy draft.
     const stopConfig = configProjection.subscribe(syncConfigCustody);
+    const stopRoute = context.router.subscribe(() => {
+      inventoryActions.retire();
+      const route = context.router.getState();
+      if ((route.pendingMatches[0] ?? route.matches[0])?.routeId !== "devices") {
+        policyActions.retire();
+      }
+    });
     return () => {
+      policyActions.retire();
       inventoryActions.retire();
       stopRoute();
       stopConfig();
@@ -323,6 +355,7 @@ export function DevicesPage(props: { routeData?: DevicesRouteData }) {
   }
 
   function invalidateRequests() {
+    policyActions.retire();
     inventoryActions.retire();
     dataState.requestGeneration = gatewayBinding.epoch;
     dataState.nodesLoading = false;
@@ -384,6 +417,7 @@ export function DevicesPage(props: { routeData?: DevicesRouteData }) {
       void presenceTask.run();
       return;
     }
+    policyActions.retire();
     dataState = {
       ...data.devices,
       client: snapshot.client,
@@ -399,6 +433,7 @@ export function DevicesPage(props: { routeData?: DevicesRouteData }) {
   }
 
   function resetServerState(snapshot: ApplicationGatewaySnapshot) {
+    policyActions.retire();
     inventoryActions.retire();
     dialogs.cancel();
     dataState.requestGeneration += 1;
@@ -440,26 +475,6 @@ export function DevicesPage(props: { routeData?: DevicesRouteData }) {
   function runAdminTask(task: (pageState: DevicesPageDataState) => unknown) {
     if (canAdmin) {
       void runPageTask(task);
-    }
-  }
-
-  function bindNode(nodeId: string | null, agentId?: string) {
-    if (!canAdmin) {
-      return;
-    }
-    const config = context.runtimeConfig;
-    const target =
-      agentId === undefined
-        ? { path: [] }
-        : config.agentEntry(agentId, { ensure: Boolean(nodeId) });
-    if (!target) {
-      return;
-    }
-    const path = [...target.path, "tools", "exec", "node"];
-    if (nodeId) {
-      config.patchForm(path, nodeId);
-    } else {
-      config.removeFormValue(path);
     }
   }
 
@@ -589,6 +604,7 @@ export function DevicesPage(props: { routeData?: DevicesRouteData }) {
     if (dataState !== devices) {
       return;
     }
+    policyActions.retire();
     execApprovalsTarget = kind;
     execApprovalsTargetNodeId = nodeId;
     devices.execApprovalsSnapshot = null;
@@ -617,7 +633,7 @@ export function DevicesPage(props: { routeData?: DevicesRouteData }) {
 
   function viewProps(): DevicesProps {
     const devices = pageData.read();
-    const config = configProjection.read().state;
+    const config = configRead().state;
     const gatewaySnapshot = gatewayBinding.snapshot ?? context.gateway.snapshot;
     return {
       configRead: policyReads.config,
@@ -658,7 +674,7 @@ export function DevicesPage(props: { routeData?: DevicesRouteData }) {
       execApprovalsLoading: devices.execApprovalsLoading,
       execApprovalsSaving: devices.execApprovalsSaving,
       execApprovalsDirty: devices.execApprovalsDirty,
-      execApprovalsSnapshot: devices.execApprovalsSnapshot,
+      execApprovalsSnapshot: approvalsSnapshot(),
       execApprovalsForm: devices.execApprovalsForm,
       execApprovalsSelectedAgent: devices.execApprovalsSelectedAgent,
       execApprovalsTarget,
@@ -691,13 +707,9 @@ export function DevicesPage(props: { routeData?: DevicesRouteData }) {
       onDeviceRename: (device) => void dialogs.editAlias(device),
       onLoadConfig: () => void context.runtimeConfig.discardDraft({ reloadOnly: true }),
       onLoadExecApprovals: refreshExecApprovals,
-      onBindDefault: (nodeId) => bindNode(nodeId),
-      onBindAgent: (agentId, nodeId) => bindNode(nodeId, agentId),
-      onSaveBindings: () => {
-        if (canAdmin && gatewayBinding.connected) {
-          void context.runtimeConfig.save();
-        }
-      },
+      onBindDefault: (nodeId) => policyActions.bindNode(nodeId),
+      onBindAgent: (agentId, nodeId) => policyActions.bindNode(nodeId, agentId),
+      onSaveBindings: () => void policyActions.save("bindings"),
       onExecApprovalsTargetChange: (kind, nodeId) => void changeExecApprovalsTarget(kind, nodeId),
       onExecApprovalsSelectAgent: (agentId) => {
         devices.execApprovalsSelectedAgent = agentId;
@@ -707,8 +719,7 @@ export function DevicesPage(props: { routeData?: DevicesRouteData }) {
         runAdminTask((pageState) => updateExecApprovalsFormValue(pageState, path, value)),
       onExecApprovalsRemove: (path) =>
         runAdminTask((pageState) => removeExecApprovalsFormValue(pageState, path)),
-      onSaveExecApprovals: () =>
-        runAdminTask((pageState) => saveExecApprovals(pageState, resolveExecApprovalsTarget())),
+      onSaveExecApprovals: () => void policyActions.save("approvals"),
     };
   }
 
@@ -732,7 +743,12 @@ export function DevicesPage(props: { routeData?: DevicesRouteData }) {
         </section>
       </ShellLayoutBoundary>
       <SettingsWorkspace>
-        <DevicesView {...view()} inventorySaving={inventoryActions.saving()} />
+        <DevicesView
+          {...view()}
+          inventorySaving={inventoryActions.saving()}
+          configSaving={policyActions.configSaving() || view().configSaving}
+          execApprovalsSaving={policyActions.approvalsSaving() || view().execApprovalsSaving}
+        />
       </SettingsWorkspace>
     </openclaw-devices-page>
   );

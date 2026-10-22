@@ -37,6 +37,7 @@ import {
 } from "./devices-page.test-support.tsx";
 
 const ROTATED_TOKEN = "rotated-operator-token";
+
 describe("DevicesPage gateway lifecycle", () => {
   setupDevicesPageFixtures();
 
