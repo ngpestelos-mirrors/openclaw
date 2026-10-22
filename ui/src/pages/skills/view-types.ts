@@ -21,6 +21,8 @@ export type SkillsProps = {
   state: SkillsState & SkillsPresentation;
   readClawHubDetail: () => ClawHubSkillDetail | null;
   readClawHubVerdicts: () => Record<string, ClawHubSkillSecurityVerdict>;
+  readClawHubSearch: () => boolean;
+  clawhubSearchEpoch: number;
   surface?: "discovery" | "settings";
   libraryEntries?: SkillLibraryEntry[];
   onLibraryOpen?: (skillId: string) => void;
