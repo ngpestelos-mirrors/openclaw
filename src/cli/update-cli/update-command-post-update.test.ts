@@ -502,7 +502,8 @@ describe("successful update finalization ordering", () => {
 
   it("keeps verified activation successful after wrapper retirement fails", () => {
     const result = {
-      status: "ok" as const,
+      status: "skipped" as const,
+      reason: "already-current" as const,
       mode: "npm" as const,
       root: "/tmp/openclaw-update",
       steps: [],
@@ -527,6 +528,7 @@ describe("successful update finalization ordering", () => {
         }),
       ],
     });
+    expect(failure.result.reason).toBeUndefined();
   });
 
   it("reports elapsed time through restart and shell completion refresh", async () => {

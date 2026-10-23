@@ -121,6 +121,8 @@ export function createPostUpdateExceptionResult(
       message: warning,
       result: {
         ...params.result,
+        status: "ok",
+        reason: undefined,
         steps: [
           ...params.result.steps,
           {

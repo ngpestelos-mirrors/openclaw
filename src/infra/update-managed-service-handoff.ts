@@ -358,9 +358,11 @@ async function finishManagedUpdateRun() {
   if (!runLedger || !runOutcome) return;
   if (foregroundParked && runOutcome.status === "succeeded") return;
   if (!ownsManagedUpdateLease()) throw new Error("managed update terminal writer lost its current claim");
+  const compactTerminalValue = (value) => value === undefined ? undefined
+    : JSON.parse(JSON.stringify(value, (_key, nested) =>
+      typeof nested === "string" ? nested.slice(-512) : Array.isArray(nested) ? nested.slice(-8) : nested));
   const compactDiagnosticStep = (step) => {
-    const compact = JSON.parse(JSON.stringify(step, (_key, value) =>
-      typeof value === "string" ? value.slice(-512) : Array.isArray(value) ? value.slice(-8) : value));
+    const compact = compactTerminalValue(step);
     if (Buffer.byteLength(JSON.stringify(compact)) <= 4096) return compact;
     return {
       name: typeof step.name === "string" ? step.name.slice(-256) : "update-step",
@@ -372,7 +374,11 @@ async function finishManagedUpdateRun() {
     };
   };
   const diagnosticSteps = [...(closedUpdateResult?.steps ?? []), ...(recoveryObservation ? [recoveryObservation.step] : [])]
-    .slice(-12).map(compactDiagnosticStep);
+    .slice(-8).map(compactDiagnosticStep);
+  const terminalWarnings = [...runWarnings].slice(-8).map(([step, detail]) => [
+    typeof step === "string" ? step.slice(-256) : "update-warning",
+    typeof detail === "string" ? detail.slice(-512) : String(detail).slice(-512),
+  ]);
   const helperRecordedRecovery = typeof triageFailure?.restored === "boolean";
   const terminalResult = {
     ...runOutcome,
@@ -382,9 +388,10 @@ async function finishManagedUpdateRun() {
     } : {}),
     diagnostics: {
       steps: diagnosticSteps,
-      recovery: closedUpdateResult?.recovery,
-      verification: recoveryObservation?.verification ??
-        (helperRecordedRecovery ? undefined : closedUpdateResult?.verification),
+      recovery: closedUpdateResult?.recovery
+        ? compactTerminalValue(closedUpdateResult.recovery) : undefined,
+      verification: compactTerminalValue(recoveryObservation?.verification ??
+        (helperRecordedRecovery ? undefined : closedUpdateResult?.verification)),
     },
     ...(serviceDowntimeMs !== undefined ? { downtimeMs: serviceDowntimeMs } : {}),
   };
@@ -392,7 +399,7 @@ async function finishManagedUpdateRun() {
   else {
     // Doctor may have advanced the schema. A new process loads the candidate's
     // entire module graph; a cache-busted import would retain old DB readers.
-    const payload = JSON.stringify([terminalRuntimePath, params.runId, terminalResult, [...runWarnings],
+    const payload = JSON.stringify([terminalRuntimePath, params.runId, terminalResult, terminalWarnings,
       path.join(params.cwd, "runtime", ${JSON.stringify(MANAGED_HANDOFF_RUNTIME_ENTRY)}),
       params.updateLeaseDatabaseIdentity, params.updateLeaseKey, params.handoffId, managedUpdateLease.helper]);
     if (Buffer.byteLength(payload) > 64 * 1024) throw new Error("managed update terminal result exceeds the command payload limit");

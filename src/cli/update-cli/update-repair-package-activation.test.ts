@@ -231,6 +231,18 @@ describe.skipIf(process.platform === "win32")(
       expect(fs.readFileSync(resolvePackageActivationJournalPath(f.anchor))).toEqual(before);
     });
 
+    it.each(["publishing", "publication-complete", "aborted"] as const)(
+      "keeps dry-run admission blocked for a candidate in %s phase",
+      async (phase) => {
+        const f = await fixtures.prepare();
+        fs.renameSync(f.packageRoot, path.join(f.anchor, "previous"));
+        fs.renameSync(path.join(f.anchor, "candidate"), f.packageRoot);
+        changeJournal(f.anchor, phase);
+
+        expect(() => assertNoPendingPackageActivation(f.packageRoot, { dryRun: true })).toThrow();
+      },
+    );
+
     it.each([
       "pending intent",
       "publication receipt",

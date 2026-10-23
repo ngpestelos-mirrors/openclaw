@@ -94,7 +94,8 @@ function readPackageActivationContinuation(installKey: string, dryRun?: boolean)
       packageActivationIdentity(installKey, true),
     ) &&
     (packageActivationLeaseChanged(record.descriptor.authority) ||
-      packageActivationIdentity(installKey, true) === record.descriptor.candidate.identity ||
+      (record.phase === "prepared" &&
+        packageActivationIdentity(installKey, true) === record.descriptor.candidate.identity) ||
       (packageActivationIdentity(installKey, true) === record.descriptor.previous.identity &&
         ((record.phase === "prepared" &&
           record.intent === null &&
