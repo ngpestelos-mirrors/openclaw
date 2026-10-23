@@ -102,6 +102,7 @@ it("repairs an admitted legacy config when the core is current without an explic
       steps: [],
       durationMs: 0,
     },
+    legacyConfigPlan: plan,
     requestedChannel: null,
     storedChannel: "beta",
     channel: "beta",
