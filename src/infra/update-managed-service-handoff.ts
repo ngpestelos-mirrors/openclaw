@@ -358,13 +358,24 @@ async function finishManagedUpdateRun() {
   if (!runLedger || !runOutcome) return;
   if (foregroundParked && runOutcome.status === "succeeded") return;
   if (!ownsManagedUpdateLease()) throw new Error("managed update terminal writer lost its current claim");
+  const diagnosticSteps = [...(closedUpdateResult?.steps ?? []), ...(recoveryObservation ? [recoveryObservation.step] : [])]
+    .map((step) => ({
+      ...step,
+      ...(typeof step.stdoutTail === "string" ? { stdoutTail: step.stdoutTail.slice(-2048) } : {}),
+      ...(typeof step.stderrTail === "string" ? { stderrTail: step.stderrTail.slice(-2048) } : {}),
+    }));
+  const helperRecordedRecovery = typeof triageFailure?.restored === "boolean";
   const terminalResult = {
     ...runOutcome,
-    ...(closedUpdateResult ? { reason: closedUpdateResult.reason ?? runOutcome.reason, after: closedUpdateResult.after } : {}),
+    ...(closedUpdateResult ? {
+      reason: runOutcome.reason ?? closedUpdateResult.reason,
+      after: closedUpdateResult.after ?? runOutcome.after,
+    } : {}),
     diagnostics: {
-      steps: [...(closedUpdateResult?.steps ?? []), ...(recoveryObservation ? [recoveryObservation.step] : [])],
+      steps: diagnosticSteps,
       recovery: closedUpdateResult?.recovery,
-      verification: recoveryObservation?.verification ?? closedUpdateResult?.verification,
+      verification: recoveryObservation?.verification ??
+        (helperRecordedRecovery ? undefined : closedUpdateResult?.verification),
     },
     ...(serviceDowntimeMs !== undefined ? { downtimeMs: serviceDowntimeMs } : {}),
   };

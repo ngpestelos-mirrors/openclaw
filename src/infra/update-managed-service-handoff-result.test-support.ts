@@ -47,6 +47,52 @@ export function registerManagedTerminalResultTests(
     },
   );
 
+  itUnix("bounds verbose updater diagnostics before finalizing the ledger", async () => {
+    const output = "diagnostic".repeat(800);
+    const steps = Array.from({ length: 5 }, (_, index) => ({
+      name: `verbose-step-${index}`,
+      command: "fixture command",
+      cwd: "/fixture",
+      durationMs: 10,
+      exitCode: index === 4 ? 1 : 0,
+      stdoutTail: output,
+      stderrTail: output,
+    }));
+    const { run, log } = await runManagedServiceManagerBoundary("systemd", {
+      ledger: true,
+      rollbackRestoration: true,
+      updaterExitCode: 79,
+      helperExitCode: 1,
+      gatewayHealth: "ready",
+      updaterResult: {
+        status: "error",
+        mode: "npm",
+        reason: "restart-unhealthy",
+        before: { version: "1.0.0" },
+        after: { version: "1.0.0" },
+        steps,
+        durationMs: 100,
+        recovery: {
+          serviceRestartSafe: true,
+          packageRollbackVerified: true,
+          version: "1.0.0",
+        },
+      } satisfies UpdateRunResult,
+    });
+
+    expect(log).not.toContain("managed update terminal result exceeds the command payload limit");
+    expect(run).toMatchObject({
+      phase: "finished",
+      status: "rolled-back",
+      reason: "restart-unhealthy",
+    });
+    expect(run?.steps).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ step: "verbose-step-4", status: "failed" }),
+      ]),
+    );
+  });
+
   itUnix.each(
     (["systemd", "launchd"] as const).flatMap((kind) =>
       (["git", "npm"] as const).flatMap((mode) =>

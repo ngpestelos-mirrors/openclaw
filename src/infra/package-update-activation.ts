@@ -93,7 +93,13 @@ function readPackageActivationContinuation(installKey: string, dryRun?: boolean)
     [record.descriptor.previous.identity, record.descriptor.candidate.identity].includes(
       packageActivationIdentity(installKey, true),
     ) &&
-    packageActivationLeaseChanged(record.descriptor.authority)
+    (packageActivationLeaseChanged(record.descriptor.authority) ||
+      packageActivationIdentity(installKey, true) === record.descriptor.candidate.identity ||
+      (packageActivationIdentity(installKey, true) === record.descriptor.previous.identity &&
+        ((record.phase === "prepared" &&
+          record.intent === null &&
+          record.publications.length === 0) ||
+          record.phase === "aborted")))
   ) {
     return undefined;
   }

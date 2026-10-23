@@ -206,6 +206,10 @@ describe.skipIf(process.platform === "win32")(
           reason: "publication-not-started",
         });
         expect(fs.existsSync(f.anchor)).toBe(true);
+        expect(() =>
+          assertNoPendingPackageActivation(f.packageRoot, { dryRun: true }),
+        ).not.toThrow();
+        expect(() => assertNoPendingPackageActivation(f.packageRoot)).toThrow();
 
         await expect(
           settlePendingPackageActivation(f.packageRoot, { automatic: true }),
