@@ -358,12 +358,21 @@ async function finishManagedUpdateRun() {
   if (!runLedger || !runOutcome) return;
   if (foregroundParked && runOutcome.status === "succeeded") return;
   if (!ownsManagedUpdateLease()) throw new Error("managed update terminal writer lost its current claim");
+  const compactDiagnosticStep = (step) => {
+    const compact = JSON.parse(JSON.stringify(step, (_key, value) =>
+      typeof value === "string" ? value.slice(-512) : Array.isArray(value) ? value.slice(-8) : value));
+    if (Buffer.byteLength(JSON.stringify(compact)) <= 4096) return compact;
+    return {
+      name: typeof step.name === "string" ? step.name.slice(-256) : "update-step",
+      command: typeof step.command === "string" ? step.command.slice(-512) : "",
+      cwd: typeof step.cwd === "string" ? step.cwd.slice(-512) : "",
+      durationMs: step.durationMs, exitCode: step.exitCode,
+      ...(step.signal ? { signal: step.signal } : {}),
+      ...(step.termination ? { termination: step.termination } : {}),
+    };
+  };
   const diagnosticSteps = [...(closedUpdateResult?.steps ?? []), ...(recoveryObservation ? [recoveryObservation.step] : [])]
-    .map((step) => ({
-      ...step,
-      ...(typeof step.stdoutTail === "string" ? { stdoutTail: step.stdoutTail.slice(-2048) } : {}),
-      ...(typeof step.stderrTail === "string" ? { stderrTail: step.stderrTail.slice(-2048) } : {}),
-    }));
+    .slice(-12).map(compactDiagnosticStep);
   const helperRecordedRecovery = typeof triageFailure?.restored === "boolean";
   const terminalResult = {
     ...runOutcome,

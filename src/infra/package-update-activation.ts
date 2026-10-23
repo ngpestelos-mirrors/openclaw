@@ -239,8 +239,8 @@ export async function settlePendingPackageActivation(
     return undefined;
   }
   const journal = openPackageActivationJournal(anchor);
-  const admission = await journal.readForRecovery();
-  const initial = admission.record;
+  const admission = options?.dryRun ? undefined : await journal.readForRecovery();
+  const initial = admission?.record ?? journal.read();
   const liveIdentity = packageActivationIdentity(installKey, true);
   const publicationNotStarted =
     initial.descriptor.authority.installKey === installKey &&
@@ -274,7 +274,7 @@ export async function settlePendingPackageActivation(
     journal,
     assertSelected,
     initial,
-    admission.assertUnchanged,
+    admission?.assertUnchanged ?? (() => journal.assertCurrent(initial)),
   ).preflight(initial.phase === "prepared" ? "repair" : "retire");
   const settlement = {
     operationId: initial.descriptor.operationId,
@@ -290,7 +290,7 @@ export async function settlePendingPackageActivation(
     async (executor) => {
       const fence = await executor.enter(initial.descriptor.authority.installKey);
       assertSelected();
-      admission.admit(fence.assertCurrent);
+      admission!.admit(fence.assertCurrent);
       journal.assertCurrent(initial);
       const owner = createPublicationOwner(
         anchor,

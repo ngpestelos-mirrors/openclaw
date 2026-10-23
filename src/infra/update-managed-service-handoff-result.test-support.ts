@@ -48,13 +48,13 @@ export function registerManagedTerminalResultTests(
   );
 
   itUnix("bounds verbose updater diagnostics before finalizing the ledger", async () => {
-    const output = "diagnostic".repeat(800);
-    const steps = Array.from({ length: 5 }, (_, index) => ({
+    const output = "diagnostic".repeat(25);
+    const steps = Array.from({ length: 120 }, (_, index) => ({
       name: `verbose-step-${index}`,
       command: "fixture command",
       cwd: "/fixture",
       durationMs: 10,
-      exitCode: index === 4 ? 1 : 0,
+      exitCode: index === 119 ? 1 : 0,
       stdoutTail: output,
       stderrTail: output,
     }));
@@ -88,7 +88,7 @@ export function registerManagedTerminalResultTests(
     });
     expect(run?.steps).toEqual(
       expect.arrayContaining([
-        expect.objectContaining({ step: "verbose-step-4", status: "failed" }),
+        expect.objectContaining({ step: "verbose-step-119", status: "failed" }),
       ]),
     );
   });
