@@ -43,9 +43,10 @@ it("selects an exact compatible even release from unordered upstream metadata", 
     await resolveTargetNodeRuntime({ engine: ">=26.12.1", recovery: { env: {}, installCommand } }),
   ).toBe("/owned/private-node");
   const selected = vi.mocked(findUsableNodeRuntime).mock.calls[1]?.[0];
-  expect(selected).toMatchObject({ allowInstall: true, nodeVersion: "26.8.1", installCommand });
+  expect(selected).toMatchObject({ allowInstall: true, nodeVersion: "26.12.1", installCommand });
   expect(selected?.acceptVersion?.("24.20.0")).toBe(false);
-  expect(selected?.acceptVersion?.("26.8.1")).toBe(true);
+  expect(selected?.acceptVersion?.("26.8.1")).toBe(false);
+  expect(selected?.acceptVersion?.("26.12.1")).toBe(true);
 });
 
 it.each(["no compatible release", "upstream unavailable", "oversized response"] as const)(
