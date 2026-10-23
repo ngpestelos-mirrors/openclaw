@@ -1117,7 +1117,7 @@ export const en: TranslationMap & {
     closeTab: "Close tab",
     untitledTab: {},
     tweetPost: "Post on X",
-    openPost: {},
+    openPost: "Open post",
     back: {},
     forward: {},
     reload: {},
