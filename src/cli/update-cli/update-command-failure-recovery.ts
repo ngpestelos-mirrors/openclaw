@@ -198,6 +198,7 @@ export async function verifyUpdateFailureRecovery(params: {
         params.assertCurrent?.();
       }
       const validation = await verifyUpdatedGateway({
+        nodeRunner: params.nodeRunner,
         result,
         opts: params.opts,
         purpose: "recovery",

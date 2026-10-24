@@ -186,7 +186,16 @@ updaters. Positive handoff descendants, OpenClaw identities, and retained-runtim
 path holders also block repair. This does not relax Doctor's artifact-custody
 checks or remove retained recovery data.
 
-If the retained verifier cannot authenticate to the restarted Gateway, it stops
+Gateway readiness checks use the updated installation's CLI when it supports
+delegated verification. This keeps protocol and configuration reads aligned with
+the running Gateway, while the original updater retains recovery and history
+ownership. Older channel or tag targets keep their existing verification path.
+Both the installed updater and target must support this handoff: a new candidate
+cannot repair an older updater's already-running checks, and protocol-crossing
+downgrades to older targets retain that limitation. After a failed updater exits,
+inspect `openclaw update status` and use the installed CLI's `openclaw update repair`.
+
+If the verifier cannot authenticate to the restarted Gateway, it stops
 retrying that rejection. Local HTTP readiness and runtime version/build identity
 can verify activation instead, with an RPC authentication warning recorded in
 the update result. This does not change Gateway authentication or pairing.

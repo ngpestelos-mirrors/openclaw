@@ -7,6 +7,7 @@ import { STARTUP_MIGRATION_LEASE_TTL_MS } from "../../infra/startup-migration-ch
 import { readBuiltGatewayBuildId } from "../../infra/update-git-runtime.js";
 import { recordUpdateRunStep } from "../../infra/update-run-ledger.js";
 import type { UpdateRunStep } from "../../infra/update-run-record.js";
+import type { UpdateRecoveryFence } from "../../infra/update-run-recovery.js";
 import { redactSupportDiagnosticLine } from "../../logging/diagnostic-support-redaction.js";
 import {
   CommandProcessCleanupError,
@@ -31,7 +32,12 @@ import {
 } from "../daemon-cli/restart-health.js";
 import type { UpdateCommandOptions } from "./shared.js";
 import type { PostUpdateLaunchAgentRecoveryResult } from "./update-command-launch-agent-recovery.js";
+import type {
+  UpdateReadinessObservation,
+  UpdateReadinessRequest,
+} from "./update-command-readiness-protocol.js";
 import { UpdateCommandRecoveryPendingError } from "./update-command-recovery-error.js";
+import { prepareUpdatedInstallGatewayReadiness } from "./update-command-service-command.js";
 import {
   gatewayServiceCommandUsesRoot,
   resolveUpdatedGatewayRestartPort,
@@ -108,6 +114,8 @@ export async function verifyPreviousGatewayForUpdate(params: {
       const expectedVersion = params.expectedVersion ?? installedVersion;
       progress("readiness", `checking service and listener identity on port ${port}`);
       const { health, readyz, http } = await observeUpdateGatewayReadiness({
+        targetRoot: params.root,
+        executor: params.opts.run?.executorFence,
         serviceEnv: env,
         gatewayPort: port,
         expectedVersion: expectedVersion ?? undefined,
@@ -183,6 +191,9 @@ export function captureUpdateGatewayReadinessOwner(params: {
 }
 
 export type UpdateGatewayReadinessParams = {
+  targetRoot?: string;
+  executor?: UpdateRecoveryFence;
+  nodeRunner?: string;
   serviceEnv: NodeJS.ProcessEnv;
   gatewayPort: number;
   timeoutMs?: number;
@@ -230,7 +241,11 @@ export function gatewayReadinessPending(health: GatewayRestartSnapshot): boolean
 }
 
 /** Observe one ready generation before activation or after restart, without recording a verdict. */
-export async function observeUpdateGatewayReadiness(params: UpdateGatewayReadinessParams) {
+export async function observeUpdateGatewayReadiness(params: UpdateGatewayReadinessParams): Promise<
+  UpdateReadinessObservation & {
+    launchAgentRecovery: PostUpdateLaunchAgentRecoveryResult | null;
+  }
+> {
   const waitForStartup = params.waitForStartup !== false;
   const { deadlineMs: timeoutMs } = resolveGatewayStartupTiming(process.platform, {
     timeoutMs: params.timeoutMs,
@@ -251,6 +266,7 @@ export async function observeUpdateGatewayReadiness(params: UpdateGatewayReadine
       : Math.min(remainingMs(), params.probeTimeoutMs ?? GATEWAY_RESTART_PROBE_TIMEOUT_MS);
   const assertCurrent = () => {
     deadline.signal.throwIfAborted();
+    params.executor?.assertCurrent();
     params.assertCurrent?.();
   };
   const service = resolveGatewayService();
@@ -321,6 +337,57 @@ export async function observeUpdateGatewayReadiness(params: UpdateGatewayReadine
   try {
     const readiness = await deadline.run(async () => {
       assertCurrent();
+      const target =
+        params.targetRoot && params.executor
+          ? await prepareUpdatedInstallGatewayReadiness({
+              root: params.targetRoot,
+              executor: params.executor,
+              serviceEnv: params.serviceEnv,
+              nodeRunner: params.nodeRunner,
+              timeoutMs: Math.max(1, remainingMs()),
+              signal: deadline.signal,
+              assertCurrent,
+              onProgress: params.onProgress,
+            })
+          : undefined;
+      assertCurrent();
+      if (target) {
+        const observe = (healthOnly = params.healthOnly) =>
+          deadline.read("target readiness", () => {
+            assertCurrent();
+            const request: UpdateReadinessRequest = {
+              gatewayPort: params.gatewayPort,
+              timeoutMs: Math.max(1, remainingMs()),
+              probeTimeoutMs: params.probeTimeoutMs,
+              expectedVersion: params.expectedVersion,
+              expectedBuildId: params.expectedBuildId,
+              requireRunningService: params.requireRunningService,
+              requirePluginHealth: params.requirePluginHealth,
+              waitForStartup: params.waitForStartup,
+              healthOnly,
+            };
+            return target(request);
+          });
+        let observed = await observe();
+        assertCurrent();
+        // Read-only candidate work cannot perform the parent's admitted service recovery.
+        if (
+          !params.healthOnly &&
+          params.recoverHealth &&
+          !gatewayReadinessPending(observed.health)
+        ) {
+          const recovered = await params.recoverHealth(
+            observed.health,
+            async () => (await observe(true)).health,
+            assertCurrent,
+          );
+          assertCurrent();
+          launchAgentRecovery = recovered.launchAgentRecovery;
+          if (recovered.health !== observed.health) observed = await observe();
+        }
+        assertCurrent();
+        return { ...observed, launchAgentRecovery };
+      }
       health = params.health ?? (await readHealth());
       retainChannelTimeouts(health);
       if (params.healthOnly) {

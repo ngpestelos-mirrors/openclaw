@@ -1,9 +1,11 @@
 import { readByteStreamWithLimit } from "@openclaw/media-core/read-byte-stream-with-limit";
 import { isRecord } from "@openclaw/normalization-core/record-coerce";
+import { resolveStateDir } from "../../config/paths.js";
 import { withGatewayServiceRebindCapture } from "../../daemon/service-rebind.js";
 import { withGatewayServiceUpdateAuthority } from "../../daemon/service-update-authority.js";
 import { resolveOpenClawPackageRoot } from "../../infra/openclaw-root.js";
 import { resolveUpdateInstallRoot } from "../../infra/update-install-root.js";
+import { redactSupportDiagnosticLine } from "../../logging/diagnostic-support-redaction.js";
 import { ExitError } from "../../runtime.js";
 import {
   withDelegatedUpdateCommandExecutor,
@@ -11,7 +13,7 @@ import {
 } from "../update-cli/update-command-executor.js";
 import { writeGatewayServiceUpdateCapability } from "./update-capability.js";
 
-type NativeUpdateAction = "install" | "restart" | "stop";
+type NativeUpdateAction = "install" | "restart" | "stop" | "status";
 
 /** Private stdin is withheld by the updater until the actual PID/start is bound.
  * A capability probe never loads the action implementation or consumes a grant. */
@@ -68,6 +70,38 @@ export async function runGatewayServiceUpdateCommand(
       resolveUpdateInstallRoot(grant.root) !== targetRoot
     ) {
       throw new Error("Native update receiver installation binding does not match its target.");
+    }
+    if (action === "status") {
+      if (input.originalDefinition !== undefined || input.originalRuntimePin !== undefined) {
+        throw new Error("Readiness observation cannot rebind a service.");
+      }
+      const { UpdateReadinessRequestSchema, UpdateReadinessObservationSchema } =
+        await import("../update-cli/update-command-readiness-protocol.js");
+      const request = UpdateReadinessRequestSchema.parse(input.readiness);
+      await withDelegatedUpdateCommandExecutor(grant, grant.runId, grant.root, async (fence) => {
+        const { observeUpdateGatewayReadiness } =
+          await import("../update-cli/update-command-readiness.js");
+        fence.assertCurrent();
+        let lastProgressAt = -Infinity;
+        const observation = await observeUpdateGatewayReadiness({
+          ...request,
+          serviceEnv: process.env,
+          assertCurrent: fence.assertCurrent,
+          onProgress: (stage, reason) => {
+            if (performance.now() - lastProgressAt < 30_000) return;
+            lastProgressAt = performance.now();
+            process.stderr.write(
+              `Gateway readiness (${stage}): ${redactSupportDiagnosticLine(reason, {
+                env: process.env,
+                stateDir: resolveStateDir(process.env),
+              })}\n`,
+            );
+          },
+        });
+        fence.assertCurrent();
+        process.stdout.write(JSON.stringify(UpdateReadinessObservationSchema.parse(observation)));
+      });
+      return;
     }
     // Destination admission never replaces the original installation's live authority.
     await withDelegatedUpdateCommandExecutor(grant, grant.runId, grant.root, async (fence) =>

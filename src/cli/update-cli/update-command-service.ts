@@ -361,6 +361,7 @@ export async function maybeRestartService(params: {
   ) => {
     recordPhase("verifying");
     const verification = await verifyUpdatedGateway({
+      nodeRunner: activation.nodeRunner,
       result: activation.result,
       opts: activation.opts,
       serviceEnv: activation.serviceEnv,
@@ -411,6 +412,8 @@ export async function maybeRestartService(params: {
           health = await reinspect();
         }
         const recovery = await recoverLaunchAgentAndRecheckGatewayHealth({
+          targetRoot: activation.result.root ?? undefined,
+          nodeRunner: activation.nodeRunner,
           onGatewayStartAttempted: params.onGatewayStartAttempted,
           updateRun: params.opts.run,
           assertCurrent: assertReadinessCurrent,
@@ -514,6 +517,9 @@ export async function maybeRestartService(params: {
         ) {
           recordPhase("verifying");
           const { health } = await observeUpdateGatewayReadiness({
+            targetRoot: activation.result.root ?? undefined,
+            executor: activation.opts.run?.executorFence,
+            nodeRunner: activation.nodeRunner,
             healthOnly: true,
             gatewayPort: activation.gatewayPort,
             timeoutMs: activation.timeoutMs,

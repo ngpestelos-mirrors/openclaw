@@ -223,6 +223,8 @@ export async function verifyUpdatedGateway(
   const { proofOptions, assertCurrent } = captureUpdateGatewayReadinessOwner(params);
   const { health, readyz, http, launchAgentRecovery } = await observeUpdateGatewayReadiness({
     ...params,
+    targetRoot: params.result.root ?? undefined,
+    executor: params.opts.run?.executorFence,
     assertCurrent,
     deadline: params.opts.run?.deadline ?? params.deadline,
   });
