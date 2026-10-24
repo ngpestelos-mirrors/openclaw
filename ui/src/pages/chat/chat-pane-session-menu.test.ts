@@ -200,31 +200,36 @@ describe("chat pane session menu boundary", () => {
     }
   });
 
-  it("pins a readable conversation in personal navigation without a session mutation", async () => {
-    const row: GatewaySessionRow = {
-      key: "agent:main:current",
-      sessionId: "current-session",
-      kind: "direct",
-      sharingRole: "viewer",
-      pinned: true,
-    };
-    const patch = vi.fn(async () => ({}));
-    const { pane, state } = createTestChatPane({
-      client: createGatewayBrowserClientFixture(),
-      sessions: createSessionCapabilityFixture({
-        patch,
-        state: { result: sessionsResult([row], 1) },
-      }),
-    });
-    state.sessionKey = row.key;
-    state.sessionsResult = sessionsResult([row], 1);
-    await pane.handleHeaderSessionAction({ kind: "toggle-pin" }, row);
-    expect(pane.context.navigation.snapshot.sidebarEntries).toContain("session:" + row.key);
-    expect(patch).not.toHaveBeenCalled();
-    await pane.handleHeaderSessionAction({ kind: "toggle-pin" }, row);
-    expect(pane.context.navigation.snapshot.sidebarEntries).not.toContain("session:" + row.key);
-    expect(row.pinned).toBe(true);
-  });
+  it.each(["connected", "reconnecting"] as const)(
+    "pins a readable conversation in personal navigation while %s without a session mutation",
+    async (phase) => {
+      const row: GatewaySessionRow = {
+        key: "agent:main:current",
+        sessionId: "current-session",
+        kind: "direct",
+        sharingRole: "viewer",
+        pinned: true,
+      };
+      const patch = vi.fn(async () => ({}));
+      const { pane, state } = createTestChatPane({
+        client: createGatewayBrowserClientFixture(),
+        sessions: createSessionCapabilityFixture({
+          patch,
+          state: { result: sessionsResult([row], 1) },
+        }),
+      });
+      state.sessionKey = row.key;
+      state.sessionsResult = sessionsResult([row], 1);
+      pane.context.gateway.snapshot.phase = phase;
+      state.connected = phase === "connected";
+      await pane.handleHeaderSessionAction({ kind: "toggle-pin" }, row);
+      expect(pane.context.navigation.snapshot.sidebarEntries).toContain("session:" + row.key);
+      expect(patch).not.toHaveBeenCalled();
+      await pane.handleHeaderSessionAction({ kind: "toggle-pin" }, row);
+      expect(pane.context.navigation.snapshot.sidebarEntries).not.toContain("session:" + row.key);
+      expect(row.pinned).toBe(true);
+    },
+  );
   it("retains menu children and reads current callbacks after a header refresh", async () => {
     const { pane, state } = createTestChatPane({
       client: createGatewayBrowserClientFixture(),

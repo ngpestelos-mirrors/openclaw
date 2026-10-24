@@ -229,9 +229,6 @@ export abstract class ChatPaneSessionMenu extends ChatPaneContext {
       return;
     }
     if (action.kind === "toggle-pin") {
-      if (this.context.gateway.snapshot.phase !== "connected") {
-        return;
-      }
       const current = this.state ? selectedChatSessionRow(this.state) : undefined;
       if (
         !current ||

@@ -3,6 +3,7 @@ import type { ApplicationGateway } from "../../app/gateway.ts";
 import { t } from "../../i18n/index.ts";
 import { formatUiError } from "../format-error.ts";
 import { showToast } from "../toast.ts";
+import type { SessionPatchResult, SessionPatchRoute } from "./patch.ts";
 import type { readSessionChangedEvent } from "./reconcile.ts";
 import {
   normalizeAgentId,
@@ -29,6 +30,7 @@ export type Deletion = {
   rows: WeakMap<object, { row: GatewaySessionRow; index: number }>;
   operation?: Promise<SessionDeleteOutcome>;
   deferredToken?: symbol;
+  archiveBeforeDelete?: boolean;
 };
 
 type DeletionOwner = {
@@ -41,6 +43,7 @@ type DeletionOwner = {
 type DeletionHost = {
   defer: ApplicationGateway["defer"];
   connection: SessionConnectionOwner;
+  patchNow: (...args: Parameters<SessionPatchRoute>) => Promise<SessionPatchResult | null>;
   snapshot: () => SessionGateway["snapshot"];
   requestRevision: () => number;
   readState: () => SessionState;
@@ -60,7 +63,7 @@ type DeletionHost = {
 
 export type SessionDeletionOperationsHost = Pick<
   DeletionHost,
-  "connection" | "reconcileMutation" | "reconcilePreviousConnection"
+  "connection" | "patchNow" | "reconcileMutation" | "reconcilePreviousConnection"
 > & {
   owns: (deletion: Deletion) => boolean;
   rollback: (deletion: Deletion) => void;
@@ -194,6 +197,7 @@ export function createSessionDeletions(host: DeletionHost) {
   };
   const operationsHost: SessionDeletionOperationsHost = {
     connection: host.connection,
+    patchNow: host.patchNow,
     reconcileMutation: host.reconcileMutation,
     reconcilePreviousConnection: host.reconcilePreviousConnection,
     owns,
@@ -263,10 +267,10 @@ export function createSessionDeletions(host: DeletionHost) {
             (candidate) =>
               candidate.key === conversation.sessionKey && candidate.sessionId === record.sessionId,
           );
-          // A replaced offline archive never reached the Gateway. Do not send
-          // its optimistic archive-only precondition with the winning delete.
-          if (row && !row.archived) {
-            record.target.archivedOnly = undefined;
+          // Preserve archive-only authorization when coalescing an unsent archive.
+          // Its prerequisite runs inside this same lifecycle slot before deletion.
+          if (record.target.archivedOnly && row && !row.archived) {
+            record.archiveBeforeDelete = true;
           }
           record.phase = "pending";
           (result.queued ??= []).push(target.key);

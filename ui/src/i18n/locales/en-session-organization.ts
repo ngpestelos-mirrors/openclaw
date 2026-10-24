@@ -331,9 +331,10 @@ const enSessionOrganization = {
       "Worker stop requested. Review the initial message before retrying.",
     deleteSessionMenu: "Delete…",
     deleteSessionCount: "Delete {count}…",
-    deleteSessionStale: en.sessionsView.deleteSessionStale,
+    deleteSessionStale: 'Gateway connection replaced before "{session}" was deleted. Try again.',
     deleteSessionIdentityMissing: en.sessionsView.deleteSessionIdentityMissing,
-    deleteSessionsStale: en.sessionsView.deleteSessionsStale,
+    deleteSessionsStale:
+      "Gateway connection replaced before {count} sessions were deleted. Try again.",
     groupBy: "Group by",
     groupByNone: "None",
     groupByCategory: "Custom groups",

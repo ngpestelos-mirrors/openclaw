@@ -4,6 +4,7 @@ import { SESSION_ARCHIVE_REQUEST_OPTIONS } from "../../../../src/shared/session-
 import { GatewayRequestError } from "../../api/gateway.ts";
 import type { GatewaySessionRow } from "../../api/types.ts";
 import { t } from "../../i18n/index.ts";
+import { registerSessionOrganizationEnglish } from "../../i18n/locales/en-session-organization.ts";
 import { formatUiError } from "../format-error.ts";
 import { showToast } from "../toast.ts";
 import type { Deletion, SessionDeletionOperationsHost } from "./session-deletions.ts";
@@ -14,6 +15,8 @@ import type {
   SessionDeleteBatchResult,
   SessionDeleteTarget,
 } from "./session-types.ts";
+
+registerSessionOrganizationEnglish();
 
 function performSessionDelete(
   deletion: Deletion,
@@ -55,6 +58,20 @@ function performSessionDelete(
       }
     };
     try {
+      if (deletion.archiveBeforeDelete) {
+        const archived = await host.patchNow(target.key, { archived: true }, target);
+        if (!host.owns(deletion)) {
+          return { deleted: false };
+        }
+        if (!host.connection.isCurrent(scope)) {
+          host.rollback(deletion);
+          return { deleted: false };
+        }
+        if (!archived) {
+          throw new Error(t("sessionsView.deleteSessionStale", { session: target.key }));
+        }
+        deletion.archiveBeforeDelete = false;
+      }
       const response = await scope.client.request<SessionsDeleteResult>(
         "sessions.delete",
         {

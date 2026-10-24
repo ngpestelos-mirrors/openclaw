@@ -1,5 +1,7 @@
 // @vitest-environment node
 import { afterEach, beforeEach, expect, it, onTestFinished, vi } from "vitest";
+import { roleScopesAllow } from "../../../../src/shared/operator-scope-compat.js";
+import { resolveBaseSessionMutationRequiredScope } from "../../../../src/shared/session-method-scopes-base.js";
 import { createDeferred } from "../../../../test/helpers/promise.js";
 import { GatewayRequestError } from "../../api/gateway.ts";
 import type { GatewaySessionRow } from "../../api/types.ts";
@@ -24,7 +26,7 @@ beforeEach(() => {
 });
 afterEach(() => vi.unstubAllGlobals());
 
-async function setup(archived = false) {
+async function setup(archived = false, scopes = ["operator.admin"]) {
   const store = createGatewayStoreTestStore();
   store.gateway.start();
   const client = store.current();
@@ -38,7 +40,7 @@ async function setup(archived = false) {
       "sessions.list",
       "sessions.subscribe",
     ]),
-    auth: { role: "operator", scopes: ["operator.admin"], recoveryScope: "lifecycle-owner" },
+    auth: { role: "operator", scopes, recoveryScope: "lifecycle-owner" },
   };
   let row: GatewaySessionRow | null = {
     key: "agent:main:offline",
@@ -53,17 +55,44 @@ async function setup(archived = false) {
   let reject = false;
   let missingReject = false;
   client.request.mockImplementation(async (method, params) => {
+    const requiredScope = resolveBaseSessionMutationRequiredScope(method, params);
+    if (
+      requiredScope &&
+      !roleScopesAllow({
+        role: hello.auth.role,
+        requestedScopes: [requiredScope],
+        allowedScopes: hello.auth.scopes,
+      })
+    ) {
+      throw new Error(`Missing scope: ${requiredScope}`);
+    }
     if (method === "sessions.list") {
       return sessionsResult(row ? [{ ...row }] : []);
     }
     if (method === "sessions.describe") {
       return { session: row };
     }
+    if (method === "sessions.subscribe") {
+      return { subscribed: true };
+    }
     if (method === "sessions.patch") {
       if (reject) {
         throw new Error("Lifecycle denied");
       }
-      row = { ...row!, ...(params as Partial<GatewaySessionRow>), updatedAt: 2 };
+      if (!row) {
+        throw new GatewayRequestError({
+          code: "INVALID_REQUEST",
+          message: "Session changed before patch. Retry.",
+          details: { reason: "session-changed" },
+        });
+      }
+      const patch = params as Partial<GatewaySessionRow>;
+      row = {
+        ...row,
+        ...patch,
+        ...(patch.archived === true ? { pinned: false } : {}),
+        updatedAt: 2,
+      };
       return { ok: true, key: row.key, path: "", entry: { ...row } };
     }
     if (method === "sessions.delete") {
@@ -251,8 +280,81 @@ it.each(["unarchive", "delete"])(
     expect(h.row()?.archived).toBe(last === "delete" ? undefined : false);
     h.reconnect();
     await vi.waitFor(() => expect(h.gateway.snapshot.deferredIntentDraining).toBe(false));
-    expect(h.writes()).toHaveLength(1);
-    expect(h.writes()[0]?.[0]).toBe(last === "delete" ? "sessions.delete" : "sessions.patch");
+    expect(h.writes().map(([method]) => method)).toEqual(
+      last === "delete" ? ["sessions.patch", "sessions.delete"] : ["sessions.patch"],
+    );
+    expect(h.writes()[0]?.[1]).toMatchObject({ ...h.target, archived: last === "delete" });
+    if (last === "delete") {
+      expect(h.writes()[1]?.[1]).toMatchObject({ ...h.target, archivedOnly: true });
+    }
+  },
+);
+
+it.each(["deleted", "delete rejected", "connection replaced", "already gone"] as const)(
+  "preserves the write-scope archive prerequisite when the offline delete is %s",
+  async (outcome) => {
+    const h = await setup(false, ["operator.write"]);
+    h.offline();
+    await h.patch(true);
+    expect(
+      readSessionMethodAccess(h.gateway.snapshot, {
+        method: "sessions.delete",
+        params: { key: "agent:main:offline", ...h.target, archivedOnly: true },
+        allowDeferred: true,
+        session: h.row(),
+      }).allowed,
+    ).toBe(true);
+    await h.delete();
+    expect(h.gateway.snapshot.deferredIntentCount).toBe(1);
+    expect(h.row()).toBeUndefined();
+    if (outcome === "already gone") {
+      h.gone(true);
+    }
+    const request = h.current().request.getMockImplementation()!;
+    h.current().request.mockImplementation(async (method, params) => {
+      const result = await request(method, params);
+      if (method === "sessions.patch") {
+        if (outcome === "delete rejected") {
+          h.reject();
+        } else if (outcome === "connection replaced") {
+          h.replace();
+        }
+      }
+      return result;
+    });
+    const originalClient = h.current();
+    h.reconnect();
+    await vi.waitFor(() =>
+      expect(h.gateway.snapshot).toMatchObject({
+        deferredIntentCount: 0,
+        deferredIntentDraining: false,
+      }),
+    );
+    const writes = originalClient.request.mock.calls.filter(
+      ([method]) => method === "sessions.patch" || method === "sessions.delete",
+    );
+    expect(writes.map(([method]) => method)).toEqual(
+      outcome === "already gone" || outcome === "connection replaced"
+        ? ["sessions.patch"]
+        : ["sessions.patch", "sessions.delete"],
+    );
+    expect(writes[0]?.[1]).toMatchObject({ ...h.target, archived: true });
+    if (outcome === "connection replaced") {
+      h.reconnect();
+      await h.sessions.refresh({ agentId: "main", force: true });
+      expect(h.writes()).toEqual([]);
+      expect(h.row()?.archived).toBe(true);
+    } else if (outcome === "delete rejected") {
+      expect(h.row()).toMatchObject({ archived: true, pinned: false });
+      expect(h.sessions.state.error).toContain("Lifecycle denied");
+    } else {
+      expect(h.row()).toBeUndefined();
+      expect(h.sessions.deletionState("agent:main:offline")).toBe("confirmed");
+      expect(h.sessions.state.error).toBeNull();
+    }
+    if (writes[1]) {
+      expect(writes[1][1]).toMatchObject({ ...h.target, archivedOnly: true });
+    }
   },
 );
 
@@ -301,7 +403,10 @@ it("reports targets without an identity while queuing the rest of an offline del
   const h = await setup();
   h.offline();
   const missing = { key: "agent:main:missing", agentId: "main" };
-  const result = await h.sessions.deleteMany([missing, { key: "agent:main:offline", ...h.target }]);
+  const operation = h.sessions.deleteMany([missing, { key: "agent:main:offline", ...h.target }]);
+  expect(h.row()).toBeUndefined();
+  expect(h.gateway.snapshot.deferredIntentCount).toBe(1);
+  const result = await operation;
   const message =
     'Cannot queue deletion of "agent:main:missing" without its session identity. Refresh after reconnecting and try again.';
   expect(result.errors).toEqual([{ target: missing, error: new Error(message) }]);

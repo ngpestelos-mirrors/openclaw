@@ -16,7 +16,7 @@ import {
 import type {
   SessionPatch,
   SessionPatchOptions,
-  SessionPatchOutcome,
+  SessionPatchResult,
   SessionPatchRoute,
 } from "./patch.ts";
 import { mapSessionResultRows } from "./reconcile.ts";
@@ -175,7 +175,7 @@ export function createSessionMutations(host: SessionMutationsHost) {
     key: string,
     patchParams: SessionPatch,
     options: SessionPatchOptions = {},
-  ): Promise<SessionPatchOutcome | null> => {
+  ): Promise<SessionPatchResult | null> => {
     const scope = host.connection.capture();
     if (!scope) {
       return null;
@@ -641,6 +641,7 @@ export function createSessionMutations(host: SessionMutationsHost) {
       modelOverrides.set(key, undefined);
     },
     patch,
+    patchNow,
     settingsPreview(this: void, key: string, agentId?: string) {
       const conversation = resolvePendingConversation(host.snapshot(), key, agentId);
       return conversation ? settingsPatches.read(conversation.identity) : undefined;

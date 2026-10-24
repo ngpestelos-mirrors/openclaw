@@ -342,6 +342,7 @@ export function createSessionCapability(
 
   const deletions = createSessionDeletions({
     connection,
+    patchNow: mutations.patchNow,
     defer: (intent) => gateway.defer?.(intent) ?? false,
     snapshot: () => gateway.snapshot,
     requestRevision: () => roster.requestRevision,
