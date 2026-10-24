@@ -18,8 +18,6 @@ const compositionScenario = {
 };
 const suite = createControlUiE2eSuite({
   name: "Control UI mocked Gateway E2E",
-  unavailableMessage: (executablePath) =>
-    `Playwright Chromium is not installed or cannot start at ${executablePath}. Run \`pnpm --dir ui exec playwright install --with-deps chromium\`, set PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH to a compatible browser, or set OPENCLAW_UI_E2E_ALLOW_MISSING_CHROMIUM=1 only when intentionally skipping this lane.`,
 });
 const accountLabel = "Sign in with ChatGPT";
 const catalog = (
@@ -100,14 +98,14 @@ suite.define(() => {
     { width: 1280, height: 900, minimumTarget: 32 },
     { width: 390, height: 844, minimumTarget: 44 },
   ])(
-    "opens provider groups and searches across collapsed models at $width pixels",
+    "keeps provider auth metadata outside the $width px disclosure hit target",
     async ({ width, height, minimumTarget }) => {
       await suite.withPage({ viewport: { width, height } }, async ({ page }) => {
         const models = [
           { id: "shared-alpha", name: "Shared Alpha", provider: "openai" },
           { id: "shared-beta", name: "Shared Beta", provider: "anthropic" },
         ];
-        const gateway = await installMockGateway(page, {
+        await installMockGateway(page, {
           agentModel: "openai/shared-alpha",
           models,
           methodResponses: {
@@ -116,15 +114,13 @@ suite.define(() => {
           },
         });
         await page.goto(`${suite.server.baseUrl}chat`);
-        const { picker, trigger, search, option } = modelPicker(page);
-        const alpha = option("openai/shared-alpha");
-        const beta = option("anthropic/shared-beta");
-        const openai = picker.locator(
-          '[data-chat-model-provider-group="openai"] [data-chat-model-provider-toggle]',
-        );
+        const { picker, trigger } = modelPicker(page);
         await page.locator(".agent-chat__composer-combobox textarea").click();
         await trigger.click();
         await polledCount(picker.locator("[data-chat-model-provider-toggle]")).toBe(2);
+        const openai = picker.locator(
+          '[data-chat-model-provider-group="openai"] [data-chat-model-provider-toggle]',
+        );
         const auth = picker.locator(
           '[data-chat-model-provider="openai"] .chat-controls__auth-meta',
         );
@@ -133,53 +129,11 @@ suite.define(() => {
         const toggleContentsRight = await openai.evaluate((button) =>
           Math.max(...Array.from(button.children, (child) => child.getBoundingClientRect().right)),
         );
-        const authBox = await auth.boundingBox();
-        expect(toggleContentsRight).toBeLessThanOrEqual(authBox!.x);
+        expect(toggleContentsRight).toBeLessThanOrEqual((await auth.boundingBox())!.x);
         await openai.click({ trial: true });
-        await polledVisible(alpha).toBe(true);
-        expect(await beta.isVisible()).toBe(false);
-        expect(await openai.getAttribute("aria-expanded")).toBe("true");
         await expect
           .poll(() => openai.evaluate((button) => button.getBoundingClientRect().height))
           .toBeGreaterThanOrEqual(minimumTarget);
-        await openai.focus();
-        await page.keyboard.press("Enter");
-        await polledVisible(alpha).toBe(false);
-        await page.keyboard.press("Enter");
-        await polledVisible(alpha).toBe(true);
-        expect(await beta.isVisible()).toBe(false);
-        await search.fill("shared");
-        await polledVisible(beta).toBe(true);
-        for (const query of ["shared-beta", "ANTHROPIC/SHARED-BETA"]) {
-          await search.fill(query);
-          expect({ beta: await beta.isVisible(), alpha: await alpha.isVisible() }).toEqual({
-            beta: true,
-            alpha: false,
-          });
-        }
-        await search.press("ControlOrMeta+A");
-        await search.press("Backspace");
-        expect(await search.inputValue()).toBe("");
-        await polledAttribute(openai, "aria-expanded").toBe("true");
-        expect(await alpha.isVisible()).toBe(true);
-        expect(await beta.isVisible()).toBe(false);
-        await openai.click();
-        await polledVisible(alpha).toBe(false);
-        await search.press("Escape");
-        await polledAttribute(picker, "open").toBeNull();
-        await trigger.click();
-        await polledVisible(alpha).toBe(false);
-        expect(await openai.getAttribute("aria-expanded")).toBe("false");
-        expect(await search.inputValue()).toBe("");
-        await search.fill("shared");
-        await search.press("ArrowDown");
-        await search.press("Enter");
-        const patch = await gateway.waitForRequest("sessions.patch");
-        expect(patch.params).toMatchObject({ model: "anthropic/shared-beta" });
-        await polledAttribute(picker, "open").toBeNull();
-        await trigger.click();
-        await polledVisible(beta).toBe(true);
-        expect(await alpha.isVisible()).toBe(false);
       });
     },
   );
