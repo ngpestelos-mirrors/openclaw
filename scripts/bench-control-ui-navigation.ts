@@ -43,6 +43,7 @@ const { values } = parseArgs({
     intent: { type: "string", default: "none" },
     "intent-ms": { type: "string", default: "150" },
     aa: { type: "boolean", default: false },
+    "boot-only": { type: "boolean", default: false },
     trace: { type: "boolean", default: false },
     screenshots: { type: "boolean", default: false },
     help: { type: "boolean", default: false },
@@ -50,7 +51,7 @@ const { values } = parseArgs({
 });
 if (values.help) {
   console.log(
-    "Navigation benchmark: --bundle-dir BASE [--compare-bundle-dir HEAD | --aa] --pairs 10 --profiles local,remote --scenarios usage,cron,command-palette --idle-ms 1500 --intent none|hover|focus --intent-ms 150 [--trace] [--screenshots] --output DIR",
+    "Navigation benchmark: --bundle-dir BASE [--compare-bundle-dir HEAD | --aa] --pairs 10 --profiles local,remote --scenarios usage,cron,command-palette --idle-ms 1500 --intent none|hover|focus --intent-ms 150 [--boot-only] [--trace] [--screenshots] --output DIR",
   );
   process.exit(0);
 }
@@ -139,10 +140,12 @@ const allScenarios: Scenario[] = [
   },
 ];
 const selected = values.scenarios?.split(",");
-const scenarios = allScenarios.filter(({ id }) => !selected || selected.includes(id));
+const scenarios = values["boot-only"]
+  ? []
+  : allScenarios.filter(({ id }) => !selected || selected.includes(id));
 if (
-  !scenarios.length ||
-  selected?.some((id) => !scenarios.some((scenario) => scenario.id === id))
+  !values["boot-only"] &&
+  (!scenarios.length || selected?.some((id) => !scenarios.some((scenario) => scenario.id === id)))
 ) {
   throw new Error(`Unknown scenarios; choose from ${allScenarios.map(({ id }) => id).join(",")}`);
 }
@@ -244,14 +247,6 @@ async function metrics(cdp: CDPSession) {
     await cdp.send("Performance.getMetrics");
   return Object.fromEntries(result.metrics.map(({ name, value }) => [name, value]));
 }
-async function settle(page: Page) {
-  await page.evaluate(
-    () =>
-      new Promise<void>((resolve) => {
-        requestAnimationFrame(() => requestAnimationFrame(() => resolve()));
-      }),
-  );
-}
 async function rpcCounts(page: Page) {
   return page.evaluate(() => {
     const counts: Record<string, number> = {};
@@ -346,6 +341,7 @@ try {
         },
         pairs,
         aa: values.aa,
+        bootOnly: values["boot-only"],
         profiles,
         idleMs,
         intent: values.intent,
@@ -355,7 +351,7 @@ try {
           : "untraced CDP metrics",
         fixture: { sessions: 1000, messagesPerSession: 400, models: 1000, cronJobs: 500 },
         readiness:
-          "Native input event to route commit and visible destination on two animation frames; boot starts at navigation time origin. CPU includes automation-to-assertion interval.",
+          "Native input event to route commit and visible destination on two animation frames; boot ends at an in-page two-frame visible transcript/composer marker and starts at navigation time origin. CPU includes the readiness probe and automation-to-assertion interval.",
         acceptance:
           "At least 10 interleaved base/head pairs. Median regression <=5% and p95 no worse (sub-1% p95 movement is noise); repeat noisy cells and use A/A plus CPU. Remote chunk-cached navigation target <=100ms.",
         limitations: [
@@ -394,7 +390,7 @@ try {
       if (pair % 2) {
         order.reverse();
       }
-      const offset = pair % scenarios.length;
+      const offset = scenarios.length ? pair % scenarios.length : 0;
       const destinations = [...scenarios.slice(offset), ...scenarios.slice(0, offset)];
       if (pair % 2) {
         destinations.reverse();
@@ -412,6 +408,39 @@ try {
         page.on("pageerror", (error) => errors.push(error.stack ?? error.message));
         await page.addInitScript("globalThis.__name = (fn) => fn");
         await page.addInitScript({ content: createControlUiMockGatewayInitScript(slot.fixture) });
+        await page.addInitScript(() => {
+          const state = { startedAt: 0, readyAt: 0 };
+          Reflect.set(window, "__navigationBootBench", state);
+          const visible = (element: Element | null) =>
+            element !== null &&
+            element.getClientRects().length > 0 &&
+            !["hidden", "collapse"].includes(getComputedStyle(element).visibility);
+          let readyFrame = false;
+          const observe = () => {
+            const snapshot = window.openclawControlUi?.snapshot();
+            const route = snapshot?.route;
+            const bubbles = document.querySelectorAll(
+              ".chat-pane-cache__pane--active .chat-bubble",
+            );
+            const ready =
+              snapshot?.routeReady &&
+              route?.status === "success" &&
+              route.matches[0]?.routeId === "chat" &&
+              route.pendingMatches.length === 0 &&
+              visible(bubbles.item(bubbles.length - 1)) &&
+              [...document.querySelectorAll(".agent-chat__composer-combobox textarea")].some(
+                visible,
+              );
+            if (ready && readyFrame) {
+              state.readyAt = performance.now();
+              performance.mark("navigation:boot-ready");
+              return;
+            }
+            readyFrame = Boolean(ready);
+            requestAnimationFrame(observe);
+          };
+          requestAnimationFrame(observe);
+        });
         const cdp = await context.newCDPSession(page);
         const assets = new Map<string, Asset>();
         await cdp.send("Network.enable");
@@ -559,15 +588,13 @@ try {
             }
             await action();
             if (boot) {
-              await waitForControlUiRoute(page, { routeId: "chat" });
-              await page
-                .locator(".chat-pane-cache__pane--active .chat-bubble")
-                .last()
-                .waitFor({ state: "visible" });
-              await page.locator(".agent-chat__composer-combobox textarea:visible").waitFor();
-              await settle(page);
-              row.startedAt = 0;
-              row.readyAt = await page.evaluate(() => performance.now());
+              await page.waitForFunction(
+                () => Reflect.get(window, "__navigationBootBench")?.readyAt > 0,
+              );
+              const timing: { startedAt: number; readyAt: number } = await page.evaluate(() =>
+                Reflect.get(window, "__navigationBootBench"),
+              );
+              Object.assign(row, timing);
             } else {
               await page.waitForFunction(
                 () => Reflect.get(window, "__navigationBench")?.readyAt > 0,
@@ -694,6 +721,19 @@ try {
           await page.waitForTimeout(idleMs);
           const snapshot = await page.evaluate(() => ({
             atMs: performance.now(),
+            bootReadyAt: Reflect.get(window, "__navigationBootBench")?.readyAt ?? null,
+            prefetchResources: performance
+              .getEntriesByType("resource")
+              .filter((entry) =>
+                /navigation-preloads-|new-session-page-entry-|app-shell-idle\.runtime-/u.test(
+                  entry.name,
+                ),
+              )
+              .map((entry) => ({
+                name: entry.name,
+                startTime: entry.startTime,
+                duration: entry.duration,
+              })),
             styleSheets: [...document.styleSheets].map((sheet) => sheet.href),
             links: [...document.querySelectorAll<HTMLLinkElement>("link[href]")].map((link) => ({
               href: link.href,
@@ -709,11 +749,16 @@ try {
         };
         try {
           const chat = { id: "chat", selector: ".chat-bubble" };
-          await measure(chat, "boot", () => page.goto(chatUrl), true);
+          await measure(chat, "boot", () => page.goto(chatUrl, { waitUntil: "commit" }), true);
           await idle("boot");
           for (const mode of ["first", "same-document", "chunk-cached"] as const) {
             if (mode === "chunk-cached") {
-              await measure(chat, "reload-transcript", () => page.goto(chatUrl), true);
+              await measure(
+                chat,
+                "reload-transcript",
+                () => page.goto(chatUrl, { waitUntil: "commit" }),
+                true,
+              );
               await idle("reload-transcript");
             }
             for (const scenario of destinations) {
