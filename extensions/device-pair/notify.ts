@@ -107,18 +107,6 @@ function resolveNotifyTarget(ctx: NotifyCommandContext): NotifyTarget | null {
   };
 }
 
-function nextNotifySubscription(
-  target: NotifyTarget,
-  mode: NotifySubscription["mode"],
-): NotifySubscription {
-  return {
-    ...target,
-    mode,
-    addedAtMs: Date.now(),
-    armId: randomUUID(),
-  };
-}
-
 async function registerNotifySubscriber(params: {
   api: OpenClawPluginApi;
   target: NotifyTarget;
@@ -134,30 +122,13 @@ async function registerNotifySubscriber(params: {
     return false;
   }
   await writeNotifyState(() =>
-    store.register(key, nextNotifySubscription(params.target, params.mode), { assertCurrent }),
+    store.register(
+      key,
+      { ...params.target, mode: params.mode, addedAtMs: Date.now(), armId: randomUUID() },
+      { assertCurrent },
+    ),
   );
   return true;
-}
-
-function buildPairingRequestNotificationText(request: PendingPairingRequest): string {
-  const label = normalizeOptionalString(request.displayName) || request.deviceId;
-  const platform = normalizeOptionalString(request.platform);
-  const ip = normalizeOptionalString(request.remoteIp);
-  const role = formatRoleList(request);
-  const scopes = formatStringList(request.scopes);
-  const lines = [
-    "📲 New device pairing request",
-    `ID: ${request.requestId}`,
-    `Name: ${label}`,
-    ...(platform ? [`Platform: ${platform}`] : []),
-    `Role: ${role}`,
-    `Scopes: ${scopes}`,
-    ...(ip ? [`IP: ${ip}`] : []),
-    "",
-    `Approve: /pair approve ${request.requestId}`,
-    "List pending: /pair pending",
-  ];
-  return lines.join("\n");
 }
 
 function requestTimestampMs(request: PendingPairingRequest): number | null {
@@ -223,7 +194,24 @@ async function notifyPendingPairingRequests(params: { api: OpenClawPluginApi }):
         continue;
       }
 
-      const text = buildPairingRequestNotificationText(request);
+      const label = normalizeOptionalString(request.displayName) || request.deviceId;
+      const platform = normalizeOptionalString(request.platform);
+      const ip = normalizeOptionalString(request.remoteIp);
+      const role = formatRoleList(request);
+      const scopes = formatStringList(request.scopes);
+      const lines = [
+        "📲 New device pairing request",
+        `ID: ${request.requestId}`,
+        `Name: ${label}`,
+        ...(platform ? [`Platform: ${platform}`] : []),
+        `Role: ${role}`,
+        `Scopes: ${scopes}`,
+        ...(ip ? [`IP: ${ip}`] : []),
+        "",
+        `Approve: /pair approve ${request.requestId}`,
+        "List pending: /pair pending",
+      ];
+      const text = lines.join("\n");
       let delivered = false;
       for (const entry of subscribers) {
         if (deliveredOneShots.has(entry.key)) {
