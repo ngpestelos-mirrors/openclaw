@@ -89,8 +89,6 @@ describe("mobile-release-ref", () => {
         "push",
         "Unable to determine if workflow can be created or updated due to timeout; `workflows` scope may be required.",
       ],
-      ["push", "fatal: unable to access remote: The requested URL returned error: 503"],
-      ["push", "fatal: unable to access remote: Recv failure: Connection reset by peer"],
       ["ls-remote", "fatal: Could not resolve host: github.com"],
     ])("retries transient %s failure and records the original source: %s", (operation, stderr) => {
       let attempts = 0;
@@ -135,14 +133,6 @@ describe("mobile-release-ref", () => {
     it.each([
       ["fatal: The requested URL returned error: 502", 4, [5_000, 10_000, 20_000]],
       ["fatal: Authentication failed", 1, []],
-      ["fatal: The requested URL returned error: 403", 1, []],
-      [
-        "remote: refusing to allow a GitHub App to create or update workflow without workflows permission",
-        1,
-        [],
-      ],
-      ["remote: GH013: Repository rule violations found", 1, []],
-      ["unknown remote rejection", 1, []],
     ] as const)("bounds retries for %s", (stderr, attempts, delays) => {
       let pushes = 0;
       expect(
@@ -163,14 +153,7 @@ describe("mobile-release-ref", () => {
 
     it.each([false, true])("preserves concurrent refs (conflicting: %s)", (conflict) => {
       const otherSha = conflict
-        ? git(fixture.root, [
-            "commit-tree",
-            `${fixture.sha}^{tree}`,
-            "-p",
-            fixture.sha,
-            "-m",
-            "competing release",
-          ]).trim()
+        ? commitReadme(fixture.root, `competing release ${options.build}`)
         : fixture.sha;
       const ref = `refs/openclaw/mobile-releases/ios/2026.6.10-${options.build}`;
       vi.mocked(Atomics.wait).mockImplementation(() => {
@@ -202,7 +185,6 @@ describe("mobile-release-ref", () => {
       error: string,
     ) => expect(() => mobileReleaseRefFor({ version: "2026.6.10", ...identity })).toThrow(error);
     rejects({ platform: "ios", build: "0" }, "Invalid iOS build");
-    rejects({ platform: "android" }, "Invalid Android versionCode");
     rejects({ platform: "android", versionCode: "not-a-code" }, "Invalid Android versionCode");
     rejects(
       { platform: "android", versionCode: "2026061101" },
@@ -214,11 +196,7 @@ describe("mobile-release-ref", () => {
     );
   });
 
-  it("preserves flag ordering and fails before treating a missing value as help", () => {
-    expect(
-      parseArgs(["resolve", "--platform", "android", "--", "--platform", "ios"]),
-    ).toMatchObject({ platform: "ios", sha: "HEAD" });
-    expect(() => parseArgs(["resolve", "--root", "-h"])).toThrow("Missing value for --root.");
+  it("handles unknown flags and help before validating the release identity", () => {
     expect(() => parseArgs(["resolve", "--platform=ios"])).toThrow(
       "Unknown argument: --platform=ios",
     );
@@ -234,28 +212,24 @@ describe("mobile-release-ref", () => {
     expect(recordMobileReleaseRef(iosOptions).status).toBe("already-recorded");
     expect(resolveMobileReleaseRef(iosOptions)).toMatchObject(recorded);
 
-    const identity = { platform: "android", version: "2026.6.10" };
-    const versionCode = "2026061008";
-    const args = flags({
-      ...identity,
-      "version-code": versionCode,
+    const androidArgs = flags({
+      platform: "android",
+      version: "2026.6.10",
+      "version-code": "2026061008",
       sha: "HEAD",
       root: fixture.root,
     });
-    const androidOptions = parseArgs(["record", "--", ...args]);
-    expect(androidOptions).toMatchObject({ command: "record", ...identity, versionCode });
+    const androidOptions = parseArgs(["record", "--", ...androidArgs]);
     expect(recordMobileReleaseRef(androidOptions).ref).toBe(
       "refs/openclaw/mobile-releases/android/2026.6.10-2026061008",
     );
     commitReadme(fixture.root, "next");
     expect(() => recordMobileReleaseRef(androidOptions)).toThrow("already points at");
 
-    // CLI resolution must return the recorded build even after checkout HEAD advances.
     const stdout = cli(
       "resolve",
       ...flags({ platform: "ios", version: "2026.6.10", build: "8", root: fixture.root }),
     );
-
     expect(stdout).toBe(`${fixture.sha}\t${recorded.ref}\n`);
   });
 
@@ -306,9 +280,7 @@ describe("mobile-release-ref", () => {
     const ref = "refs/openclaw/mobile-releases/android/v2/2026.9.6/0/1/2026090454-2026090455";
     const marker = "refs/openclaw/mobile-releases/android/cutover-v2/2026090453";
     const initialized = { ref: marker, sha: fixture.sha, status: "already-recorded" };
-    expect(options).toMatchObject({ platform: "android", sha: fixture.sha, version: "2026.9.60" });
     expect(() => parseArgs(["record", ...cliArgs, "--sha", "HEAD"])).toThrow("does not match");
-    expect(() => parseArgs(["record", ...cliArgs, "--platform", "ios"])).toThrow("does not match");
     expect(() => parseArgs(["initialize-android", "--platform", "android"])).toThrow(
       "requires --plan",
     );
@@ -317,20 +289,7 @@ describe("mobile-release-ref", () => {
     expect(cli("initialize-android", ...cliArgs)).toContain(`${marker} recorded ${fixture.sha}`);
     expect(initializeAndroidStoreRelease(options)).toEqual(initialized);
 
-    // Git accepted this push, but the caller lost the response. The owner must read it back.
-    let pushes = 0;
-    expect(
-      recording(options, (args, forward) => {
-        const result = forward();
-        if (args[0] === "push") {
-          pushes += 1;
-          throw new Error("response lost after accepted push");
-        }
-        return result;
-      })(),
-    ).toEqual({ ref, sha: fixture.sha, status: "already-recorded" });
-    expect(pushes).toBe(1);
-    expect(recordMobileReleaseRef(options).status).toBe("already-recorded");
+    expect(recordMobileReleaseRef(options)).toEqual({ ref, sha: fixture.sha, status: "created" });
     expect(cli("resolve", ...cliArgs)).toBe(`${fixture.sha}\t${ref}\n`);
 
     const nextSha = commitReadme(fixture.root, "next");

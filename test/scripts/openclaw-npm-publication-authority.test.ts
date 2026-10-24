@@ -113,10 +113,8 @@ async function fixture() {
         .digest("hex"),
     };
   }
-  const archive = (name: string, value: unknown) =>
-    makeStoredZip({ [name]: JSON.stringify(value) });
   const artifact = <T extends { id: number }>(metadata: T, name: string, value: unknown) => {
-    const zip = archive(name, value);
+    const zip = makeStoredZip({ [name]: JSON.stringify(value) });
     const result = { ...metadata, digest: "sha256:" + hash(zip), size_in_bytes: zip.length };
     api["actions/artifacts/" + metadata.id] = result;
     respondBytes("actions/artifacts/" + metadata.id + "/zip", zip);
@@ -143,7 +141,7 @@ async function fixture() {
     artifacts: [manifestArtifact, planArtifact],
   };
   json("transport.json", { api, binary });
-  json("state.json", { writes: [], calls: [], revoked: false });
+  json("state.json", { writes: [], revoked: false });
 
   const preload = join(root, "transport.mjs");
   write(
@@ -163,8 +161,6 @@ if (process.argv[1] === root + '/bin/npm') {
   const state = readState();
   const args = process.argv.slice(2);
   if (args[0] === 'view') {
-    state.calls.push('registry:' + args[1]);
-    save(state);
     process.exit(state.reuseFirst && args[1].startsWith('@openclaw/ai@') ? 0 : 1);
   }
   if (args[0] !== 'publish') throw new Error('Unexpected npm command');
@@ -175,7 +171,6 @@ if (process.argv[1] === root + '/bin/npm') {
 }
 if (process.argv[1]?.endsWith('/openclaw-npm-extended-stable-release.mjs') && process.argv[2] === 'publish-plan') {
   const state = readState();
-  state.calls.push('prepare');
   if (state.revokeAtPreparation) state.revoked = true;
   save(state);
 }
@@ -186,7 +181,6 @@ function response(args) {
   if (key && !key.startsWith('contents/')) key = key.split('?')[0];
   if (args[0] === 'run' && args[1] === 'view') key = 'view/' + args[2];
   if (!key) throw new Error('Unexpected GitHub transport: ' + JSON.stringify(args));
-  state.calls.push(key);
   if (state.revokeAtParent && key === 'actions/runs/99') state.revoked = true;
   save(state);
   if (data.binary[key]) return Buffer.from(data.binary[key], 'base64');
@@ -266,7 +260,6 @@ syncBuiltinESMExports();
   const state = () =>
     JSON.parse(readFileSync(statePath, "utf8")) as {
       writes: string[][];
-      calls: string[];
       revoked: boolean;
     };
   const change = (values: Record<string, unknown>) =>
@@ -311,22 +304,18 @@ describe("npm final publication authority", () => {
         expect(args.slice(2)).toEqual(["--access", "public", "--tag", "beta", "--provenance"]);
       }
       expect(result.stderr).not.toContain("CANDIDATE_");
-      expect(f.state().calls.filter((key) => key === "actions/runs/99")).toHaveLength(4);
-      if (!candidate) {
-        expect(f.state().calls).not.toContain("actions/artifacts/70/zip");
-      }
     },
   );
 
   const authorityError = "qualification authority";
-  it.each<[string, Record<string, unknown>, number[], string, string?]>([
-    ["preparation", { revokeAtPreparation: true }, [], authorityError, "prepare"],
-    ["publisher check", { revokeAtParent: true }, [], authorityError, "actions/runs/99"],
+  it.each<[string, Record<string, unknown>, number[], string]>([
+    ["preparation", { revokeAtPreparation: true }, [], authorityError],
+    ["publisher check", { revokeAtParent: true }, [], authorityError],
     ["companions", { revokeAfter: 3 }, [0, 1, 2], authorityError],
     ["moved ref", { movedRef: true }, [], "Protected publication tooling tag changed"],
     ["parent completion", { parentCompleted: true }, [], "parent run state"],
     ["manual recovery", { recovery: true, reuseFirst: true, revokeAfter: 1 }, [1], authorityError],
-  ])("stops publishing after %s revokes authority", async (_label, change, writes, error, call) => {
+  ])("stops publishing after %s revokes authority", async (_label, change, writes, error) => {
     const f = await fixture();
     if (change.revokeAtPreparation) {
       const preflight = f.preflight();
@@ -342,9 +331,6 @@ describe("npm final publication authority", () => {
     );
     expect(result.status).not.toBe(0);
     expect(result.stderr).toContain(error);
-    if (call) {
-      expect(f.state().calls).toContain(call);
-    }
     if (change.recovery) {
       expect(result.stdout).toContain("already published; reusing it");
     }

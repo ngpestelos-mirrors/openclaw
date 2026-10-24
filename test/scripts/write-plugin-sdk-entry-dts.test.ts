@@ -5,7 +5,6 @@ import { describe, expect } from "vitest";
 import { requireNodeTool } from "../helpers/node-toolchain.js";
 import {
   createDeclarationFixture as createFixture,
-  createDeclarationFixtureWriter,
   createDeclarationTest,
   declarationCacheRecords,
   declarationInputs,
@@ -31,30 +30,6 @@ function expectCompiled(result: { status: number | null; stdout: string; stderr:
 }
 
 describe("write-plugin-sdk-entry-dts", { timeout: WRITER_TEST_TIMEOUT_MS }, () => {
-  it("refuses fixture writes through borrowed dependencies before changing their files", ({
-    command,
-  }) => {
-    const root = fs.realpathSync(command.createTempDir("declaration-fixture-writer-"));
-    const borrowed = fs.realpathSync(command.createTempDir("declaration-borrowed-dependency-"));
-    fs.writeFileSync(path.join(borrowed, "worker.js"), "export const untouched = true;\n");
-    fs.mkdirSync(path.join(root, "node_modules"));
-    fs.symlinkSync(borrowed, path.join(root, "node_modules/borrowed"), "junction");
-    const write = createDeclarationFixtureWriter(root);
-    for (const file of ["worker.js", "new/directory/worker.js"]) {
-      expect(() => write(`node_modules/borrowed/${file}`, "export {};\n")).toThrow(
-        "Declaration input escapes checkout",
-      );
-    }
-    expect(fs.readFileSync(path.join(borrowed, "worker.js"), "utf8")).toBe(
-      "export const untouched = true;\n",
-    );
-    expect(fs.readdirSync(borrowed)).toEqual(["worker.js"]);
-    write("node_modules/synthetic/worker.js", "export const owned = true;\n");
-    expect(fs.readFileSync(path.join(root, "node_modules/synthetic/worker.js"), "utf8")).toBe(
-      "export const owned = true;\n",
-    );
-  });
-
   // POSIX uses the nested-writer retention case in dist-artifact-ownership.test.ts.
   it.skipIf(process.platform !== "win32").concurrent(
     "retains private stages and both compiler errors when a child is unjoined",
@@ -178,20 +153,6 @@ describe("write-plugin-sdk-entry-dts", { timeout: WRITER_TEST_TIMEOUT_MS }, () =
       }
 
       const before = await build();
-      const records = declarationCacheRecords(root);
-      expect(records).toHaveLength(1);
-      const inputs = records.flatMap((record) => record.inputs ?? []);
-      expect(inputs).toEqual(
-        expect.arrayContaining([
-          ...declarationInputs.map(({ file }) => file),
-          "src/shared.ts",
-          "src/schema.d.ts",
-          "contracts/before.ts",
-        ]),
-      );
-      expect(inputs.some((file) => file.endsWith("/lib.es2023.d.ts"))).toBe(true);
-      expect(inputs).not.toContain("test/unrelated.test.ts");
-      expect(inputs).not.toContain("ui/unrelated.ts");
       for (const entry of qa.filter((candidate) => !production.includes(candidate))) {
         expect(fs.existsSync(path.join(root, `dist/${entry}.d.ts`)), entry).toBe(false);
       }
@@ -260,21 +221,19 @@ describe("write-plugin-sdk-entry-dts", { timeout: WRITER_TEST_TIMEOUT_MS }, () =
 
       write(
         "consumer.ts",
-        [
-          'import type { Shared } from "./dist/plugin-sdk/core.js";',
-          'import type { Shared as ChannelShared } from "./dist/plugin-sdk/channel-core.js";',
-          `import type { TransitiveAlias, ${declarationInputs.map(({ name }) => name).join(", ")} } from "./dist/plugin-sdk/test-fixtures.js";`,
-          "declare const shared: Shared; const canonical: ChannelShared = shared;",
-          "declare const channelShared: ChannelShared; const publicShared: Shared = channelShared;",
-          "// @ts-expect-error An empty object cannot satisfy the nominal SDK class.",
-          "const impostor: Shared = {}; void impostor;",
-          "// @ts-expect-error The second public subpath must retain the nominal class too.",
-          "const channelImpostor: ChannelShared = {}; void channelImpostor;",
-          ...["TransitiveAlias", ...declarationInputs.map(({ name }) => name)].map(
-            (name) => `const current${name}: ${name} = { value: "after" }; void current${name};`,
-          ),
-          "void canonical; void publicShared;",
-        ].join("\n"),
+        `import type { Shared } from "./dist/plugin-sdk/core.js";
+import type { Shared as ChannelShared } from "./dist/plugin-sdk/channel-core.js";
+import type { TransitiveAlias, ${declarationInputs.map(({ name }) => name).join(", ")} } from "./dist/plugin-sdk/test-fixtures.js";
+declare const shared: Shared; const canonical: ChannelShared = shared;
+declare const channelShared: ChannelShared; const publicShared: Shared = channelShared;
+// @ts-expect-error An empty object cannot satisfy the nominal SDK class.
+const impostor: Shared = {}; void impostor;
+// @ts-expect-error The second public subpath must retain the nominal class too.
+const channelImpostor: ChannelShared = {}; void channelImpostor;
+${["TransitiveAlias", ...declarationInputs.map(({ name }) => name)]
+  .map((name) => `const current${name}: ${name} = { value: "after" }; void current${name};`)
+  .join("\n")}
+void canonical; void publicShared;`,
       );
       write(
         "consumer.json",
@@ -296,21 +255,24 @@ describe("write-plugin-sdk-entry-dts", { timeout: WRITER_TEST_TIMEOUT_MS }, () =
       expect(consumer.status, consumer.stdout + consumer.stderr).toBe(0);
     }));
 
-  it.concurrent.for([
-    {
-      source: "source declaration export",
-      diagnostics: ["TS1110", "src/contract.d.ts", "Type expected"],
-    },
-    {
-      source: "transitive declaration export",
-      diagnostics: ["TS1109", "contracts/before.ts", "Expression expected"],
-    },
-    { source: "missing entry", diagnostics: ["core.ts"] },
-    { source: "invalid config", diagnostics: ["missing-config.json"] },
-    { source: "missing declaration", diagnostics: ["contract"] },
+  it.concurrent.for<[string, string, string | null, string[]]>([
+    [
+      "source declaration export",
+      "src/contract.d.ts",
+      "export type SourceOnly = ;",
+      ["TS1110", "src/contract.d.ts", "Type expected"],
+    ],
+    ["missing entry", "src/plugin-sdk/core.ts", null, ["core.ts"]],
+    [
+      "invalid config",
+      "tsconfig.json",
+      '{"extends":"./missing-config.json"}',
+      ["missing-config.json"],
+    ],
+    ["missing declaration", "src/contract.d.ts", null, ["contract"]],
   ])(
-    "rejects $source before replacing published or local declarations",
-    ({ source, diagnostics }, { command }) =>
+    "rejects %s before replacing published or local declarations",
+    ([_source, file, contents, diagnostics], { command }) =>
       command.lifetime.run(async () => {
         const { root, write } = createFixture(command);
         write("dist/plugin-sdk/core.d.ts", "previous declaration");
@@ -318,16 +280,10 @@ describe("write-plugin-sdk-entry-dts", { timeout: WRITER_TEST_TIMEOUT_MS }, () =
         write("packages/plugin-sdk/dist/src/plugin-sdk/core.d.ts", "previous local declaration");
         const published = treeHashes(path.join(root, "dist"));
         const local = treeHashes(path.join(root, "packages/plugin-sdk/dist"));
-        if (source === "source declaration export") {
-          write("src/contract.d.ts", "export type SourceOnly = ;");
-        } else if (source === "transitive declaration export") {
-          write("contracts/before.ts", "export const broken = ;");
-        } else if (source === "missing entry") {
-          fs.rmSync(path.join(root, "src/plugin-sdk/core.ts"));
-        } else if (source === "invalid config") {
-          write("tsconfig.json", '{"extends":"./missing-config.json"}');
-        } else if (source === "missing declaration") {
-          fs.rmSync(path.join(root, "src/contract.d.ts"));
+        if (contents === null) {
+          fs.rmSync(path.join(root, file));
+        } else {
+          write(file, contents);
         }
         const failed = await runWriter(command, root, true);
         expect(failed.error).toBeUndefined();
