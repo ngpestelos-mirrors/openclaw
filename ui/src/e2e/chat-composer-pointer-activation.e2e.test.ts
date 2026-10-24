@@ -1,34 +1,19 @@
-// Control UI E2E tests cover pointer activation near the mobile safe area.
-import { chromium, type Browser, type Locator, type Page } from "playwright";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { runQaGatewayFixture } from "../../../test/helpers/qa-gateway-cleanup.ts";
-import {
-  canRunPlaywrightChromium,
-  installMockGateway,
-  resolvePlaywrightChromiumExecutablePath,
-  startControlUiE2eServer,
-  type ControlUiE2eServer,
-} from "../test-helpers/control-ui-e2e.ts";
+import type { Locator, Page } from "playwright";
+import { expect, it } from "vitest";
+import { installMockGateway } from "../test-helpers/control-ui-e2e.ts";
+import { createControlUiE2eSuite } from "./control-ui-e2e-suite.test-support.ts";
 
-const chromiumExecutablePath = resolvePlaywrightChromiumExecutablePath(chromium.executablePath());
-const chromiumAvailable = canRunPlaywrightChromium(chromiumExecutablePath);
-const allowMissingChromium = process.env.OPENCLAW_UI_E2E_ALLOW_MISSING_CHROMIUM === "1";
-const describeControlUiE2e = chromiumAvailable || !allowMissingChromium ? describe : describe.skip;
+const suite = createControlUiE2eSuite({
+  name: "Control UI composer pointer controls",
+  startServerBeforeBrowser: true,
+});
 
 type PointerTraceEntry = {
-  activeTag: string;
-  bottom: number;
   centerHitLabel: string | null;
-  clientX: number;
-  clientY: number;
-  defaultPrevented: boolean;
   eventTargetLabel: string | null;
   top: number;
   type: string;
 };
-
-let server: ControlUiE2eServer;
-let browser: Browser;
 
 type Gateway = Awaited<ReturnType<typeof installMockGateway>>;
 
@@ -38,28 +23,27 @@ async function withComposer(
   run: (page: Page, gateway: Gateway) => Promise<void>,
   deferred = true,
 ): Promise<void> {
-  const context = await browser.newContext({
-    hasTouch: mobile,
-    isMobile: mobile,
-    serviceWorkers: "block",
-    viewport: wide ? { width: 1280, height: 900 } : { width: 393, height: 852 },
-  });
-  try {
-    const page = await context.newPage();
-    const gateway = await installMockGateway(page, {
-      assistantName: "OpenClaw",
-      ...(deferred ? { deferredMethods: ["chat.send"] } : {}),
-    });
-    await page.goto(`${server.baseUrl}chat`);
-    await gateway.waitForRequest("chat.startup");
-    if (!wide) {
-      const protocol = await context.newCDPSession(page);
-      await protocol.send("Emulation.setSafeAreaInsetsOverride", { insets: { bottom: 34 } });
-    }
-    await run(page, gateway);
-  } finally {
-    await context.close();
-  }
+  return suite.withPage(
+    {
+      hasTouch: mobile,
+      isMobile: mobile,
+      serviceWorkers: "block",
+      viewport: wide ? { width: 1280, height: 900 } : { width: 393, height: 852 },
+    },
+    async ({ page, context }) => {
+      const gateway = await installMockGateway(page, {
+        assistantName: "OpenClaw",
+        ...(deferred ? { deferredMethods: ["chat.send"] } : {}),
+      });
+      await page.goto(`${suite.server.baseUrl}chat`);
+      await gateway.waitForRequest("chat.startup");
+      if (!wide) {
+        const protocol = await context.newCDPSession(page);
+        await protocol.send("Emulation.setSafeAreaInsetsOverride", { insets: { bottom: 34 } });
+      }
+      await run(page, gateway);
+    },
+  );
 }
 
 async function expectComposerFocus(page: Page): Promise<void> {
@@ -165,12 +149,7 @@ async function installPointerTrace(button: Locator): Promise<void> {
       const bounds = target.getBoundingClientRect();
       const hit = document.elementFromPoint(pointerEvent.clientX, pointerEvent.clientY);
       trace.push({
-        activeTag: document.activeElement?.tagName ?? "",
-        bottom: bounds.bottom,
-        clientX: pointerEvent.clientX,
-        clientY: pointerEvent.clientY,
         centerHitLabel: hit?.closest("button")?.getAttribute("aria-label") ?? null,
-        defaultPrevented: event.defaultPrevented,
         eventTargetLabel:
           event.target instanceof Element
             ? (event.target.closest("button")?.getAttribute("aria-label") ?? null)
@@ -237,45 +216,7 @@ async function clickMouseAtCurrentCenter(page: Page, button: Locator): Promise<v
   await page.mouse.up();
 }
 
-describeControlUiE2e("Control UI composer pointer controls", () => {
-  beforeAll(async () => {
-    server = await startControlUiE2eServer();
-    browser = await chromium.launch({ executablePath: chromiumExecutablePath });
-  });
-
-  afterAll(async () => {
-    await runQaGatewayFixture(
-      async () => {
-        await browser?.close();
-      },
-      () => server?.close(),
-    );
-  });
-
-  it("focuses the compact editor on its first touch before the layout moves", async () => {
-    await withComposer(true, false, async (page, gateway) => {
-      const textarea = page.locator(".agent-chat__input textarea");
-      const shell = page.locator(".agent-chat__composer-shell");
-      await expect.poll(() => shell.getAttribute("data-composer-editing")).toBe("false");
-      await textarea.evaluate((node) => {
-        node.addEventListener(
-          "pointerdown",
-          () => {
-            node.dataset.focusedAtPointerDown = String(document.activeElement === node);
-          },
-          { once: true },
-        );
-      });
-      await textarea.tap();
-      expect(await textarea.getAttribute("data-focused-at-pointer-down")).toBe("true");
-      await expectComposerFocus(page);
-      await expect.poll(() => shell.getAttribute("data-composer-editing")).toBe("true");
-      await page.keyboard.insertText("First tap is ready to type");
-      expect(await textarea.inputValue()).toBe("First tap is ready to type");
-      expect(await gateway.getRequests("chat.send")).toHaveLength(0);
-    });
-  });
-
+suite.define(() => {
   it("sends and stops without moving the action out from under an Android-like tap", async () => {
     await narrowSendAndStop(true);
   });

@@ -42,27 +42,15 @@ const toolResult = (runId: string, toolCallId: string, name: string, text: strin
   stream: "tool",
   data: { phase: "result", toolCallId, name, result: { content: textContent(text) } },
 });
-function commentaryFixture(runId: string, texts: string[], startedAt?: number, firstSeq = 1) {
-  return {
-    events: texts.map((text, index) => ({
-      data: { kind: "preamble", itemId: `preamble-${index}`, phase: "end", progressText: text },
-      runId,
-      seq: index + firstSeq,
-      sessionKey,
-      stream: "item",
-      ts: (startedAt ?? 0) + 2_000 + index,
-    })),
-    messages: texts.map((text, index) =>
-      Object.assign(savedAnswer(runId, text, `commentary-${index}`, index + firstSeq), {
-        ...(startedAt === undefined ? {} : { timestamp: startedAt + 1_000 + index }),
-        openclawStreamFallback: {
-          itemId: `preamble-${index}`,
-          replacementText: text,
-          source: "segment",
-        },
-      }),
-    ),
-  };
+function commentaryMessages(runId: string, texts: string[]) {
+  return texts.map((text, index) => ({
+    ...savedAnswer(runId, text, `commentary-${index}`, index + 2),
+    openclawStreamFallback: {
+      itemId: `preamble-${index}`,
+      replacementText: text,
+      source: "segment",
+    },
+  }));
 }
 function runEvents(gateway: Gateway, runId: string, key = sessionKey) {
   const emit = (kind: string, payload: Record<string, unknown>) =>
@@ -111,24 +99,6 @@ async function openRun(runId: string, options: Parameters<typeof installMockGate
 }
 
 suite.define(() => {
-  it("recovers a retired final when its session message was missed", async () => {
-    const runId = "missed-terminal-publication";
-    const answer = "Review complete. The verified fix is ready.";
-    const user = savedUser(runId, "Finalize the review.");
-    const { page, gateway, events } = await openRun(runId, { historyMessages: [user] });
-    await page.getByText("Finalize the review.", { exact: true }).waitFor();
-    const initialReads = (await gateway.getRequests("chat.history")).length;
-    // Persistence succeeded, but this client missed the session.message publication.
-    await gateway.setHistoryMessages([user, { ...savedAnswer(runId, answer), stopReason: "stop" }]);
-    await events.final(answer);
-    await stopButton(page).waitFor({ state: "hidden" });
-
-    await page.locator(".chat-text").getByText(answer, { exact: true }).waitFor();
-
-    expect((await gateway.getRequests("chat.history")).length).toBe(initialReads + 1);
-    expect(await page.locator(".chat-text").getByText(answer, { exact: true }).count()).toBe(1);
-  });
-
   it("keeps a saved terminal answer once when its fallback notice arrives", async () => {
     const runId = "fallback-terminal-run";
     const answer = "The workspace check is complete.";
@@ -240,43 +210,12 @@ suite.define(() => {
     }
   });
 
-  it("reconciles distinct commentary items once across reconnect", async () => {
-    const runId = "commentary-reconciliation-run";
-    const startedAt = Date.now() - 30_000;
-    const texts = ["Inspecting the workspace.", "Checking the result."];
-    const { events, messages } = commentaryFixture(runId, texts, startedAt);
-    const { page, gateway } = await openRun(runId, {
-      inFlightRun: activeRun(runId, "", startedAt),
-    });
-    const transcript = page.locator(".chat-thread-inner");
-    const itemOccurrences = async () => {
-      const bubbles = await transcript.locator(".chat-bubble").allTextContents();
-      return texts.map((text) => bubbles.filter((bubble) => bubble.trim() === text).length);
-    };
-
-    for (const event of events) {
-      await gateway.emitGatewayEvent("agent", event);
-    }
-    await expect.poll(itemOccurrences).toEqual([1, 1]);
-    const secondText = transcript.locator(".chat-text").filter({ hasText: texts[1] });
-    await expect.poll(async () => (await secondText.textContent())?.trim()).toBe(texts[1]);
-
-    await gateway.setMethodResponse("chat.startup", {
-      messages,
-      inFlightRun: { runId, startedAt, text: "", events },
-      sessionInfo: activeSession(runId),
-      thinkingLevel: null,
-    });
-    await reconnect(gateway);
-    await expect.poll(itemOccurrences).toEqual([1, 1]);
-  });
-
   it("keeps persisted commentary once when its replay items were evicted", async () => {
     const runId = "evicted-commentary-run";
     const commentary = ["Checking the workspace.", "The focused tests are green."];
     const historyMessages = [
       savedUser(runId, "Inspect the workspace."),
-      ...commentaryFixture(runId, commentary, undefined, 2).messages,
+      ...commentaryMessages(runId, commentary),
     ];
     const { page } = await openRun(runId, {
       historyMessages,

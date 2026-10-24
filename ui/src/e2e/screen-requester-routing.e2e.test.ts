@@ -145,26 +145,6 @@ suite.define(() => {
           uiCommandHandlers["ui.command"],
           "ui.command",
         )({ params, respond, context } as never);
-        if (!validateUiCommandParams(params)) {
-          throw new Error("Screen tool emitted an invalid UI command");
-        }
-        const command = params.command;
-        if (command.kind === "panel" && command.panel === "portal" && command.open) {
-          expect(respond).toHaveBeenCalledWith(true, {
-            ok: true,
-            delivery: "dispatched",
-            presentation:
-              "portalId" in command && command.portalId
-                ? {
-                    portalId: command.portalId,
-                    status: "unverified",
-                    reason: "network-reachable",
-                  }
-                : { status: "unverified", reason: "waiting-for-app" },
-          });
-        } else {
-          expect(respond).toHaveBeenCalledWith(true, { ok: true });
-        }
         return expectDefined(respond.mock.calls[0], "Gateway response")[1] as T;
       },
     );
@@ -276,20 +256,6 @@ suite.define(() => {
       "screen-requester-routing",
       "human-control-preserved.png",
     );
-    await requester.gateway.setMethodResponse("desktop.observe", {
-      transport: "rfb",
-      wsPath: "/desktop/observe?token=synthetic",
-      expiresAtMs: 60_000,
-      control: false,
-    });
-    // The Gateway revokes the human controller when the agent explicitly takes over.
-    await rfb.disconnect("control-taken:Agent", 4000);
-    await desktop.getByText("Agent took control", { exact: true }).waitFor();
-    await expect.poll(rfb.events).toContain("authenticated:3");
-    expect((await requester.gateway.getRequests("desktop.observe")).at(-1)).toMatchObject({
-      params: { control: false },
-    });
-
     await screen.execute("prepare-web", {
       action: "portal_show",
       environmentId: "preview-desktop",

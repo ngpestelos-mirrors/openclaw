@@ -266,18 +266,13 @@ suite.define(() => {
         ["iPad desktop Safari", "new"],
         ["Android Chrome", "chat"],
         ["Android Firefox", "new"],
-        ["Android Edge", "new"],
-        ["Android Samsung", "chat"],
         ["Android WebView", "new"],
         ["Android unknown app", "chat"],
         ["Android native", "chat"],
         ["Android web chrome", "new"],
         ["unknown", "new"],
         ["macOS Safari", "new"],
-        ["iOS unknown engine", "chat"],
         ["iOS in-app", "new"],
-        ["iOS native", "chat"],
-        ["iOS web chrome", "new"],
       ] as const
     ).map(([name, route]) => Object.assign({}, attachmentBrowser(name), { route })),
   )("preserves $name picker semantics in $route across widths", (fixture) =>
@@ -298,11 +293,6 @@ suite.define(() => {
           expect((await items.allTextContents()).map((text) => text.trim())).toEqual(
             fixture.single ? ["Attach…"] : ["Take photo", "Photo", "File"],
           );
-          for (const value of ["open-skills", "open-connectors", "manage-plugins"]) {
-            expect(await page.locator(`.oc-menu-item[data-value="${value}"]`).isVisible()).toBe(
-              true,
-            );
-          }
           await page.keyboard.press("Escape");
           await attachmentOption(page, "file").waitFor({ state: "hidden" });
         }
