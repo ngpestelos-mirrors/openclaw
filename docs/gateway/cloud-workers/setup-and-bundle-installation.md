@@ -45,6 +45,8 @@ Headless Windows guests must include Crabbox's managed launcher at `C:\Program F
 
 New native Windows workers use a short, account- and lease-specific state directory on the profile's drive, leaving more path-length headroom for tools launched from their workspaces. Existing workers keep their original state directory across enrollment retries and recovery; reprovision a worker to use the shorter layout. Linux and macOS paths are unchanged.
 
+Each worker turn's GitHub profile lives in temporary runtime state. OpenClaw creates that profile with a protected Windows ACL for the worker account, SYSTEM, and Administrators before writing credentials, independently of the temporary directory's inherited permissions. Shell launches still reject profiles whose ownership or privacy cannot be verified.
+
 Desktop-enabled Windows workers use Crabbox's interactive desktop service; see [native desktop prerequisites](/gateway/cloud-workers/desktop#native-windows-prerequisites).
 
 ## Bundle installation
