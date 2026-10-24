@@ -98,13 +98,6 @@ function normalizeModelCatalogApi(value: unknown): ModelCatalogApi | undefined {
   return MODEL_CATALOG_API_SET.has(api) ? (api as ModelCatalogApi) : undefined;
 }
 
-function normalizeModelCatalogInputs(value: unknown): ModelCatalogInput[] | undefined {
-  const inputs = normalizeTrimmedStringList(value).filter((input): input is ModelCatalogInput =>
-    MODEL_CATALOG_INPUTS.has(input),
-  );
-  return inputs.length > 0 ? inputs : undefined;
-}
-
 function normalizeModelCatalogContextWindows(
   value: unknown,
 ): ModelCatalogContextWindowOption[] | undefined {
@@ -410,21 +403,6 @@ function normalizeModelCatalogCompat(value: unknown): ModelCatalogCompatConfig |
   return Object.keys(compat).length > 0 ? compat : undefined;
 }
 
-function normalizeModelCatalogStatus(value: unknown): ModelCatalogStatus | undefined {
-  const status = normalizeOptionalString(value) ?? "";
-  return MODEL_CATALOG_STATUSES.has(status) ? (status as ModelCatalogStatus) : undefined;
-}
-
-function normalizeModelCatalogImageTokenMode(
-  value: unknown,
-): ModelCatalogImageInputConfig["tokenMode"] {
-  const tokenMode = normalizeOptionalString(value) ?? "";
-  if (tokenMode === "tile" || tokenMode === "detail" || tokenMode === "provider") {
-    return tokenMode;
-  }
-  return undefined;
-}
-
 function normalizeModelCatalogMediaInput(value: unknown): ModelCatalogMediaInputConfig | undefined {
   if (!isRecord(value) || !isRecord(value.image)) {
     return undefined;
@@ -436,8 +414,8 @@ function normalizeModelCatalogMediaInput(value: unknown): ModelCatalogMediaInput
       normalizedImage[field] = normalized;
     }
   }
-  const tokenMode = normalizeModelCatalogImageTokenMode(value.image.tokenMode);
-  if (tokenMode) {
+  const tokenMode = normalizeOptionalString(value.image.tokenMode) ?? "";
+  if (tokenMode === "tile" || tokenMode === "detail" || tokenMode === "provider") {
     normalizedImage.tokenMode = tokenMode;
   }
   return Object.keys(normalizedImage).length > 0 ? { image: normalizedImage } : undefined;
@@ -463,7 +441,10 @@ function normalizeModelCatalogModel(value: unknown): ModelCatalogModel | undefin
   const api = normalizeModelCatalogApi(value.api);
   const baseUrl = normalizeOptionalString(value.baseUrl) ?? "";
   const headers = normalizeStringMap(value.headers);
-  const input = normalizeModelCatalogInputs(value.input);
+  const inputs = normalizeTrimmedStringList(value.input).filter(
+    (input): input is ModelCatalogInput => MODEL_CATALOG_INPUTS.has(input),
+  );
+  const input = inputs.length > 0 ? inputs : undefined;
   const reasoning = typeof value.reasoning === "boolean" ? value.reasoning : undefined;
   const contextWindow = normalizePositiveNumber(value.contextWindow);
   const contextWindowSelection = normalizeModelCatalogContextWindowSelection(value);
@@ -475,7 +456,10 @@ function normalizeModelCatalogModel(value: unknown): ModelCatalogModel | undefin
   const cost = normalizeModelCatalogCost(value.cost);
   const compat = normalizeModelCatalogCompat(value.compat);
   const mediaInput = normalizeModelCatalogMediaInput(value.mediaInput);
-  const status = normalizeModelCatalogStatus(value.status);
+  const normalizedStatus = normalizeOptionalString(value.status) ?? "";
+  const status = MODEL_CATALOG_STATUSES.has(normalizedStatus)
+    ? (normalizedStatus as ModelCatalogStatus)
+    : undefined;
   const statusReason = normalizeOptionalString(value.statusReason) ?? "";
   const replaces = normalizeTrimmedStringList(value.replaces);
   const replacedBy = normalizeOptionalString(value.replacedBy) ?? "";
