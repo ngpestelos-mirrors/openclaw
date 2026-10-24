@@ -34,7 +34,6 @@ import {
   type ModelCatalogSource,
   type ModelCatalogStatus,
   type ModelCatalogSuppression,
-  type ModelCatalogThinkingLevelMap,
   type ModelCatalogTieredCost,
   type ModelCatalogVercelGatewayRouting,
   type NormalizedModelCatalogRow,
@@ -53,19 +52,6 @@ const DEFAULT_MODEL_STATUS: ModelCatalogStatus = "available";
 /** Reject object keys that can mutate prototypes when copied into records. */
 function isBlockedObjectKey(key: string): boolean {
   return key === "__proto__" || key === "prototype" || key === "constructor";
-}
-
-function normalizeModelCatalogThinkingLevelMap(
-  value: unknown,
-): ModelCatalogThinkingLevelMap | undefined {
-  if (!isRecord(value)) {
-    return undefined;
-  }
-  const normalized = normalizeCatalogFields(MODEL_CATALOG_THINKING_LEVELS, (level) => {
-    const mapped = value[level];
-    return mapped === null ? null : normalizeOptionalString(mapped);
-  });
-  return Object.keys(normalized).length > 0 ? normalized : undefined;
 }
 
 function normalizeStringMap(value: unknown): Record<string, string> | undefined {
@@ -124,24 +110,6 @@ function normalizeModelCatalogContextWindows(
           left.contextWindow - right.contextWindow || left.id.localeCompare(right.id),
       )
     : undefined;
-}
-
-function normalizeModelCatalogContextWindowSelection(value: {
-  contextWindows?: unknown;
-  contextWindowDefault?: unknown;
-}): {
-  contextWindows?: ModelCatalogContextWindowOption[];
-  contextWindowDefault?: string;
-} {
-  const contextWindows = normalizeModelCatalogContextWindows(value.contextWindows);
-  const contextWindowDefault = normalizeOptionalString(value.contextWindowDefault);
-  // Options and default are one atomic tuple: options without a valid default
-  // would advertise a capability the picker cannot render a selection for, so
-  // a missing or invalid default drops the option list with it.
-  return contextWindowDefault &&
-    contextWindows?.some((option) => option.id === contextWindowDefault)
-    ? { contextWindows, contextWindowDefault }
-    : {};
 }
 
 function normalizeModelCatalogTieredCost(value: unknown): ModelCatalogTieredCost[] | undefined {
@@ -447,12 +415,30 @@ function normalizeModelCatalogModel(value: unknown): ModelCatalogModel | undefin
   const input = inputs.length > 0 ? inputs : undefined;
   const reasoning = typeof value.reasoning === "boolean" ? value.reasoning : undefined;
   const contextWindow = normalizePositiveNumber(value.contextWindow);
-  const contextWindowSelection = normalizeModelCatalogContextWindowSelection(value);
+  const contextWindows = normalizeModelCatalogContextWindows(value.contextWindows);
+  const contextWindowDefault = normalizeOptionalString(value.contextWindowDefault);
+  // Options and default are one atomic tuple: options without a valid default
+  // would advertise a capability the picker cannot render a selection for, so
+  // a missing or invalid default drops the option list with it.
+  const contextWindowSelection =
+    contextWindowDefault && contextWindows?.some((option) => option.id === contextWindowDefault)
+      ? { contextWindows, contextWindowDefault }
+      : {};
   const contextTokens = normalizePositiveInteger(value.contextTokens);
   const parameterCount = normalizePositiveInteger(value.parameterCount);
   const family = normalizeModelFamily(value.family);
   const maxTokens = normalizePositiveNumber(value.maxTokens);
-  const thinkingLevelMap = normalizeModelCatalogThinkingLevelMap(value.thinkingLevelMap);
+  const rawThinkingLevelMap = value.thinkingLevelMap;
+  const normalizedThinkingLevelMap = isRecord(rawThinkingLevelMap)
+    ? normalizeCatalogFields(MODEL_CATALOG_THINKING_LEVELS, (level) => {
+        const mapped = rawThinkingLevelMap[level];
+        return mapped === null ? null : normalizeOptionalString(mapped);
+      })
+    : undefined;
+  const thinkingLevelMap =
+    normalizedThinkingLevelMap && Object.keys(normalizedThinkingLevelMap).length > 0
+      ? normalizedThinkingLevelMap
+      : undefined;
   const cost = normalizeModelCatalogCost(value.cost);
   const compat = normalizeModelCatalogCompat(value.compat);
   const mediaInput = normalizeModelCatalogMediaInput(value.mediaInput);
