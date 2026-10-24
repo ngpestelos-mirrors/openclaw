@@ -104,33 +104,6 @@ export function makeBootstrapWarn(params: {
   };
 }
 
-function sanitizeBootstrapFiles(
-  files: WorkspaceBootstrapFile[],
-  workspaceDir: string,
-  warn?: (message: string) => void,
-): WorkspaceBootstrapFile[] {
-  const workspaceRoot = resolveUserPath(workspaceDir);
-  const seenPaths = new Set<string>();
-  const sanitized: WorkspaceBootstrapFile[] = [];
-  for (const file of files) {
-    const pathValue = normalizeOptionalString(file.path) ?? "";
-    if (!pathValue) {
-      warn?.(
-        `skipping bootstrap file "${file.name}" — missing or invalid "path" field (hook may have used "filePath" instead)`,
-      );
-      continue;
-    }
-    const resolvedPath = resolveWorkspaceBootstrapPath(workspaceRoot, pathValue);
-    const dedupeKey = path.normalize(path.relative(workspaceRoot, resolvedPath));
-    if (seenPaths.has(dedupeKey)) {
-      continue;
-    }
-    seenPaths.add(dedupeKey);
-    sanitized.push({ ...file, path: resolvedPath });
-  }
-  return sanitized;
-}
-
 function filterCompletedWorkspaceBootstrapFile(
   files: WorkspaceBootstrapFile[],
   setupCompleted: boolean,
@@ -163,37 +136,6 @@ async function isWorkspaceSetupCompletedForContext(
   } catch {
     return false;
   }
-}
-
-function filterBootstrapFilesAfterHooks(params: {
-  files: WorkspaceBootstrapFile[];
-  session: {
-    sessionKey?: string;
-    chatType?: ChatType;
-    workspaceDir: string;
-  };
-  protectedFiles?: WorkspaceBootstrapFile[];
-}): WorkspaceBootstrapFile[] {
-  const sessionFiltered = filterBootstrapFilesForSession(params.files, params.session);
-  const protectedFiles = params.protectedFiles ?? [];
-  if (protectedFiles.length === 0) {
-    return sessionFiltered;
-  }
-  // Hooks can relabel or alias loader-produced records. Reapply lexical/session
-  // policy first, then enforce protected sources captured by the pinned opens.
-  return sessionFiltered.filter(
-    (file) =>
-      !protectedFiles.some((protectedFile) => {
-        if (workspaceFilesShareSourceIdentity(file, protectedFile)) {
-          return true;
-        }
-        const filePath = normalizeOptionalString(file.path);
-        const protectedPath = normalizeOptionalString(protectedFile.path);
-        return Boolean(
-          filePath && protectedPath && path.resolve(filePath) === path.resolve(protectedPath),
-        );
-      }),
-  );
 }
 
 async function resolveIneligibleAutomaticMemoryFiles(params: {
@@ -395,19 +337,54 @@ async function resolveBootstrapFiles(
     hooked = Array.isArray(updated) ? updated : bootstrapFiles;
   }
   const updated = typeof hooks === "object" ? [...hooked, ...hooks.projected] : hooked;
+  const sessionFiltered = filterBootstrapFilesForSession(updated, session);
+  // Hooks can relabel or alias loader-produced records. Reapply lexical/session
+  // policy first, then enforce protected sources captured by the pinned opens.
+  const afterHooks =
+    protectedFiles.length === 0
+      ? sessionFiltered
+      : sessionFiltered.filter(
+          (file) =>
+            !protectedFiles.some((protectedFile) => {
+              if (workspaceFilesShareSourceIdentity(file, protectedFile)) {
+                return true;
+              }
+              const filePath = normalizeOptionalString(file.path);
+              const protectedPath = normalizeOptionalString(protectedFile.path);
+              return Boolean(
+                filePath && protectedPath && path.resolve(filePath) === path.resolve(protectedPath),
+              );
+            }),
+        );
   const filteredUpdated = filterCompletedWorkspaceBootstrapFile(
-    filterBootstrapFilesAfterHooks({
-      files: updated,
-      session,
-      protectedFiles,
-    }),
+    afterHooks,
     workspaceSetupCompleted,
     params.workspaceDir,
   );
   if (getAgentWorkspaceAccess(params.workspaceDir) !== access) {
     throw new Error("Workspace access changed while preparing bootstrap context");
   }
-  return sanitizeBootstrapFiles(filteredUpdated, params.workspaceDir, params.warn);
+  const { workspaceDir, warn } = params;
+  const workspaceRoot = resolveUserPath(workspaceDir);
+  const seenPaths = new Set<string>();
+  const sanitized: WorkspaceBootstrapFile[] = [];
+  for (const file of filteredUpdated) {
+    const pathValue = normalizeOptionalString(file.path) ?? "";
+    if (!pathValue) {
+      warn?.(
+        `skipping bootstrap file "${file.name}" — missing or invalid "path" field (hook may have used "filePath" instead)`,
+      );
+      continue;
+    }
+    const resolvedPath = resolveWorkspaceBootstrapPath(workspaceRoot, pathValue);
+    const dedupeKey = path.normalize(path.relative(workspaceRoot, resolvedPath));
+    if (seenPaths.has(dedupeKey)) {
+      continue;
+    }
+    seenPaths.add(dedupeKey);
+    sanitized.push({ ...file, path: resolvedPath });
+  }
+  return sanitized;
 }
 
 /** Resolves both raw bootstrap metadata and bounded context files for a run. */
