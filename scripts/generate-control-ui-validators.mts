@@ -1,10 +1,9 @@
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { parse } from "acorn";
 import { build } from "esbuild";
 import { format } from "oxfmt";
-import { IsLiteralString, ObjectOptions, Type, type TSchema } from "typebox";
-import * as Compiler from "typebox/schema";
+import { ObjectOptions, Type, type TSchema } from "typebox";
+import { Intern } from "typebox/schema";
 import { AgentRuntimeRestrictionErrorDetailsSchema } from "../packages/gateway-protocol/src/agent-runtime-restriction-error-details.js";
 import {
   SessionApprovalEventSchema,
@@ -40,7 +39,7 @@ import { CHAT_TRANSCRIPT_METADATA_KEYS } from "../ui/src/pages/chat/chat-transcr
 import { writeGeneratedOutput } from "./lib/generated-output-utils.mts";
 import {
   assertStandaloneValidatorSource,
-  emitStandaloneValidatorSource,
+  compileStandaloneValidators,
   standaloneValidatorHeader,
 } from "./lib/typebox-standalone.mts";
 
@@ -180,122 +179,6 @@ const validators: Array<[name: string, schema: TSchema, type: string, group: Gro
   ],
 ];
 
-function compile(name: string, schema: TSchema, imports: Set<string>): string {
-  const compiled = Compiler.Build(schema);
-  if (compiled.UseUnevaluated()) {
-    throw new Error(`${name}: unevaluated schemas need an explicit standalone implementation`);
-  }
-  const emitted = emitStandaloneValidatorSource(
-    `is${name}`,
-    compiled.Functions().join(";\n"),
-    compiled.External().variables,
-    `value => ${compiled.Entry()}`,
-  );
-  for (const statement of emitted.imports) {
-    imports.add(statement);
-  }
-  return emitted.source;
-}
-
-function onlyStringUniqueItems(value: unknown): boolean {
-  if (!value || typeof value !== "object") {
-    return true;
-  }
-  if (
-    "uniqueItems" in value &&
-    value.uniqueItems === true &&
-    !(Type.IsArray(value) && Type.IsUnion(value.items) && value.items.anyOf.every(IsLiteralString))
-  ) {
-    return false;
-  }
-  return Object.values(value).every(onlyStringUniqueItems);
-}
-
-function removeStringEnumHashing(source: string): string {
-  type Node = { type: string; start: number; end: number; [key: string]: unknown };
-  const isNode = (value: unknown): value is Node =>
-    typeof value === "object" &&
-    value !== null &&
-    "type" in value &&
-    typeof value.type === "string" &&
-    "start" in value &&
-    typeof value.start === "number" &&
-    "end" in value &&
-    typeof value.end === "number";
-  const isIdentifier = (value: unknown, name: string): boolean =>
-    isNode(value) && value.type === "Identifier" && value.name === name;
-  const ranges: Array<{ start: number; end: number }> = [];
-  const visit = (value: unknown): void => {
-    if (typeof value !== "object" || value === null) {
-      return;
-    }
-    if (isNode(value) && value.type === "CallExpression") {
-      const callee = value.callee;
-      const argument =
-        Array.isArray(value.arguments) && value.arguments.length === 1
-          ? value.arguments[0]
-          : undefined;
-      if (
-        isNode(callee) &&
-        callee.type === "MemberExpression" &&
-        !callee.computed &&
-        isIdentifier(callee.property, "map") &&
-        isNode(callee.object) &&
-        isNode(argument) &&
-        argument.type === "MemberExpression" &&
-        !argument.computed &&
-        isIdentifier(argument.object, "Hashing") &&
-        isIdentifier(argument.property, "Hash")
-      ) {
-        ranges.push({ start: callee.object.end, end: value.end });
-      }
-    }
-    for (const child of Object.values(value)) {
-      visit(child);
-    }
-  };
-  visit(parse(source, { ecmaVersion: "latest", sourceType: "module" }));
-  let rewritten = source;
-  for (const { start, end } of ranges.toSorted((a, b) => b.start - a.start)) {
-    rewritten = rewritten.slice(0, start) + rewritten.slice(end);
-  }
-  return rewritten;
-}
-
-function compileShared(entries: typeof validators, imports: Set<string>): string {
-  const sharedSchema = Compiler.Intern(
-    Type.Object(Object.fromEntries(entries.map(([name, schema]) => [name, schema]))),
-  );
-  const root = sharedSchema.$defs[sharedSchema.$ref.slice("#/$defs/".length)];
-  if (!root || !Compiler.IsProperties(root) || Compiler.HasUnevaluated({}, sharedSchema)) {
-    throw new Error("Shared validators need a standalone object schema without unevaluated checks");
-  }
-  // Match Build's reset boundary while sharing one scope across the group entry points.
-  Compiler.ResetExternal();
-  Compiler.ResetFunctions();
-  const context = new Compiler.BuildContext(false);
-  const stack = Compiler.Stack({}, sharedSchema);
-  const entriesSource = Object.entries(root.properties).map(
-    ([name, entry]) =>
-      `is${name}: value => ${Compiler.CreateFunction(stack, context, entry, "value")}`,
-  );
-  let functions = Compiler.GetFunctions().join(";\n");
-  if (entries.every(([, schema]) => onlyStringUniqueItems(schema))) {
-    // These finite string enums have the same equality under Set and TypeBox hashing.
-    functions = removeStringEnumHashing(functions);
-  }
-  const emitted = emitStandaloneValidatorSource(
-    `{ ${entries.map(([name]) => `is${name}`).join(", ")} }`,
-    functions,
-    Compiler.GetExternal().variables,
-    `{ ${entriesSource.join(", ")} }`,
-  );
-  for (const statement of emitted.imports) {
-    imports.add(statement);
-  }
-  return emitted.source;
-}
-
 async function main() {
   const args = process.argv.slice(2);
   if (args.some((arg) => arg !== "--check")) {
@@ -333,23 +216,19 @@ async function main() {
     "board",
   ] as const) {
     const selected = validators.filter((entry) => entry[3] === group);
-    const imports = new Set<string>();
     // Share repeated shapes only within each existing lazy boundary.
-    const compiled = ["activity", "approvals", "session-input"].includes(group)
-      ? compileShared(selected, imports)
-      : selected
-          .map(([name, schema]) =>
-            compile(
-              name,
-              name === "ChatHistoryState" || name === "ChatTranscriptMetadata"
-                ? Compiler.Intern(schema)
-                : schema,
-              imports,
-            ),
-          )
-          .join("\n");
-    // Import the compiler's exact helpers by name so one scalar check does not bundle every guard.
-    const source = [...imports, compiled, ...(group === "activity" ? [cleaner] : [])].join("\n");
+    const shareSchemaFunctions = ["activity", "approvals", "session-input"].includes(group);
+    const compiled = await compileStandaloneValidators(
+      selected.map(([name, schema]) => ({
+        name: `is${name}`,
+        schema:
+          name === "ChatHistoryState" || name === "ChatTranscriptMetadata"
+            ? Intern(schema)
+            : schema,
+      })),
+      { resolveDir: repoRoot, shareSchemaFunctions, hoistSchemaFunctions: shareSchemaFunctions },
+    );
+    const source = [compiled, ...(group === "activity" ? [cleaner] : [])].join("\n");
     const result = await build({
       stdin: { contents: source, resolveDir: repoRoot, loader: "js" },
       bundle: true,

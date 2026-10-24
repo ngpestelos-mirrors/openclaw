@@ -3,6 +3,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { parse } from "acorn";
 import { build } from "esbuild";
+import { IsLiteralString, Type } from "typebox";
 import * as Format from "typebox/format";
 import {
   Build,
@@ -65,6 +66,53 @@ function visitSyntax(source: string, callback: (node: SyntaxNode) => void): void
     }
   };
   visit(parse(source, { ecmaVersion: "latest", sourceType: "module" }));
+}
+
+function onlyStringUniqueItems(value: unknown): boolean {
+  if (!value || typeof value !== "object") {
+    return true;
+  }
+  if (
+    "uniqueItems" in value &&
+    value.uniqueItems === true &&
+    !(Type.IsArray(value) && Type.IsUnion(value.items) && value.items.anyOf.every(IsLiteralString))
+  ) {
+    return false;
+  }
+  return Object.values(value).every(onlyStringUniqueItems);
+}
+
+function removeStringEnumHashing(source: string): string {
+  const ranges: Array<{ start: number; end: number }> = [];
+  visitSyntax(source, (node) => {
+    if (node.type !== "CallExpression") {
+      return;
+    }
+    const callee = node.callee;
+    const argument =
+      Array.isArray(node.arguments) && node.arguments.length === 1 ? node.arguments[0] : undefined;
+    if (
+      isSyntaxNode(callee) &&
+      callee.type === "MemberExpression" &&
+      callee.computed === false &&
+      identifier(callee.property) === "map" &&
+      isSyntaxNode(callee.object) &&
+      typeof callee.object.end === "number" &&
+      typeof node.end === "number" &&
+      isSyntaxNode(argument) &&
+      argument.type === "MemberExpression" &&
+      argument.computed === false &&
+      identifier(argument.object) === "Hashing" &&
+      identifier(argument.property) === "Hash"
+    ) {
+      ranges.push({ start: callee.object.end, end: node.end });
+    }
+  });
+  let rewritten = source;
+  for (const { start, end } of ranges.toSorted((a, b) => b.start - a.start)) {
+    rewritten = rewritten.slice(0, start) + rewritten.slice(end);
+  }
+  return rewritten;
 }
 
 function compilerHelpers(source: string): Array<{ name: string; start: number; end: number }> {
@@ -269,6 +317,13 @@ export async function compileStandaloneValidators(
     }
     return emitted.source;
   };
+  // Finite string enums have the same equality under Set and TypeBox hashing.
+  // Explicit reference contexts can introduce other uniqueness rules.
+  const stringEnumsOnly = entries.every(
+    ({ schema, context }) => context === undefined && onlyStringUniqueItems(schema),
+  );
+  const optimizeFunctions = (source: string) =>
+    stringEnumsOnly ? removeStringEnumHashing(source) : source;
   let checks: string[];
   if (options.shareSchemaFunctions) {
     if (entries.some(({ context }) => context !== undefined)) {
@@ -303,7 +358,7 @@ export async function compileStandaloneValidators(
       collect(
         emitStandaloneValidatorSource(
           `{ ${entries.map(({ name }) => name).join(", ")} }`,
-          GetFunctions().join(";\n"),
+          optimizeFunctions(GetFunctions().join(";\n")),
           GetExternal().variables,
           `{ ${entryPoints.map(({ name, expression }) => `${name}: ${expression}`).join(", ")} }`,
           {
@@ -325,7 +380,7 @@ export async function compileStandaloneValidators(
         : `value => ${compiled.Entry()}`;
       const emitted = emitStandaloneValidatorSource(
         name,
-        compiled.Functions().join(";\n"),
+        optimizeFunctions(compiled.Functions().join(";\n")),
         compiled.External().variables,
         check,
         { ...options, externalIdentifier: compiled.External().identifier },
