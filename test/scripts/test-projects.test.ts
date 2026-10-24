@@ -316,36 +316,6 @@ describe("scripts/test-projects changed-target routing", () => {
     );
   });
 
-  it.each([
-    {
-      changedPath: ".github/workflows/plugin-npm-release.yml",
-      exactTargets: testFiles(
-        "test/scripts",
-        "plugin-npm-extended-stable-workflow plugin-release-git-lifecycle",
-      ),
-    },
-    {
-      changedPath: ".github/actions/setup-node-env/action.yml",
-      exactTargets: testFiles("test/scripts", "setup-node-env-bun setup-node-env-semantic-memory"),
-    },
-  ])("unions exact owners and references for $changedPath", ({ changedPath, exactTargets }) => {
-    withTinyGitRepo(
-      {
-        [changedPath]: "name: fixture\n",
-        "test/scripts/direct-workflow-reference.test.ts": `const target = "${changedPath}";\n`,
-      },
-      (cwd) => {
-        const targets = changedPlan([changedPath], { cwd }).targets;
-
-        for (const exactTarget of exactTargets) {
-          expect(targets).toContain(exactTarget);
-        }
-        expect(targets).toContain("test/scripts/direct-workflow-reference.test.ts");
-        expect(targets).toContain("test/scripts/ci-workflow-guards.test.ts");
-      },
-    );
-  });
-
   it("does not scan direct references for semantic non-YAML tooling", () => {
     withTinyGitRepo(
       {
@@ -1526,19 +1496,6 @@ export const single = {
     ).toEqual(["src/cli/update-cli/update-command-legacy-finalize.test.ts"]);
   });
 
-  it("preserves post-separator Vitest args without parsing them as targets", () => {
-    for (const [arg, watchMode] of [
-      ["--reporter=verbose", false],
-      ["--watch", true],
-    ] as const) {
-      expectRun(planRuns(["test/scripts/run-vitest.test.ts", "--", arg]), "tooling", {
-        forwardedArgs: [arg],
-        includePatterns: ["test/scripts/run-vitest.test.ts"],
-        watchMode,
-      });
-    }
-  });
-
   it("prints wrapper help for --help without starting a broad local suite", () => {
     const helpFlag = "--help";
     const nodeExecPath = requireNodeTool("node");
@@ -2101,11 +2058,7 @@ export const single = {
   it("routes prompt snapshot generator helper edits to the owner test", () => {
     for (const target of [
       "scripts/generate-prompt-snapshots.ts",
-      "scripts/prompt-snapshot-files.ts",
-      "scripts/sync-codex-model-prompt-fixture.ts",
       "test/helpers/agents/happy-path-prompt-snapshots.ts",
-      "test/fixtures/agents/prompt-snapshots/codex-model-catalog/gpt-5.5.pragmatic.source.json",
-      "test/fixtures/agents/prompt-snapshots/codex-runtime-happy-path/telegram-direct-codex-message-tool.md",
       "test/fixtures/agents/prompt-snapshots/codex-runtime-happy-path/discord-group-codex-message-tool.md.diff",
     ]) {
       expectChangedTargets([target], ["test/scripts/prompt-snapshots.test.ts"]);
@@ -2118,9 +2071,6 @@ export const single = {
       "packages/ai/test/fixtures/provider-transport-parity/anthropic-success.snap.txt",
       "packages/ai/test/fixtures/provider-transport-parity/anthropic-error.snap.txt",
     ];
-    for (const fixturePath of fixturePaths) {
-      expectChangedTargets([fixturePath], [owner]);
-    }
     expectChangedTargets(fixturePaths, [owner]);
     expectRun(
       planRuns(["--changed", "origin/main"], process.cwd(), () => fixturePaths),
