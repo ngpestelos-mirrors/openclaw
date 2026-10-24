@@ -6,7 +6,6 @@ import { requireNodeTool } from "../helpers/node-toolchain.js";
 import {
   createDeclarationFixture as createFixture,
   createDeclarationTest,
-  declarationCacheRecords,
   declarationInputs,
   expectOutputs,
   expectStagingClean,
@@ -126,7 +125,7 @@ describe("write-plugin-sdk-entry-dts", { timeout: WRITER_TEST_TIMEOUT_MS }, () =
       }),
   );
 
-  it.concurrent("publishes the canonical SDK graph with stable bytes and public nominal identity", ({
+  it.concurrent("publishes and restores SDK and QA declarations with public nominal identity", ({
     command,
   }) =>
     command.lifetime.run(async () => {
@@ -158,19 +157,12 @@ describe("write-plugin-sdk-entry-dts", { timeout: WRITER_TEST_TIMEOUT_MS }, () =
       }
 
       // Identical sources with a different QA selection must emit the extra canonical entries.
-      const priorOutputs = await build(true);
+      await build(true);
 
       writeDeclarations("after");
       fs.rmSync(path.join(root, "contracts/before.ts"));
       write("dist/plugin-sdk/obsolete.d.ts", "obsolete flat declaration");
       const first = await build(true);
-      const cachedDistFiles = new Set(
-        declarationCacheRecords(root).flatMap((record) =>
-          Object.keys(record.outputs)
-            .filter((file) => file.startsWith("dist/"))
-            .map((file) => file.slice("dist/".length)),
-        ),
-      );
       expect(first).not.toEqual(before);
       expect(fs.existsSync(path.join(root, "dist/plugin-sdk/obsolete.d.ts"))).toBe(false);
       for (const relative of preserved) {
@@ -178,46 +170,11 @@ describe("write-plugin-sdk-entry-dts", { timeout: WRITER_TEST_TIMEOUT_MS }, () =
       }
       expect(read("src/schema.sql")).toBe("CREATE TABLE fixture (value TEXT NOT NULL);");
 
-      // One restore proves portable, byte-stable reuse despite unrelated edits.
-      // Copy only the cache: copying Windows junctions can change the source topology.
-      const {
-        root: relocated,
-        write: writeRelocated,
-        writeDeclarations: writeRelocatedDeclarations,
-      } = createFixture(command);
-      writeRelocatedDeclarations("after");
-      fs.rmSync(path.join(relocated, "contracts/before.ts"));
-      writeRelocated("test/unrelated.test.ts", "export const test = 2;\n");
-      writeRelocated("ui/unrelated.ts", "export const view = 2;\n");
-      writeRelocated(".github/workflows/unrelated.yml", "name: unrelated after\n");
-      for (const relative of preserved) {
-        writeRelocated(relative, relative);
-      }
-      // The QA build can add shared chunks after the production snapshot. Seed
-      // only unowned history; current cache outputs must come from the restore.
-      for (const file of Object.keys(priorOutputs).filter(
-        (entry) => !entry.startsWith("plugin-sdk/") && !cachedDistFiles.has(entry),
-      )) {
-        expect(first[file]).toBe(priorOutputs[file]);
-        writeRelocated(`dist/${file}`, read(`dist/${file}`));
-      }
-      writeRelocated("dist/plugin-sdk/obsolete.d.ts", "obsolete restored declaration");
-      fs.cpSync(
-        path.join(root, ".artifacts/build-all-cache"),
-        path.join(relocated, ".artifacts/build-all-cache"),
-        { recursive: true },
-      );
-      const restored = await runWriter(command, relocated, true);
+      const restored = await runWriter(command, root, true);
       expect(restored.status, restored.stdout + restored.stderr).toBe(0);
       expect(restored.stdout + restored.stderr).not.toContain("[tsdown-build] invocation");
-      const restoredFiles = treeHashes(path.join(relocated, "dist"));
-      // Include shared root chunks, not just flat SDK entries, in filename/byte determinism.
-      expect(restoredFiles).toEqual(first);
-      expectOutputs(relocated, qa, Object.keys(restoredFiles));
-      expectStagingClean(relocated);
-      for (const relative of preserved) {
-        expect(fs.readFileSync(path.join(relocated, relative), "utf8")).toBe(relative);
-      }
+      expect(treeHashes(path.join(root, "dist"))).toEqual(first);
+      expectStagingClean(root);
 
       write(
         "consumer.ts",

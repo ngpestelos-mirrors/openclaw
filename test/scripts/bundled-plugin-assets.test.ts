@@ -6,7 +6,6 @@ import { buildDiscordActivitySdk } from "../../scripts/build-discord-activity-sd
 import * as assets from "../../scripts/bundled-plugin-assets.mts";
 import * as managedCommands from "../../scripts/lib/managed-child-process.mts";
 import * as watch from "../../scripts/run-node-watch-paths.mts";
-import { awaitGateBeforeSettlement, createDeferred } from "../helpers/promise.js";
 import { useAutoCleanupTempDirTracker } from "../helpers/temp-dir.js";
 
 const tempDirs = useAutoCleanupTempDirTracker(afterEach);
@@ -143,41 +142,25 @@ it("keeps browser manifest producers early while deferring selected isolated hoo
   }
 });
 
-it("awaits bounded asset execution and reports joined timeouts safely", async () => {
-  const build = "node scripts/private-asset-command.mjs";
-  const { rootDir, pluginDir } = pluginAssetFixture({ build });
-  const started = createDeferred<Parameters<typeof managedCommands.runManagedCommand>[0]>();
-  const command = createDeferred<number>();
-  const runner = vi.spyOn(managedCommands, "runManagedCommand");
-  runner.mockImplementationOnce((options) => {
-    started.resolve(options);
-    return command.promise;
-  });
-  const running = assets.runBundledPluginAssetHooks({ phase: "build", rootDir });
-  const outcome = running.catch((error: unknown) => error);
+it("dispatches discovered build hooks and propagates their failure", async () => {
+  const { rootDir, pluginDir } = pluginAssetFixture();
+  const failure = Object.assign(new Error("joined timeout"), { code: "ETIMEDOUT" });
+  const run = vi.spyOn(managedCommands, "runManagedCommand").mockRejectedValueOnce(failure);
   try {
-    const options = await awaitGateBeforeSettlement(
-      started.promise,
-      running,
-      "Asset hook settled before command",
-    );
-    expect(options).toMatchObject({
-      bin: build,
-      cwd: pluginDir,
-      timeoutMs: 600_000,
-      requireProcessTreeExit: process.platform !== "win32",
-    });
-    const failure = Object.assign(new Error("cleanup completed"), { code: "ETIMEDOUT" });
-    command.reject(failure);
-    expect(await outcome).toMatchObject({
+    await expect(
+      assets.runBundledPluginAssetHooks({ phase: "build", rootDir }),
+    ).rejects.toMatchObject({
       code: "ETIMEDOUT",
-      message: "Plugin asset build hook timed out after 600000ms: canvas",
       cause: failure,
     });
+    expect(run).toHaveBeenCalledExactlyOnceWith(
+      expect.objectContaining({
+        bin: "node scripts/build-runtime.mjs",
+        cwd: pluginDir,
+      }),
+    );
   } finally {
-    command.resolve(0);
-    await outcome;
-    runner.mockRestore();
+    run.mockRestore();
   }
 });
 

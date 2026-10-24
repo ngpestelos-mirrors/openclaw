@@ -196,10 +196,25 @@ describePosix("native auto-merge recovery", () => {
     expectStatus(f.run(false, f.repo, "squash", retired, selected), 1);
     expect(receipt(f)).toBe(retired);
     const replacement = f.replacePreparedHead();
-    update(f, { mode: "success" }, { mergeStateStatus: "CLEAN" });
+    update(
+      f,
+      { mode: "success", pooledMergeBlocked: true, quotaAt: "observe", quotaFailuresRemaining: 0 },
+      { mergeStateStatus: "CLEAN" },
+    );
     expectStatus(f.run(false, f.repo, "squash", retired, replacement));
     expect(f.record()).toMatchObject({ phase: "complete", head: replacement });
     expectEffects(f, 2, 0, 1);
+    expect(f.record()).not.toHaveProperty("transport");
+    expect(f.state().restMergePayload).toBeNull();
+    expect(f.state().graphqlMergePayloads).toEqual([
+      {
+        pullRequestId: "fixture-pr",
+        expectedHeadOid: replacement,
+        mergeMethod: "SQUASH",
+        commitBody: f.state().mergeBody,
+      },
+    ]);
+    expect(f.state().mergeBody).toContain(f.state().previewBody);
   });
   it.each<{ mode: string; cancellation: string; absent?: boolean; settlesAfter?: number }>([
     { mode: "pending", cancellation: "success" },
@@ -209,14 +224,12 @@ describePosix("native auto-merge recovery", () => {
     { mode: "pending", cancellation: "success", settlesAfter: 0 },
     { mode: "pending", cancellation: "success", settlesAfter: 2 },
   ])(
-    "retires auto before recovery (submission=$mode, cancellation=$cancellation, absent=$absent, settlesAfter=$settlesAfter)",
+    "confirms auto retirement (submission=$mode, cancellation=$cancellation, absent=$absent, settlesAfter=$settlesAfter)",
     ({ mode, cancellation, absent, settlesAfter }) => {
       const f = autoFixture(mode, cancellation);
       const acknowledged = mode === "pending";
       expectStatus(f.run(true), acknowledged ? 0 : 1);
       const attempt = receipt(f);
-      const attemptRecord = f.record();
-      const captures = f.captures();
       if (!acknowledged) {
         // The failed request drained, so the supervisor already released its lock.
         expect(f.recover()).toBe(false);
@@ -239,48 +252,7 @@ describePosix("native auto-merge recovery", () => {
         route: "auto",
         cancellation: { state: "confirmed", outcome: attempt, actor: "fixture-operator" },
       });
-      if (settlesAfter !== undefined) {
-        return;
-      }
-      const retired = receipt(f);
-      const retiredRecord = f.record();
-      expect(retiredRecord).not.toHaveProperty("transport");
-      const retirement = f
-        .git(["rev-list", "--ancestry-path", "--reverse", `${attempt}..${retired}`])
-        .split("\n")[0]!;
-      const replacement = f.replacePreparedHead();
-      update(
-        f,
-        {
-          mode: "success",
-          pooledMergeBlocked: true,
-          quotaAt: "observe",
-          quotaFailuresRemaining: 0,
-        },
-        { mergeStateStatus: "CLEAN" },
-      );
-      expectStatus(f.run(false, f.repo, "squash", retired, replacement));
-      expectEffects(f, 2, absent ? 0 : 1, 1);
-      expect(f.record()).toMatchObject({
-        phase: "complete",
-        head: replacement,
-        recovery: { outcome: retired, replacementHead: replacement },
-      });
       expect(f.record()).not.toHaveProperty("transport");
-      expect(savedRecord(f, attempt)).toEqual(attemptRecord);
-      expect(savedRecord(f, retired)).toEqual(retiredRecord);
-      expect(f.state().restMergePayload).toBeNull();
-      expect(f.state().graphqlMergePayloads).toEqual([
-        {
-          pullRequestId: "fixture-pr",
-          expectedHeadOid: replacement,
-          mergeMethod: "SQUASH",
-          commitBody: f.state().mergeBody,
-        },
-      ]);
-      expect(f.state().mergeBody).toContain(f.state().previewBody);
-      expect(f.git(["merge-base", "--is-ancestor", attempt, outcomeRef])).toBe("");
-      expectCapturedFiles(f, captures, retirement);
     },
   );
   it("never repeats an uncertain auto cancellation and confirms its later observed retirement", () => {

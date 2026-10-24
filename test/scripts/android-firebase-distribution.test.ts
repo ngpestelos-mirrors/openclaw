@@ -259,7 +259,7 @@ it("closes preflight and failed publishing connections independently", async () 
   expect(publishingDispatcher).toMatchObject({ closed: true, destroyed: true });
 });
 
-it("publishes signed Wear then Phone with labeled notes and idempotent notifications", async () => {
+it("publishes signed Wear then Phone and binds idempotent recovery to the original inputs", async () => {
   const result = await distribute();
   const effects = test.effects();
   expect(effects.map((call) => `${call.method} ${call.url.split("/releases")[1]}`)).toEqual(
@@ -287,6 +287,16 @@ it("publishes signed Wear then Phone with labeled notes and idempotent notificat
   test.calls.length = 0;
   await distribute();
   expect(test.effects()).toEqual([]);
+  test.calls.length = 0;
+  fs.writeFileSync(test.files.phone!, "different AAB");
+  await expect(distribute()).rejects.toThrow("SHA-256 sidecar");
+  fs.writeFileSync(test.files.phone!, test.bytes.phone);
+  test.options.notes.entries[0]!.text = "different notes";
+  test.options.notes.entries[0]!.textSha256 = sha256("different notes");
+  await expect(distribute()).rejects.toThrow("receipt does not match");
+  test.env.FIREBASE_TESTER_GROUPS = "another-group";
+  await expect(distribute()).rejects.toThrow("saved internal Android plan");
+  expect(test.calls).toEqual([]);
 });
 
 it("resumes a partial pair without uploading or emailing Wear again", async () => {
@@ -322,20 +332,6 @@ it("rejects an incomplete Play integration during read-only preflight", async ()
   test.state.integrationState = "ADHOC_SHARING_KEY_NOT_REGISTERED";
   await expect(preflight()).rejects.toThrow("register its Internal App Sharing certificate");
   expect(test.calls.some((call) => call.url.includes("releases"))).toBe(false);
-});
-
-it("rejects changed artifacts, notes, and destination on recovery", async () => {
-  await distribute();
-  test.calls.length = 0;
-  fs.writeFileSync(test.files.phone!, "different AAB");
-  await expect(distribute()).rejects.toThrow("SHA-256 sidecar");
-  fs.writeFileSync(test.files.phone!, test.bytes.phone);
-  test.options.notes.entries[0]!.text = "different notes";
-  test.options.notes.entries[0]!.textSha256 = sha256("different notes");
-  await expect(distribute()).rejects.toThrow("receipt does not match");
-  test.env.FIREBASE_TESTER_GROUPS = "another-group";
-  await expect(distribute()).rejects.toThrow("saved internal Android plan");
-  expect(test.calls).toEqual([]);
 });
 
 it("rejects a different processed build before publishing", async () => {
