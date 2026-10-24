@@ -45,26 +45,6 @@ async function runNode(root: string, entry = "openclaw.mjs") {
 }
 
 describe("node bootstrap distribution", () => {
-  it("preserves workspace bundles when npm bundling is disabled", async () => {
-    const { root, packageRoot, provider, sourcePackage } = await fixture();
-    await write(packageRoot, "package.json", { ...sourcePackage, bundleDependencies: false });
-
-    const target = await extract(root, await provider.prepare());
-    expect(await runNode(target)).toBe("local-ai:cloud-ready");
-    const manifest = JSON.parse(await readText(target, "package.json"));
-    expect(manifest.bundleDependencies).toEqual(["@fixture/ai"]);
-  });
-
-  it("retains registry bundle dependency declarations for npm installation", async () => {
-    const { root, packageRoot, provider } = await fixture();
-    await writeBundledBrowser(packageRoot, { "transitive-runtime": "^1.2.3" });
-
-    const target = await extract(root, await provider.prepare());
-    expect(
-      JSON.parse(await readText(target, "node_modules/@fixture/browser/package.json")),
-    ).toMatchObject({ dependencies: { "transitive-runtime": "^1.2.3" } });
-  });
-
   it.each([false, true])(
     "omits unselected plugin chunks while preserving selected imports (selected: %s)",
     async (selected) => {

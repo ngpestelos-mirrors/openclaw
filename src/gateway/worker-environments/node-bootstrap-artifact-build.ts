@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
-import { constants as fsConstants, createWriteStream } from "node:fs";
+import { constants as fsConstants, createWriteStream, existsSync } from "node:fs";
 import fs from "node:fs/promises";
+import { createRequire } from "node:module";
 import path from "node:path";
 import { finished, pipeline } from "node:stream/promises";
 import { isDeepStrictEqual } from "node:util";
@@ -233,7 +234,13 @@ async function resolvePlugins(options: NodeBootstrapArtifactOptions, packageRoot
         const relative = bootstrapPath(entry.replace(/^\.\//u, "").replace(/\.ts$/u, ".js"));
         await fs.access(path.join(builtRoot, relative));
       }
-      return { id, root: builtRoot, packageJson, bundled: builtRoot === bundledRoot };
+      return {
+        id,
+        root: builtRoot,
+        installationRoot: requestedRoot,
+        packageJson,
+        bundled: builtRoot === bundledRoot,
+      };
     }),
   );
 }
@@ -377,15 +384,36 @@ export async function prepareNodeBootstrapArtifact(
 
   // Only declared bundled/workspace packages cross as JavaScript artifacts. Native dependencies
   // remain exact npm pins, so the destination chooses its own OS/CPU optional packages.
-  const bundledNames = new Set([
-    ...listBundleDependencies(packageJson),
-    ...Object.entries(packageJson.dependencies ?? {})
+  const coreBundles = new Set([
+    ...listBundleDependencies(sourcePackage),
+    ...Object.entries(sourcePackage.dependencies ?? {})
       .filter(([, spec]) => spec.startsWith("workspace:"))
       .map(([name]) => name),
   ]);
+  const bundledNames = new Set([...coreBundles, ...listBundleDependencies(packageJson)]);
   for (const name of [...bundledNames].toSorted()) {
     bootstrapPath(name);
-    const root = await fs.realpath(path.join(packageRoot, "node_modules", name));
+    const owner = coreBundles.has(name)
+      ? undefined
+      : (plugins.find(({ packageJson: pluginJson }) =>
+          listBundleDependencies(pluginJson).includes(name),
+        ) ??
+        plugins.find(
+          ({ packageJson: pluginJson }) =>
+            Object.hasOwn(pluginJson.dependencies ?? {}, name) ||
+            Object.hasOwn(pluginJson.optionalDependencies ?? {}, name),
+        ));
+    // Source plugins execute built files but retain their source installation's dependencies.
+    const installationRoot = owner?.installationRoot ?? packageRoot;
+    const modules = createRequire(path.join(installationRoot, "package.json"))
+      .resolve.paths(`${name}/package.json`)
+      ?.find((directory) => existsSync(path.join(directory, name, "package.json")));
+    if (!modules) {
+      throw new Error(
+        `Bundled node dependency ${name} is missing from ${installationRoot}; install its dependencies and rebuild the Gateway`,
+      );
+    }
+    const root = await fs.realpath(path.join(modules, name));
     const bundled = await readPackageManifest(root);
     if (bundled.name !== name) {
       throw new Error(`Bundled node distribution dependency identity does not match ${name}`);
