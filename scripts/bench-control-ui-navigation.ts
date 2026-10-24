@@ -10,6 +10,8 @@ import path from "node:path";
 import { parseArgs } from "node:util";
 import { chromium, type CDPSession, type Locator, type Page } from "playwright";
 import { selectControlUiRoutePreloads } from "../src/gateway/control-ui-route-preloads.ts";
+import { createEmptyCostUsageTotals } from "../src/infra/session-cost-usage-totals.ts";
+import type { SessionsUsageResult } from "../src/shared/usage-types.ts";
 import { SIDEBAR_NAV_ROUTES } from "../ui/src/app-navigation.ts";
 import type { RouteId } from "../ui/src/app-route-paths.ts";
 import { createControlUiE2eArtifactDir } from "../ui/src/test-helpers/control-ui-e2e-artifacts.ts";
@@ -249,6 +251,24 @@ function createFixture(buildId: string, version: string) {
         raw: JSON.stringify(config),
       },
       "claws.catalog.search": { entries: [] },
+      "sessions.usage": {
+        updatedAt: 1_800_000_000_000,
+        startDate: "2026-10-01",
+        endDate: "2026-10-24",
+        sessions: [],
+        totals: createEmptyCostUsageTotals(),
+        aggregates: {
+          messages: { total: 0, user: 0, assistant: 0, toolCalls: 0, toolResults: 0, errors: 0 },
+          tools: { totalCalls: 0, uniqueTools: 0, tools: [] },
+          byModel: [],
+          byProvider: [],
+          byAgent: [],
+          byChannel: [],
+          costDaily: [],
+          modelDaily: [],
+          daily: [],
+        },
+      } satisfies SessionsUsageResult,
       "node.list": { nodes: [] },
       "backup.status": { targets: [], schedules: [], locations: [] },
     },
