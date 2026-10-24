@@ -8,8 +8,6 @@ import { expandProvider } from "./model-providers.test-support.ts";
 const suite = createControlUiE2eSuite({
   name: "Control UI Model Provider operator outcomes mocked Gateway E2E",
   startServerBeforeBrowser: true,
-  unavailableMessage: (executablePath) =>
-    `Playwright Chromium is not available at ${executablePath}`,
 });
 const now = Date.now();
 const unavailableMessage =
@@ -27,20 +25,6 @@ const configuredProvider = {
   apiKey: { source: "config" },
 };
 const models = [{ id: "gpt-5.5", name: "GPT-5.5", provider: "openai", available: true }];
-const configuredResponses = {
-  ...providerUsageResponses({ updatedAt: now, providers: [] }),
-  "config.get": {
-    config,
-    sourceConfig: config,
-    hash: "model-providers-configured",
-    issues: [],
-    raw: JSON.stringify(config),
-    valid: true,
-  },
-  "models.list": { models },
-  "models.authStatus": { ts: now, providers: [configuredProvider] },
-};
-
 function withPage(run: (page: Page) => Promise<void>, width = 1440) {
   return suite.withPage(
     { locale: "en-US", serviceWorkers: "block", viewport: { height: 1000, width } },
@@ -68,55 +52,48 @@ function providerUsageResponses(usageStatus: unknown) {
 }
 
 suite.define(() => {
-  it("shows usage request failures with no configured providers", async () => {
-    await withPage(async (page) => {
-      const gateway = await installMockGateway(page, {
-        methodResponses: providerUsageResponses({
-          __mockError: { code: "INTERNAL_ERROR", message: "gateway transport unavailable" },
-        }),
+  it.each(["request failure", "provider error"] as const)(
+    "distinguishes usage outcomes: %s",
+    async (outcome) => {
+      await withPage(async (page) => {
+        const failed = outcome === "request failure";
+        const gateway = await installMockGateway(page, {
+          methodResponses: providerUsageResponses(
+            failed
+              ? {
+                  __mockError: { code: "INTERNAL_ERROR", message: "gateway transport unavailable" },
+                }
+              : {
+                  updatedAt: now,
+                  providers: [
+                    {
+                      provider: "openai",
+                      displayName: "OpenAI",
+                      windows: [],
+                      error: "provider API unavailable",
+                    },
+                  ],
+                },
+          ),
+        });
+        await page.goto(`${suite.server.baseUrl}settings/model-providers`);
+        await expect
+          .poll(async () => (await gateway.getRequests("usage.status")).length)
+          .toBeGreaterThan(0);
+        const warning = expect.poll(() => page.locator(".settings-page").textContent());
+        if (failed) {
+          await warning.toContain(unavailableMessage);
+          expect(await page.locator("[data-provider-id]").count()).toBe(0);
+        } else {
+          await page.locator('[data-provider-id="openai"]').waitFor();
+          await expect
+            .poll(() => page.locator('.provider-row[data-provider-id="openai"]').textContent())
+            .toContain("provider API unavailable");
+          await warning.not.toContain(unavailableMessage);
+        }
       });
-
-      await page.goto(`${suite.server.baseUrl}settings/model-providers`);
-      await expect
-        .poll(async () => (await gateway.getRequests("usage.status")).length)
-        .toBeGreaterThan(0);
-      await expect
-        .poll(() => page.locator(".settings-page").textContent())
-        .toContain(unavailableMessage);
-      expect(await page.locator("[data-provider-id]").count()).toBe(0);
-    });
-  });
-
-  it("keeps provider-scoped usage errors as data without the global warning", async () => {
-    await withPage(async (page) => {
-      const gateway = await installMockGateway(page, {
-        methodResponses: providerUsageResponses({
-          updatedAt: now,
-          providers: [
-            {
-              provider: "openai",
-              displayName: "OpenAI",
-              windows: [],
-              error: "provider API unavailable",
-            },
-          ],
-        }),
-      });
-
-      await page.goto(`${suite.server.baseUrl}settings/model-providers`);
-      const card = page.locator('[data-provider-id="openai"]');
-      await card.waitFor();
-      await expect
-        .poll(async () => (await gateway.getRequests("usage.status")).length)
-        .toBeGreaterThan(0);
-      await expect
-        .poll(() => page.locator('.provider-row[data-provider-id="openai"]').textContent())
-        .toContain("provider API unavailable");
-      await expect
-        .poll(() => page.locator(".settings-page").textContent())
-        .not.toContain(unavailableMessage);
-    });
-  });
+    },
+  );
 
   it("clears unsaved provider credentials when switching agents without saving them", async () => {
     await withPage(async (page) => {
@@ -124,7 +101,16 @@ suite.define(() => {
         defaultAgentId: "main",
         featureMethods: ["chat.metadata", "chat.startup", "config.patch"],
         methodResponses: {
-          ...configuredResponses,
+          ...providerUsageResponses({ updatedAt: now, providers: [] }),
+          "config.get": {
+            config,
+            sourceConfig: config,
+            hash: "model-providers-configured",
+            issues: [],
+            raw: JSON.stringify(config),
+            valid: true,
+          },
+          "models.list": { models },
           "agents.list": {
             agents: [
               { id: "main", name: "Main" },

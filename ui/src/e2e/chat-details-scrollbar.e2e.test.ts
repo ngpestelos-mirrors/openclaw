@@ -1,10 +1,6 @@
 import type { Page } from "playwright";
 import { expect, it } from "vitest";
-import { cronJobsListResponse } from "../lib/cron/cron.test-support.ts";
-import {
-  defaultControlUiFeatureMethods,
-  installMockGateway,
-} from "../test-helpers/control-ui-e2e.ts";
+import { installMockGateway } from "../test-helpers/control-ui-e2e.ts";
 import { closeChatDetails, openChatDetails } from "./chat-details.test-support.ts";
 import { seedChatSettings } from "./chat-layout-fixtures.test-support.ts";
 import { openChatSidePanelType } from "./chat-side-panel.test-support.ts";
@@ -160,34 +156,7 @@ suite.define(() => {
         await seedChatSettings(page, suite.server.baseUrl, { themeMode: "dark" });
         await installMockGateway(page, {
           sessionKey,
-          agentModel: "example/demo-model",
-          models: [
-            { id: "demo-model", name: "Demo model", provider: "example", contextWindow: 128000 },
-          ],
-          featureMethods: [
-            ...defaultControlUiFeatureMethods,
-            "cron.list",
-            "chat.metadata",
-            "chat.startup",
-            "progressCard.get",
-            "progressCard.refresh",
-          ],
           methodResponses: {
-            "cron.list": cronJobsListResponse([]),
-            "progressCard.get": {
-              card: {
-                sessionKey,
-                revision: 1,
-                updatedAt: 1,
-                markdown:
-                  "Review the release notes and verify the session layout before publication.",
-                steps: [
-                  { step: "Inspect the proposed release notes", status: "completed" },
-                  { step: "Verify the session layout", status: "in_progress" },
-                  { step: "Publish the reviewed notes", status: "pending" },
-                ],
-              },
-            },
             "sessions.files.list": {
               sessionKey,
               root: "/workspace/release-review",
@@ -202,12 +171,6 @@ suite.define(() => {
               sessionId: "details-scrollbar",
               kind: "direct",
               label: "Review release notes",
-              spawnedCwd: "/workspace/release-review",
-              worktree: { id: "release-review", repoRoot: "/workspace", branch: "release-review" },
-              model: "demo-model",
-              totalTokens: 32000,
-              totalTokensFresh: true,
-              contextTokens: 128000,
             },
           ],
           historyMessages: Array.from({ length: 24 }, (_, index) => ({

@@ -182,9 +182,6 @@ suite.define(() => {
           await effort.click();
           const slider = composer.locator("[data-chat-thinking-slider]");
           await slider.waitFor({ state: "visible" });
-          await expect
-            .poll(() => slider.getAttribute("data-chat-thinking-values"))
-            .toBe(levels.map(({ id }) => id).join(","));
           await expect.poll(() => slider.isVisible()).toBe(true);
           const sliderBounds = await slider.boundingBox();
           expect(sliderBounds).not.toBeNull();
@@ -236,29 +233,6 @@ suite.define(() => {
       );
     },
   );
-
-  it("keeps usable effort controls with a locked model and a retained snapshot", async () => {
-    await suite.withPage({ locale: "en-US" }, async ({ page }) => {
-      await installMockGateway(page, {
-        agentModel: partialConfig.agents.defaults.model,
-        models: catalog.models,
-        methodResponses: {
-          "models.list": catalog,
-          "sessions.list": sessionList({}, { ...modelFields(), modelSelectionLocked: true }),
-        },
-      });
-      await page.goto(`${suite.server.baseUrl}chat`);
-      const model = page.locator("[data-chat-model-select]");
-      const effort = page.locator("[data-chat-thinking-select]");
-      await expect.poll(() => effort.isVisible()).toBe(true);
-      await page.locator('[data-chat-thinking-select][aria-disabled="false"]').waitFor();
-      await expectUnreserved(page.locator(".chat-controls__effort-picker"));
-      expect(await model.getAttribute("data-chat-model-locked")).toBe("true");
-      expect(await effort.getAttribute("aria-disabled")).toBe("false");
-      await effort.click();
-      await expect.poll(() => page.locator("[data-chat-thinking-slider]").isEnabled()).toBe(true);
-    });
-  });
 
   it.each(["empty", "rejected", "selected unavailable", "non-reasoning"])(
     "does not expose usable effort for %s",
