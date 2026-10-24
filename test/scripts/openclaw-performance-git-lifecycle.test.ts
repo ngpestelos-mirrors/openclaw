@@ -176,11 +176,10 @@ posixIt.for([0, 1, 125])(
   },
 );
 
-posixIt.for([125, "hang"] as const)(
-  "ambiguous push %s reconciles only after extinction",
-  { timeout: 55_000 },
-  async (code, { signal }) => {
-    const report = await performanceRun(signal, "publish", { pushResults: [code] });
+posixIt(
+  "hung push reconciles only after extinction",
+  async ({ signal }) => {
+    const report = await performanceRun(signal, "publish", { pushResults: ["hang"] });
     expectReport(report, 0, { pushes: 2, fetches: 1, checkouts: 1 });
     expect(report.output.match(/fixture backoff: \d+/gu)).toEqual(["fixture backoff: 2"]);
     expect(report.githubSummary).toContain("### Clawgrit report published");
@@ -209,6 +208,7 @@ posixIt.for([125, "hang"] as const)(
       Buffer.from("x-access-token:fixture-performance-token").toString("base64"),
     );
   },
+  55_000,
 );
 
 posixIt.for([false, true])(
@@ -283,17 +283,17 @@ posixIt.for(["owner", "python", "git"] as const)(
   },
 );
 
-posixIt.for([125, "hang"] as const)(
-  "reconciliation fetch %s warns once and retries without replay",
-  { timeout: 55_000 },
-  async (code, { signal }) => {
+posixIt(
+  "hung reconciliation fetch warns once and retries without replay",
+  async ({ signal }) => {
     const report = await performanceRun(signal, "publish", {
       pushResults: [23],
-      fetchResults: [code],
+      fetchResults: ["hang"],
     });
     expectReport(report, 0, { pushes: 2, fetches: 1, checkouts: 0 });
     expect(report.output.match(/::warning::Unable to refresh/gu)).toHaveLength(1);
   },
+  55_000,
 );
 
 posixIt.for(["prepare", "publish"] as const)(

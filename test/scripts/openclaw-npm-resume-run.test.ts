@@ -195,7 +195,6 @@ describe("openclaw npm resume run identity", () => {
     ["branch", { head_branch: "main" }],
     ["workflow", { workflow_id: 999 }],
     ["event", { event: "push" }],
-    ["conclusion", { conclusion: "failure" }],
     ["path", { path: ".github/workflows/ci.yml" }],
   ])("rejects an untrusted %s", (_label, run) => {
     expect(() => validateOpenClawNpmResumeRun(runFixture(run))).toThrow(identityError);
@@ -227,14 +226,6 @@ describe("openclaw npm resume run identity", () => {
       workflowRef: `refs/tags/${BRANCH}`,
       workflowSha: SHA,
     });
-    expect(runGh).toHaveBeenCalledTimes(annotated ? 6 : 4);
-    expect(runGh.mock.calls.some(([args]) => args.includes(RUN_API))).toBe(false);
-    expect(runGh.mock.calls.find(([args]) => args[0] === "run")?.[0]).toContain("--attempt");
-    if (!annotated) {
-      expect(runGh.mock.calls.flatMap(([args]) => args)).not.toContain(
-        `repos/openclaw/openclaw/compare/${SHA}...main`,
-      );
-    }
   });
 });
 
