@@ -683,10 +683,20 @@ export async function prepareSessionPendingInputDedupeRecovery(
 }
 
 /** Read one admitted source for explicit retry comparison; this never authorizes replay. */
+export function readSessionSubmittedInput(
+  scope: PendingInputScope,
+  idempotencyKey: string,
+  options: { includeSource: true },
+): Promise<{ message: PersistedUserTurnMessage; source: "pending" | "transcript" } | undefined>;
+export function readSessionSubmittedInput(
+  scope: PendingInputScope,
+  idempotencyKey: string,
+): Promise<PersistedUserTurnMessage | undefined>;
 export async function readSessionSubmittedInput(
   scope: PendingInputScope,
   idempotencyKey: string,
-): Promise<PersistedUserTurnMessage | undefined> {
+  options?: { includeSource: true },
+) {
   const source = await readPendingInputSource(scope, idempotencyKey, false);
   if (!source?.snapshot.current) {
     return undefined;
@@ -694,5 +704,10 @@ export async function readSessionSubmittedInput(
   source.assertCurrent();
   const { pending, committed } = source.snapshot;
   const message = pending ? parseSessionPendingInputMessage(pending.message_json) : committed;
-  return message && readMessageIdempotencyKey(message) === idempotencyKey ? message : undefined;
+  if (!message || readMessageIdempotencyKey(message) !== idempotencyKey) {
+    return undefined;
+  }
+  return options?.includeSource
+    ? { message, source: pending ? ("pending" as const) : ("transcript" as const) }
+    : message;
 }

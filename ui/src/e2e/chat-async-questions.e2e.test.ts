@@ -47,35 +47,41 @@ function createQuestionCapture(scope: string) {
 suite.define(() => {
   it("keeps an admitted optional answer with its original outbox owner after reconnect", async () => {
     await suite.withPage(createControlUiE2eContextOptions(), async ({ page }) => {
-      const gateway = await installMockGateway(page, { historyMessages: [questionMessage] });
+      const gateway = await installMockGateway(page, {
+        historyMessages: [questionMessage],
+        heldMethods: ["chat.send"],
+      });
       await page.goto(`${suite.server.baseUrl}chat`);
       const card = page.locator(".agent-chat__question-dock openclaw-chat-question-panel");
       const answer = "The customer support team";
       await card.getByRole("textbox", { name: `Your own answer for ${title}` }).fill(answer);
-      await gateway.deferNext("chat.send");
       await card.getByRole("button", { name: "Submit", exact: true }).click();
       const firstRequest = await gateway.waitForRequest("chat.send");
       const admitted = await readOutboxQueue(page);
       expect(admitted).toHaveLength(1);
       expect(requireRecord(firstRequest.params).message).toBe(`> ${title}\n\n${answer}`);
-      await reconnectMockGateway(page, gateway);
+      await gateway.setOnline(false);
       await expect
         .poll(async () => (await readOutboxQueue(page))[0]?.sendState)
-        .toBe("unconfirmed");
+        .toBe("waiting-reconnect");
       await expectBrowser(card).toHaveCount(0);
       const summary = page.locator(".chat-question-summary").filter({ hasText: title });
-      await expectBrowser(summary).toContainText(answer);
-      const unconfirmed = page.locator('.chat-send-status[data-send-state="unconfirmed"]');
-      const retry = unconfirmed.getByRole("button", { name: "Retry queued message" });
-      await expectBrowser(retry).toBeVisible();
+      await expectBrowser(page.locator(".chat-group.user")).toContainText(answer);
+      const pending = page.locator('.chat-send-status[data-send-state="waiting-reconnect"]');
+      await expectBrowser(
+        pending.getByText("Waiting for reconnect", { exact: true }),
+      ).toBeVisible();
+      await expectBrowser(
+        pending.getByRole("button", { name: "Retry queued message" }),
+      ).toHaveCount(0);
       expect((await readOutboxQueue(page)).map((item) => item.id)).toEqual(
         admitted.map((item) => item.id),
       );
       expect(await gateway.getRequests("chat.send")).toHaveLength(1);
-      await captureUiProof(suite, page, "async-question-reconnect", "after-reconnect.png");
-      await gateway.deferNext("chat.send");
-      await retry.click();
+      await captureUiProof(suite, page, "async-question-reconnect", "waiting-for-reconnect.png");
+      await gateway.setOnline(true);
       const retried = await gateway.waitForRequest("chat.send", { after: 1 });
+      await expectBrowser(summary).toContainText(answer);
       expect(requireRecord(retried.params).message).toBe(
         requireRecord(firstRequest.params).message,
       );
@@ -86,7 +92,7 @@ suite.define(() => {
         admitted.map((item) => item.id),
       );
       await gateway.resolveDeferred("chat.send");
-      await expectBrowser(unconfirmed).toHaveCount(0);
+      await expectBrowser(page.locator(".chat-send-status")).toHaveCount(0);
       await expectBrowser(card).toHaveCount(0);
       expect(await page.locator(".chat-group.user .chat-bubble").count()).toBe(1);
       expect(await gateway.getRequests("chat.send")).toHaveLength(2);

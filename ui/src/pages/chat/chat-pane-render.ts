@@ -342,6 +342,9 @@ export class ChatPaneRuntime extends ChatPaneLayoutRender {
       onRetrySessionPlacementStartup: placementStartup?.retryable
         ? this.retrySessionPlacementStartup
         : undefined,
+      onDiscardSessionPlacementStartup: placementStartup?.initialTurn
+        ? this.discardSessionPlacementStartup
+        : undefined,
       canAbort: sessionParticipationBlocked ? false : hasAbortableSessionRun(state),
       runActive,
       runStatus: state.chatRunStatus,

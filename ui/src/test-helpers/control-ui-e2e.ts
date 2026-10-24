@@ -1701,6 +1701,10 @@ function installControlUiMockGateway(
           })
         : configuredValue;
     }
+    const sessionResponse = sessions.readResponse(method, params, scenario);
+    if (sessionResponse !== undefined) {
+      return sessionResponse;
+    }
     switch (method) {
       case "session.reactions.list":
         return reactionFixtures.list(params);
@@ -1906,10 +1910,6 @@ function installControlUiMockGateway(
         return { artifacts: [] };
       case "artifacts.download":
         return null;
-      case "sessions.resolve":
-      case "sessions.describe":
-      case "session.members.listEvidence":
-        return sessions.readResponse(method, params, scenario);
       case "chat.history":
       case "chat.startup": {
         const resolution =

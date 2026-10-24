@@ -132,6 +132,7 @@ export function resolveChatSendRequestConflict(
     return undefined;
   }
   const knownRetry =
+    comparison?.submitted !== undefined ||
     retryEntries.some(Boolean) ||
     sameDurableSource ||
     hasRestartRecoveryTerminalRun(session.entry, session.clientRunId) ||
@@ -178,9 +179,14 @@ export async function consumeChatSendCurrent<T>(
   return invoke();
 }
 
-async function respondPreparedChatSendRetry(params: ChatSendRetryParams): Promise<boolean> {
+async function respondPreparedChatSendRetry(
+  params: ChatSendRetryParams,
+  readRecordedInput = false,
+): Promise<boolean> {
   try {
-    const pending = prepareChatSendRetryComparison(params);
+    const pending =
+      prepareChatSendRetryComparison(params) ??
+      (readRecordedInput ? readChatSendRetryComparison(params.session) : undefined);
     const comparison = pending ? await pending : undefined;
     return await consumeChatSendCurrent(params, () => respondChatSendRetry(params, comparison));
   } catch (error) {
@@ -243,6 +249,15 @@ export function respondChatSendRetry(
   });
   if (pending || getRpcSourceForGateway(clientRunId, context.resolveGatewayContext)) {
     respond(true, { runId: clientRunId, status: "in_flight" as const }, undefined, {
+      cached: true,
+      runId: clientRunId,
+    });
+    return true;
+  }
+  if (comparison?.submitted) {
+    // RAM reservations cover concurrent sends before their durable input exists.
+    // A crash before either record leaves the original key available for retry.
+    respond(true, { runId: clientRunId, status: "ok" as const }, undefined, {
       cached: true,
       runId: clientRunId,
     });
@@ -334,7 +349,7 @@ export async function runChatSendPreAdmission(
       );
       return false;
     }
-    if (!stopCommand && !request.goalOperation) {
+    if (!request.goalOperation) {
       try {
         const handled = respondChatSendRetry(params);
         retryChecked = true;
@@ -347,12 +362,12 @@ export async function runChatSendPreAdmission(
         }
         // Missing comparison facts are prepared below, then consumed with fresh authority.
       }
-      if (retryChecked && !requiresReconciliation) {
+      if (!stopCommand && retryChecked && !requiresReconciliation) {
         preparedClaim = resolveClaim(entry, warnRecovery);
         if (preparedClaim instanceof Promise) {
           // Reader settlement may reject after recovery starts; retain its accepted work.
           void preparedClaim.catch(() => {});
-        } else if (preparedClaim.kind === "continue") {
+        } else if (preparedClaim.kind === "continue" && !entry?.sessionId) {
           initialDecisionCompleted = true;
           return consumeNewDispatchDecision();
         }
@@ -412,6 +427,9 @@ export async function runChatSendPreAdmission(
   }
 
   if (stopCommand) {
+    if (await respondPreparedChatSendRetry(params, true)) {
+      return false;
+    }
     if (sessionRoutingChanged(cfg)) {
       respondChatSessionRoutingChanged(respond);
       return false;
@@ -631,30 +649,34 @@ export async function runChatSendPreAdmission(
             cfg,
           ),
   };
-  const retryParams = { ...params, session: retrySession };
+  // Structured Goal receipts replay above; an existing ordinary input also fences a new Goal.
+  const retryParams = {
+    ...params,
+    session: retrySession,
+    request: request.goalOperation ? { ...request, goalOperation: undefined } : request,
+  };
   // Goal lookup can yield; its early replay keeps the existing ordering before that lookup.
   if (request.goalOperation && (await respondPreparedChatSendRetry(retryParams))) {
     return false;
   }
   let comparison: ChatSendRetryComparison | undefined;
-  if (!request.goalOperation) {
-    try {
-      const pending = prepareChatSendRetryComparison(retryParams);
-      comparison = pending ? await pending : undefined;
-    } catch (error) {
-      if (!isSessionTranscriptProjectionUnavailableError(error)) {
-        throw error;
-      }
-      respondChatSendAdmissionError(error, respond);
-      return false;
+  try {
+    const pending =
+      prepareChatSendRetryComparison(retryParams) ?? readChatSendRetryComparison(retrySession);
+    comparison = pending ? await pending : undefined;
+  } catch (error) {
+    if (!isSessionTranscriptProjectionUnavailableError(error)) {
+      throw error;
     }
+    respondChatSendAdmissionError(error, respond);
+    return false;
   }
   const preparedGoalRetry =
     durableClaim.kind === "accepted" && request.goalOperation
       ? await prepareGoalChatSendRetry(params)
       : undefined;
   return consumeChatSendCurrent(params, () => {
-    if (!request.goalOperation && respondChatSendRetry(retryParams, comparison)) {
+    if (respondChatSendRetry(retryParams, comparison)) {
       return false;
     }
     if (durableClaim.kind === "pending" || durableClaim.kind === "rejected") {
