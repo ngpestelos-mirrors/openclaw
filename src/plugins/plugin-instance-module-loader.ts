@@ -14,10 +14,6 @@ import {
   supportsBunRuntimeOnResolveTargets,
   useNodeModuleHooks,
 } from "./native-module-require.js";
-import {
-  bundledPluginCaptureInputs,
-  resolveBundledPluginReloadSource,
-} from "./plugin-bundled-reload.js";
 import type { InspectionNativeEsmRetention, PluginModuleLoader } from "./plugin-cache-artifacts.js";
 import { bindPluginCacheRoot, getPluginCache, withPluginCache } from "./plugin-cache.js";
 import {
@@ -231,13 +227,9 @@ function retainedNativeEsmExecution(retained: RetainedNativeEsm) {
 }
 
 /** Runtime and setup share code identity policy while keeping separate instance authority. */
-export function bindPluginInstanceModuleLoader(input: PluginInstanceModuleLoaderParams): void {
-  const params =
-    input.origin === "bundled" && input.reloadBundledCode && !input.bundledReloadSource
-      ? { ...input, bundledReloadSource: resolveBundledPluginReloadSource(input.rootDir) }
-      : input;
+export function bindPluginInstanceModuleLoader(params: PluginInstanceModuleLoaderParams): void {
   const cache = getPluginCache();
-  if (params.origin === "bundled" && !params.reloadBundledCode) {
+  if (params.origin === "bundled") {
     if (params.expectedSourceDigest !== undefined) {
       throw new Error("Source digest validation is not applicable to core-bundled runtime modules");
     }
@@ -288,18 +280,11 @@ export function bindPluginInstanceModuleLoader(input: PluginInstanceModuleLoader
       reusedArtifact ??
       params.preparedArtifact?.artifact ??
       capturePluginGenerationArtifact(
-        ...bundledPluginCaptureInputs(
-          params.rootDir,
-          params.source,
-          params.bundledReloadSource,
-          Boolean(params.recoverySourceMap),
-          params.standalone,
-        ),
+        params.rootDir,
+        params.standalone ? params.source : undefined,
         retained ? retainedNativeEsmExecution(retained) : (run) => params.instance.run(run),
         moduleSource,
         params.nativeRecovery,
-        undefined,
-        params.bundledReloadSource,
       );
     if (
       params.expectedSourceDigest !== undefined &&
@@ -520,10 +505,6 @@ export function bindPluginInstanceModuleLoader(input: PluginInstanceModuleLoader
         });
       }
       // Generated files resolve imports from their captured source's package and directory.
-      const sharedModule = parentSource && artifact.sharedModule?.(parentSource, specifier);
-      if (sharedModule) {
-        return nextResolve(pathToFileURL(sharedModule).href, context);
-      }
       const nativeContext =
         parentSource && parentRoot
           ? { ...context, parentURL: pathToFileURL(parentSource).href }

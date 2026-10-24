@@ -177,6 +177,13 @@ after editing its source; reload does not run the build. Multiple IDs use one Ga
 and one applied runtime generation. Repeated IDs are collapsed, and the Gateway
 resolves package siblings together. The request supports up to 64 distinct IDs.
 
+Bundled plugins share the running Gateway's code. Reload refreshes their
+registrations and returns `restartRequired: true`, even if their files have not
+changed. Restart the Gateway to load updated bundled code; rebuild first for
+compiled installations. Updating code embedded in an executable requires a new
+executable. External plugins loaded from disk pick up their captured source changes
+without restarting the Gateway.
+
 Busy plugins admit replacement and fence new retained work on the old instance.
 Existing agent runs keep their original callbacks while new runs wait for the
 replacement. Before stopping services or channels, replacement waits up to
