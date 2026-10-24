@@ -121,6 +121,7 @@ export function prepareSessionPatch(
         showToast({ message: formatUiError(error) });
       } finally {
         settle();
+        options.onDeferredSettled?.();
       }
     },
     discard: settle,

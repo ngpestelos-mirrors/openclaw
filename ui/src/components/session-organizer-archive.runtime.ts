@@ -268,7 +268,17 @@ export async function archiveSessionWithUndo(
   const undoPins = captureSessionArchivePins(scope, [session.key]);
   let result: SidebarSessionMutationResult;
   try {
-    result = await patchSession(host, session, { archived: true }, scope, { sessionScope: true });
+    result = await patchSession(
+      {
+        ...host,
+        pruneSidebarSessionEntry: (key) =>
+          undoPins.prune(key, () => host.pruneSidebarSessionEntry(key)),
+      },
+      session,
+      { archived: true },
+      scope,
+      { sessionScope: true },
+    );
   } finally {
     finishArchive();
   }
@@ -321,6 +331,8 @@ export async function archiveConfirmedSessionsWithUndo(
   let failure: { status: "failed"; error: unknown } | undefined;
   const initialHost: SessionActionHost = {
     ...outcomeHost,
+    pruneSidebarSessionEntry: (key) =>
+      undoPins.prune(key, () => outcomeHost.pruneSidebarSessionEntry(key)),
     sessionData: {
       ...outcomeHost.sessionData,
       publishSessionMutationError: (candidate, error) => {
@@ -364,11 +376,11 @@ function archiveUndoAction(
 ): () => void {
   const undoHost = sessionUndoHost(host, scope);
   return () => {
-    void undoPins(() => restoreArchivedSessions(undoHost, archived, scope)).catch(
-      (error: unknown) => {
+    void undoPins
+      .restore(() => restoreArchivedSessions(undoHost, archived, scope))
+      .catch((error: unknown) => {
         undoHost.sessionData.publishSessionMutationError(scope, error);
-      },
-    );
+      });
   };
 }
 
@@ -380,23 +392,25 @@ export function captureSessionArchivePins(
   const { navigation } = scope.context;
   const isCurrent = captureSessionUndoCurrent(scope);
   const pins = keys.filter((key) => navigation.snapshot.sidebarEntries.includes("session:" + key));
-  return async (restore: () => Promise<readonly string[]>): Promise<void> => {
+  let pruning: string | undefined;
+  const restore = async (restoreSessions: () => Promise<readonly string[]>): Promise<void> => {
     if (!isCurrent()) {
       return;
     }
     const changed = new Set<string>();
-    const initial = new Set(navigation.snapshot.sidebarEntries);
+    let previous = new Set(navigation.snapshot.sidebarEntries);
     // A manual pin/unpin during the request is newer intent, even if its final value matches.
     const stop = navigation.subscribe(({ sidebarEntries }) => {
       for (const key of pins) {
         const entry = "session:" + key;
-        if (sidebarEntries.includes(entry) !== initial.has(entry)) {
+        if (key !== pruning && sidebarEntries.includes(entry) !== previous.has(entry)) {
           changed.add(key);
         }
       }
+      previous = new Set(sidebarEntries);
     });
     try {
-      const restored = await restore();
+      const restored = await restoreSessions();
       if (!isCurrent()) {
         return;
       }
@@ -412,6 +426,18 @@ export function captureSessionArchivePins(
     } finally {
       stop();
     }
+  };
+  return {
+    restore,
+    prune(key: string, action: () => void) {
+      // An archive ACK can arrive after Undo was queued; it is not a manual unpin.
+      pruning = key;
+      try {
+        action();
+      } finally {
+        pruning = undefined;
+      }
+    },
   };
 }
 
@@ -466,6 +492,22 @@ async function restoreArchivedSessions(
     snapshot.phase !== "connected" ||
     Boolean(snapshot.deferredIntentCount || snapshot.deferredIntentDraining);
   const rows = archived.map((entry) => entry.session);
+  if (deferred) {
+    const restored = await Promise.all(
+      rows.map(async (session) => {
+        const receipt = Promise.withResolvers<boolean>();
+        const result = await patchSession(host, session, { archived: false }, scope, {
+          deferListRefresh: true,
+          sessionScope: true,
+          onConfirmed: (confirmed) =>
+            receipt.resolve(confirmed.entry.sessionId === session.sessionId),
+          onDeferredSettled: () => receipt.resolve(false),
+        });
+        return result === "completed" && (await receipt.promise) ? session.key : null;
+      }),
+    );
+    return restored.filter((key) => key !== null);
+  }
   if (archived.length === 1) {
     const { session, pinned } = archived[0]!;
     const restored = await patchSession(
@@ -473,7 +515,7 @@ async function restoreArchivedSessions(
       session,
       {
         archived: false,
-        ...(pinned && !deferred ? { pinned: true } : {}),
+        ...(pinned ? { pinned: true } : {}),
       },
       scope,
       { deferListRefresh: true, sessionScope: true },
@@ -494,7 +536,7 @@ async function restoreArchivedSessions(
     const repinRows = archived.flatMap(({ session, pinned }) =>
       pinned && restored.includes(session) ? [session] : [],
     );
-    if (repinRows.length > 0 && !deferred) {
+    if (repinRows.length > 0) {
       const repinned = await patchSessionRows(host, repinRows, { pinned: true }, scope, {
         deferListRefresh: true,
         sessionScope: true,
@@ -506,9 +548,6 @@ async function restoreArchivedSessions(
   }
   if (!host.sessionData.isSessionMutationScopeCurrent(scope)) {
     return [];
-  }
-  if (deferred) {
-    return restoredKeys;
   }
   scope.sessions.invalidate();
   try {

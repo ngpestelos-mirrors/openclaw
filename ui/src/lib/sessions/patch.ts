@@ -51,6 +51,8 @@ export type SessionPatchOptions = {
   };
   /** Publish the write receipt before list reconciliation can fail. */
   onConfirmed?: (result: SessionPatchResult) => void;
+  /** Release a queued write's receipt after replay or discard, including failed replay. */
+  onDeferredSettled?: () => void;
   /** Called for a rejected settings write while it still owns a pending field. */
   onRejected?: (error: unknown) => void;
   /** Revalidate explicit user intent after the settings tail, before dispatch. */

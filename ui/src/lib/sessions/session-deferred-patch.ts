@@ -60,6 +60,7 @@ export function deferSessionPatch(
         options,
       ),
     host.connection,
+    options.onDeferredSettled,
   );
   const lifecycle = typeof patchParams.archived === "boolean";
   const lifecycleKey = `sessions.lifecycle:${target.agentId}:${target.key}`;

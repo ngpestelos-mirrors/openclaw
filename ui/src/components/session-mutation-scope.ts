@@ -26,7 +26,7 @@ export function captureSessionMutationScope(
 
 export function isSessionMutationScopeCurrent(
   context: ApplicationContext | undefined,
-  scope: SidebarSessionMutationScope,
+  scope: Omit<SidebarSessionMutationScope, "selectedAgentId">,
   currentEpoch?: number,
 ): boolean {
   const gateway = context?.gateway;

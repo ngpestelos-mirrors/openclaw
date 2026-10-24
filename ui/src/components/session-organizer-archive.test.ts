@@ -3,13 +3,21 @@
 import { assert, describe, expect, it, onTestFinished, vi } from "vitest";
 import { createDeferred } from "../../../test/helpers/promise.js";
 import type { GatewaySessionRow } from "../api/types.ts";
+import {
+  createGatewayStoreTestStore,
+  stubGatewayStoreTestGlobals,
+} from "../app/gateway-store.test-support.ts";
 import { t } from "../i18n/index.ts";
 import type { SessionPatchOptions, SessionPatchRoute } from "../lib/sessions/patch.ts";
-import { sessionsResult } from "../lib/sessions/session-capability.test-support.ts";
+import {
+  createTestSessionCapability,
+  sessionsResult,
+} from "../lib/sessions/session-capability.test-support.ts";
 import type { SessionRefreshOptions } from "../lib/sessions/session-capability.ts";
 import { patchReceipt } from "../lib/sessions/session-rpc.test-support.ts";
 import { showToast } from "../lib/toast.ts";
 import { createTestGatewayClient } from "../test-helpers/gateway-client.ts";
+import { gatewayHelloForMethods } from "../test-helpers/gateway-methods.ts";
 import {
   answerConfirmDialog,
   createModalDialogTestFixture,
@@ -286,6 +294,99 @@ function createOfflineArchiveHarness() {
 }
 
 describe("personal pin archive Undo", () => {
+  it.each(["restored", "rejected", "manual"] as const)(
+    "settles a personal pin after Undo during archive replay (%s)",
+    async (outcome) => {
+      stubGatewayStoreTestGlobals();
+      onTestFinished(() => {
+        vi.unstubAllGlobals();
+      });
+      const store = createGatewayStoreTestStore();
+      store.gateway.start();
+      const client = store.current();
+      client.testOptions.offlineRecoveryScope = "archive-owner";
+      Object.assign(client, { recoveryScope: "archive-owner", recoveryScopeReady: true });
+      const hello = {
+        ...gatewayHelloForMethods([
+          "sessions.patch",
+          "sessions.list",
+          "sessions.describe",
+          "sessions.subscribe",
+        ]),
+        auth: { role: "operator", scopes: ["operator.admin"], recoveryScope: "archive-owner" },
+      };
+      let row: GatewaySessionRow = gatewayRow(1);
+      const archiveReply = createDeferred();
+      const undoReply = createDeferred();
+      const archiveStarted = createDeferred();
+      const undoStarted = createDeferred();
+      client.request.mockImplementation(async (method, params) => {
+        if (method === "sessions.list") {
+          return sessionsResult([{ ...row }]);
+        }
+        if (method === "sessions.subscribe") {
+          return { subscribed: true };
+        }
+        if (method === "sessions.patch") {
+          const patch = params as { archived: boolean };
+          if (patch.archived) {
+            archiveStarted.resolve();
+            await archiveReply.promise;
+          } else {
+            undoStarted.resolve();
+            await undoReply.promise;
+            if (outcome === "rejected") {
+              throw new Error("Undo denied");
+            }
+          }
+          row = { ...row, archived: patch.archived, pinned: false };
+          return patchReceipt(row.key, row);
+        }
+        return {};
+      });
+      client.testOptions.onHello?.(hello);
+      const sessions = createTestSessionCapability(store.gateway);
+      onTestFinished(() => {
+        archiveReply.resolve();
+        undoReply.resolve();
+        sessions.dispose();
+        store.gateway.stop();
+      });
+      await sessions.refresh({ agentId: "main" });
+      client.testOptions.onClose?.({ code: 1006, reason: "offline", willRetry: true });
+      const h = createOfflineArchiveHarness();
+      Object.assign(h.scope, { gateway: store.gateway, client, sessions });
+      Object.assign(h.scope.context, { gateway: store.gateway, sessions });
+      const navigation = h.scope.context.navigation;
+      const pin = "session:" + row.key;
+      navigation.update({ sidebarEntries: [pin] });
+      h.host.pruneSidebarSessionEntry = (key) =>
+        navigation.update({
+          sidebarEntries: navigation.snapshot.sidebarEntries.filter(
+            (entry) => entry !== "session:" + key,
+          ),
+        });
+      await archiveSessionWithUndo(h.host, sessionRow(1), h.scope);
+      const undo = vi.mocked(showToast).mock.calls.at(-1)?.[0].onAction;
+      assert(undo);
+      client.testOptions.onHello?.(hello);
+      await archiveStarted.promise;
+      undo();
+      await waitForFast(() => expect(store.gateway.snapshot.deferredIntentCount).toBe(1));
+      archiveReply.resolve();
+      await undoStarted.promise;
+      expect(navigation.snapshot.sidebarEntries).toEqual([]);
+      if (outcome === "manual") {
+        navigation.update({ sidebarEntries: [pin] });
+        navigation.update({ sidebarEntries: [] });
+      }
+      undoReply.resolve();
+      await waitForFast(() => expect(store.gateway.snapshot.deferredIntentDraining).toBe(false));
+      expect(row.archived).toBe(outcome === "rejected");
+      expect(navigation.snapshot.sidebarEntries).toEqual(outcome === "restored" ? [pin] : []);
+    },
+  );
+
   it.each(["same-client", "replacement-client", "recovery-scope", "manual"] as const)(
     "settles an offline personal pin receipt after reconnect (%s)",
     async (outcome) => {
@@ -303,7 +404,7 @@ describe("personal pin archive Undo", () => {
       }
       const reply = createDeferred<readonly string[]>();
       const restore = vi.fn(() => reply.promise);
-      const operation = undoPins(restore);
+      const operation = undoPins.restore(restore);
       if (outcome === "recovery-scope") {
         Object.assign(h.scope.client, { recoveryScope: "another-owner" });
       } else if (outcome === "manual") {
@@ -384,7 +485,13 @@ describe("personal pin archive Undo", () => {
     const h = createOfflineArchiveHarness();
     h.scope.sessions.invalidate = vi.fn();
     h.scope.sessions.refreshReplacement = vi.fn(async () => null);
-    h.scope.sessions.patch = vi.fn(async () => ({ queued: true as const }));
+    const queuedPatch = vi.fn<SessionPatchRoute>(async () => ({ queued: true }));
+    h.scope.sessions.patch = queuedPatch;
+    onTestFinished(() => {
+      for (const call of queuedPatch.mock.calls) {
+        call[2]?.onDeferredSettled?.();
+      }
+    });
     const rows = [sessionRow(0), sessionRow(100)];
     await archiveConfirmedSessionsWithUndo(h.host, rows, h.scope);
     vi.mocked(showToast).mock.calls.at(-1)![0].onAction!();
@@ -410,7 +517,7 @@ describe("personal pin archive Undo", () => {
       const undoPins = captureSessionArchivePins(h.scope, [key]);
       navigation.update({ sidebarEntries: retained });
       const reply = createDeferred<readonly string[]>();
-      const operation = undoPins(() => reply.promise);
+      const operation = undoPins.restore(() => reply.promise);
       expect(navigation.snapshot.sidebarEntries).toEqual(retained);
       if (outcome === "profile") {
         h.retireScope();

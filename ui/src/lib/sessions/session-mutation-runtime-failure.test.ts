@@ -3,6 +3,7 @@ import { expect, it, vi } from "vitest";
 import { sessionsResult } from "./session-capability.test-support.ts";
 import { sessionRow, sessionRpcHarness } from "./session-rpc.test-support.ts";
 
+// mock-isolation: Simulate a failed chunk download without initializing or registering its runtime.
 vi.mock("./session-mutation-operations.runtime.ts", () => {
   throw new Error("Synthetic mutation runtime download failure");
 });

@@ -62,7 +62,7 @@ export function prepareSessionDeferredMutation(
       prepared?.admit();
       return initialize();
     },
-    run(): Promise<void> {
+    run(this: void): Promise<void> {
       const scope = connection.capture();
       const run = () => {
         if (!scope || !connection.isCurrent(scope)) {
@@ -71,8 +71,8 @@ export function prepareSessionDeferredMutation(
         }
         return !discarded && prepared ? prepared.run(scope) : Promise.resolve();
       };
-      const ready = initialize();
-      return ready ? ready.then(run) : run();
+      const initialization = initialize();
+      return initialization ? initialization.then(run) : run();
     },
   };
 }

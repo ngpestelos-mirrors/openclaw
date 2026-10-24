@@ -1,5 +1,5 @@
 import "../lib/sessions/session-mutation-operations.runtime.ts";
-import { isSessionDeferredPatch } from "../lib/sessions/patch.ts";
+import { isSessionDeferredPatch, type SessionPatchOptions } from "../lib/sessions/patch.ts";
 import { resolveUiSessionRowAgentId } from "../lib/sessions/session-key.ts";
 import type {
   SidebarSessionMutationResult,
@@ -18,6 +18,8 @@ export async function patchSession(
   refresh: {
     deferListRefresh?: boolean;
     sessionScope?: boolean;
+    onConfirmed?: SessionPatchOptions["onConfirmed"];
+    onDeferredSettled?: SessionPatchOptions["onDeferredSettled"];
     /** Return true when the caller presents this attempt's rejection locally. */
     handleError?: (error: unknown) => boolean;
   } = {},
@@ -65,7 +67,17 @@ export async function patchSession(
         agentId,
         ...(session.sessionId ? { expectedSessionId: session.sessionId } : {}),
         ...(refresh.deferListRefresh ? { deferListRefresh: true } : {}),
-        ...(queuedArchive ? { onConfirmed: () => host.pruneSidebarSessionEntry(session.key) } : {}),
+        ...(queuedArchive || refresh.onConfirmed
+          ? {
+              onConfirmed: (result) => {
+                if (queuedArchive) {
+                  host.pruneSidebarSessionEntry(session.key);
+                }
+                refresh.onConfirmed?.(result);
+              },
+            }
+          : {}),
+        ...(refresh.onDeferredSettled ? { onDeferredSettled: refresh.onDeferredSettled } : {}),
       });
     const patched =
       patch.archived === true
