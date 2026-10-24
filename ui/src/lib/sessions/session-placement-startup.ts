@@ -15,6 +15,10 @@ import { formatUiError } from "../../lib/format-error.ts";
 import { isAwaitingGatewayFailure } from "../../lib/gateway-availability.ts";
 import { generateUUID } from "../../lib/uuid.ts";
 import {
+  CHAT_OUTBOX_RETRY_DEFAULT_MS,
+  retryableGatewayDelayMs,
+} from "../../pages/chat/chat-outbox-retry.ts";
+import {
   formatTerminalChatSendAckError,
   isActiveLeafChangedError,
   isTerminalFailureChatSendAck,
@@ -44,7 +48,7 @@ type SessionPlacementStartOutcome =
   | { status: "session-missing"; error: string }
   | { status: "send-not-started"; error: string; messageId: string }
   | { status: "send-definitive-rejected"; error: string; messageId: string }
-  | { status: "send-rejected"; error: string; messageId: string };
+  | { status: "send-rejected"; error: string; messageId: string; retryAfterMs: number };
 
 type PlacementReadResult =
   | { status: "read"; placement?: SessionPlacement; sessionId?: string }
@@ -538,6 +542,7 @@ export async function startSessionPlacementInitialTurn(
     }
     return {
       status: "send-rejected",
+      retryAfterMs: retryableGatewayDelayMs(error) ?? CHAT_OUTBOX_RETRY_DEFAULT_MS,
       error: formatUiError(error),
       messageId,
     };

@@ -10,6 +10,7 @@ import { getRpcSourceForGateway } from "../../sessions/session-controller.rpc-so
 import { sessionDeliveryChannel } from "../../utils/delivery-context.read.js";
 import { setGatewayDedupeEntry } from "../agent-turn/agent-job.js";
 import { createChatAbortOps } from "../chat-abort-ops.js";
+import { readChatInputRecoveryAdmission } from "../chat-input-recovery-source.js";
 import { chatAbortMarkerTimestampMs } from "../server-chat-state.js";
 import { SessionMutationAuthorizationChangedError } from "../session-mutation-authorization-error.js";
 import { tryResolveSessionCompatibilityOwnerAgentId } from "../session-request-agent.js";
@@ -229,38 +230,55 @@ export function respondChatSendRetry(
     return true;
   }
   const accepted = context.dedupe.get(`chat:${clientRunId}`);
-  if (
+  const inputAccepted =
     accepted?.ok === true &&
     accepted.effectAccepted === true &&
     !hasRestartRecoveryTerminalRun(session.entry, clientRunId) &&
     accepted.requestIdentity === params.request.requestIdentity &&
     accepted.payload === undefined &&
-    accepted.error === undefined
-  ) {
-    respond(true, { runId: clientRunId, status: "in_flight" as const }, undefined, {
-      cached: true,
-      runId: clientRunId,
-    });
-    return true;
-  }
+    accepted.error === undefined;
   const pending = readPreRegisteredRun({
     key: pendingChatSendKey,
     entry: context.dedupe.get(pendingChatSendKey),
   });
-  if (pending || getRpcSourceForGateway(clientRunId, context.resolveGatewayContext)) {
+  const preparing = pending || getRpcSourceForGateway(clientRunId, context.resolveGatewayContext);
+  if (inputAccepted || (preparing && comparison?.submitted)) {
     respond(true, { runId: clientRunId, status: "in_flight" as const }, undefined, {
       cached: true,
       runId: clientRunId,
     });
     return true;
   }
+  if (preparing) {
+    respond(
+      false,
+      undefined,
+      errorShape(ErrorCodes.UNAVAILABLE, "Chat input is being admitted; retry the same request.", {
+        retryable: true,
+      }),
+    );
+    return true;
+  }
   if (comparison?.submitted) {
+    const recovery = readChatInputRecoveryAdmission(clientRunId)?.target;
+    if (
+      comparison.source === "pending" &&
+      recovery?.agentId === session.agentId &&
+      recovery.storePath === session.storePath &&
+      recovery.sessionKey === session.sessionKey &&
+      recovery.sessionId === session.entry?.sessionId
+    ) {
+      // The private recovery owner must re-admit its interrupted input before it can run.
+      return false;
+    }
     // RAM reservations cover concurrent sends before their durable input exists.
     // A crash before either record leaves the original key available for retry.
-    respond(true, { runId: clientRunId, status: "ok" as const }, undefined, {
-      cached: true,
+    const payload = {
       runId: clientRunId,
-    });
+      status: "ok" as const,
+      ...(comparison.messageSeq !== undefined ? { messageSeq: comparison.messageSeq } : {}),
+    };
+    respond(true, payload, undefined, { cached: true, runId: clientRunId });
     return true;
   }
   return false;
@@ -427,13 +445,6 @@ export async function runChatSendPreAdmission(
   }
 
   if (stopCommand) {
-    if (await respondPreparedChatSendRetry(params, true)) {
-      return false;
-    }
-    if (sessionRoutingChanged(cfg)) {
-      respondChatSessionRoutingChanged(respond);
-      return false;
-    }
     const stopRequester = resolveChatAbortRequester(client);
 
     const stopStorePath = session.readSource?.path ?? storePath;
@@ -471,6 +482,13 @@ export async function runChatSendPreAdmission(
     };
     let res: Awaited<ReturnType<typeof abortChatRunsForSessionKeyWithPartials>>;
     try {
+      if (await respondPreparedChatSendRetry(params, true)) {
+        return false;
+      }
+      if (sessionRoutingChanged(cfg)) {
+        respondChatSessionRoutingChanged(respond);
+        return false;
+      }
       assertCurrent();
       res = await abortChatRunsForSessionKeyWithPartials({
         context,
@@ -661,9 +679,7 @@ export async function runChatSendPreAdmission(
   }
   let comparison: ChatSendRetryComparison | undefined;
   try {
-    const pending =
-      prepareChatSendRetryComparison(retryParams) ?? readChatSendRetryComparison(retrySession);
-    comparison = pending ? await pending : undefined;
+    comparison = await readChatSendRetryComparison(retrySession);
   } catch (error) {
     if (!isSessionTranscriptProjectionUnavailableError(error)) {
       throw error;

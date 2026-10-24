@@ -17,7 +17,7 @@ import {
 
 export type SessionPlacementDraftAdvanceResult =
   | { status: "started"; messageId: string }
-  | { status: "pending"; recovery: SessionPlacementPendingRecovery }
+  | { status: "pending"; recovery: SessionPlacementPendingRecovery; retryAfterMs: number }
   | { status: "paused"; recovery: SessionPlacementPausedRecovery }
   | { status: "cancelled"; cleanupError?: string }
   | { status: "interrupted" }
@@ -157,7 +157,11 @@ export async function advanceSessionPlacementDraft(params: {
     return { status: "cancelled" };
   }
   if (placementStart.status === "send-rejected") {
-    return { status: "pending", recovery: { ...recovery, phase: "sending" } };
+    return {
+      status: "pending",
+      recovery: { ...recovery, phase: "sending" },
+      retryAfterMs: placementStart.retryAfterMs,
+    };
   }
   if ("error" in placementStart) {
     return pause(

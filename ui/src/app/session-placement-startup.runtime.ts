@@ -1,3 +1,4 @@
+import { sleepWithAbort } from "@openclaw/retry";
 import type { GatewaySessionRow } from "../api/types.ts";
 import { t } from "../i18n/index.ts";
 import { registerNewSessionRuntimeEnglish } from "../i18n/locales/en-new-session-runtime.ts";
@@ -196,7 +197,7 @@ export default function createApplicationPlacementStartupRuntime(
         publish();
       },
     })
-      .then((result) => {
+      .then(async (result) => {
         if (!ownsRecovery(entry) || !entry.retainsConnection()) {
           retireEntry(entry);
           return;
@@ -210,6 +211,11 @@ export default function createApplicationPlacementStartupRuntime(
         if (result.status === "pending") {
           entry.work = { kind: "waiting", recovery: result.recovery };
           publish();
+          await sleepWithAbort(result.retryAfterMs, entry.abort.signal);
+          if (isCurrent(entry) && entry.work.kind === "waiting") {
+            entry.work = { kind: "running", recovery: result.recovery };
+            run(entry, result.recovery, "recover");
+          }
           return;
         }
         if (result.status === "cancelled" && result.cleanupError) {

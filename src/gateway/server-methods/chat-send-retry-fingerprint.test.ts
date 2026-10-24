@@ -54,13 +54,15 @@ describe("chat.send persisted request identity", () => {
   });
 
   it.each([
-    { source: "transcript", input: "override" },
-    { source: "input receipt", input: "attachment" },
-    { source: "transcript", input: "command" },
+    { source: "transcript", input: "override", storage: "durable" },
+    { source: "transcript", input: "override", storage: "memory" },
+    { source: "input receipt", input: "attachment", storage: "durable" },
+    { source: "input receipt", input: "attachment", storage: "memory" },
+    { source: "transcript", input: "command", storage: "durable" },
   ] as const)(
-    "deduplicates a non-restart-safe $input from its $source after RAM identity expires",
-    async ({ source, input }) => {
-      await using fixture = await createFixture({ preserveContent: true });
+    "deduplicates a non-restart-safe $input from its $source in $storage after RAM identity expires",
+    async ({ source, input, storage }) => {
+      await using fixture = await createFixture({ preserveContent: true, storage });
       if (input === "override") {
         fixture.params.thinking = "high";
       } else if (input === "attachment") {
@@ -98,7 +100,11 @@ describe("chat.send persisted request identity", () => {
 
       expect(await fixture.send()).toHaveBeenCalledWith(
         true,
-        { runId: fixture.params.idempotencyKey, status: "ok" },
+        {
+          runId: fixture.params.idempotencyKey,
+          status: "ok",
+          ...(source === "transcript" ? { messageSeq: 2 } : {}),
+        },
         undefined,
         expect.objectContaining({ cached: true }),
       );

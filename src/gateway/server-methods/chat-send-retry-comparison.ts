@@ -18,6 +18,7 @@ export type ChatSendRetryComparison = {
   clientRunId: string;
   submitted: Awaited<ReturnType<typeof readSessionSubmittedInput>>;
   source?: "pending" | "transcript";
+  messageSeq?: number;
 };
 
 /** Submitted bytes compare input; the caller's current owner still decides replay. */
@@ -41,6 +42,7 @@ export function readChatSendRetryComparison(session: ComparisonSession) {
       clientRunId,
       submitted: submitted?.message,
       source: submitted?.source,
+      messageSeq: submitted?.messageSeq,
     };
   });
 }

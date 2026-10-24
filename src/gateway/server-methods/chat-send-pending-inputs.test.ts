@@ -838,7 +838,11 @@ describe("ordinary chat input admission", () => {
       if (disposition !== "changed-payload") {
         expect(retried).toHaveBeenCalledWith(
           true,
-          { runId: fixture.params.idempotencyKey, status: "ok" },
+          {
+            runId: fixture.params.idempotencyKey,
+            status: "ok",
+            ...(disposition === "consumed" ? { messageSeq: 2 } : {}),
+          },
           undefined,
           expect.objectContaining({ cached: true }),
         );

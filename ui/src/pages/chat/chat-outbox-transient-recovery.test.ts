@@ -18,7 +18,9 @@ useChatSendBrowserFixture();
 
 function useFakeClock() {
   vi.useFakeTimers();
-  onTestFinished(() => vi.useRealTimers());
+  onTestFinished(() => {
+    vi.useRealTimers();
+  });
 }
 function unavailable(message = "History is temporarily unavailable") {
   return new GatewayRequestError({
@@ -33,6 +35,55 @@ function requestTimeout(method: string) {
 }
 
 describe("transient outbox delivery recovery", () => {
+  it.each(["durable", "volatile", "changed connection"] as const)(
+    "retries a timed-out send only for its current owner (%s)",
+    async (mode) => {
+      const volatile = mode !== "durable";
+      useFakeClock();
+      if (volatile) {
+        vi.spyOn(sessionStorage, "setItem").mockImplementation(() => {
+          throw new Error("quota");
+        });
+      }
+      const sends: unknown[] = [];
+      const host = makeChatHost({
+        sessionKey: "agent:main",
+        currentSessionId: "physical-session",
+        chatMessage: "Retain this input",
+        requestHandlers: {
+          "chat.send": (params: unknown) => {
+            sends.push(params);
+            if (sends.length === 1) {
+              throw requestTimeout("chat.send");
+            }
+            return { runId: requireRecord(params, "retry").idempotencyKey, status: "ok" };
+          },
+        },
+      });
+      await handleSendChat(host);
+      expect(host.chatQueue[0]).toMatchObject({ sendState: "waiting-reconnect", sendAttempts: 1 });
+      if (volatile) {
+        expect(listStoredChatOutboxes(host)).toEqual([]);
+      }
+      if (mode === "changed connection") {
+        host.connectionEpoch += 1;
+      }
+      await vi.advanceTimersByTimeAsync(499);
+      expect(sends).toHaveLength(1);
+      await vi.advanceTimersByTimeAsync(1);
+      if (mode === "changed connection") {
+        expect(sends).toHaveLength(1);
+        expect(host.chatQueue[0]?.sendState).toBe("waiting-reconnect");
+        return;
+      }
+      await waitForFast(() => {
+        expect(sends).toHaveLength(2);
+        expect(host.chatQueue).toEqual([]);
+      });
+      expect(sends[1]).toEqual(sends[0]);
+    },
+  );
+
   it("binds a background first attempt and its replay to the physical session", async () => {
     const sessionKey = "agent:main:background";
     const attempts: Record<string, unknown>[] = [];
@@ -85,7 +136,12 @@ describe("transient outbox delivery recovery", () => {
       const issued = Promise.withResolvers<void>();
       const pending = new GatewayPendingRequests({
         createRequestId: () => "transport-request",
-        createRequestError: (error) => new GatewayRequestError(error),
+        createRequestError: (error) =>
+          new GatewayRequestError({
+            ...error,
+            code: error.code ?? "UNAVAILABLE",
+            message: error.message ?? "Request failed",
+          }),
         nowMs: Date.now,
       });
       onTestFinished(() => pending.flush(new Error("test request owner disposed")));

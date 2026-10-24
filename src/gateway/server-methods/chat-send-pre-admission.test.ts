@@ -313,15 +313,16 @@ it("stops selected-agent work without cancelling the compatibility owner's run",
   });
 });
 
-it.each(["pending", "active", "terminal"] as const)(
-  "rejects changed mention recipients before a %s acknowledgement",
+it.each(["pending", "active", "accepted", "terminal"] as const)(
+  "requires accepted custody and rejects changed mention recipients for a %s retry",
   async (state) => {
     const { clientRunId, pendingChatSendKey, sessionKey } = params.session;
     params.context.dedupe.set(state === "pending" ? pendingChatSendKey : `chat:${clientRunId}`, {
       ts: 100,
       ok: true,
       requestIdentity: params.request.requestIdentity,
-      ...(state !== "active"
+      ...(state === "accepted" ? { effectAccepted: true } : {}),
+      ...(state === "pending" || state === "terminal"
         ? {
             payload: {
               runId: clientRunId,
@@ -347,15 +348,19 @@ it.each(["pending", "active", "terminal"] as const)(
       await claimRpcSourceForTest(source);
     }
     expect(await retry(params)).toBe(true);
-    expect(params.respond).toHaveBeenCalledWith(
-      true,
-      expect.objectContaining({
-        runId: clientRunId,
-        status: state === "terminal" ? "ok" : "in_flight",
-      }),
-      undefined,
-      expect.objectContaining({ cached: true }),
-    );
+    if (state === "pending" || state === "active") {
+      expectFailure(params.respond, { code: "UNAVAILABLE", retryable: true });
+    } else {
+      expect(params.respond).toHaveBeenCalledWith(
+        true,
+        expect.objectContaining({
+          runId: clientRunId,
+          status: state === "terminal" ? "ok" : "in_flight",
+        }),
+        undefined,
+        expect.objectContaining({ cached: true }),
+      );
+    }
 
     params.respond.mockClear();
     params.request.requestIdentity = "changed-carol-selection";

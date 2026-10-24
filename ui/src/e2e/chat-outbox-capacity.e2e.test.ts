@@ -256,17 +256,6 @@ suite.define(() => {
     expect(params).toMatchObject({ agentId: "work", message: prompt, sessionKey: "global" });
     const runId = requireString(params.idempotencyKey, "inactive-agent outbox run id");
     await expectRequestCountStable(gateway, "chat.send", 1);
-    const recoveryRequests = (await gateway.getRequests("chat.history"))
-      .map((entry) => requireRecord(entry.params))
-      .filter((historyParams) => Array.isArray(historyParams.inputRunIds));
-    expect(recoveryRequests.length).toBeGreaterThan(0);
-    for (const historyParams of recoveryRequests) {
-      expect(historyParams).toMatchObject({
-        agentId: "work",
-        sessionKey: "global",
-        inputRunIds: [runId],
-      });
-    }
     const workPath = controlUiSessionPath("agent:work:main");
     await evaluateControlUiContext(
       page,

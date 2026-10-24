@@ -344,31 +344,40 @@ export function createApplicationPlacementStartup(
         return;
       }
       const current = capturePlacementStartupConnection(gateway, pending.input.recovery);
-      void import("../lib/sessions/session-placement-recovery.ts").then((recovery) => {
-        if (disposed || !current()) {
-          return;
-        }
-        if (runtime) {
-          if (
-            runtime.get(sessionKey)?.initialTurn?.sendRunId === pending.input.recovery.messageId
-          ) {
-            runtime.discard(sessionKey);
+      const discardPending = async () => {
+        try {
+          const { clearSessionPlacementRecovery } =
+            await import("../lib/sessions/session-placement-recovery.ts");
+          if (disposed || !current()) {
+            return;
           }
-          return;
+          if (runtime) {
+            if (
+              runtime.get(sessionKey)?.initialTurn?.sendRunId === pending.input.recovery.messageId
+            ) {
+              runtime.discard(sessionKey);
+            }
+            return;
+          }
+          if (preRuntimeEntries.get(sessionKey)?.() !== pending) {
+            return;
+          }
+          clearSessionPlacementRecovery(
+            gateway.connection.gatewayUrl,
+            pending.input.recovery.recoveryScope,
+            sessionKey,
+            pending.input.recovery.messageId,
+          );
+          preRuntimeEntries.delete(sessionKey);
+          pendingStoredRecovery?.refresh();
+          publish();
+        } catch (error) {
+          if (!disposed && current()) {
+            showToast({ message: formatUiError(error) });
+          }
         }
-        if (preRuntimeEntries.get(sessionKey)?.() !== pending) {
-          return;
-        }
-        recovery.clearSessionPlacementRecovery(
-          gateway.connection.gatewayUrl,
-          pending.input.recovery.recoveryScope,
-          sessionKey,
-          pending.input.recovery.messageId,
-        );
-        preRuntimeEntries.delete(sessionKey);
-        pendingStoredRecovery?.refresh();
-        publish();
-      });
+      };
+      void discardPending();
     },
     pause(sessionKey, error, recoveryAccess) {
       const client = readyClient();

@@ -526,6 +526,9 @@ Recovery notices appear below the composer and clear when the blocking condition
 
 Until the Gateway acknowledges a chat send, it stays pending, including when
 the frame was written but its acknowledgment times out or the socket closes.
+If the connection stays healthy, an acknowledgment timeout or retryable rejection
+automatically retries the same submission, honoring the Gateway's retry delay.
+This also applies to the first message and memory-only sends.
 While disconnected, it shows **Waiting for reconnect**. On the first accepted
 connection with the same identity and recovery scope, the browser resends
 attempted pending messages in queue order, preserving each original `runId` and
@@ -543,6 +546,8 @@ restarts. This also covers attachments, commands sent through `chat.send`, and
 per-message overrides. Reusing a recorded key with different content is rejected.
 The guarantee applies while that submission record remains in the same session;
 it does not restore deleted sessions or resume interrupted agent work.
+The Gateway's separate interrupted-input recovery still resumes eligible accepted
+work after rechecking its current authority.
 
 **Discard** stays available while a message is pending. It removes only this
 browser's outbox copy, not work the Gateway already accepted. It does not undo or

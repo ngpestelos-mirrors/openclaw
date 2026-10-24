@@ -687,7 +687,10 @@ export function readSessionSubmittedInput(
   scope: PendingInputScope,
   idempotencyKey: string,
   options: { includeSource: true },
-): Promise<{ message: PersistedUserTurnMessage; source: "pending" | "transcript" } | undefined>;
+): Promise<
+  | { message: PersistedUserTurnMessage; source: "pending" | "transcript"; messageSeq?: number }
+  | undefined
+>;
 export function readSessionSubmittedInput(
   scope: PendingInputScope,
   idempotencyKey: string,
@@ -702,12 +705,16 @@ export async function readSessionSubmittedInput(
     return undefined;
   }
   source.assertCurrent();
-  const { pending, committed } = source.snapshot;
+  const { pending, committed, committedMessageSeq } = source.snapshot;
   const message = pending ? parseSessionPendingInputMessage(pending.message_json) : committed;
   if (!message || readMessageIdempotencyKey(message) !== idempotencyKey) {
     return undefined;
   }
   return options?.includeSource
-    ? { message, source: pending ? ("pending" as const) : ("transcript" as const) }
+    ? {
+        message,
+        source: pending ? ("pending" as const) : ("transcript" as const),
+        ...(committedMessageSeq !== undefined ? { messageSeq: committedMessageSeq } : {}),
+      }
     : message;
 }

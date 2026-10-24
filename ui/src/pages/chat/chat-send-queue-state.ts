@@ -266,7 +266,7 @@ export function settleQueuedChatSendFailure(
     if (!retained) {
       reportFailure(OFFLINE_QUEUE_STORAGE_ERROR);
     }
-    if (retained && storageMode === "durable") {
+    if (retained) {
       scheduleRetry(CHAT_OUTBOX_RETRY_DEFAULT_MS);
     }
     return "pending";

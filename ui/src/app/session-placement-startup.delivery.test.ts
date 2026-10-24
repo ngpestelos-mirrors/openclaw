@@ -1,3 +1,4 @@
+import { GatewayProtocolRequestTimeoutError } from "@openclaw/gateway-client/browser";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createDeferred } from "../../../test/helpers/promise.js";
 import { GatewayRequestError } from "../api/gateway.ts";
@@ -22,9 +23,91 @@ describe("application placement delivery recovery", () => {
     sessionStorage.clear();
   });
   afterEach(() => {
+    vi.useRealTimers();
     vi.restoreAllMocks();
     vi.unstubAllGlobals();
   });
+
+  it.each([
+    [true, "retryable", 1250],
+    [false, "timeout", 500],
+  ] as const)(
+    "retries first input on a healthy connection (persistent=%s, %s)",
+    async (persistRecovery, failure, delayMs) => {
+      vi.useFakeTimers();
+      let attempts = 0;
+      const request = startupRequest({
+        "sessions.dispatch": () => ({ placement: createStartupPlacement("active", 1) }),
+        "chat.send": (payload) => {
+          if (++attempts === 1) {
+            throw failure === "timeout"
+              ? new GatewayProtocolRequestTimeoutError({
+                  method: "chat.send",
+                  timeoutMs: 300000,
+                  requestSent: true,
+                })
+              : new GatewayRequestError({
+                  code: "UNAVAILABLE",
+                  message: "Busy",
+                  retryable: true,
+                  retryAfterMs: delayMs,
+                });
+          }
+          return { runId: payload.idempotencyKey, status: "ok" };
+        },
+      });
+      const { key, startup, input, client, chatSubmissions } =
+        createPlacementStartupHarness(request);
+      if (!persistRecovery) {
+        sessionStorage.clear();
+      }
+      startup.start({ ...input, persistRecovery });
+      await vi.advanceTimersByTimeAsync(0);
+      expect(startup.get(key)?.initialTurn?.sendState).toBe("waiting-reconnect");
+      await vi.advanceTimersByTimeAsync(delayMs - 1);
+      expect(startupCalls(request, "chat.send")).toHaveLength(1);
+      await vi.advanceTimersByTimeAsync(1);
+      const sends = startupCalls(request, "chat.send");
+      expect(sends).toHaveLength(2);
+      expect(sends[1]?.[1]).toEqual(sends[0]?.[1]);
+      expect(startupCalls(request, "sessions.dispatch")).toHaveLength(1);
+      expect(startup.get(key)).toBeNull();
+      expect(chatSubmissions.readInitial(key, client)?.pendingRunId).toBe(input.recovery.messageId);
+    },
+  );
+
+  it.each(["discard", "pause", "dispose", "credential"] as const)(
+    "cancels the first-input retry after %s",
+    async (change) => {
+      vi.useFakeTimers();
+      const request = startupRequest({
+        "chat.send": () =>
+          Promise.reject(
+            new GatewayRequestError({
+              code: "UNAVAILABLE",
+              message: "Busy",
+              retryable: true,
+              retryAfterMs: 1250,
+            }),
+          ),
+      });
+      const { key, startup, input, client } = createPlacementStartupHarness(request);
+      startup.start({ ...input, recovery: { ...input.recovery, phase: "sending" } });
+      await vi.advanceTimersByTimeAsync(0);
+      expect(startup.get(key)?.initialTurn?.sendState).toBe("waiting-reconnect");
+      if (change === "credential") {
+        client.recoveryScope = "principal-b";
+      } else if (change === "pause") {
+        startup.pause(key, "Stopped");
+      } else if (change === "discard") {
+        startup.discard(key);
+      } else {
+        startup.dispose();
+      }
+      await vi.advanceTimersByTimeAsync(1250);
+      expect(startupCalls(request, "chat.send")).toHaveLength(1);
+    },
+  );
 
   it.each(["sending", "paused"] as const)(
     "retains persisted %s input without a physical binding until explicit Retry",

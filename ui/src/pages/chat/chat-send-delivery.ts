@@ -41,7 +41,11 @@ import {
   waitForQueuedChatHistory,
 } from "./chat-send-queue-state.ts";
 import { requestChatSend } from "./chat-send-request.ts";
-import { OFFLINE_QUEUE_STORAGE_ERROR, surfaceChatDeliveryFailure } from "./chat-send-support.ts";
+import {
+  OFFLINE_QUEUE_STORAGE_ERROR,
+  retireDeliveredQueuedUserTurn,
+  surfaceChatDeliveryFailure,
+} from "./chat-send-support.ts";
 import {
   captureChatNativeRuntimeRecovery,
   refreshChatSessionListForTarget,
@@ -256,7 +260,7 @@ async function sendQueuedChatMessage(
             runId,
             ...(steerTargetRunId ? { steerTargetRunId } : {}),
           },
-          steerTargetRunId ? "complete" : undefined,
+          "complete",
         );
       if (isVisible()) {
         host.chatSendingScopeKey = storedChatOutboxScopeKey(scope);
@@ -381,8 +385,24 @@ async function sendQueuedChatMessage(
           });
           return "failed";
         }
-        // An ACK transfers custody to the Gateway, including duplicate admissions.
-        chatOutboxOwner(host).remove(host, id);
+        // Durable delivery hands complete display bytes to the existing shared owner.
+        // Memory-only admission has no stored row and retains its local projection.
+        const inputConsumed = ack.status === "ok" && ack.messageSeq !== undefined;
+        const projectedMessage =
+          storageMode === "memory" && !inputConsumed ? buildSubmittedUserMessage() : null;
+        if (storageMode === "durable" || inputConsumed) {
+          const retirement = await retireDeliveredQueuedUserTurn(host, runId, scope, {
+            inputConsumed,
+          });
+          if (retirement === "stale" || !requestConnectionIsCurrent()) {
+            return "pending";
+          }
+          // A peer may have retired durable custody while this pane still displays its local row.
+          chatOutboxOwner(host).syncHost(host);
+        }
+        if (storageMode === "memory") {
+          chatOutboxOwner(host).remove(host, id);
+        }
         const retirementFailed =
           storageMode === "durable" && readQueuedMessageById(host, id) !== null;
         if (isVisible()) {
@@ -390,7 +410,6 @@ async function sendQueuedChatMessage(
             sessionKey,
             agentId: prepared.agentId,
           });
-          const projectedMessage = buildSubmittedUserMessage();
           if (projectedMessage) {
             reduceChatSessionProjection(
               host,
