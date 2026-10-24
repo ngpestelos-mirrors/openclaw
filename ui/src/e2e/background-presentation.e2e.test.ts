@@ -1,4 +1,5 @@
 import { expect, it } from "vitest";
+import { createSolidPngBuffer } from "../../../test/helpers/image-fixtures.js";
 import {
   defaultControlUiFeatureMethods,
   installMockGateway,

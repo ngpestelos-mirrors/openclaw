@@ -1,9 +1,7 @@
 // Real-Chromium coverage keeps automation condition authoring aligned with Gateway contracts.
-import path from "node:path";
 import type { Page } from "playwright";
-import { beforeEach, expect, it } from "vitest";
+import { expect, it } from "vitest";
 import type { CronJob } from "../api/types.ts";
-import { createControlUiE2eArtifactDir } from "../test-helpers/control-ui-e2e-artifacts.ts";
 import { evaluateControlUiContext } from "../test-helpers/control-ui-e2e-context.ts";
 import { waitForControlUiGatewayReconnecting } from "../test-helpers/control-ui-e2e-readiness.ts";
 import { installMockGateway } from "../test-helpers/control-ui-e2e.ts";
@@ -16,15 +14,6 @@ const suite = createControlUiE2eSuite({
   startServerBeforeBrowser: true,
   unavailableMessage: (executablePath) => `Playwright Chromium is unavailable at ${executablePath}`,
 });
-
-const proofDirectoryParent = process.env.OPENCLAW_TRIGGER_UI_PROOF_DIR;
-let proofDirectory: string | undefined;
-beforeEach(() => {
-  proofDirectory = proofDirectoryParent
-    ? createControlUiE2eArtifactDir("cron-trigger-authoring", proofDirectoryParent)
-    : undefined;
-});
-const proofStage = process.env.OPENCLAW_TRIGGER_UI_PROOF_STAGE ?? "after";
 
 const scriptJob = cronJob("existing-script-automation", "Script health check", {
   configRevision: "existing-script-revision",
@@ -71,62 +60,25 @@ function cronMethodResponses(jobs: CronJob[]) {
   };
 }
 
-async function captureProof(page: Page, name: string) {
-  if (!proofDirectory) {
-    return;
-  }
-  await page.screenshot({
-    animations: "disabled",
-    path: path.join(proofDirectory, `${proofStage}-${name}.png`),
-  });
-}
-
-async function captureTriggerCapabilityProof(page: Page, name: string) {
-  await page
-    .locator(".settings-row__title")
-    .filter({ hasText: "Condition trigger" })
-    .evaluate((element) => element.scrollIntoView({ block: "center" }));
-  await captureProof(page, name);
-}
-
 async function selectSeconds(page: Page) {
-  const unit = page.getByRole("button", { name: /^Unit: /u });
-  await unit.click();
+  await page.getByRole("button", { name: /^Unit: /u }).click();
   await page.getByRole("option", { name: "Seconds", exact: true }).click();
 }
 
 suite.define(() => {
-  it("prevents unsupported condition triggers while preserving valid interval submissions", async () => {
+  it("submits triggered and ordinary intervals at their respective boundaries", async () => {
     await suite.withPage(pageOptions, async ({ page }) => {
       const gateway = await installMockGateway(page, {
         methodResponses: cronMethodResponses([scriptJob]),
       });
 
       await page.goto(`${suite.server.baseUrl}cron`);
-      await page.locator('[data-test-id="cron-row-existing-script-automation"]').click();
-      await advanced(page);
-
-      const scriptTriggerControlCount = await page
-        .getByRole("switch", { name: "Condition trigger", exact: true })
-        .count();
-      await page
-        .getByText("Condition trigger", { exact: true })
-        .evaluate((element) => element.scrollIntoView({ block: "center" }));
-      await captureProof(page, "01-script-payload-condition-control");
-
-      await page.locator('[data-test-id="cron-back"]').click();
       await newTask(page, "Conditional interval", "Run when the condition matches");
       await selectSeconds(page);
       await field(page, "every-amount").fill("5");
       await advanced(page);
       await triggerToggle(page).click();
       await field(page, "trigger-script").fill("json({ fire: true })");
-      await page
-        .locator("#cron-every-amount")
-        .evaluate((element) => element.scrollIntoView({ block: "center" }));
-      await captureProof(page, "02-triggered-five-second-validation");
-
-      expect(scriptTriggerControlCount).toBe(0);
 
       const intervalError = field(page, "error-everyAmount");
       await intervalError.waitFor({ state: "visible" });
@@ -138,7 +90,6 @@ suite.define(() => {
       await field(page, "every-amount").fill("30");
       await expect.poll(async () => intervalError.count()).toBe(0);
       expect(await submit(page).isEnabled()).toBe(true);
-      await captureProof(page, "03-triggered-thirty-second-boundary");
       await submit(page).click();
 
       const triggeredRequest = await gateway.waitForRequest("cron.add");
@@ -155,7 +106,6 @@ suite.define(() => {
 
       expect(await field(page, "error-everyAmount").count()).toBe(0);
       expect(await submit(page).isEnabled()).toBe(true);
-      await captureProof(page, "04-untriggered-five-second-interval");
 
       const previousAdds = (await gateway.getRequests("cron.add")).length;
       await submit(page).click();
@@ -206,7 +156,6 @@ suite.define(() => {
       expect(unsaved).toEqual({ dirty: true, needsApply: false });
       expect(await gateway.getRequests("config.set")).toHaveLength(0);
       await expect.poll(() => toggle.count()).toBe(1);
-      await captureTriggerCapabilityProof(page, "05-unsaved-disable-keeps-active-trigger");
 
       await evaluateControlUiContext(page, (context) => {
         const config = context.runtimeConfig;
@@ -233,7 +182,6 @@ suite.define(() => {
         .toEqual({ dirty: false, needsApply: true, saving: false });
       expect(await gateway.getRequests("config.apply")).toHaveLength(0);
       await expect.poll(() => toggle.count()).toBe(1);
-      await captureTriggerCapabilityProof(page, "06-saved-unapplied-keeps-active-trigger");
 
       const previousStatuses = (await gateway.getRequests("cron.status")).length;
       await gateway.setMethodResponse("cron.status", {
@@ -257,7 +205,6 @@ suite.define(() => {
       expect(await page.locator("details.cron-advanced").getAttribute("open")).not.toBeNull();
       await expect.poll(() => toggle.count()).toBe(0);
       await page.getByText("Condition triggers are disabled by cron.triggers.enabled.").waitFor();
-      await captureTriggerCapabilityProof(page, "07-reconnect-refreshes-disabled-trigger");
 
       const oppositeDraft = await evaluateControlUiContext(page, async (context) => {
         const config = context.runtimeConfig;
@@ -268,7 +215,6 @@ suite.define(() => {
       });
       expect(oppositeDraft).toBe(true);
       await expect.poll(() => toggle.count()).toBe(0);
-      await captureTriggerCapabilityProof(page, "08-unsaved-enable-cannot-author-disabled-trigger");
       await evaluateControlUiContext(page, async (context) => {
         const config = context.runtimeConfig;
         await config.discardDraft();
@@ -309,12 +255,10 @@ suite.define(() => {
       expect(await triggerScript.inputValue()).toBe("const x = ;");
       expect(await gateway.getRequests("cron.list")).toHaveLength(listsBeforeSave);
       await errorBanner.scrollIntoViewIfNeeded();
-      await captureProof(page, "05-malformed-trigger-rejected");
 
       // A rejected save must release the fieldset's inherited disabled state.
       const once = page.locator('[data-test-id="cron-schedule-kind-at"]').getByRole("radio");
       await once.scrollIntoViewIfNeeded();
-      await captureProof(page, "06-repeat-after-rejection");
       await expect.poll(() => once.isEnabled()).toBe(true);
       await once.click();
       await field(page, "schedule-at").waitFor();

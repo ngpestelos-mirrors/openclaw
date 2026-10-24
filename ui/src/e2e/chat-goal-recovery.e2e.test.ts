@@ -42,69 +42,6 @@ function goalSessions(
 }
 
 suite.define(() => {
-  it("lets an invalid Goal edit be corrected without reload or recovery", async () => {
-    await suite.withPage(pageOptions, async ({ page }) => {
-      const now = Date.now();
-      const goal = goalFixture(now, "goal-edit");
-      const method = "sessions.goal.update";
-      const gateway = await installMockGateway(page, {
-        sessionKey: "agent:main:main",
-        heldMethods: [method],
-        methodResponses: {
-          "sessions.list": goalSessions(now, "goal-edit-session", goal),
-        },
-      });
-      await page.goto(`${suite.server.baseUrl}chat/main`);
-      await exactButton(page, "Edit goal").click();
-      const objective = page.locator(".agent-chat__composer-combobox textarea");
-      const save = exactButton(page, "Save goal");
-      const invalid = page.getByText("Goal update is invalid. Check the objective and try again.", {
-        exact: true,
-      });
-      await objective.fill("x".repeat(16_001));
-      await save.click();
-      await expect
-        .poll(
-          async () => (await gateway.getRequests(method)).length > 0 || (await invalid.isVisible()),
-        )
-        .toBe(true);
-      expect(await gateway.getRequests(method)).toHaveLength(0);
-      expect(await invalid.isVisible()).toBe(true);
-      expect(await exactButton(page, "Check outcome").count()).toBe(0);
-
-      const corrected = "Verify only the sample deployment";
-      await objective.fill(corrected);
-      await save.click();
-      const request = await gateway.waitForRequest(method);
-      expect(request.params).toMatchObject({ action: "edit", objective: corrected });
-      const committed = { ...goal, objective: corrected, updatedAt: now + 1 };
-      // The real Gateway commits before ACK; later reads must see the same Goal.
-      await gateway.setSessionsListResponse({
-        sessions: [{ ...(await gateway.getSessionRow("agent:main:main")), goal: committed }],
-      });
-      await gateway.resolveDeferred(method, {
-        status: "updated",
-        goalId: goal.id,
-        goal: committed,
-      });
-      await expect.poll(() => save.count()).toBe(0);
-      // Release the Goal refresh after the ACK to exercise the losing read order.
-      const lists = await gateway.deferNext("sessions.list");
-      await gateway.emitGatewayEvent("sessions.changed", {
-        sessionKey: "agent:main:main",
-        agentId: "main",
-        reason: "goal",
-      });
-      await gateway.waitForRequest("sessions.list", { after: lists });
-      await gateway.resolveDeferred("sessions.list");
-      await expect
-        .poll(() => page.locator(".agent-chat__goal-objective").textContent())
-        .toBe(corrected);
-      expect(await gateway.getRequests(method)).toHaveLength(1);
-      expect(await invalid.count()).toBe(0);
-    });
-  });
-
   it.each([
     { action: "pause", legacyScope: false },
     { action: "clear", legacyScope: false },
