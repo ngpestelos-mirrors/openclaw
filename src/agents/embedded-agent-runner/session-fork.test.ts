@@ -63,7 +63,7 @@ function apiModel(api: "openai-responses" | "anthropic-messages"): Model {
 
 async function complete(
   parent: StreamFn,
-  requestModel = model,
+  requestModel: Model = model,
   requestContext = context,
   options: Parameters<StreamFn>[2] = {},
 ) {
@@ -170,7 +170,7 @@ async function expectCollected(references: WeakRef<object>[]) {
   expect(references.filter((reference) => reference.deref())).toHaveLength(0);
 }
 
-async function fork(requestModel = model, assertCurrent = () => {}) {
+async function fork(requestModel: Model = model, assertCurrent = () => {}) {
   return runEmbeddedSessionFork({
     ...identity,
     model: requestModel,

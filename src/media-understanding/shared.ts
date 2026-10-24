@@ -355,16 +355,25 @@ export function resolveProviderHttpRequestConfigWithOriginTrust(params: {
   capability?: ProviderRequestCapability;
   transport?: ProviderRequestTransport;
 }): ResolvedProviderHttpRequestConfigWithOriginTrust {
+  const callerHeaders: ModelRequestHeaders | undefined = params.headers ? {} : undefined;
+  if (callerHeaders && params.headers) {
+    const entries =
+      params.headers instanceof Headers || Array.isArray(params.headers)
+        ? new Headers(params.headers).entries()
+        : Object.entries(params.headers);
+    for (const [name, value] of entries) {
+      if (value !== undefined) {
+        callerHeaders[name] = value;
+      }
+    }
+  }
   const requestConfig = resolveProviderRequestPolicyConfig({
     provider: params.provider ?? "",
     baseUrl: params.baseUrl,
     defaultBaseUrl: params.defaultBaseUrl,
     capability: params.capability ?? "other",
     transport: params.transport ?? "http",
-    callerHeaders:
-      params.headers instanceof Headers || Array.isArray(params.headers)
-        ? Object.fromEntries(new Headers(params.headers).entries())
-        : params.headers,
+    callerHeaders,
     providerHeaders: params.defaultHeaders,
     precedence: "caller-wins",
     allowPrivateNetwork: params.allowPrivateNetwork,
