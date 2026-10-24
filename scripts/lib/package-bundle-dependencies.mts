@@ -1,4 +1,4 @@
-import { isRecord } from "@openclaw/normalization-core/record-coerce";
+import { isRecord } from "./record-shared.mjs";
 
 export function listBundleDependencies(packageJson: unknown): string[] {
   if (!isRecord(packageJson)) {

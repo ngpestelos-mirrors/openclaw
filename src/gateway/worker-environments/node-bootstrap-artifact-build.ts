@@ -7,6 +7,7 @@ import { isDeepStrictEqual } from "node:util";
 import { readFileHandleBounded } from "@openclaw/fs-safe/advanced";
 import { valid } from "semver";
 import * as tar from "tar";
+import { listBundleDependencies } from "../../../scripts/lib/package-bundle-dependencies.mts";
 import {
   collectPatchedMcpArtifactErrors,
   PATCHED_MCP_NAME,
@@ -82,8 +83,6 @@ const METADATA_KEYS = [
 type NodePackageManifest = DistributionPackageManifest & {
   scripts?: Record<string, string>;
   devDependencies?: Record<string, string>;
-  bundleDependencies?: string[];
-  bundledDependencies?: string[];
   openclaw?: { extensions?: string[]; runtimeExtensions?: string[] };
 };
 
@@ -379,7 +378,7 @@ export async function prepareNodeBootstrapArtifact(
   // Only declared bundled/workspace packages cross as JavaScript artifacts. Native dependencies
   // remain exact npm pins, so the destination chooses its own OS/CPU optional packages.
   const bundledNames = new Set([
-    ...(packageJson.bundleDependencies ?? packageJson.bundledDependencies ?? []),
+    ...listBundleDependencies(packageJson),
     ...Object.entries(packageJson.dependencies ?? {})
       .filter(([, spec]) => spec.startsWith("workspace:"))
       .map(([name]) => name),
@@ -391,19 +390,22 @@ export async function prepareNodeBootstrapArtifact(
     if (bundled.name !== name) {
       throw new Error(`Bundled node distribution dependency identity does not match ${name}`);
     }
-    const dependencies = validateBundledPackageDependencyAlignment({
-      bundledDependencies: bundled.dependencies,
-      bundledPackageLabel: `bundled ${name}`,
-      rootDependencies: packageJson.dependencies,
-    });
-    for (const [dependency, version] of dependencies) {
-      packageJson.dependencies![dependency] = version;
-    }
-    // Linked workspaces can carry source and private files; installed npm bundles already
-    // own their published layout, including compiled directories and non-JavaScript assets.
+    // Linked workspaces share the root dependency graph. Registry bundles retain their
+    // published dependency declarations for installation on the destination.
     const workspace =
       sourcePackage.dependencies?.[name]?.startsWith("workspace:") ||
       !root.endsWith(`${path.sep}node_modules${path.sep}${name.split("/").join(path.sep)}`);
+    if (workspace) {
+      const dependencies = validateBundledPackageDependencyAlignment({
+        bundledDependencies: bundled.dependencies,
+        bundledPackageLabel: `bundled ${name}`,
+        rootDependencies: packageJson.dependencies,
+      });
+      for (const [dependency, version] of dependencies) {
+        packageJson.dependencies![dependency] = version;
+      }
+      delete bundled.dependencies;
+    }
     const bundledFiles = workspace
       ? await collectPackageDistInventory(root)
       : await collectBootstrapFiles(root);
@@ -424,7 +426,6 @@ export async function prepareNodeBootstrapArtifact(
     };
     scopes.push(scope);
     addFiles(root, bundledFiles, scope.prefix, scope);
-    delete bundled.dependencies;
     delete bundled.devDependencies;
     delete bundled.scripts;
     addGeneratedFile(

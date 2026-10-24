@@ -1,6 +1,6 @@
 import { satisfies, valid } from "semver";
+import { listBundleDependencies } from "../../scripts/lib/package-bundle-dependencies.mts";
 import { validateBundledPackageDependencyAlignment } from "../../scripts/package-source-dependencies.mjs";
-import { listBundleDependencies } from "./package-bundle-dependencies.js";
 
 export type DistributionPackageManifest = {
   name: string;

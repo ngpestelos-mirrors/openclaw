@@ -70,7 +70,10 @@ export async function writeOwnedChunks(
   });
 }
 
-export async function writeBundledBrowser(packageRoot: string) {
+export async function writeBundledBrowser(
+  packageRoot: string,
+  dependencies?: Record<string, string>,
+) {
   const manifestPath = path.join(packageRoot, "package.json");
   const manifest = JSON.parse(await fs.readFile(manifestPath, "utf8"));
   manifest.dependencies["@fixture/browser"] = version;
@@ -84,6 +87,7 @@ export async function writeBundledBrowser(packageRoot: string) {
     main: "./build/src/index.js",
     bin: { browser: "./build/src/bin/browser.js" },
     files: ["build/src", "LICENSE", "skills", "!*.js.map"],
+    dependencies,
   });
   await writeFiles(browserRoot, {
     "build/src/index.js":

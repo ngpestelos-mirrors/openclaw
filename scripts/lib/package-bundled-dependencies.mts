@@ -2,8 +2,8 @@ import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
-import { listBundleDependencies } from "../../src/infra/package-bundle-dependencies.js";
 import { coerceErrorMessage } from "./error-format.mts";
+import { listBundleDependencies } from "./package-bundle-dependencies.mts";
 import {
   collectPatchedMcpArtifactErrors,
   isSupportedPatchedMcpVersion,
