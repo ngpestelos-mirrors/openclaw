@@ -35,12 +35,6 @@ import {
 } from "./runner.attachments.js";
 import type { MediaAttachment } from "./types.js";
 
-type LocalPathSelfServeUpgrade = {
-  attachmentIndex: number;
-  fallback: string;
-  render: (path?: string) => string | undefined;
-};
-
 // URL attachments may carry signed query credentials; only the pathname
 // basename is safe to surface as a model-visible display name.
 function attachmentUrlDisplayName(url: string): string | undefined {
@@ -215,7 +209,11 @@ export async function extractFileContext(params: {
 
   const blocks: AttachmentContextBlock[] = [];
   const images: ExtractedFileImage[] = [];
-  const localPathSelfServeUpgrades: LocalPathSelfServeUpgrade[] = [];
+  const localPathSelfServeUpgrades: Array<{
+    attachmentIndex: number;
+    fallback: string;
+    render: (path?: string) => string | undefined;
+  }> = [];
   for (const attachment of attachments) {
     const { outcome, filename, mimeType } = await classifyFileAttachment(attachment).finally(() =>
       cache.releaseBuffer(attachment.index),
