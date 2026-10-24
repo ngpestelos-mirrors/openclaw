@@ -1,3 +1,4 @@
+import "../lib/sessions/session-mutation-operations.runtime.ts";
 import { isSessionDeferredPatch } from "../lib/sessions/patch.ts";
 import { resolveUiSessionRowAgentId } from "../lib/sessions/session-key.ts";
 import type {

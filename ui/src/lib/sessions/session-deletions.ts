@@ -10,6 +10,7 @@ import {
   resolveUiConversationIdentity,
   resolveUiSelectedGlobalAgentId,
 } from "./session-key.ts";
+import { prepareSessionDeferredMutation } from "./session-mutation-operations.ts";
 import type {
   SessionConnectionOwner,
   SessionDeleteBatchResult,
@@ -70,6 +71,9 @@ export type SessionDeletionOperationsHost = Pick<
   confirm: (deletion: Deletion, key: string) => void;
   reportError: (message: string) => void;
 };
+
+export type SessionDeferredDeletionHost = SessionDeletionOperationsHost &
+  Pick<DeletionHost, "publishedRow">;
 
 export function createSessionDeletions(host: DeletionHost) {
   let retainedOwner: { scope: SessionListScope } = { scope: {} };
@@ -216,67 +220,61 @@ export function createSessionDeletions(host: DeletionHost) {
     }
     const snapshot = host.snapshot();
     if (!scope || snapshot.deferredIntentCount || snapshot.deferredIntentDraining) {
+      const admissions: Promise<void>[] = [];
       for (const target of targets) {
         const record = begin({ ...target });
         if (!record.sessionId?.trim()) {
           rollback(record);
-          const error = new Error(
-            t("sessionsView.deleteSessionIdentityMissing", { session: target.key }),
-          );
-          result.errors.push({ target, error });
+          result.errors.push({
+            target,
+            error: new Error(
+              t("sessionsView.deleteSessionIdentityMissing", { session: target.key }),
+            ),
+          });
           continue;
         }
         record.target.expectedSessionId ??= record.sessionId;
         const token = Symbol("delete");
         record.deferredToken = token;
-        // Superseded fields roll back before deletion captures the row to hide.
+        // Coalescing releases older field claims before this deletion hides its row.
         record.phase = "rollback";
         const conversation = resolveUiConversationIdentity(snapshot, target.key, target.agentId);
         const agentId = conversation.agentId ?? normalizeAgentId(target.agentId);
         const lifecycleKey = `sessions.lifecycle:${agentId}:${conversation.sessionKey}`;
-        const accepted = host.defer({
-          key: lifecycleKey,
-          group: lifecycleKey,
-          discardGroup: true,
-          preservePosition: true,
-          run: () => {
-            const current = host.connection.capture();
-            if (!current) {
-              rollback(record);
-              return Promise.resolve();
-            }
-            return import("./session-delete-operation.ts").then(
-              ({ runDeferredSessionDelete }) =>
-                runDeferredSessionDelete(record, current, operationsHost),
-              (error: unknown) => {
-                if (owns(record)) {
-                  rollback(record);
-                  reportError(formatUiError(error));
-                }
-              },
-            );
-          },
-          discard: () => {
+        const prepared = prepareSessionDeferredMutation(
+          (runtime) =>
+            runtime.prepareSessionDelete(record, conversation.sessionKey, {
+              ...operationsHost,
+              publishedRow: host.publishedRow,
+            }),
+          host.connection,
+          () => {
             if (record.deferredToken === token) {
               rollback(record);
             }
           },
-        });
-        if (accepted) {
-          const row = host.publishedRow(
-            (candidate) =>
-              candidate.key === conversation.sessionKey && candidate.sessionId === record.sessionId,
-          );
-          // Preserve archive-only authorization when coalescing an unsent archive.
-          // Its prerequisite runs inside this same lifecycle slot before deletion.
-          if (record.target.archivedOnly && row && !row.archived) {
-            record.archiveBeforeDelete = true;
+        );
+        if (
+          host.defer({
+            key: lifecycleKey,
+            group: lifecycleKey,
+            discardGroup: true,
+            preservePosition: true,
+            run: prepared.run,
+            discard: prepared.discard,
+          })
+        ) {
+          const ready = prepared.admit();
+          if (ready) {
+            admissions.push(ready);
           }
-          record.phase = "pending";
           (result.queued ??= []).push(target.key);
         } else {
-          rollback(record);
+          prepared.discard();
         }
+      }
+      if (admissions.length > 0) {
+        await Promise.all(admissions);
       }
       publish();
       if (result.errors.length > 0) {

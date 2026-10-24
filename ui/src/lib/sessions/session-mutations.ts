@@ -20,33 +20,28 @@ import type {
   SessionPatchRoute,
 } from "./patch.ts";
 import { mapSessionResultRows } from "./reconcile.ts";
-import { createSessionArchiveState, projectSessionArchiveFields } from "./session-archive-state.ts";
+import { createSessionArchiveState } from "./session-archive-state.ts";
 import { deferSessionPatch } from "./session-deferred-patch.ts";
 import { createSessionModelOverrides } from "./session-model-overrides.ts";
+import type { createOptimisticArchivePatches } from "./session-mutation-operations.runtime.ts";
+import { withSessionMutationOperations } from "./session-mutation-operations.ts";
 import {
   createSessionMutationRefresh,
   isRejectedSessionMutation,
 } from "./session-mutation-refresh.ts";
 import type { SessionMutationsHost } from "./session-mutations-host.ts";
-import { projectSessionPatchRowFields } from "./session-patch-row-facts.ts";
 import {
   capturePendingRowReplacement,
   createOptimisticRowField,
-  createOptimisticArchivePatches,
   createOptimisticPinPatches,
   createOptimisticSettingsPatches,
   resolvePendingConversation,
   resolvePendingRowTarget,
   resolvePredecessorRowTarget,
   pendingRowIdentity,
-  type SessionPinFields,
 } from "./session-pending-rows.ts";
 import type { SessionPermissionClaim } from "./session-permission-projection.ts";
-import {
-  requestSessionPatch,
-  requestSessionPatchMany,
-  requestSessionReset,
-} from "./session-requests.ts";
+import { requestSessionPatch, requestSessionReset } from "./session-requests.ts";
 import { createSessionRowLocalPatch } from "./session-row-local-patch.ts";
 import type {
   SessionConnectionScope,
@@ -81,15 +76,26 @@ export function createSessionMutations(host: SessionMutationsHost) {
     category: optimisticCategories,
   };
   const optimisticUnread = createOptimisticRowField(host, "unread");
-  const optimisticArchive = createOptimisticArchivePatches(host);
+  let optimisticArchive: ReturnType<typeof createOptimisticArchivePatches> | undefined;
   const settingsPatches = createOptimisticSettingsPatches(host);
-  const rowPatches = [
+  const rowPatches: Array<
+    Pick<
+      ReturnType<typeof createOptimisticRowField>,
+      "hasPending" | "applyRow" | "observe" | "clear"
+    >
+  > = [
     optimisticPins,
     optimisticUnread,
-    optimisticArchive,
     ...Object.values(metadataFields),
     ...settingsPatches.owners,
   ];
+  const archiveOwner = (create: typeof createOptimisticArchivePatches) => {
+    if (!optimisticArchive) {
+      optimisticArchive = create(host);
+      rowPatches.push(optimisticArchive);
+    }
+    return optimisticArchive;
+  };
   const hasPendingRowPatches = () => rowPatches.some((owner) => owner.hasPending());
   const applyPendingRow = (
     row: GatewaySessionRow,
@@ -334,15 +340,20 @@ export function createSessionMutations(host: SessionMutationsHost) {
           return null;
         }
       }
+      const projection = withSessionMutationOperations(
+        (runtime) => runtime.projectSessionPatchRowFields,
+      );
+      const projectSessionPatchRowFields =
+        typeof projection === "function" ? projection : await projection;
       if (options.canDispatch?.() === false) {
         settleOptimisticPatch(false);
         return null;
       }
-      startOptimisticPatch();
       if (!host.connection.isCurrent(scope) || !canDispatchSettings()) {
         settleOptimisticPatch(false);
         return null;
       }
+      startOptimisticPatch();
       if (Object.hasOwn(patchParams, "permissionMode")) {
         permissionProjection = host.claimPermissionProjection(
           key,
@@ -495,15 +506,8 @@ export function createSessionMutations(host: SessionMutationsHost) {
   };
 
   const patch: SessionPatchRoute = async (key, patchParams, options = {}) =>
-    deferSessionPatch(
-      host,
-      metadataFields,
-      optimisticArchive,
-      patchNow,
-      key,
-      patchParams,
-      options,
-    ) ?? patchNow(key, patchParams, options);
+    deferSessionPatch(host, metadataFields, archiveOwner, patchNow, key, patchParams, options) ??
+    patchNow(key, patchParams, options);
 
   const patchMany = async (
     targets: SessionsPatchManyParams["targets"],
@@ -513,51 +517,10 @@ export function createSessionMutations(host: SessionMutationsHost) {
     if (!scope) {
       return null;
     }
-    const { archived, pinned } = patchParams;
-    // Batch outcomes confirm pin intent without returning the Gateway's pin timestamp.
-    const pin: SessionPinFields | { pinned: true } | undefined =
-      pinned === true
-        ? { pinned: true }
-        : pinned === false
-          ? { pinned: false, pinnedAt: undefined }
-          : undefined;
-    const fields =
-      archived === undefined
-        ? pin
-        : { ...projectSessionArchiveFields(archived), ...(archived ? undefined : pin) };
     const snapshot = host.snapshot();
-    const confirmations = fields
-      ? targets.map((target) => {
-          const identity = resolvePendingConversation(snapshot, target.key, target.agentId);
-          const sessionId = target.expectedSessionId?.trim();
-          if (!identity || !sessionId) {
-            return null;
-          }
-          const owned = { ...identity, sessionId };
-          return { owned, confirm: host.capturePatchFields(owned) };
-        })
-      : [];
-    const result = await requestSessionPatchMany(scope.client, { targets, patch: patchParams });
-    if (!host.connection.isCurrent(scope)) {
-      return result;
-    }
-    if (fields) {
-      const readCutoff = host.readRevision();
-      result.outcomes.forEach((outcome, index) => {
-        const confirmation = confirmations[index];
-        if (outcome.ok && confirmation) {
-          confirmation.confirm({
-            key: confirmation.owned.key,
-            agentId: confirmation.owned.agentId,
-            sessionId: confirmation.owned.sessionId,
-            updatedAt: null,
-            readCutoff,
-            fields,
-          });
-        }
-      });
-    }
-    return result;
+    return withSessionMutationOperations((runtime) =>
+      runtime.patchSessionBatch(host, scope, snapshot, targets, patchParams),
+    );
   };
 
   const reset = async (
@@ -695,7 +658,7 @@ export function createSessionMutations(host: SessionMutationsHost) {
     retireModelOverride: modelOverrides.retire,
     archiveVisibility(this: void, key: string): SessionArchiveVisibility | undefined {
       const target = resolvePendingConversation(host.snapshot(), key);
-      const pending = target ? optimisticArchive.read(target.identity) : undefined;
+      const pending = target ? optimisticArchive?.read(target.identity) : undefined;
       return pending
         ? pending.next.archived
           ? "archived"

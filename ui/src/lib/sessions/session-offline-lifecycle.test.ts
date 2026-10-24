@@ -144,6 +144,9 @@ async function setup(archived = false, scopes = ["operator.admin"]) {
       missingReject = rejectMissing;
       row = null;
     },
+    setServerRow: (next: GatewaySessionRow) => {
+      row = next;
+    },
     row: () => sessions.presentation.result?.sessions[0],
     patch: (nextArchived: boolean) =>
       sessions.patch("agent:main:offline", { archived: nextArchived }, target),
@@ -160,6 +163,37 @@ async function setup(archived = false, scopes = ["operator.admin"]) {
         ),
   };
 }
+
+it("rejects a missing offline delete identity before a reconnect can publish its successor", async () => {
+  const h = await setup();
+  h.offline();
+  const deletion = h.sessions.delete("agent:main:future", { agentId: "main" });
+  h.setServerRow({
+    key: "agent:main:future",
+    sessionId: "successor",
+    kind: "direct",
+    updatedAt: 2,
+  });
+  h.reconnect();
+  await expect(deletion).rejects.toThrow("without its session identity");
+  await h.sessions.refresh({ agentId: "main", force: true });
+  expect(h.row()?.sessionId).toBe("successor");
+  expect(h.writes()).toHaveLength(0);
+});
+
+it("coalesces the first offline delete and archive before the optional runtime loads", async () => {
+  const h = await setup();
+  h.offline();
+  const deletion = h.delete();
+  const archive = h.patch(true);
+  expect(h.gateway.snapshot.deferredIntentCount).toBe(1);
+  h.reconnect();
+  await expect(deletion).resolves.toMatchObject({ queued: true });
+  await expect(archive).resolves.toEqual({ queued: true });
+  await vi.waitFor(() => expect(h.gateway.snapshot.deferredIntentDraining).toBe(false));
+  expect(h.writes().map(([method]) => method)).toEqual(["sessions.patch"]);
+  expect(h.row()).toMatchObject({ sessionId: "incarnation", archived: true });
+});
 
 it.each(["identity", "retirement", "stop"])(
   "admits lifecycle work while reconnecting but not after %s",
