@@ -4,17 +4,12 @@ type WebView2Bridge = {
   removeEventListener(type: "message", listener: (event: MessageEvent) => void): void;
 };
 
-export type NativeChatDrafts = {
-  subscribe: (listener: (draft: string) => void) => () => void;
-  dispose: () => void;
-};
-
 /**
  * WebView2's message-only bridge is not a DOM EventTarget. Subscribe before
  * the ready handshake and pair its native subscription with disposal below.
  * Drafts received while Chat is not mounted are retained for its next subscriber.
  */
-export function createNativeChatDrafts(): NativeChatDrafts {
+export function createNativeChatDrafts() {
   const bridge = (window as Window & { chrome?: { webview?: WebView2Bridge } }).chrome?.webview;
   if (!bridge) {
     return {
@@ -50,7 +45,7 @@ export function createNativeChatDrafts(): NativeChatDrafts {
   bridge.postMessage({ type: "ready" });
 
   return {
-    subscribe(listener) {
+    subscribe(listener: (draft: string) => void): () => void {
       listeners.add(listener);
       if (pendingDraft !== null) {
         const draft = pendingDraft;

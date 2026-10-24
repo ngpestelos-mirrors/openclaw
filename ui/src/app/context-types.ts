@@ -25,7 +25,7 @@ import type { ConnectionBootstrapCoordinator } from "./connection-bootstrap.ts";
 import type { ControlUiReadinessOutlet } from "./control-ui-readiness.ts";
 import type { ScopeUpgradeCapability } from "./device-scope-upgrade.ts";
 import type { ApplicationGateway } from "./gateway.ts";
-import type { NativeChatDrafts } from "./native-bridge.ts";
+import type { createNativeChatDrafts } from "./native-bridge.ts";
 import type { NativeConversationBridge } from "./native-conversation-types.ts";
 import type { NativeDeviceSettingsCapability } from "./native-device-settings.ts";
 import type { NativeNotificationsCapability } from "./native-notifications.ts";
@@ -149,7 +149,7 @@ export type ApplicationContext<TRouteId extends string = RouteId> = {
   readonly overlays: ApplicationOverlays;
   readonly navigation: ApplicationNavigationPreferences;
   readonly theme: ApplicationTheme;
-  readonly nativeChatDrafts: NativeChatDrafts;
+  readonly nativeChatDrafts: ReturnType<typeof createNativeChatDrafts>;
   readonly nativeConversation?: NativeConversationBridge | null;
   readonly nativeDeviceSettings: NativeDeviceSettingsCapability | null;
   readonly nativeNotifications: NativeNotificationsCapability | null;

@@ -35,13 +35,7 @@ import {
 } from "./runner.attachments.js";
 import type { MediaAttachment } from "./types.js";
 
-type ClassifiedFileAttachment = {
-  outcome: FileAttachmentOutcome;
-  filename?: string;
-  mimeType?: string;
-};
-
-export type LocalPathSelfServeUpgrade = {
+type LocalPathSelfServeUpgrade = {
   attachmentIndex: number;
   fallback: string;
   render: (path?: string) => string | undefined;
@@ -68,9 +62,11 @@ export async function extractFileContext(params: {
   selfServePathsEnabled: boolean;
 }) {
   const { attachments, cache, cfg, limits, skipAttachmentIndexes } = params;
-  async function classifyFileAttachment(
-    attachment: MediaAttachment,
-  ): Promise<ClassifiedFileAttachment> {
+  async function classifyFileAttachment(attachment: MediaAttachment): Promise<{
+    outcome: FileAttachmentOutcome;
+    filename?: string;
+    mimeType?: string;
+  }> {
     const assertCurrent = params.assertCurrent;
     assertCurrent?.();
     const attachmentFilename =

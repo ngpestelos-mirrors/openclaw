@@ -72,35 +72,6 @@ type ZalouserMonitorResult = {
 
 const ZALOUSER_TEXT_LIMIT = 2000;
 
-function resolveUserAllowlistEntries(
-  entries: string[],
-  byName: Map<string, Array<{ userId: string }>>,
-): {
-  additions: string[];
-  mapping: string[];
-  unresolved: string[];
-} {
-  const additions: string[] = [];
-  const mapping: string[] = [];
-  const unresolved: string[] = [];
-  for (const entry of entries) {
-    if (/^\d+$/.test(entry)) {
-      additions.push(entry);
-      continue;
-    }
-    const matches = byName.get(normalizeLowercaseStringOrEmpty(entry)) ?? [];
-    const match = matches[0];
-    const id = match?.userId;
-    if (id) {
-      additions.push(id);
-      mapping.push(`${entry}->${id}`);
-    } else {
-      unresolved.push(entry);
-    }
-  }
-  return { additions, mapping, unresolved };
-}
-
 type ZalouserCoreRuntime = ReturnType<typeof getZalouserRuntime>;
 
 function normalizeZalouserAllowEntry(entry: string): string {
@@ -158,7 +129,24 @@ export async function monitorZalouserProvider(
         if (entries.length === 0) {
           continue;
         }
-        const { additions, mapping, unresolved } = resolveUserAllowlistEntries(entries, byName);
+        const additions: string[] = [];
+        const mapping: string[] = [];
+        const unresolved: string[] = [];
+        for (const entry of entries) {
+          if (/^\d+$/.test(entry)) {
+            additions.push(entry);
+            continue;
+          }
+          const matches = byName.get(normalizeLowercaseStringOrEmpty(entry)) ?? [];
+          const match = matches[0];
+          const id = match?.userId;
+          if (id) {
+            additions.push(id);
+            mapping.push(`${entry}->${id}`);
+          } else {
+            unresolved.push(entry);
+          }
+        }
         account.config[key] = mergeAllowlist({ existing: account.config[key], additions });
         summarizeMapping(label, mapping, unresolved, runtime);
       }

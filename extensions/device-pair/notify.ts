@@ -6,7 +6,6 @@ import type {
   PluginCommandContext,
   PluginServiceSchedulerV1,
 } from "openclaw/plugin-sdk/plugin-entry";
-import type { PluginStateKeyedStore } from "openclaw/plugin-sdk/plugin-state-runtime";
 import {
   normalizeOptionalString,
   normalizeTrimmedStringList,
@@ -79,16 +78,6 @@ function openNotifySubscriberStore(api: OpenClawPluginApi) {
   });
 }
 
-function openNotifySeenRequestStore(
-  api: OpenClawPluginApi,
-): PluginStateKeyedStore<NotifySeenRequest> {
-  return api.runtime.state.openKeyedStore<NotifySeenRequest>({
-    namespace: DEVICE_PAIR_NOTIFY_SEEN_REQUEST_NAMESPACE,
-    maxEntries: DEVICE_PAIR_NOTIFY_SEEN_REQUEST_MAX_ENTRIES,
-    defaultTtlMs: DEVICE_PAIR_NOTIFY_MAX_SEEN_AGE_MS,
-  });
-}
-
 type NotifyTarget = Pick<NotifySubscription, "to" | "accountId" | "messageThreadId">;
 
 function resolveNotifyTarget(ctx: NotifyCommandContext): NotifyTarget | null {
@@ -156,7 +145,11 @@ function shouldNotifySubscriberForRequest(
 
 async function notifyPendingPairingRequests(params: { api: OpenClawPluginApi }): Promise<boolean> {
   const subscriberStore = openNotifySubscriberStore(params.api);
-  const seenRequestStore = openNotifySeenRequestStore(params.api);
+  const seenRequestStore = params.api.runtime.state.openKeyedStore<NotifySeenRequest>({
+    namespace: DEVICE_PAIR_NOTIFY_SEEN_REQUEST_NAMESPACE,
+    maxEntries: DEVICE_PAIR_NOTIFY_SEEN_REQUEST_MAX_ENTRIES,
+    defaultTtlMs: DEVICE_PAIR_NOTIFY_MAX_SEEN_AGE_MS,
+  });
   const [subscriberEntries, seenRequestEntries] = await Promise.all([
     subscriberStore.entries(),
     seenRequestStore.entries(),
