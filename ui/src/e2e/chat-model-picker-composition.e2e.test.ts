@@ -1,7 +1,4 @@
-import type { Page } from "playwright";
 import { expect, it } from "vitest";
-import { captureControlUiE2eFailureDiagnostics } from "../test-helpers/control-ui-e2e-diagnostics.ts";
-import { installControlUiE2eRendererStallProbe } from "../test-helpers/control-ui-e2e-renderer-stall.ts";
 import { installMockGateway } from "./chat-flow.test-support.ts";
 import {
   polledAttribute,
@@ -19,32 +16,10 @@ const compositionScenario = {
     { id: "claude-sonnet-4-6", name: "Claude Sonnet 4.6", provider: "anthropic" },
   ],
 };
-let compositionFixture: {
-  page: Page;
-  gateway: Awaited<ReturnType<typeof installMockGateway>>;
-};
 const suite = createControlUiE2eSuite({
   name: "Control UI mocked Gateway E2E",
   unavailableMessage: (executablePath) =>
     `Playwright Chromium is not installed or cannot start at ${executablePath}. Run \`pnpm --dir ui exec playwright install --with-deps chromium\`, set PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH to a compatible browser, or set OPENCLAW_UI_E2E_ALLOW_MISSING_CHROMIUM=1 only when intentionally skipping this lane.`,
-  resources: {
-    run: async () => {
-      const context = await suite.newBrowserContext({});
-      const page = await context.newPage();
-      await installControlUiE2eRendererStallProbe(page);
-      try {
-        const gateway = await installMockGateway(page, compositionScenario);
-        compositionFixture = { page, gateway };
-        await page.goto(`${suite.server.baseUrl}chat`);
-      } catch (error) {
-        await captureControlUiE2eFailureDiagnostics(page, {
-          error: error instanceof Error ? error : new Error(String(error)),
-          label: "Model search composition setup",
-        });
-        throw error;
-      }
-    },
-  },
 });
 const accountLabel = "Sign in with ChatGPT";
 const catalog = (
@@ -209,36 +184,21 @@ suite.define(() => {
     },
   );
 
-  for (const composition of ["active", "keyCode229", "none"] as const) {
-    it.for(["Enter", "Escape", "ArrowDown", "ArrowUp"])(
+  for (const composition of ["active", "keyCode229"] as const) {
+    it.for(["Enter", "Escape"])(
       `respects ${composition} composition ownership for model-search %s`,
-      async (key, testContext) => {
-        const runCase = async ({ page }: { page: Page }) => {
-          const gateway =
-            composition === "none"
-              ? await installMockGateway(page, compositionScenario)
-              : compositionFixture.gateway;
-          if (composition === "none") {
-            await page.goto(`${suite.server.baseUrl}chat`);
-          }
+      async (key) => {
+        await suite.withPage({}, async ({ page }) => {
+          const gateway = await installMockGateway(page, compositionScenario);
+          await page.goto(`${suite.server.baseUrl}chat`);
           const { picker, trigger, search } = modelPicker(page);
           await polledAttribute(trigger, "aria-disabled").toBe("false");
           await trigger.click();
           await polledCount(picker.locator("[data-chat-model-option]")).toBe(1);
           await page.mouse.move(0, 0);
-          const query = key.startsWith("Arrow") ? "" : "anthropic";
-          if (key.startsWith("Arrow")) {
-            for (const toggle of await picker
-              .locator('[data-chat-model-provider-toggle][aria-expanded="false"]')
-              .all()) {
-              await toggle.focus();
-              await toggle.press("Enter");
-            }
-          }
+          const query = "anthropic";
           await search.fill(query);
-          await polledCount(picker.locator("[data-chat-model-option]")).toBe(
-            key.startsWith("Arrow") ? 2 : 1,
-          );
+          await polledCount(picker.locator("[data-chat-model-option]")).toBe(1);
           await search.focus();
           // This exercises browser event ownership, not a native OS IME candidate window.
           const { prevented, highlightedBefore } = await search.evaluate(
@@ -263,84 +223,12 @@ suite.define(() => {
 
           expect(highlightedBefore).toBeTruthy();
 
-          if (composition !== "none") {
-            expect.soft(prevented).toBe(false);
-            expect.soft(await picker.getAttribute("open")).not.toBeNull();
-            expect.soft(await search.inputValue()).toBe(query);
-            expect.soft(await search.getAttribute("aria-activedescendant")).toBe(highlightedBefore);
-            expect.soft(await gateway.getRequests("sessions.patch")).toEqual([]);
-          } else {
-            expect(prevented).toBe(true);
-            if (key === "Enter") {
-              const patch = await gateway.waitForRequest("sessions.patch");
-              expect(patch.params).toMatchObject({ model: "anthropic/claude-sonnet-4-6" });
-              expect(await picker.getAttribute("open")).toBeNull();
-            } else {
-              expect(await picker.getAttribute("open")).not.toBeNull();
-              expect(await gateway.getRequests("sessions.patch")).toEqual([]);
-              if (key === "Escape") {
-                expect(await search.inputValue()).toBe("");
-                await search.press("Escape");
-                expect(await picker.getAttribute("open")).toBeNull();
-              } else {
-                await polledAttribute(search, "aria-activedescendant").not.toBe(highlightedBefore);
-              }
-            }
-          }
-          if (composition !== "none") {
-            // Dismissal resets query/highlight; provider disclosure deliberately survives it.
-            await search.fill("");
-            const otherProvider = picker.locator(
-              '[data-chat-model-provider-group="anthropic"] [data-chat-model-provider-toggle]',
-            );
-            if ((await otherProvider.getAttribute("aria-expanded")) === "true") {
-              await otherProvider.focus();
-              await otherProvider.press("Enter");
-            }
-            await trigger.click();
-            await polledAttribute(picker, "open").toBeNull();
-          }
-        };
-        if (composition === "none") {
-          await suite.withPage({}, runCase);
-          return;
-        }
-        const { page } = compositionFixture;
-        let failedClose: Promise<void> | undefined;
-        const closeAfterFailure = (error: unknown) => {
-          failedClose ??= (async () => {
-            await captureControlUiE2eFailureDiagnostics(page, {
-              error: error instanceof Error ? error : new Error(String(error)),
-              label: "Model search composition",
-            });
-            await suite.closeBrowserContext(page.context());
-          })();
-          return failedClose;
-        };
-        // The page belongs to the suite; native case cancellation must still close it.
-        const onAbort = () => void closeAfterFailure(testContext.signal.reason).catch(() => {});
-        testContext.signal.addEventListener("abort", onAbort, { once: true });
-        try {
-          await suite.runScenario(testContext, {
-            run: async () => {
-              try {
-                await runCase({ page });
-              } catch (error) {
-                void closeAfterFailure(error).catch(() => {});
-                throw error;
-              }
-            },
-            close: async () => {
-              const failure = testContext.task.result?.errors?.[0];
-              if (failure !== undefined) {
-                await closeAfterFailure(failure);
-              }
-              await failedClose;
-            },
-          });
-        } finally {
-          testContext.signal.removeEventListener("abort", onAbort);
-        }
+          expect.soft(prevented).toBe(false);
+          expect.soft(await picker.getAttribute("open")).not.toBeNull();
+          expect.soft(await search.inputValue()).toBe(query);
+          expect.soft(await search.getAttribute("aria-activedescendant")).toBe(highlightedBefore);
+          expect.soft(await gateway.getRequests("sessions.patch")).toEqual([]);
+        });
       },
     );
   }

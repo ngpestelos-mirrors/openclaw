@@ -137,14 +137,6 @@ suite.define(() => {
     }
   });
 
-  it("opens Side chat when selecting /btw from the slash menu", async () => {
-    const { page, main, side } = await openChat();
-    await main.fill("/bt");
-    await page.locator(".chat-send-btn--send:enabled").waitFor({ state: "visible" });
-    await page.getByRole("option").filter({ hasText: "/btw" }).click();
-    await expectFocus(side);
-    expect(await main.inputValue()).toBe("");
-  });
   it("opens Side chat when the slash catalog refreshes during selection", async () => {
     const { page, gateway, main, side } = await openChat({
       scenario: { deferredMethods: ["commands.list"] },

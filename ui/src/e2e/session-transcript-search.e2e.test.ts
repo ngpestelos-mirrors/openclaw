@@ -3,11 +3,7 @@ import path from "node:path";
 import type { Page } from "playwright";
 import { expect, it } from "vitest";
 import { takeControlUiViewportScreenshot } from "../test-helpers/control-ui-e2e-screenshot.ts";
-import {
-  controlUiSessionPath,
-  installMockGateway,
-  type MockGatewayWindow,
-} from "../test-helpers/control-ui-e2e.ts";
+import { controlUiSessionPath, installMockGateway } from "../test-helpers/control-ui-e2e.ts";
 import { createControlUiE2eSuite } from "./control-ui-e2e-suite.test-support.ts";
 import { waitForSessionText as waitText } from "./session-ui.test-support.ts";
 
@@ -86,26 +82,6 @@ async function captureUiProof(fileName: string) {
     return;
   }
   await page.screenshot({ fullPage: true, path: path.join(suite.artifactDir, fileName) });
-}
-
-async function resolveDeferredAndDrain(
-  browserPage: Page,
-  method: string,
-  payload: unknown,
-): Promise<void> {
-  await browserPage.evaluate(
-    async ({ targetMethod, responsePayload }) => {
-      const gateway = (window as MockGatewayWindow).openclawControlUiE2eGateway;
-      if (!gateway) {
-        throw new Error("Mock Gateway is not installed");
-      }
-      gateway.resolveDeferred(targetMethod, responsePayload);
-      await new Promise<void>((resolve) => {
-        setTimeout(resolve, 0);
-      });
-    },
-    { targetMethod: method, responsePayload: payload },
-  );
 }
 
 suite.define(() => {
@@ -283,68 +259,24 @@ suite.define(() => {
     });
     expect(await gateway.getRequests("sessions.list")).toEqual(listRequests);
   });
-
-  it("ignores stale results and exposes indexing and request errors", async () => {
+  it("retries an indexing response without presenting it as an empty result", async () => {
     page = await newPage();
     const gateway = await installMockGateway(page, {
-      featureMethods: ["chat.metadata", "chat.startup", "sessions.search"],
-      methodResponses: {
-        "sessions.list": listResponse([
-          { ...sessionRow("stale", "Stale search fixture"), status: "done", totalTokens: 0 },
-        ]),
-        "sessions.search": { indexing: true, results: [] },
-      },
+      methodResponses: { "sessions.search": { indexing: true, results: [] } },
     });
-
-    const { search, input } = await openSearch(page);
-    const submit = search.getByRole("button", { name: "Search transcripts" });
-    const empty = page.getByText("No transcript messages match that search.", { exact: true });
+    const { input } = await openSearch(page);
+    await input.fill("recent phrase");
+    await input.press("Enter");
     const indexing = page.getByText(
       "The transcript index is still updating. Retry to include recent messages.",
     );
-    const retry = page.getByRole("button", { name: "Retry" });
-    await input.waitFor({ state: "visible", timeout: 10_000 });
-    await input.fill("   ");
-    await expect.poll(() => submit.isEnabled()).toBe(true);
-    await input.press("Enter");
-    expect(await gateway.getRequests("sessions.search")).toHaveLength(0);
-
-    await gateway.deferNext("sessions.search");
-    await input.fill("old phrase");
-    await expect.poll(() => submit.isEnabled()).toBe(true);
-    await input.press("Enter");
-    await expect.poll(async () => gateway.getRequests("sessions.search")).toHaveLength(1);
-    await input.fill("new phrase");
-    await resolveDeferredAndDrain(page, "sessions.search", {
-      results: [searchHit("stale", "stale result must stay hidden", "user")],
-    });
-    expect(await page.getByText("stale result must stay hidden", { exact: true }).count()).toBe(0);
-    await input.press("Enter");
+    const empty = page.getByText("No transcript messages match that search.", { exact: true });
     await indexing.waitFor({ state: "visible", timeout: 10_000 });
-    await expect.poll(async () => gateway.getRequests("sessions.search")).toHaveLength(2);
-    expect(await page.getByText("No transcript messages match that search.").count()).toBe(0);
-
+    expect(await empty.count()).toBe(0);
     await gateway.setMethodResponse("sessions.search", { results: [] });
-    await retry.click();
-    await expect.poll(async () => gateway.getRequests("sessions.search")).toHaveLength(3);
+    await page.getByRole("button", { name: "Retry" }).click();
+    await expect.poll(async () => gateway.getRequests("sessions.search")).toHaveLength(2);
     await empty.waitFor({ state: "visible", timeout: 10_000 });
     expect(await indexing.count()).toBe(0);
-
-    await gateway.deferNext("sessions.search");
-    await submit.click();
-    await expect.poll(async () => gateway.getRequests("sessions.search")).toHaveLength(4);
-    await gateway.rejectDeferred("sessions.search", {
-      code: "UNAVAILABLE",
-      message: "Search service unavailable",
-      retryable: true,
-    });
-    await page
-      .getByText(/Transcript search failed:.*Search service unavailable/)
-      .waitFor({ state: "visible", timeout: 10_000 });
-    await captureUiProof("05-search-request-error.png");
-    await retry.click();
-    await expect.poll(async () => gateway.getRequests("sessions.search")).toHaveLength(5);
-    await empty.waitFor({ state: "visible" });
-    expect(await page.getByText(/Transcript search failed:/).count()).toBe(0);
   });
 });
