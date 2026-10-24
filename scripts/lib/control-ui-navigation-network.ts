@@ -9,13 +9,11 @@ export type NavigationNetworkConditions = {
 /** Page-target emulation does not reach fetches made by the production service worker. */
 export async function emulateNavigationWorkerNetwork(
   browser: Browser,
-  initial: NavigationNetworkConditions,
+  conditions: NavigationNetworkConditions,
 ) {
   const cdp = await browser.newBrowserCDPSession();
-  let conditions = initial;
   let sequence = 0;
   let closed = false;
-  const workers = new Map<string, string>();
   const attaching = new Set<string>();
   const failures: Error[] = [];
   const pending = new Map<
@@ -85,7 +83,6 @@ export async function emulateNavigationWorkerNetwork(
           targetId,
           flatten: false,
         });
-        workers.set(targetId, sessionId);
         try {
           await send(sessionId, "Network.enable");
           await apply(sessionId);
@@ -105,14 +102,6 @@ export async function emulateNavigationWorkerNetwork(
       });
     },
   );
-  cdp.on("Target.detachedFromTarget", (event: { sessionId: string }) => {
-    for (const [targetId, sessionId] of workers) {
-      if (sessionId === event.sessionId) {
-        workers.delete(targetId);
-        attaching.delete(targetId);
-      }
-    }
-  });
   await cdp.send("Target.setAutoAttach", {
     autoAttach: true,
     waitForDebuggerOnStart: true,
@@ -120,12 +109,6 @@ export async function emulateNavigationWorkerNetwork(
     filter: [{ type: "service_worker" }, { exclude: true }],
   });
   return {
-    async setConditions(next: NavigationNetworkConditions) {
-      conditions = next;
-      for (const sessionId of workers.values()) {
-        await apply(sessionId);
-      }
-    },
     assertHealthy() {
       if (failures.length) {
         throw new AggregateError(failures, "Service worker network emulation failed");

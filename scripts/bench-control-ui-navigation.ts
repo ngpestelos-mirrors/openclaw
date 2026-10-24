@@ -215,12 +215,6 @@ const browser = await chromium.launch({
   headless: true,
 });
 
-const workerNetwork = await emulateNavigationWorkerNetwork(browser, {
-  latency: 0,
-  downloadThroughput: -1,
-  uploadThroughput: -1,
-});
-
 function createFixture(buildId: string, version: string) {
   const fixture = createInteractionFixture(buildId, version);
   const config = {
@@ -386,7 +380,6 @@ try {
     ),
   );
   for (const profile of profiles) {
-    await workerNetwork.setConditions(profile);
     for (let pair = 0; pair < pairs; pair++) {
       const observation = {
         profile: profile.id,
@@ -412,6 +405,7 @@ try {
           viewport: { width: 1440, height: 1000 },
           serviceWorkers: "allow",
         });
+        const workerNetwork = await emulateNavigationWorkerNetwork(browser, profile);
         const page = await context.newPage();
         page.setDefaultTimeout(30_000);
         const errors: string[] = [];
@@ -759,6 +753,7 @@ try {
           );
           await cdp.detach().catch(() => {});
           await context.close();
+          await workerNetwork.close();
         }
       }
       observation.endedAt = new Date().toISOString();
@@ -768,7 +763,6 @@ try {
     }
   }
 } finally {
-  await workerNetwork.close();
   await browser.close();
   for (const slot of servers) {
     await slot.server.close();
