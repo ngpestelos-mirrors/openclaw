@@ -1,4 +1,5 @@
 import type { GatewaySessionRow } from "../api/types.ts";
+import { gatewayPresentationScope } from "../app/gateway-presentation-scope.ts";
 import { t } from "../i18n/index.ts";
 import { registerSessionOrganizationEnglish } from "../i18n/locales/en-session-organization.ts";
 import { formatUiError } from "../lib/format-error.ts";
@@ -13,6 +14,7 @@ import type {
   SidebarSessionMutationScope,
 } from "./app-sidebar-session-types.ts";
 import { showConfirmChoiceDialog, showConfirmDialog } from "./confirm-dialog.ts";
+import { isSessionMutationScopeCurrent } from "./session-mutation-scope.ts";
 import {
   patchSessionRows,
   type SessionActionHost,
@@ -302,7 +304,7 @@ export async function archiveConfirmedSessionsWithUndo(
     return;
   }
   // Once confirmed, finish the batch and publish its outcome across page navigation.
-  // The captured connection still retires work and Undo on reconnect.
+  // Online work stays connection-scoped; offline Undo follows its recovery owner.
   const outcomeHost = sessionUndoHost(host, scope);
   const pending = rows.flatMap((row) => {
     const finish = scope.sessions.beginArchive(row.key, row.sessionId);
@@ -372,18 +374,14 @@ function archiveUndoAction(
 
 /** The toast alone retains this receipt; ordinary Unarchive never restores personal pins. */
 export function captureSessionArchivePins(
-  scope: Pick<SidebarSessionMutationScope, "context" | "sessions">,
+  scope: SidebarSessionMutationScope,
   keys: readonly string[],
 ) {
   const { navigation } = scope.context;
-  const connection = scope.sessions.captureConnectionScope();
+  const isCurrent = captureSessionUndoCurrent(scope);
   const pins = keys.filter((key) => navigation.snapshot.sidebarEntries.includes("session:" + key));
   return async (restore: () => Promise<readonly string[]>): Promise<void> => {
-    if (!connection) {
-      await restore();
-      return;
-    }
-    if (!scope.sessions.isConnectionScopeCurrent(connection)) {
+    if (!isCurrent()) {
       return;
     }
     const changed = new Set<string>();
@@ -399,7 +397,7 @@ export function captureSessionArchivePins(
     });
     try {
       const restored = await restore();
-      if (!scope.sessions.isConnectionScopeCurrent(connection)) {
+      if (!isCurrent()) {
         return;
       }
       const entries = navigation.snapshot.sidebarEntries;
@@ -417,27 +415,38 @@ export function captureSessionArchivePins(
   };
 }
 
+function captureSessionUndoCurrent(scope: SidebarSessionMutationScope): () => boolean {
+  const connection = scope.sessions.captureConnectionScope();
+  if (connection) {
+    return () => scope.sessions.isConnectionScopeCurrent(connection);
+  }
+  // Offline Undo follows the admitted recovery owner across reconnect, not the pane's
+  // retired confirmation epoch. The session owner still authorizes each restore.
+  const owner = gatewayPresentationScope(scope.gateway).key;
+  return () =>
+    scope.allowDeferred === true &&
+    isSessionMutationScopeCurrent(scope.context, scope) &&
+    gatewayPresentationScope(scope.gateway).key === owner;
+}
+
 function sessionUndoHost(
   host: SessionActionHost,
   scope: SidebarSessionMutationScope,
 ): SessionActionHost {
-  // The toast outlives its originating pane. The session owner fences reconnects;
-  // the captured row IDs still fence replacement conversations during restore.
-  const connection = scope.sessions.captureConnectionScope();
+  // The toast outlives its originating pane; captured row IDs still fence
+  // replacement conversations during restore.
+  const isCurrent = captureSessionUndoCurrent(scope);
   return {
     pruneSidebarSessionEntry: (key) => host.pruneSidebarSessionEntry(key),
     selectSession: (key) => host.selectSession(key),
     sidebarSessionStatusFilter: () => host.sidebarSessionStatusFilter(),
     sessionData: {
       refreshSidebarSessions: (agentId) => host.sessionData.refreshSidebarSessions(agentId),
-      isSessionMutationScopeCurrent: () =>
-        connection !== null
-          ? scope.sessions.isConnectionScopeCurrent(connection)
-          : host.sessionData.isSessionMutationScopeCurrent(scope),
+      isSessionMutationScopeCurrent: isCurrent,
       publishSessionMutationError: (candidate, error) => {
         if (host.sessionData.isSessionMutationScopeCurrent(candidate)) {
           host.sessionData.publishSessionMutationError(candidate, error);
-        } else if (connection && scope.sessions.isConnectionScopeCurrent(connection)) {
+        } else if (isCurrent()) {
           showToast({ message: formatUiError(error) });
         }
       },

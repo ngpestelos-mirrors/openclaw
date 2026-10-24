@@ -1,6 +1,5 @@
 import type { GatewayProtocolRequestOptions } from "@openclaw/gateway-client/browser";
 import type {
-  SessionsDeleteResult,
   SessionsSetInvolvementParams,
   SessionsListParams,
   SessionsPatchManyParams,
@@ -16,7 +15,6 @@ import type { SessionsListResult, SessionsPatchResult } from "../../api/types.ts
 import type { SessionPatch } from "./patch.ts";
 import { appendSessionResults } from "./reconcile.ts";
 import type {
-  SessionDeleteOptions,
   SessionListOptions,
   SessionRequestClient,
   SessionResetOptions,
@@ -310,23 +308,6 @@ export function requestSessionPatchMany(
         SESSION_ARCHIVE_REQUEST_OPTIONS,
       )
     : client.request<SessionsPatchManyResult>("sessions.patchMany", params);
-}
-
-export function requestSessionDelete(
-  client: SessionRequestClient,
-  key: string,
-  options: SessionDeleteOptions = {},
-): Promise<SessionsDeleteResult> {
-  return client.request<SessionsDeleteResult>(
-    "sessions.delete",
-    {
-      ...buildSessionRequestParams(key, options.agentId),
-      deleteTranscript: options.deleteTranscript ?? true,
-      ...(options.expectedSessionId ? { expectedSessionId: options.expectedSessionId } : {}),
-      ...(options.archivedOnly === true ? { archivedOnly: true } : {}),
-    },
-    SESSION_ARCHIVE_REQUEST_OPTIONS,
-  );
 }
 
 export function requestSessionReset(

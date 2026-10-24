@@ -9,7 +9,6 @@ import {
   resolveUiConversationIdentity,
   resolveUiSelectedGlobalAgentId,
 } from "./session-key.ts";
-import { requestSessionDelete } from "./session-requests.ts";
 import type {
   SessionConnectionOwner,
   SessionDeleteBatchResult,
@@ -22,7 +21,7 @@ import type {
   SessionState,
 } from "./session-types.ts";
 
-type Deletion = {
+export type Deletion = {
   target: SessionDeleteTarget;
   sessionId?: string;
   phase: "pending" | "confirmed" | "rollback";
@@ -57,6 +56,16 @@ type DeletionHost = {
     agentId?: string | null,
   ) => Promise<boolean>;
   retire: (key: string) => void;
+};
+
+export type SessionDeletionOperationsHost = Pick<
+  DeletionHost,
+  "connection" | "reconcileMutation" | "reconcilePreviousConnection"
+> & {
+  owns: (deletion: Deletion) => boolean;
+  rollback: (deletion: Deletion) => void;
+  confirm: (deletion: Deletion, key: string) => void;
+  reportError: (message: string) => void;
 };
 
 export function createSessionDeletions(host: DeletionHost) {
@@ -183,42 +192,14 @@ export function createSessionDeletions(host: DeletionHost) {
     }
     publish(deletion);
   };
-  const perform = (
-    deletion: Deletion,
-    scope: NonNullable<ReturnType<SessionConnectionOwner["capture"]>>,
-    allowAbsent = false,
-  ): Promise<SessionDeleteOutcome> => {
-    if (deletion.operation) {
-      return deletion.operation;
-    }
-    // Admit the write synchronously; only settlement needs the lazy runtime.
-    const response = new Promise<Awaited<ReturnType<typeof requestSessionDelete>>>((resolve) => {
-      resolve(requestSessionDelete(scope.client, deletion.target.key, deletion.target));
-    }).then(
-      (result) => ({ result }),
-      (error: unknown) => ({ error }),
-    );
-    deletion.operation = import("./session-delete-operation.ts").then(
-      ({ settleSessionDelete }) => {
-        return settleSessionDelete(response, deletion.target, scope, allowAbsent, {
-          isCurrent: () => host.connection.isCurrent(scope),
-          owns: () => owns(deletion),
-          confirmed: () => deletion.phase === "confirmed",
-          confirm: () => confirm(deletion, deletion.target.key),
-          rollback: () => rollback(deletion),
-          reportError,
-        });
-      },
-      (error: unknown) => {
-        if (!owns(deletion)) {
-          return { deleted: false };
-        }
-        rollback(deletion);
-        reportError(formatUiError(error));
-        throw error;
-      },
-    );
-    return deletion.operation;
+  const operationsHost: SessionDeletionOperationsHost = {
+    connection: host.connection,
+    reconcileMutation: host.reconcileMutation,
+    reconcilePreviousConnection: host.reconcilePreviousConnection,
+    owns,
+    rollback,
+    confirm,
+    reportError,
   };
 
   const removeMany = async (
@@ -254,33 +235,22 @@ export function createSessionDeletions(host: DeletionHost) {
           group: lifecycleKey,
           discardGroup: true,
           preservePosition: true,
-          run: async () => {
+          run: () => {
             const current = host.connection.capture();
             if (!current) {
               rollback(record);
-              return;
+              return Promise.resolve();
             }
-            try {
-              const outcome = await perform(record, current, true);
-              if (outcome.worktreePreserved) {
-                const { formatPreservedWorktreesNotice } =
-                  await import("./worktree-preservation.ts");
-                if (host.connection.isCurrent(current)) {
-                  showToast({
-                    message: formatPreservedWorktreesNotice([outcome.worktreePreserved]),
-                  });
+            return import("./session-delete-operation.ts").then(
+              ({ runDeferredSessionDelete }) =>
+                runDeferredSessionDelete(record, current, operationsHost),
+              (error: unknown) => {
+                if (owns(record)) {
+                  rollback(record);
+                  reportError(formatUiError(error));
                 }
-              }
-              if (outcome.deleted && host.connection.isCurrent(current)) {
-                await host.reconcileMutation(target.agentId);
-              }
-            } catch (error) {
-              // Rejected writes already retired their claim and reported the error.
-              if (owns(record)) {
-                rollback(record);
-                reportError(formatUiError(error));
-              }
-            }
+              },
+            );
           },
           discard: () => {
             if (record.deferredToken === token) {
@@ -320,48 +290,25 @@ export function createSessionDeletions(host: DeletionHost) {
       records.set(record, callerTargets);
     }
     publish();
-    for (const [record, callerTargets] of records) {
-      if (!host.connection.isCurrent(scope) && !record.operation) {
-        const unstarted = [...records.keys()].filter(
-          (candidate) => !candidate.operation && owns(candidate),
-        );
-        if (unstarted.length > 0) {
-          const error = new Error(
-            t("sessionsView.deleteSessionsStale", { count: String(targets.length) }),
-          );
-          for (const candidate of unstarted) {
-            rollback(candidate);
-            for (const target of records.get(candidate)!.values()) {
-              result.errors.push({ target, error });
-            }
+    return import("./session-delete-operation.ts").then(
+      ({ settleSessionDeleteBatch }) =>
+        settleSessionDeleteBatch(records, targets, scope, operationsHost),
+      (error: unknown) => {
+        for (const [record, callerTargets] of records) {
+          if (!owns(record)) {
+            continue;
           }
-          reportError(error.message);
-        }
-        break;
-      }
-      try {
-        const outcome = await perform(record, scope);
-        if (outcome.deleted) {
-          result.deleted.push(...callerTargets.keys());
-          if (outcome.worktreePreserved) {
-            result.preservedWorktrees.push(outcome.worktreePreserved);
+          rollback(record);
+          for (const target of callerTargets.values()) {
+            result.errors.push({ target, error });
           }
         }
-      } catch (error) {
-        for (const target of callerTargets.values()) {
-          result.errors.push({ target, error });
+        if (result.errors.length > 0) {
+          reportError(formatUiError(error));
         }
-      }
-    }
-    if (result.deleted.length > 0) {
-      if (host.connection.isCurrent(scope)) {
-        await host.reconcileMutation(targets.length === 1 ? targets[0]?.agentId : undefined);
-      }
-      if (!host.connection.isCurrent(scope) && !(await host.reconcilePreviousConnection(scope))) {
-        return { deleted: [], errors: [], preservedWorktrees: [] };
-      }
-    }
-    return result;
+        return result;
+      },
+    );
   };
 
   const api = {

@@ -1,12 +1,15 @@
 /* @vitest-environment jsdom */
 
-import { describe, expect, it, onTestFinished, vi } from "vitest";
+import { assert, describe, expect, it, onTestFinished, vi } from "vitest";
 import { createDeferred } from "../../../test/helpers/promise.js";
 import type { GatewaySessionRow } from "../api/types.ts";
 import { t } from "../i18n/index.ts";
+import type { SessionPatchOptions, SessionPatchRoute } from "../lib/sessions/patch.ts";
 import { sessionsResult } from "../lib/sessions/session-capability.test-support.ts";
 import type { SessionRefreshOptions } from "../lib/sessions/session-capability.ts";
+import { patchReceipt } from "../lib/sessions/session-rpc.test-support.ts";
 import { showToast } from "../lib/toast.ts";
+import { createTestGatewayClient } from "../test-helpers/gateway-client.ts";
 import {
   answerConfirmDialog,
   createModalDialogTestFixture,
@@ -268,10 +271,117 @@ describe("session organizer nested archive choice", () => {
   );
 });
 
+function createOfflineArchiveHarness() {
+  const h = createHarness({ phase: "reconnecting" });
+  h.scope.allowDeferred = true;
+  Object.assign(h.scope.context, { gateway: h.scope.gateway, sessions: h.scope.sessions });
+  Object.assign(h.scope.client, { recoveryScope: "archive-owner", recoveryScopeReady: true });
+  const connection = { client: h.scope.client, epoch: 1 };
+  h.scope.sessions.captureConnectionScope = () =>
+    h.scope.gateway.snapshot.phase === "connected" ? connection : null;
+  h.scope.sessions.isConnectionScopeCurrent = (candidate) =>
+    h.scope.gateway.snapshot.phase === "connected" &&
+    h.scope.gateway.snapshot.client === candidate.client;
+  return h;
+}
+
 describe("personal pin archive Undo", () => {
+  it.each(["same-client", "replacement-client", "recovery-scope", "manual"] as const)(
+    "settles an offline personal pin receipt after reconnect (%s)",
+    async (outcome) => {
+      const h = createOfflineArchiveHarness();
+      const key = sessionRow(1).key;
+      const pin = "session:" + key;
+      const retained = ["session-rail:" + key];
+      const navigation = h.scope.context.navigation;
+      navigation.update({ sidebarEntries: [pin, ...retained] });
+      const undoPins = captureSessionArchivePins(h.scope, [key]);
+      navigation.update({ sidebarEntries: retained });
+      h.scope.gateway.snapshot.phase = "connected";
+      if (outcome === "replacement-client") {
+        h.scope.gateway.snapshot.client = createTestGatewayClient(async () => ({}));
+      }
+      const reply = createDeferred<readonly string[]>();
+      const restore = vi.fn(() => reply.promise);
+      const operation = undoPins(restore);
+      if (outcome === "recovery-scope") {
+        Object.assign(h.scope.client, { recoveryScope: "another-owner" });
+      } else if (outcome === "manual") {
+        navigation.update({ sidebarEntries: [...retained, pin] });
+        navigation.update({ sidebarEntries: retained });
+      }
+      reply.resolve([key]);
+      await operation;
+      expect(navigation.snapshot.sidebarEntries).toEqual(
+        outcome === "same-client" ? [...retained, pin] : retained,
+      );
+      expect(restore).toHaveBeenCalledTimes(outcome === "replacement-client" ? 0 : 1);
+    },
+  );
+
+  it.each(["header", "sidebar"] as const)(
+    "restores a personal pin through %s Undo after offline archive replay",
+    async (surface) => {
+      const h = createOfflineArchiveHarness();
+      const row = { ...sessionRow(1), sessionId: "archived-offline" };
+      const pin = "session:" + row.key;
+      const navigation = h.scope.context.navigation;
+      navigation.update({ sidebarEntries: [pin] });
+      h.host.pruneSidebarSessionEntry = (key) =>
+        navigation.update({
+          sidebarEntries: navigation.snapshot.sidebarEntries.filter(
+            (entry) => entry !== "session:" + key,
+          ),
+        });
+      let onConfirmed: SessionPatchOptions["onConfirmed"];
+      const patch = vi.fn<SessionPatchRoute>(async (key, fields, options) => {
+        if (fields.archived === true) {
+          onConfirmed = options?.onConfirmed;
+          return { queued: true };
+        }
+        return patchReceipt(key, { sessionId: row.sessionId });
+      });
+      h.scope.sessions.patch = patch;
+      h.scope.sessions.invalidate = vi.fn();
+      h.scope.sessions.refreshReplacement = vi.fn(async () => sessionsResult([], 1));
+
+      if (surface === "header") {
+        await archiveSessionWithUndo(h.host, row, h.scope);
+      } else {
+        await archiveConfirmedSessionsWithUndo(h.host, [row], h.scope);
+      }
+      expect(navigation.snapshot.sidebarEntries).toEqual([pin]);
+      const undo = vi.mocked(showToast).mock.calls.at(-1)?.[0].onAction;
+      assert(undo);
+      assert(onConfirmed);
+      h.scope.gateway.snapshot.phase = "connected";
+      onConfirmed(patchReceipt(row.key, { sessionId: row.sessionId }));
+      expect(navigation.snapshot.sidebarEntries).toEqual([]);
+      if (surface === "sidebar") {
+        // Reconnect retires the pane's confirmation epoch, not the admitted offline intent.
+        vi.mocked(h.host.sessionData.isSessionMutationScopeCurrent).mockReturnValue(false);
+      }
+      const repinned = createDeferred();
+      onTestFinished(
+        navigation.subscribe(({ sidebarEntries }) => {
+          if (sidebarEntries.includes(pin)) {
+            repinned.resolve();
+          }
+        }),
+      );
+      undo();
+      await repinned.promise;
+      expect(navigation.snapshot.sidebarEntries).toEqual([pin]);
+      expect(patch.mock.calls.map(([, fields]) => fields)).toEqual([
+        { archived: true },
+        { archived: false },
+      ]);
+      expect(h.publishSessionMutationError).not.toHaveBeenCalled();
+    },
+  );
+
   it("undoes an offline bulk archive without attempting a pin write", async () => {
-    const h = createHarness({ phase: "reconnecting" });
-    h.scope.sessions.captureConnectionScope = () => null;
+    const h = createOfflineArchiveHarness();
     h.scope.sessions.invalidate = vi.fn();
     h.scope.sessions.refreshReplacement = vi.fn(async () => null);
     h.scope.sessions.patch = vi.fn(async () => ({ queued: true as const }));
