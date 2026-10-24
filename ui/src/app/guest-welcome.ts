@@ -19,7 +19,7 @@ type GuestWelcomeEnsureResult =
 const POLL_MIN_MS = 500;
 const POLL_MAX_MS = 5_000;
 /** Setup still pending after this long becomes a retryable failure. */
-export const GUEST_WELCOME_PENDING_LIMIT_MS = 3 * 60_000;
+const GUEST_WELCOME_PENDING_LIMIT_MS = 3 * 60_000;
 const VISITED_KEY_PREFIX = "openclaw.guestWelcome.visited.v1:";
 
 function parseEnsureResult(value: unknown): GuestWelcomeEnsureResult | null {
