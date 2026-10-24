@@ -28,7 +28,9 @@ package manifests and source files. It does not say that the plugin is compatibl
 with the host. `scannedPackages` and `scannedFiles` are inspection counts.
 Missing required dependencies or peers and malformed dependency metadata make
 coverage incomplete. Optional dependencies and peers explicitly marked optional
-can be absent.
+can be absent. An absent `openclaw` dependency does not produce a missing-dependency
+warning: the host-link owner supplies it after install checks. Existing
+OpenClaw dependency directories still undergo the normal admission checks.
 
 ## What the warnings mean
 

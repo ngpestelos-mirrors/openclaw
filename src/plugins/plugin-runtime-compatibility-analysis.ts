@@ -435,7 +435,7 @@ export function analyzePluginRuntimeCompatibility(
     ) {
       return reference(node.expression, scope, seen);
     }
-    if (node.type === "CallExpression") {
+    if (node.type === "CallExpression" || node.type === "OptionalCallExpression") {
       const callee = reference(node.callee, scope, seen);
       if (callee?.root === "node:module" && callee.members[0] === "createRequire") {
         return { root: "node:module", members: ["require"] };
@@ -478,7 +478,10 @@ export function analyzePluginRuntimeCompatibility(
   function mutation(node: t.Node, target: Reference | undefined, wholeObject = false) {
     record(node, target, target && mutationRule(target, wholeObject));
   }
-  function inspectCall(node: t.CallExpression | t.NewExpression, scope: Scope) {
+  function inspectCall(
+    node: t.CallExpression | t.OptionalCallExpression | t.NewExpression,
+    scope: Scope,
+  ) {
     const callee = reference(node.callee, scope);
     if (!callee) {
       return;
@@ -559,6 +562,7 @@ export function analyzePluginRuntimeCompatibility(
       }
     },
     CallExpression: (nodePath) => inspectCall(nodePath.node, nodePath.scope),
+    OptionalCallExpression: (nodePath) => inspectCall(nodePath.node, nodePath.scope),
     NewExpression: (nodePath) => inspectCall(nodePath.node, nodePath.scope),
   });
   return warnings.toSorted(

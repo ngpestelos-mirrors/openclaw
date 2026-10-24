@@ -144,7 +144,8 @@ export async function collectInstalledRuntimePackageGraph(params: {
       }
       if (candidate && !visited.has(candidate.realPath)) {
         queue.push(candidate);
-      } else if (!candidate && !optional) {
+      } else if (!candidate && !optional && name !== "openclaw") {
+        // The host-link owner supplies absent OpenClaw dependencies after admission.
         reportIncomplete(
           `Missing required runtime dependency ${JSON.stringify(name)}; install package dependencies before qualification.`,
         );

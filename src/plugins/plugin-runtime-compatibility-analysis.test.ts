@@ -167,6 +167,24 @@ eval(unknownSource);
     ]);
   });
 
+  it("inspects feature-detected calls without evaluating them", () => {
+    const warnings = analyzePluginRuntimeCompatibility(
+      `
+const Module = process.getBuiltinModule?.("module");
+eval?.("throw new Error('must not run')");
+eval?.(42);
+Module.registerHooks?.({});
+Object.defineProperty?.(Array.prototype, "push", { value: () => 1 });
+`,
+      "optional.js",
+    );
+    expect(warnings.map(({ ruleId, reference }) => ({ ruleId, reference }))).toEqual([
+      { ruleId: "runtime-code-generation", reference: "eval" },
+      { ruleId: "loader-patch", reference: "node:module.registerHooks" },
+      { ruleId: "builtin-patch", reference: "Array.prototype.push" },
+    ]);
+  });
+
   it("does not mistake optional or guarded code for a proven runtime failure", () => {
     const [warning] = analyzePluginRuntimeCompatibility(
       `
