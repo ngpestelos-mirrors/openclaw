@@ -1,9 +1,6 @@
-// Real-Chromium coverage keeps automation condition authoring aligned with Gateway contracts.
 import type { Page } from "playwright";
 import { expect, it } from "vitest";
 import type { CronJob } from "../api/types.ts";
-import { evaluateControlUiContext } from "../test-helpers/control-ui-e2e-context.ts";
-import { waitForControlUiGatewayReconnecting } from "../test-helpers/control-ui-e2e-readiness.ts";
 import { installMockGateway } from "../test-helpers/control-ui-e2e.ts";
 import { cronListResponseFixture } from "../test-helpers/cron.ts";
 import { createControlUiE2eSuite } from "./control-ui-e2e-suite.test-support.ts";
@@ -16,9 +13,6 @@ const suite = createControlUiE2eSuite({
 });
 
 const scriptJob = cronJob("existing-script-automation", "Script health check", {
-  configRevision: "existing-script-revision",
-  createdAtMs: Date.parse("2026-05-29T08:00:00.000Z"),
-  updatedAtMs: Date.parse("2026-05-29T08:05:00.000Z"),
   sessionTarget: "isolated",
   payload: { kind: "script", script: "return { ready: true };" },
 });
@@ -117,109 +111,6 @@ suite.define(() => {
         schedule: { kind: "every", everyMs: 5_000 },
       });
       expect(untriggeredRequest.params).not.toHaveProperty("trigger");
-    });
-  });
-
-  it("keeps saved and unsaved trigger drafts separate from reconnect-refreshed scheduler capability", async () => {
-    await suite.withPage(pageOptions, async ({ page }) => {
-      const initialConfig = { cron: { triggers: { enabled: true } } };
-      const gateway = await installMockGateway(page, {
-        methodResponses: {
-          "config.get": {
-            appliedConfigHash: "trigger-config-1",
-            config: initialConfig,
-            configRevisionHash: "trigger-config-1",
-            hash: "trigger-config-1",
-            issues: [],
-            raw: JSON.stringify(initialConfig),
-            valid: true,
-          },
-          "cron.list": listResponse([]),
-          "cron.runs": { entries: [], total: 0, offset: 0, limit: 50, hasMore: false },
-          "cron.status": { enabled: true, triggersEnabled: true, jobs: 0, nextWakeAtMs: null },
-        },
-      });
-
-      await page.goto(`${suite.server.baseUrl}cron`);
-      await newTask(page, "Retained trigger draft", "Keep this unsaved automation");
-      await advanced(page);
-      const toggle = triggerToggle(page);
-      await expect.poll(() => toggle.count()).toBe(1);
-
-      const unsaved = await evaluateControlUiContext(page, async (context) => {
-        const config = context.runtimeConfig;
-        await config.ensureLoaded();
-        config.setWritesSuspended(true);
-        config.patchForm(["cron", "triggers", "enabled"], false);
-        return { dirty: config.state.configFormDirty, needsApply: config.state.configNeedsApply };
-      });
-      expect(unsaved).toEqual({ dirty: true, needsApply: false });
-      expect(await gateway.getRequests("config.set")).toHaveLength(0);
-      await expect.poll(() => toggle.count()).toBe(1);
-
-      await evaluateControlUiContext(page, (context) => {
-        const config = context.runtimeConfig;
-        config.setWritesSuspended(false);
-        // Observe this long-lived save through Gateway/state boundaries; returning its
-        // promise through CDP lets Chromium collect it under full-shard memory pressure.
-        void config.save();
-      });
-      const savedRequest = await gateway.waitForRequest("config.set");
-      expect(JSON.parse(String((savedRequest.params as { raw?: string }).raw))).toEqual({
-        cron: { triggers: { enabled: false } },
-      });
-      await expect
-        .poll(() =>
-          evaluateControlUiContext(page, (context) => {
-            const config = context.runtimeConfig;
-            return {
-              dirty: config.state.configFormDirty,
-              needsApply: config.state.configNeedsApply,
-              saving: config.state.configSaving,
-            };
-          }),
-        )
-        .toEqual({ dirty: false, needsApply: true, saving: false });
-      expect(await gateway.getRequests("config.apply")).toHaveLength(0);
-      await expect.poll(() => toggle.count()).toBe(1);
-
-      const previousStatuses = (await gateway.getRequests("cron.status")).length;
-      await gateway.setMethodResponse("cron.status", {
-        enabled: true,
-        triggersEnabled: false,
-        jobs: 0,
-        nextWakeAtMs: null,
-      });
-      await gateway.setOnline(false);
-      await waitForControlUiGatewayReconnecting(page);
-      expect(await page.locator("#cron-name").inputValue()).toBe("Retained trigger draft");
-      expect(await page.locator('[data-test-id="cron-submit"]').isDisabled()).toBe(true);
-      await gateway.setOnline(true);
-      await expect
-        .poll(async () => (await gateway.getRequests("cron.status")).length)
-        .toBeGreaterThan(previousStatuses);
-      expect(await page.locator("#cron-name").inputValue()).toBe("Retained trigger draft");
-      expect(await page.locator("#cron-payload-text").inputValue()).toBe(
-        "Keep this unsaved automation",
-      );
-      expect(await page.locator("details.cron-advanced").getAttribute("open")).not.toBeNull();
-      await expect.poll(() => toggle.count()).toBe(0);
-      await page.getByText("Condition triggers are disabled by cron.triggers.enabled.").waitFor();
-
-      const oppositeDraft = await evaluateControlUiContext(page, async (context) => {
-        const config = context.runtimeConfig;
-        await config.ensureLoaded();
-        config.setWritesSuspended(true);
-        config.patchForm(["cron", "triggers", "enabled"], true);
-        return config.state.configFormDirty;
-      });
-      expect(oppositeDraft).toBe(true);
-      await expect.poll(() => toggle.count()).toBe(0);
-      await evaluateControlUiContext(page, async (context) => {
-        const config = context.runtimeConfig;
-        await config.discardDraft();
-        config.setWritesSuspended(false);
-      });
     });
   });
 

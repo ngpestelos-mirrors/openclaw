@@ -4,10 +4,6 @@ import {
   defaultControlUiFeatureMethods,
   installMockGateway,
 } from "../test-helpers/control-ui-e2e.ts";
-import {
-  discoveryCategories,
-  discoveryResult,
-} from "../test-helpers/plugins-e2e-fixtures.test-support.ts";
 import { createControlUiE2eSuite } from "./control-ui-e2e-suite.test-support.ts";
 import { installNativeWebChrome } from "./native-nav.test-support.ts";
 
@@ -194,16 +190,18 @@ suite.define(() => {
   );
 
   it.each([
-    { width: 1280, height: 900 },
-    { width: 390, height: 844 },
-  ])(
-    "shares a stacked title and aligned tabs across Sessions and Worktrees at $width px",
-    async ({ width, height }) => {
+    { width: 1280, height: 900, direction: "ltr" },
+    { width: 1280, height: 900, direction: "rtl" },
+    { width: 390, height: 844, direction: "ltr" },
+  ] as const)(
+    "shares a stacked title and aligned tabs across Sessions and Worktrees at $width px ($direction)",
+    async ({ width, height, direction }) => {
       const { page, toolbar } = await openPage(
         "sessions",
         installNativeWebChrome,
         ".hub-page-header__tabs",
         { methodResponses: { "worktrees.list": { worktrees: [] } } },
+        direction,
       );
       await page.setViewportSize({ width, height });
       if (width <= 560) {
@@ -219,11 +217,12 @@ suite.define(() => {
         header.evaluate((element) => {
           const titleBox = element.querySelector(".page-title")!.getBoundingClientRect();
           const tabsBox = element.querySelector(".hub-page-header__tabs")!.getBoundingClientRect();
+          const edge = getComputedStyle(element).direction === "rtl" ? "right" : "left";
           return {
             titleWidth: titleBox.width,
             titleY: titleBox.y,
             tabsBelowTitle: tabsBox.y >= titleBox.bottom,
-            xDelta: Math.abs(tabsBox.x - titleBox.x),
+            xDelta: Math.abs(tabsBox[edge] - titleBox[edge]),
           };
         });
       const expectAlignedHub = async () => {
@@ -246,44 +245,6 @@ suite.define(() => {
           .poll(async () => (await title.boundingBox())?.y ?? -1)
           .toBeGreaterThanOrEqual(toolbar.y + toolbar.height);
       }
-    },
-  );
-
-  it.each(["ltr", "rtl"] as const)(
-    "keeps the stacked hub title and tabs below collapsed Mac controls (%s)",
-    async (direction) => {
-      const { page, toolbar } = await openPage(
-        "plugins",
-        installNativeWebChrome,
-        ".plugins-hub-header",
-        {
-          methodResponses: {
-            "plugins.catalog.browse": discoveryResult,
-            "plugins.catalog.categories": discoveryCategories,
-          },
-        },
-        direction,
-      );
-      const header = page.locator(".plugins-hub-header");
-      const title = header.locator(".page-title");
-      await expect
-        .poll(async () => (await title.boundingBox())?.y ?? -1)
-        .toBeGreaterThanOrEqual(toolbar.y + toolbar.height);
-      // Read together to avoid comparing different animation frames.
-      const { titleBox, introBox, tabsBox } = await header.evaluate((element) => ({
-        titleBox: element.querySelector(".page-title")!.getBoundingClientRect().toJSON(),
-        introBox: element
-          .querySelector(".hub-page-header__title")!
-          .getBoundingClientRect()
-          .toJSON(),
-        tabsBox: element.querySelector(".hub-page-header__tabs")!.getBoundingClientRect().toJSON(),
-      }));
-      expect(titleBox.height).toBeGreaterThan(1);
-      expect(titleBox.width).toBeGreaterThan(1);
-      expect(tabsBox.y).toBeGreaterThanOrEqual(introBox.bottom);
-      const titleStart = direction === "rtl" ? titleBox.right : titleBox.left;
-      const tabsStart = direction === "rtl" ? tabsBox.right : tabsBox.left;
-      expect(Math.abs(titleStart - tabsStart)).toBeLessThanOrEqual(1);
     },
   );
 
