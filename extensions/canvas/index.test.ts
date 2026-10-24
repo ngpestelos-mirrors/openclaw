@@ -10,6 +10,10 @@ const mocks = vi.hoisted(() => {
   return {
     handleHttpRequest: vi.fn(async () => true),
     loadRenderer: vi.fn(),
+    readPublicResource: vi.fn(async () => ({
+      body: new Uint8Array([42]),
+      contentType: "application/javascript",
+    })),
     registerNodesCanvasCommands: vi.fn(),
     toolExecute,
     createCanvasTool: vi.fn(() => ({ execute: toolExecute })),
@@ -19,7 +23,10 @@ const mocks = vi.hoisted(() => {
 // mock-isolation: the real renderer must stay unloaded until the HTTP route is used.
 vi.mock("./src/host/a2ui.js", () => {
   mocks.loadRenderer();
-  return { handleA2uiHttpRequest: mocks.handleHttpRequest };
+  return {
+    handleA2uiHttpRequest: mocks.handleHttpRequest,
+    readPublicA2uiResource: mocks.readPublicResource,
+  };
 });
 
 vi.mock("./src/cli.js", async (importOriginal) => ({
@@ -50,6 +57,27 @@ function registerCanvas(config: OpenClawPluginApi["config"] = {}) {
   );
   return registrations;
 }
+
+function registeredBoardKind() {
+  const [registration] = registerCanvas().registerBoardWidgetContentKind.mock.calls;
+  assert(registration);
+  return registration[0];
+}
+
+const V08_SOURCE = [
+  JSON.stringify({
+    surfaceUpdate: {
+      surfaceId: "main",
+      components: [{ id: "root", component: { Text: { text: { literalString: "hello" } } } }],
+    },
+  }),
+  JSON.stringify({ beginRendering: { surfaceId: "main", root: "root" } }),
+].join("\n");
+const V09_SOURCE = JSON.stringify({
+  version: "v0.9",
+  deleteSurface: { surfaceId: "main" },
+});
+const BASIC_CATALOG = "https://a2ui.org/specification/v0_9/catalogs/basic/catalog.json";
 
 describe("Canvas plugin entry", () => {
   beforeEach(() => vi.clearAllMocks());
@@ -137,5 +165,127 @@ describe("Canvas plugin entry", () => {
     await (tool as AnyAgentTool).execute("tool-call", { action: "hide" });
     expect(mocks.createCanvasTool).toHaveBeenCalledWith({ agentSessionKey: "agent:main:canvas" });
     expect(mocks.toolExecute).toHaveBeenCalledWith("tool-call", { action: "hide" });
+  });
+
+  it("exposes only its two registered renderer bundles as public static resources", async () => {
+    const kind = registeredBoardKind();
+    for (const resourcePath of kind.resources.paths) {
+      await expect(kind.resources.readPublicResource?.(resourcePath)).resolves.toMatchObject({
+        contentType: "application/javascript",
+      });
+      expect(mocks.readPublicResource).toHaveBeenLastCalledWith(resourcePath);
+    }
+    for (const resourcePath of [
+      "/__openclaw__/a2ui/private.json",
+      "/__openclaw__/a2ui/../config.json",
+      "/__openclaw__/canvas/documents/private/index.html",
+    ]) {
+      await expect(kind.resources.readPublicResource?.(resourcePath)).resolves.toBeUndefined();
+    }
+    expect(mocks.readPublicResource).toHaveBeenCalledTimes(2);
+  });
+
+  it.each([
+    ["v0.8", V08_SOURCE, "/__openclaw__/a2ui/a2ui.bundle.js"],
+    ["v0.9", V09_SOURCE, "/__openclaw__/a2ui/a2ui-v0.9.bundle.js"],
+  ])("composes %s with the capability-scoped renderer resource", (_name, source, path) => {
+    const resourceUrl = `/__openclaw__/cap/token${path}`;
+    const document = registeredBoardKind().composeDocument({
+      source,
+      title: "A2UI",
+      resourceUrls: { [path]: resourceUrl },
+      promptGranted: false,
+    });
+    expect(document).toContain("<openclaw-a2ui-host></openclaw-a2ui-host>");
+    expect(document).toContain(resourceUrl);
+    expect(document).toContain('"actionTier":"state"');
+  });
+
+  it("rejects a document when its renderer resource was not provisioned", () => {
+    expect(() =>
+      registeredBoardKind().composeDocument({
+        source: V09_SOURCE,
+        title: "A2UI",
+        resourceUrls: {},
+        promptGranted: true,
+      }),
+    ).toThrow("A2UI renderer resource unavailable");
+  });
+
+  it("escapes a provisioned renderer URL inside its quoted script attribute", () => {
+    const document = registeredBoardKind().composeDocument({
+      source: V09_SOURCE,
+      title: "A2UI",
+      resourceUrls: { "/__openclaw__/a2ui/a2ui-v0.9.bundle.js": `/cap/a&b<test>"'` },
+      promptGranted: false,
+    });
+    expect(document).toContain('<script src="/cap/a&amp;b&lt;test&gt;&quot;&#39;"></script>');
+  });
+
+  it("accepts the v0.9 create, component, data, and delete message set", () => {
+    const messages = [
+      {
+        version: "v0.9",
+        createSurface: { surfaceId: "main", catalogId: BASIC_CATALOG },
+      },
+      {
+        version: "v0.9",
+        updateComponents: {
+          surfaceId: "main",
+          components: [{ id: "root", component: "Text", text: "hello" }],
+        },
+      },
+      {
+        version: "v0.9",
+        updateDataModel: { surfaceId: "main", path: "/status", value: "ready" },
+      },
+      { version: "v0.9", deleteSurface: { surfaceId: "main" } },
+    ];
+    const source = messages.map((message) => JSON.stringify(message)).join("\n");
+    const kind = registeredBoardKind();
+    expect(() => kind.validateSource(source)).not.toThrow();
+    const document = kind.composeDocument({
+      source,
+      title: "A2UI",
+      resourceUrls: {
+        "/__openclaw__/a2ui/a2ui.bundle.js": "/cap/token/a2ui.bundle.js",
+        "/__openclaw__/a2ui/a2ui-v0.9.bundle.js": "/cap/token/a2ui-v0.9.bundle.js",
+      },
+      promptGranted: false,
+    });
+    const boot = document.match(/^<script>globalThis\.openclawA2UIBoot=(.*?);<\/script>/u);
+    assert(boot);
+    expect(JSON.parse(boot[1]!)).toEqual({ messages, actionTier: "state" });
+    expect(document).toContain("/cap/token/a2ui-v0.9.bundle.js");
+  });
+
+  it.each([
+    ["empty input", " \n ", "no JSONL messages"],
+    ["invalid JSON", "{", "line 1"],
+    [
+      "versioned v0.8 operation",
+      JSON.stringify({ version: "v0.9", surfaceUpdate: { surfaceId: "main", components: [] } }),
+      "v0.9 action key",
+    ],
+    [
+      "unversioned v0.9 operation",
+      JSON.stringify({ createSurface: { surfaceId: "main", catalogId: BASIC_CATALOG } }),
+      "v0.8 action key",
+    ],
+    [
+      "malformed createSurface",
+      JSON.stringify({ version: "v0.9", createSurface: { surfaceId: "main" } }),
+      "Invalid input",
+    ],
+    [
+      "mixed versions",
+      [
+        JSON.stringify({ deleteSurface: { surfaceId: "legacy" } }),
+        JSON.stringify({ version: "v0.9", deleteSurface: { surfaceId: "modern" } }),
+      ].join("\n"),
+      "mixed A2UI",
+    ],
+  ])("rejects $0", (_name, source, expected) => {
+    expect(() => registeredBoardKind().validateSource(source)).toThrow(expected);
   });
 });
