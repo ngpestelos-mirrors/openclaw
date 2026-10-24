@@ -3,7 +3,11 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createDeferred } from "../../../test/helpers/promise.js";
 import { GatewayRequestError } from "../api/gateway.ts";
 import { sessionPlacementRecoveryExactStorageKey } from "../lib/sessions/session-placement-recovery-storage-key.ts";
-import { writeSessionPlacementRecovery } from "../lib/sessions/session-placement-recovery.ts";
+import {
+  pauseSessionPlacementRecovery,
+  readSessionPlacementRecovery,
+  writeSessionPlacementRecovery,
+} from "../lib/sessions/session-placement-recovery.ts";
 import { chatStartupStatusLabel } from "../pages/chat/chat-run-startup.ts";
 import type { ApplicationGateway } from "./gateway.ts";
 import createRuntime from "./session-placement-startup.runtime.ts";
@@ -98,7 +102,10 @@ describe("application placement delivery recovery", () => {
       if (change === "credential") {
         client.recoveryScope = "principal-b";
       } else if (change === "pause") {
-        startup.pause(key, "Stopped");
+        startup.pause(key, "Stopped", {
+          readSessionPlacementRecovery,
+          pauseSessionPlacementRecovery,
+        });
       } else if (change === "discard") {
         startup.discard(key);
       } else {

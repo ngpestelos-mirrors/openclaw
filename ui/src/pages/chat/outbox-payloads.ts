@@ -30,10 +30,15 @@ export function outboxPayloadError(reason: OutboxPayloadFailure): string {
 }
 
 export function failOutboxPayload(item: ChatQueueItem, reason: OutboxPayloadFailure) {
+  const awaitingDelivery =
+    item.sendState !== "failed" &&
+    ((item.sendAttempts ?? 0) > 0 || item.sendRequestStartedAtMs !== undefined);
   return {
     ...item,
     attachmentStorageError: reason,
-    sendState: item.sendState === "held" ? ("held" as const) : ("failed" as const),
+    // Missing local bytes cannot settle an earlier transport attempt or release its FIFO slot.
+    sendState:
+      item.sendState === "held" || awaitingDelivery ? ("held" as const) : ("failed" as const),
     sendError: outboxPayloadError(reason),
   };
 }

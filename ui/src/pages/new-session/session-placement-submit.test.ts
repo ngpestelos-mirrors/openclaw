@@ -107,7 +107,7 @@ describe("session placement draft advancement", () => {
     const request = vi.fn().mockRejectedValue(new Error("connection unavailable"));
     await expect(
       advanceSessionPlacementDraft(request, recovery, { mode: "recover" }),
-    ).resolves.toEqual({ status: "pending", recovery });
+    ).resolves.toEqual({ status: "pending", recovery, retryAfterMs: 500 });
     expect(request.mock.calls.map(([method]) => method)).toEqual(["chat.send"]);
   });
 

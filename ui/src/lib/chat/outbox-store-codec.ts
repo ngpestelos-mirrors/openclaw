@@ -230,7 +230,10 @@ export function normalizeStoredQueueItem(entry: unknown): ChatQueueItem | null {
   if (replyToId) {
     item.replyToId = replyToId;
   }
-  if (entry.sendState === "executing-command") {
+  if (
+    entry.sendState === "executing-command" ||
+    (entry.sendState === "unconfirmed" && normalizeOptionalString(entry.localCommandName))
+  ) {
     item.sendState = "failed";
     item.sendError = "Command was interrupted. Review the conversation before retrying.";
   } else if (entry.sendState === "steering") {

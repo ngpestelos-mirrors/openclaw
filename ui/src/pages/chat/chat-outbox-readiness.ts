@@ -23,7 +23,11 @@ import {
   updateQueuedMessage,
 } from "./chat-queue.ts";
 import type { ChatHost } from "./chat-send-contract.ts";
-import { OFFLINE_QUEUE_STORAGE_ERROR, surfaceChatDeliveryFailure } from "./chat-send-support.ts";
+import {
+  chatSendHoldReason,
+  OFFLINE_QUEUE_STORAGE_ERROR,
+  surfaceChatDeliveryFailure,
+} from "./chat-send-support.ts";
 import { formatConnectError } from "./connect-error.ts";
 import { isChatBusy, reconcileChatRunFromSessionRow } from "./run-lifecycle.ts";
 
@@ -79,7 +83,10 @@ export async function reconcileStoredChatOutboxHead(
       : undefined;
   const reconcile = observation?.captureReconcile();
   const isCurrent = () =>
-    host.client === client && host.connectionEpoch === connectionEpoch && host.connected;
+    host.client === client &&
+    host.connectionEpoch === connectionEpoch &&
+    host.connected &&
+    !chatSendHoldReason(host, outbox.sessionKey, false, outbox.agentId);
   const ownsRecovery = () =>
     isCurrent() &&
     host.sessions === sessions &&

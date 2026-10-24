@@ -16,7 +16,10 @@ import {
 import * as outboxPayloadStore from "../../lib/chat/outbox-payload-store.runtime.ts";
 import { listStoredChatOutboxes } from "../../lib/chat/outbox-store-projection.ts";
 import { storedChatOutboxScopeKey } from "../../lib/chat/outbox-store-scope.ts";
-import { captureChatOutboxAdmission } from "../../lib/chat/outbox-store.ts";
+import {
+  captureChatOutboxAdmission,
+  storageTargetForComposer,
+} from "../../lib/chat/outbox-store.ts";
 import "../../lib/toast-host.tsx";
 import {
   createGatewayHarness,
@@ -2433,6 +2436,51 @@ describe("handleSendChat", () => {
     expect(listStoredChatOutboxes(host)[0]?.queue[0]?.id).toBe(item.id);
   });
 
+  it("holds a legacy unconfirmed local command until explicit retry", async () => {
+    executeSlashCommandMock.mockResolvedValue({ content: "Thinking level set." });
+    const host = makeChatHost({
+      requestHandlers: { "chat.history": () => idleChatHistory() },
+    });
+    const item = createQueuedLocalCommand("legacy-unconfirmed-command", "/think high");
+    const target = storageTargetForComposer(host);
+    const scopeKey = storedChatOutboxScopeKey(resolveUiConversationIdentity(host, host.sessionKey));
+    sessionStorage.setItem(
+      target.key,
+      JSON.stringify({
+        version: 4,
+        gatewayOwner: target.gatewayOwner,
+        recovery: {},
+        sessions: {
+          [scopeKey]: {
+            updatedAt: 1,
+            queue: [
+              {
+                ...item,
+                storageScope: outboxPayloadStore.outboxStorageScope(host),
+                sendState: "unconfirmed",
+                sendAttempts: 1,
+              },
+            ],
+          },
+        },
+      }),
+    );
+
+    await resumeStoredChatOutboxes(host);
+
+    expect(executeSlashCommandMock).not.toHaveBeenCalled();
+    expect(listStoredChatOutboxes(host)[0]?.queue[0]).toMatchObject({
+      id: item.id,
+      sendState: "failed",
+      sendError: "Command was interrupted. Review the conversation before retrying.",
+    });
+
+    await retryQueuedChatMessage(host, item.id);
+
+    expect(executeSlashCommandMock).toHaveBeenCalledTimes(1);
+    expect(listStoredChatOutboxes(host)).toEqual([]);
+  });
+
   it("keeps a failed stored local command retryable after a transient disconnect", async () => {
     const events: string[] = [];
     executeSlashCommandMock
@@ -3129,9 +3177,14 @@ describe("handleSendChat", () => {
     },
   );
 
-  it.each(["unavailable", "missing"] as const)(
-    "keeps an uncertain send id across repeated %s payload retries",
-    async (reason) => {
+  it.each([
+    { reason: "unavailable", action: "retry" },
+    { reason: "missing", action: "retry" },
+    { reason: "unavailable", action: "discard" },
+    { reason: "missing", action: "discard" },
+  ] as const)(
+    "keeps an uncertain send id and FIFO across $reason payload retries until $action",
+    async ({ reason, action }) => {
       const { attachments, dataUrls } = createDeliveryAttachmentBatch();
       let wireAttempts = 0;
       const request = makeRequestMock({
@@ -3163,6 +3216,9 @@ describe("handleSendChat", () => {
         );
         expect(original.sendAttempts).toBe(1);
         expect(source.chatRunId).toBeNull();
+        source.connected = false;
+        await handleSendChat(source, "later queued input");
+        const successor = expectDefined(source.chatQueue[1], "queued successor");
         stopSource();
         reloadChatDocumentStorage(attachments);
         const host = makeChatHost({
@@ -3177,17 +3233,19 @@ describe("handleSendChat", () => {
         await waitForFast(() =>
           expect(loadChatComposerState(host, host.sessionKey).snapshot?.queue[0]).toMatchObject({
             attachmentStorageError: reason,
-            sendState: "failed",
+            sendState: "held",
             sendRunId: original.sendRunId,
           }),
         );
         await resumeStoredChatOutboxes(host);
+        expect(wireAttempts).toBe(1);
+        expect(host.chatQueue).toHaveLength(2);
         for (let attempt = 0; attempt < 2; attempt += 1) {
           await retryQueuedChatMessage(host, original.id);
           await waitForFast(() =>
             expect(loadChatComposerState(host, host.sessionKey).snapshot?.queue[0]).toMatchObject({
               attachmentStorageError: reason,
-              sendState: "failed",
+              sendState: "held",
               sendRunId: original.sendRunId,
               sendAttempts: 1,
             }),
@@ -3195,13 +3253,32 @@ describe("handleSendChat", () => {
           expect(wireAttempts).toBe(1);
         }
         read.mockRestore();
-        await retryQueuedChatMessage(host, original.id);
+        if (action === "retry") {
+          await retryQueuedChatMessage(host, original.id);
+          expectItems(host.chatQueue, { id: successor.id, sendAttempts: 0 });
+          const resent = requireRecord(
+            requestCalls(request, "chat.send")[1]?.[1],
+            "same-id recovered attachment payload",
+          );
+          expect(resent.idempotencyKey).toBe(original.sendRunId);
+          expect(resent.attachments).toEqual(wireAttachments(attachments, dataUrls));
+          handleChatGatewayEvent(host, {
+            sessionKey: host.sessionKey,
+            runId: original.sendRunId!,
+            state: "final",
+          });
+        } else {
+          expect(removeQueuedMessage(host, original.id)).toBe("removed");
+        }
+        await resumeStoredChatOutboxes(host);
         await waitForFast(() => expect(host.chatQueue).toEqual([]));
         const sends = requestCalls(request, "chat.send");
-        expect(sends).toHaveLength(2);
-        const resent = requireRecord(sends[1]?.[1], "same-id recovered attachment payload");
-        expect(resent.idempotencyKey).toBe(original.sendRunId);
-        expect(resent.attachments).toEqual(wireAttachments(attachments, dataUrls));
+        expect(sends.map(([, params]) => requireRecord(params, "FIFO delivery").message)).toEqual([
+          original.text,
+          ...(action === "retry" ? [original.text] : []),
+          "later queued input",
+        ]);
+        expect(sends.at(-1)?.[1]).toMatchObject({ idempotencyKey: successor.sendRunId });
       } finally {
         stopRecovered();
         stopSource();

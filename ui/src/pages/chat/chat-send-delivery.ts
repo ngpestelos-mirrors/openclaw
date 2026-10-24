@@ -385,6 +385,15 @@ async function sendQueuedChatMessage(
           });
           return "failed";
         }
+        // Publish accepted run activity before retiring its queued progress across an await.
+        // Steering keeps the active run; only an explicit interrupt replaces it here.
+        if (
+          isNonTerminalAgentRunStatus(ack.status) &&
+          isVisible() &&
+          (!host.chatRunId || prepared.queueMode === "interrupt")
+        ) {
+          adoptStartedChatRun(host, ack.runId, startedAt);
+        }
         // Durable delivery hands complete display bytes to the existing shared owner.
         // Memory-only admission has no stored row and retains its local projection.
         const inputConsumed = ack.status === "ok" && ack.messageSeq !== undefined;
@@ -442,12 +451,6 @@ async function sendQueuedChatMessage(
               flushStoredChatOutbox(host, chatOutboxDrainDependencies),
             );
           } else if (isNonTerminalAgentRunStatus(ack.status)) {
-            // Accepted steering/queued custody identifies the input, not a replacement
-            // for the active model run. Only an explicit interrupt may replace it here;
-            // otherwise live execution events own adoption when the queued turn starts.
-            if (!host.chatRunId || prepared.queueMode === "interrupt") {
-              adoptStartedChatRun(host, ack.runId, startedAt);
-            }
             // Hydrate approved custody during setup without changing ordinary send
             // reconciliation or steering, whose ACK does not identify a new input.
             const setupHeld =
