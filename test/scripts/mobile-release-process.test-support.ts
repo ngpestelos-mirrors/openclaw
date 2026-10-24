@@ -71,7 +71,8 @@ async function withNativeBoundedFixture(
       children.unsubscribe(capture);
     }
     const child = observed.find(
-      (candidate) => candidate.spawnargs[0] === testNodeExecPath && candidate.spawnargs[1] === script,
+      (candidate) =>
+        candidate.spawnargs[0] === testNodeExecPath && candidate.spawnargs[1] === script,
     );
     if (!child) {
       // Unknown process ownership cannot certify cleanup or release the root.
