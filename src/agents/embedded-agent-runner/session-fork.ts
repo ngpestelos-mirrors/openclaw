@@ -9,7 +9,7 @@ import { registerSessionResourceCleanup } from "@openclaw/ai/internal/runtime";
 import { isCredentialFieldName, preparedRequestSuffix } from "@openclaw/ai/internal/shared";
 import { isRecord } from "@openclaw/normalization-core/record-coerce";
 import { withGuardedFetchRequestAuthority } from "../../infra/net/fetch-request-authority.js";
-import type { Message, Model } from "../../llm/types.js";
+import type { Message, Model, ModelRequestHeaders } from "../../llm/types.js";
 import { isPlainData } from "../../shared/immutable-data.js";
 import { collectTextContentBlocks } from "../content-blocks.js";
 import type { StreamFn } from "../runtime/index.js";
@@ -77,7 +77,7 @@ function prune() {
   }
 }
 
-function safeHeaders(headers: Record<string, string> | undefined) {
+function safeHeaders(headers: ModelRequestHeaders | undefined) {
   return (
     headers &&
     Object.fromEntries(Object.entries(headers).filter(([key]) => !isCredentialFieldName(key)))

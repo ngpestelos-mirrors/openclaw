@@ -547,7 +547,7 @@ extensions/ollama/src/provider-models.ts	1
 extensions/ollama/src/setup-pull.ts	1
 extensions/ollama/src/setup.runtime.ts	1
 extensions/ollama/src/stream-compat.ts	1
-extensions/ollama/src/stream.runtime.ts	3
+extensions/ollama/src/stream.runtime.ts	2
 extensions/onepassword/index.ts	2
 extensions/openai/embedding-batch.ts	2
 extensions/openai/index.ts	2
@@ -919,7 +919,7 @@ packages/ai/src/providers/clean-for-gemini.ts	4
 packages/ai/src/providers/google-shared.ts	2
 packages/ai/src/providers/mistral.ts	1
 packages/ai/src/providers/openai-chatgpt-responses-protocol.ts	1
-packages/ai/src/providers/openai-chatgpt-responses.ts	17
+packages/ai/src/providers/openai-chatgpt-responses.ts	16
 packages/ai/src/providers/openai-completions.ts	1
 packages/ai/src/providers/openai-reasoning-effort.ts	6
 packages/ai/src/providers/openai-responses-shared.ts	4
