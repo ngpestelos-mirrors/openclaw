@@ -1,8 +1,8 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import { list as listTar } from "tar";
+import { listBundleDependencies } from "../../src/infra/package-bundle-dependencies.js";
 import { collectNpmPackInventory } from "./npm-pack-inventory.mts";
-import { listBundleDependencies } from "./package-bundled-dependencies.mts";
 import { isRecord } from "./record-shared.mjs";
 
 export async function hasMissingBundledDependencies(tarballPath: string): Promise<boolean> {

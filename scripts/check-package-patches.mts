@@ -10,6 +10,9 @@ import { pnpmLockfileDocuments } from "./lib/pnpm-lockfile-documents.mjs";
 import { runAsScript } from "./lib/ts-guard-utils.mts";
 
 const ALLOWED_PATCHED_DEPENDENCIES = new Map([
+  ["apache-arrow@21.2.0", "patches/apache-arrow@21.2.0.patch"],
+  ["@shinyoshiaki/binary-data@0.6.1", "patches/@shinyoshiaki__binary-data@0.6.1.patch"],
+  ["@openclaw/crabline@0.1.30", "patches/@openclaw__crabline@0.1.30.patch"],
   ["chrome-devtools-mcp@1.11.0", "patches/chrome-devtools-mcp@1.11.0.patch"],
   ["@novnc/novnc@1.7.0", "patches/@novnc__novnc@1.7.0.patch"],
   ["@solidjs/web@2.0.0-rc.18", "patches/@solidjs__web@2.0.0-rc.18.patch"],
