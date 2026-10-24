@@ -160,10 +160,11 @@ type BootstrapEntry = {
 
 async function collectBootstrapFiles(root: string, plugin = false): Promise<string[]> {
   // Published plugins alone use dist/.setup; private descendants remain excluded.
+  // Registry packages can ship implementation modules below src/node_modules.
   const included = ({ name, relativePath }: { name: string; relativePath: string }) =>
     (plugin && relativePath.split(path.sep).join("/") === PLUGIN_DIST_SHARED_CHUNK_PREFIX) ||
     (!name.startsWith(".") &&
-      !(plugin ? IGNORED_PLUGIN_DIRECTORIES.has(name) : name === "node_modules"));
+      !(plugin ? IGNORED_PLUGIN_DIRECTORIES.has(name) : relativePath === "node_modules"));
   const { entries, failedDirs, truncated } = await walkDirectory(root, {
     maxEntries: DEFAULT_WORKER_BUNDLE_ARCHIVE_LIMITS.maxEntries,
     symlinks: "include",

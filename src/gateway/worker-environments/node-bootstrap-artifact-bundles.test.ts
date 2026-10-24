@@ -51,6 +51,36 @@ describe("node bootstrap bundled dependency ownership", () => {
     ).toMatchObject({ dependencies: { "transitive-runtime": "^1.2.3" } });
   });
 
+  it("runs package-owned modules under src/node_modules", async () => {
+    const { root, packageRoot, provider, sourcePackage } = await fixture();
+    const name = "@fixture/codec";
+    await write(packageRoot, "package.json", {
+      ...sourcePackage,
+      dependencies: { ...sourcePackage.dependencies, [name]: "1.2.3" },
+      bundleDependencies: [name],
+    });
+    const bundledRoot = path.join(packageRoot, "node_modules", name);
+    await writeFiles(bundledRoot, {
+      "package.json": {
+        name,
+        version: "1.2.3",
+        type: "commonjs",
+        main: "./src/index.js",
+      },
+      "src/index.js": 'module.exports = require("codec-internal");',
+      "src/node_modules/codec-internal/package.json": {
+        name: "codec-internal",
+        version: "1.2.3",
+        main: "./index.js",
+      },
+      "src/node_modules/codec-internal/index.js": 'module.exports = "bundled-internal";',
+    });
+    await write(packageRoot, "dist/entry.js", `import result from "${name}"; console.log(result);`);
+
+    const target = await extract(root, await provider.prepare());
+    expect(await runNode(target)).toBe("bundled-internal");
+  });
+
   it.each(["source", "external-plugin"] as const)(
     "packages a plugin bundle from its own %s installation",
     async (mode) => {
