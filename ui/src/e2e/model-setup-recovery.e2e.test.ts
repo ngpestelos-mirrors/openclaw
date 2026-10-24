@@ -13,7 +13,6 @@ import {
   expectText,
   makeDetection,
   providerLogin,
-  runningStep,
   runningWizard,
   setupContext,
   setupPages,
@@ -29,22 +28,6 @@ const suite = createControlUiE2eSuite({
 });
 
 const withPage = setupPages(suite, () => setupContext({ viewport: { height: 900, width: 1280 } }));
-
-function configuredProvider(provider: string, displayName: string, id: string, config: object) {
-  const modelRef = `${provider}/${id}`;
-  return {
-    agentModel: modelRef,
-    models: [{ id, name: id, provider, available: true }],
-    methodResponses: {
-      "config.get": configSnapshot(config, "configured-provider"),
-      "models.authStatus": {
-        ts: 1,
-        providerCapabilities: [],
-        providers: [{ provider, displayName, status: "static", profiles: [] }],
-      },
-    },
-  };
-}
 
 suite.define(() => {
   it.each(["rejected", "uncertain"] as const)(
@@ -113,9 +96,16 @@ suite.define(() => {
             },
           },
         };
-        const provider = configuredProvider("lmstudio", "LM Studio", "qwen3-8b-instruct", config);
         const gateway = await installSetupGateway(page, {
-          ...provider,
+          agentModel: modelRef,
+          models: [
+            {
+              id: "qwen3-8b-instruct",
+              name: "qwen3-8b-instruct",
+              provider: "lmstudio",
+              available: true,
+            },
+          ],
           featureMethods: [
             "chat.metadata",
             "chat.startup",
@@ -125,23 +115,17 @@ suite.define(() => {
             rpc.next,
           ],
           methodResponses: {
-            ...provider.methodResponses,
+            "config.get": configSnapshot(config, "configured-provider"),
+            "models.authStatus": {
+              ts: 1,
+              providerCapabilities: [],
+              providers: [
+                { provider: "lmstudio", displayName: "LM Studio", status: "static", profiles: [] },
+              ],
+            },
             [rpc.detect]: makeDetection({
-              candidates: [
-                candidate("provider-auto:lmstudio", "LM Studio", modelRef, {
-                  brandId: "lmstudio",
-                  detail: "qwen3-8b-instruct at http://localhost:1234/v1",
-                }),
-              ],
-              prepareOptions: [
-                {
-                  id: "lmstudio",
-                  brandId: "lmstudio",
-                  label: "LM Studio",
-                  hint: "Connect to a running LM Studio server and use an already loaded model",
-                  actionLabel: "Connect server",
-                },
-              ],
+              candidates: [candidate("provider-auto:lmstudio", "LM Studio", modelRef)],
+              prepareOptions: [{ id: "lmstudio", label: "LM Studio" }],
               configuredModel: modelRef,
               setupComplete: true,
             }),
@@ -150,18 +134,8 @@ suite.define(() => {
               provider: "lmstudio",
               status: "unknown",
               error: "The connection probe failed.",
-              results: [
-                {
-                  label: "Configured credential · lmstudio/qwen3-8b-instruct",
-                  status: "unknown",
-                  error: "The connection probe failed.",
-                },
-              ],
+              results: [],
             },
-            [rpc.prepare]: runningWizard("lmstudio-recovery-session"),
-            [rpc.next]: runningStep("lmstudio-base-url", "text", "LM Studio base URL", {
-              initialValue: "http://localhost:1234/v1",
-            }),
           },
         });
 
