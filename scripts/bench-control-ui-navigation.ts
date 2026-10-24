@@ -87,7 +87,13 @@ if (
 ) {
   throw new Error("profiles must contain local and/or remote");
 }
-type Scenario = { id: string; routeId?: RouteId; selector: string; shortcut?: string };
+type Scenario = {
+  id: string;
+  routeId?: RouteId;
+  selector: string;
+  shortcut?: string;
+  trigger?: string;
+};
 const allScenarios: Scenario[] = [
   ...SIDEBAR_NAV_ROUTES.map((routeId) => ({
     id: routeId,
@@ -118,6 +124,11 @@ const allScenarios: Scenario[] = [
     id: "keyboard-shortcuts",
     selector: "openclaw-keyboard-shortcuts-dialog .shortcut-row",
     shortcut: "ControlOrMeta+/",
+  },
+  {
+    id: "model-picker",
+    selector: ".chat-controls__model-menu [data-chat-model-search]",
+    trigger: ".chat-pane-cache__pane--active .chat-controls__model-trigger",
   },
 ];
 const selected = values.scenarios?.split(",");
@@ -246,6 +257,11 @@ async function rpcCounts(page: Page) {
   });
 }
 async function prepareTarget(page: Page, scenario: Scenario): Promise<Locator | undefined> {
+  if (scenario.trigger) {
+    const target = page.locator(scenario.trigger).first();
+    await target.waitFor({ state: "visible" });
+    return target;
+  }
   if (!scenario.routeId) {
     return undefined;
   }
@@ -491,7 +507,7 @@ try {
             }
             if (!boot) {
               await page.evaluate(
-                ({ selector, routeId }) => {
+                ({ selector, routeId, eventType }) => {
                   const state = { startedAt: 0, readyAt: 0 };
                   Reflect.set(window, "__navigationBench", state);
                   const start = () => {
@@ -519,12 +535,16 @@ try {
                     };
                     requestAnimationFrame(ready);
                   };
-                  document.addEventListener(routeId ? "click" : "keydown", start, {
+                  document.addEventListener(eventType, start, {
                     capture: true,
                     once: true,
                   });
                 },
-                { selector: scenario.selector, routeId: scenario.routeId },
+                {
+                  selector: scenario.selector,
+                  routeId: scenario.routeId,
+                  eventType: scenario.routeId || scenario.trigger ? "click" : "keydown",
+                },
               );
             }
             await action();

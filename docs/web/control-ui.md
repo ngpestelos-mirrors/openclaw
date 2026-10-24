@@ -127,7 +127,7 @@ The selected chat loads before automatic sidebar session lists refresh. Live eve
 
 After the current page and transcript are ready, the browser can prepare code for
 Pages, New Session, and common dialogs during idle time. Hovering or focusing a
-navigation link or the command-palette button prepares that destination sooner.
+navigation link, the command-palette button, or the model picker prepares that destination sooner.
 Background preparation pauses while a page loads, the tab is hidden, or the
 connection is offline, and respects the browser's Save-Data setting. Page data
 still loads through its normal navigation flow. Hashed assets remain cached for

@@ -20,6 +20,7 @@ const entries = {
   apps: ["pages/apps/apps-page.tsx"],
   portals: ["pages/portals/portals-page.tsx"],
   palette: ["components/command-palette.tsx"],
+  "model-picker": ["pages/chat/components/chat-model-picker-panel.tsx"],
   shortcuts: ["components/keyboard-shortcuts-dialog.tsx"],
   debug: ["pages/debug/debug-overlay.tsx", "pages/debug/debug-overlay-content.tsx"],
 };

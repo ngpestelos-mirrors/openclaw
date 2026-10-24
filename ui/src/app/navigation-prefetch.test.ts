@@ -11,6 +11,7 @@ const manifest = {
   "new-session": ["assets/new-1234abcd.js", "assets/new-1234abcd.css"],
   claws: ["assets/claws-1234abcd.js"],
   palette: ["assets/palette-1234abcd.js"],
+  "model-picker": ["assets/model-picker-1234abcd.js"],
 };
 
 beforeEach(() => {
@@ -144,6 +145,14 @@ it("prioritizes keyboard intent without mounting a dialog and rechecks Save-Data
     new URL("/control/assets/palette-1234abcd.js", location.origin).href,
   ]);
   expect(fixture.shell.children).toHaveLength(1);
+
+  trigger.className = "chat-controls__model-trigger";
+  trigger.dispatchEvent(new FocusEvent("focusin", { bubbles: true }));
+  hints().forEach((link) => link.dispatchEvent(new Event("load")));
+  await idle();
+  expect(hints().map((link) => link.href)).toContain(
+    new URL("/control/assets/model-picker-1234abcd.js", location.origin).href,
+  );
 
   const timers = new Map();
   const preload = vi.fn();

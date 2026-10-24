@@ -24,6 +24,7 @@ export function connectNavigationPrefetch(options: {
     "new-session",
     ...SIDEBAR_NAV_ROUTES,
     "palette",
+    "model-picker",
     "shortcuts",
     "debug",
   ]);
@@ -146,8 +147,16 @@ export function connectNavigationPrefetch(options: {
     }
   };
   const onIntent = (event: Event) => {
-    if (event.target instanceof Element && event.target.closest(".topbar-search")) {
-      intent = "palette";
+    if (!(event.target instanceof Element)) {
+      return;
+    }
+    const key = event.target.closest(".topbar-search")
+      ? "palette"
+      : event.target.closest(".chat-controls__model-trigger")
+        ? "model-picker"
+        : undefined;
+    if (key && pending.has(key)) {
+      intent = key;
       if (!running && ready()) {
         cancel();
         void warm();
