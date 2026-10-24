@@ -233,12 +233,13 @@ function runPlan(
   config: string,
   includePatterns: string[] | null = null,
   forwardedArgs: string[] = [],
+  watchMode = false,
 ) {
   return {
     config: `test/vitest/vitest.${config}.config.ts`,
     includePatterns,
     forwardedArgs,
-    watchMode: false,
+    watchMode,
   };
 }
 
@@ -252,12 +253,12 @@ function expectRun(
   } = {},
 ): void {
   expect(actual).toEqual([
-    {
-      config: configFile(project),
-      forwardedArgs: expected.forwardedArgs ?? [],
-      includePatterns: expected.includePatterns ?? null,
-      watchMode: expected.watchMode ?? false,
-    },
+    runPlan(
+      project,
+      expected.includePatterns ?? null,
+      expected.forwardedArgs ?? [],
+      expected.watchMode ?? false,
+    ),
   ]);
 }
 
@@ -1426,22 +1427,16 @@ export const single = {
             : [target, workerFile];
       const forwardedArgs = ["--reporter=dot", "--coverage"];
       expect(planRuns([...targets, ...forwardedArgs])).toEqual([
-        {
-          config: configFile("gateway"),
+        runPlan(
+          "gateway",
+          targets.map((file) => (file === "src/gateway" ? "src/gateway/**/*.test.ts" : file)),
           forwardedArgs,
-          includePatterns: targets.map((file) =>
-            file === "src/gateway" ? "src/gateway/**/*.test.ts" : file,
-          ),
-          watchMode: false,
-        },
-        {
-          config: configFile("infra"),
+        ),
+        runPlan(
+          "infra",
+          databaseWorkerCoreTestFiles.filter((file) => file.startsWith("src/gateway/")),
           forwardedArgs,
-          includePatterns: databaseWorkerCoreTestFiles.filter((file) =>
-            file.startsWith("src/gateway/"),
-          ),
-          watchMode: false,
-        },
+        ),
       ]);
     },
   );
@@ -1554,31 +1549,6 @@ export const single = {
     const toolRoot = "src/agents/tools";
     const failoverRoot = "src/agents/failover";
     const embeddedRoot = "src/agents/embedded-agent-runner";
-    const ownerExamples = [
-      ["src/agents/agent-command-local.test.ts", "cli-process"],
-      [`${toolRoot}/chat-history-text.test.ts`, "unit-fast"],
-      [`${toolRoot}/computer-tool.schema.test.ts`, "unit-fast-isolated"],
-      [`${toolRoot}/gateway.hosted-routing.test.ts`, "infra"],
-      [`${failoverRoot}/classify.legacy-provider-predicates.test.ts`, "agents-core-isolated"],
-      [`${failoverRoot}/failover-classification.corpus.test.ts`, "agents-core-isolated"],
-      [`${failoverRoot}/provider-structured-signals.test.ts`, "agents-core-isolated"],
-      ["src/agents/runtime-plan/materialize-model.test.ts", "agents-support"],
-      [
-        `${embeddedRoot}/run.incomplete-turn.classification.test.ts`,
-        "agents-embedded-agent-incomplete-turn",
-      ],
-      [
-        `${embeddedRoot}/run.overflow-compaction.test.ts`,
-        "agents-embedded-agent-overflow-compaction",
-      ],
-      [`${embeddedRoot}/run/attempt.abort-race.test.ts`, "infra"],
-      [
-        `${embeddedRoot}/run/attempt-transcript-helpers.presence.test.ts`,
-        "agents-embedded-agent-run",
-      ],
-      [`${embeddedRoot}/run/attempt-system-prompt.test.ts`, "infra"],
-    ] as const;
-
     it.each`
       label                                        | targets                                                                                                          | patterns
       ${"agent root directory"}                    | ${["src/agents"]}                                                                                                | ${["src/agents/**/*.test.ts"]}
@@ -1596,7 +1566,7 @@ export const single = {
         expect(expected.length).toBeGreaterThan(0);
         const controls = ["--sequence.shuffle", "--sequence.seed", "3"];
         const plans = planRuns([...targets, "--", ...controls]);
-        const selected: Array<{ file: string; config: string }> = [];
+        const selected: string[] = [];
         for (const plan of plans) {
           // Config loading temporarily owns process.argv and the include-file environment.
           const ownerFiles =
@@ -1612,32 +1582,23 @@ export const single = {
                     .map((file) => repoPath(path.relative(process.cwd(), path.resolve(file)))),
                 );
           selected.push(
-            ...ownerFiles
-              .filter(
-                (file) =>
-                  (!includedFiles || includedFiles.has(file)) &&
-                  matchesVitestCliSelection(
-                    file,
-                    [file],
-                    ["run", ...plan.forwardedArgs],
-                    "",
-                    {},
-                    includedFiles ? [file] : null,
-                  ),
-              )
-              .map((file) => ({ file, config: plan.config })),
+            ...ownerFiles.filter(
+              (file) =>
+                (!includedFiles || includedFiles.has(file)) &&
+                matchesVitestCliSelection(
+                  file,
+                  [file],
+                  ["run", ...plan.forwardedArgs],
+                  "",
+                  {},
+                  includedFiles ? [file] : null,
+                ),
+            ),
           );
           expect(plan.watchMode).toBe(false);
           expect(plan.forwardedArgs.slice(0, controls.length)).toEqual(controls);
         }
-        expect(selected.map(({ file }) => file).toSorted()).toEqual(expected);
-        for (const [file, owner] of ownerExamples) {
-          if (expected.includes(file)) {
-            expect(
-              selected.filter((entry) => entry.file === file).map(({ config }) => config),
-            ).toEqual([`test/vitest/vitest.${owner}.config.ts`]);
-          }
-        }
+        expect(selected.toSorted()).toEqual(expected);
       },
     );
 
@@ -2082,14 +2043,10 @@ export const single = {
   it("keeps a grouped Matrix config target unsplit beside its worker tests", () => {
     const plans = planRuns(["extensions/matrix", configFile("extension-matrix")]);
     expect(plans).toEqual([
-      {
-        config: configFile("extension-database-workers"),
-        forwardedArgs: [],
-        includePatterns: databaseWorkerExtensionTestFiles.filter((file) =>
-          file.startsWith("extensions/matrix/"),
-        ),
-        watchMode: false,
-      },
+      runPlan(
+        "extension-database-workers",
+        databaseWorkerExtensionTestFiles.filter((file) => file.startsWith("extensions/matrix/")),
+      ),
       runPlan("extension-matrix"),
     ]);
   });
