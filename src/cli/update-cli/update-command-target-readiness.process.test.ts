@@ -1,4 +1,6 @@
 import fs from "node:fs/promises";
+import path from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import { afterEach, expect, it, vi } from "vitest";
 import {
   MIN_CLIENT_PROTOCOL_VERSION,
@@ -8,12 +10,14 @@ import { runtimeProcessEntrypoints } from "../../infra/runtime-process-entrypoin
 import { resolveRuntimeWorkerUrl } from "../../infra/runtime-worker-url.js";
 import * as temporaryState from "../../infra/tmp-openclaw-dir.js";
 import { createUpdateRun, getUpdateRun } from "../../infra/update-run-ledger.js";
+import * as processRunner from "../../process/exec.js";
 import { withOpenClawTestState } from "../../test-utils/openclaw-test-state.js";
 import { withProtocolGateway } from "../daemon-cli/restart-health-protocol.test-support.js";
 import { prepareCandidateAuthorityRuntime } from "./update-command-candidate-authority.test-support.js";
 import { withUpdateCommandExecutor } from "./update-command-executor.js";
 import { resultFixture } from "./update-command-fixtures.test-support.js";
 import { observeUpdateGatewayReadiness } from "./update-command-readiness.js";
+import { UpdateCommandRecoveryPendingError } from "./update-command-recovery-error.js";
 import { verifyUpdatedGateway } from "./update-command-verification.js";
 
 // Only the retained parent has the old dialect. The separately executed installed
@@ -40,9 +44,15 @@ const compiledCandidate = !resolveRuntimeWorkerUrl(
 
 // This receiver validates its own installed package root. Source-mode adapters
 // cannot impersonate that root; the normal compiled-worker lane supplies it.
-it.skipIf(!compiledCandidate).each(["none", "token"] as const)(
-  "verifies a new installed Gateway from an old updater with %s auth",
-  async (mode) => {
+it.skipIf(!compiledCandidate).each([
+  { mode: "none", authority: "allowed" },
+  { mode: "token", authority: "allowed" },
+  { mode: "token", authority: "wrong-run" },
+  { mode: "token", authority: "unbound" },
+  { mode: "token", authority: "revoked" },
+] as const)(
+  "installed readiness with $mode auth and $authority authority",
+  async ({ mode, authority }) => {
     await withOpenClawTestState(
       {
         env: {
@@ -62,6 +72,47 @@ it.skipIf(!compiledCandidate).each(["none", "token"] as const)(
         await fs.mkdir(control);
         vi.spyOn(temporaryState, "resolvePreferredOpenClawTmpDir").mockReturnValue(control);
         await prepareCandidateAuthorityRuntime(root);
+        const siblingRunId = createUpdateRun({ trigger: "cli" }, { env: state.env }).runId;
+        let faultInjected = false;
+        let statusResult:
+          | Awaited<ReturnType<typeof processRunner.runCommandWithTimeout>>
+          | undefined;
+        const runCommand = processRunner.runCommandWithTimeout;
+        vi.spyOn(processRunner, "runCommandWithTimeout").mockImplementation(
+          async (argv, options) => {
+            const statusChild = argv.includes("status") && argv.includes("--update-executor");
+            if (statusChild && typeof options !== "number") {
+              if (authority === "wrong-run") {
+                const input = JSON.parse(String(options.input));
+                input.executor.runId = siblingRunId;
+                options = { ...options, input: JSON.stringify(input) };
+                faultInjected = true;
+              } else if (authority === "unbound") {
+                options = { ...options, beforeInput: undefined };
+                faultInjected = true;
+              }
+            }
+            const result = await runCommand(argv, options);
+            if (statusChild) {
+              statusResult = result;
+            }
+            if (argv.includes("--update-executor") && argv.includes("check")) {
+              expect(result, "Actual installed capability probe result").toMatchObject({
+                code: 0,
+                termination: "exit",
+                signal: null,
+                killed: false,
+              });
+              expect(JSON.parse(result.stdout)).toMatchObject({
+                updateExecutor: "root-spawner-v1",
+                targetRootBinding: true,
+                retainedOwnerBinding: true,
+                readinessObservation: 1,
+              });
+            }
+            return result;
+          },
+        );
         await withProtocolGateway(
           mode,
           async ({ port, config, observed, failures, httpRequests }) => {
@@ -76,32 +127,40 @@ it.skipIf(!compiledCandidate).each(["none", "token"] as const)(
               waitForStartup: false,
               requireRunningService: false,
             };
-            const previous = await observeUpdateGatewayReadiness(readiness);
-            expect(previous).toMatchObject({
-              readyz: false,
-              health: { healthy: false, probeError: expect.stringContaining("protocol mismatch") },
-            });
-            const previousConnections = observed.length;
-            expect(previousConnections).toBeGreaterThan(0);
-            for (const connect of observed) {
-              expect(connect).toMatchObject({
-                minProtocol: retainedProtocol,
-                maxProtocol: retainedProtocol,
-                client:
-                  mode === "none"
-                    ? { id: "gateway-client", mode: "backend" }
-                    : { id: "cli", mode: "cli" },
+            if (authority === "allowed") {
+              const previous = await observeUpdateGatewayReadiness(readiness);
+              expect(previous).toMatchObject({
+                readyz: false,
+                health: {
+                  healthy: false,
+                  probeError: expect.stringContaining("protocol mismatch"),
+                },
               });
+              const previousConnections = observed.length;
+              expect(previousConnections).toBeGreaterThan(0);
+              for (const connect of observed) {
+                expect(connect).toMatchObject({
+                  minProtocol: retainedProtocol,
+                  maxProtocol: retainedProtocol,
+                  client:
+                    mode === "none"
+                      ? { id: "gateway-client", mode: "backend" }
+                      : { id: "cli", mode: "cli" },
+                });
+              }
+              expect(failures).toEqual(
+                Array.from({ length: previousConnections }, () => "protocol-mismatch"),
+              );
             }
-            expect(failures).toEqual(
-              Array.from({ length: previousConnections }, () => "protocol-mismatch"),
-            );
+            const previousConnections = observed.length;
             const runId = createUpdateRun({ trigger: "cli" }, { env: state.env }).runId;
-            await withUpdateCommandExecutor(runId, async (owner) => {
+            const initialVerification = getUpdateRun(runId, { env: state.env })?.verification;
+            const verification = withUpdateCommandExecutor(runId, async (owner) => {
               const executorFence = await owner.enter(root);
               const result = resultFixture(root);
               const verified = await verifyUpdatedGateway({
                 ...readiness,
+                targetRoot: root,
                 result,
                 opts: { json: true, run: { runId, env: state.env, executorFence } },
               });
@@ -121,6 +180,18 @@ it.skipIf(!compiledCandidate).each(["none", "token"] as const)(
               });
               executorFence.assertCurrent();
             });
+            if (authority !== "allowed") {
+              await expect(verification).rejects.toBeInstanceOf(UpdateCommandRecoveryPendingError);
+              expect(faultInjected).toBe(true);
+              expect(observed).toEqual([]);
+              expect(getUpdateRun(runId, { env: state.env })?.verification).toEqual(
+                initialVerification,
+              );
+              expect(statusResult?.stdout).toBe("");
+              expect(statusResult?.stderr).toContain("UPDATE_NATIVE_AUTHORITY");
+              return;
+            }
+            await verification;
             expect(failures).toEqual(
               Array.from({ length: previousConnections }, () => "protocol-mismatch"),
             );
@@ -136,7 +207,25 @@ it.skipIf(!compiledCandidate).each(["none", "token"] as const)(
             expect(httpRequests).toContain("/healthz");
             expect(httpRequests).toContain("/readyz");
           },
-          { warnings: true },
+          {
+            warnings: true,
+            beforeChallenge: async () => {
+              if (authority !== "revoked") {
+                return;
+              }
+              const db = new DatabaseSync(path.join(control, "managed-update-handoffs.sqlite"));
+              try {
+                expect(
+                  db
+                    .prepare("UPDATE managed_update_handoffs SET owner=? WHERE install_root=?")
+                    .run("replacement", root).changes,
+                ).toBe(1);
+                faultInjected = true;
+              } finally {
+                db.close();
+              }
+            },
+          },
         );
       },
     );

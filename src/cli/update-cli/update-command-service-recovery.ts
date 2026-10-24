@@ -520,7 +520,8 @@ export async function maybeRestartServiceAfterFailedMutableUpdate(params: {
     }
     assertCurrent();
     const { health } = await observeUpdateGatewayReadiness({
-      targetRoot: original?.root ?? verdict.root,
+      // Restored A remains under its retained owner, never the candidate child owner.
+      targetRoot: original ? undefined : verdict.root,
       executor,
       nodeRunner: original?.nodeRunner ?? params.nodeRunner,
       serviceEnv: current.env,

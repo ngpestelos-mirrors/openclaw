@@ -189,7 +189,9 @@ checks or remove retained recovery data.
 Gateway readiness checks use the updated installation's CLI when it supports
 delegated verification. This keeps protocol and configuration reads aligned with
 the running Gateway, while the original updater retains recovery and history
-ownership. If post-update target observation times out or cannot return a valid result, the
+ownership. If the service keeps its previous installation, the original updater
+also keeps verification of that service, including after package cleanup fails.
+If post-update target observation times out or cannot return a valid result, the
 update keeps recovery pending instead of treating the Gateway as failed or
 starting another recovery restart. Older channel or tag targets keep their existing verification path.
 Both the installed updater and target must support this handoff: a new candidate

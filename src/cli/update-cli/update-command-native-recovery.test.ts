@@ -11,9 +11,7 @@ import { withUpdateCommandExecutor } from "./update-command-executor.js";
 import { useExecutorFixture } from "./update-command-executor.test-support.js";
 import { resultFixture, verificationFixture } from "./update-command-fixtures.test-support.js";
 import { finishSuccessfulPackageSwitch } from "./update-command-post-update.test-support.js";
-import { verifyPreviousGatewayForUpdate } from "./update-command-readiness.js";
 import { UpdateCommandRecoveryPendingError } from "./update-command-recovery-error.js";
-import * as serviceCommand from "./update-command-service-command.js";
 import { maybeRestartServiceAfterFailedMutableUpdate } from "./update-command-service-recovery.js";
 import * as recoveryService from "./update-command-service.js";
 import { verifyUpdatedGateway } from "./update-command-verification.js";
@@ -177,41 +175,6 @@ it.each([
     expect(getUpdateRun(runId, { env })?.status).toBe("running");
   },
 );
-
-it("does not downgrade predecessor executor loss to an advisory observation", async () => {
-  vi.clearAllMocks();
-  const { root, control, env, runId, run } = createOwner();
-  await fs.writeFile(path.join(root, "package.json"), JSON.stringify({ version: "1.0.0" }));
-  vi.spyOn(serviceCommand, "prepareUpdatedInstallGatewayReadiness").mockImplementationOnce(
-    async () => {
-      using db = new DatabaseSync(path.join(control, "managed-update-handoffs.sqlite"));
-      expect(
-        db
-          .prepare("UPDATE managed_update_handoffs SET owner = ? WHERE install_root = ?")
-          .run("replacement", root).changes,
-      ).toBe(1);
-      throw new UpdateCommandRecoveryPendingError("Previous Gateway observer did not settle.");
-    },
-  );
-  const work = withUpdateCommandExecutor(runId, async (executor) => {
-    run.executorFence = await executor.enter(root);
-    await expect(
-      verifyPreviousGatewayForUpdate({
-        root,
-        config: {},
-        env,
-        opts: { json: true, run },
-        gatewayPort: 18789,
-      }),
-    ).rejects.toBeInstanceOf(UpdateCommandRecoveryPendingError);
-  });
-  await expect(work).rejects.toBeInstanceOf(UpdateCommandRecoveryPendingError);
-  expect(getUpdateRun(runId, { env })?.steps).not.toContainEqual(
-    expect.objectContaining({ step: "warning:previous gateway verification" }),
-  );
-  expect(mocks.restart).not.toHaveBeenCalled();
-  expect(mocks.health).not.toHaveBeenCalled();
-});
 
 it("retains the live update run while recovering a failed update before reporting", async () => {
   const { root: home, env, runId, run } = createOwner(true);

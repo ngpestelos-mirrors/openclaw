@@ -35,7 +35,7 @@ export async function withProtocolGateway<T>(
     failures: string[];
     httpRequests: string[];
   }) => Promise<T>,
-  options: { warnings?: boolean } = {},
+  options: { warnings?: boolean; beforeChallenge?: () => Promise<void> } = {},
 ): Promise<T> {
   const auth = mode === "none" ? { mode } : { mode, token: "fixture-protocol-token" };
   const httpRequests: string[] = [];
@@ -54,7 +54,6 @@ export async function withProtocolGateway<T>(
   const failures: string[] = [];
   gateway.on("connection", (socket, upgradeReq) => {
     let scopes: string[] = [];
-    sendMinimalGatewayConnectChallenge(socket);
     const handleMessage = async (data: RawData) => {
       const request = parseMinimalGatewayRequestFrame(data);
       if (!request.id || !request.method) {
@@ -180,6 +179,13 @@ export async function withProtocolGateway<T>(
           : {},
       });
     };
+    void Promise.resolve()
+      .then(() => options.beforeChallenge?.())
+      .then(() => sendMinimalGatewayConnectChallenge(socket))
+      .catch((error: unknown) => {
+        failures.push(error instanceof Error ? error.message : String(error));
+        socket.terminate();
+      });
     socket.on("message", (data) => {
       void handleMessage(data).catch((error: unknown) => {
         failures.push(error instanceof Error ? error.message : String(error));

@@ -45,12 +45,12 @@ import {
 import { registerCurrentF3Controls } from "./update-command-original-service-current.test-support.js";
 import { observeOriginalManagedServiceRuntime } from "./update-command-original-service.js";
 import { finishUpdate } from "./update-command-post-update.js";
-import { UpdateCommandRecoveryPendingError } from "./update-command-recovery-error.js";
 import { rollbackFailedUpdate } from "./update-command-rollback.js";
 import { getNodeRuntimeFixture } from "./update-command-runtime-recovery.test-support.js";
 import * as serviceCommand from "./update-command-service-command.js";
 import type { PreManagedServiceStop } from "./update-command-service-context-types.js";
 import { revalidateManagedGatewayServiceAfterUpdate } from "./update-command-service-maintenance.js";
+import { maybeRestartServiceAfterFailedMutableUpdate } from "./update-command-service-recovery.js";
 import { createWindowsTaskAutoStartRecovery } from "./update-command-windows-task.js";
 
 // Real update/state/lease owners; simulated native manager, HTTP, and package transport.
@@ -102,8 +102,6 @@ vi.mock("./update-command-service-command.js", async (original) => ({
   ...(await original<typeof import("./update-command-service-command.js")>()),
   runUpdatedInstallGatewayCommand: mocks.restart,
   isUpdatedInstallGatewayExecutorSupported: mocks.capability,
-  // A and B are legacy package fixtures, not executable current-runtime readiness receivers.
-  prepareUpdatedInstallGatewayReadiness: async () => undefined,
 }));
 vi.mock("../daemon-cli/restart-health.js", async (original) => ({
   ...(await original<typeof import("../daemon-cli/restart-health.js")>()),
@@ -667,13 +665,41 @@ it("refuses B ledger admission independently from compatible service A state", a
   expect(mocks.restart).not.toHaveBeenCalled();
 });
 
+it("certifies and recovers retained A without a candidate observer under B custody", async () => {
+  const reader = vi.spyOn(serviceCommand, "prepareUpdatedInstallGatewayReadiness");
+  const run = updateRun(state.env);
+  await withOriginalRun(run, async (opts) => {
+    const original = await observeOriginalManagedServiceRuntime({ root: rootB, opts }, before);
+    expect(original).toMatchObject({ root: rootA, verified: true });
+    assert(original);
+    await expect(
+      maybeRestartServiceAfterFailedMutableUpdate({
+        updateRun: run,
+        jsonMode: true,
+        originalManagedServiceRuntime: original,
+        preManagedServiceStop: { ...before, stopped: true },
+        timeoutMs: 30_000,
+      }),
+    ).resolves.toBe("healthy");
+    expect(mocks.nativeRestart).toHaveBeenCalledOnce();
+    expect(mocks.health).toHaveBeenCalledWith(
+      expect.objectContaining({
+        expectedVersion: original.version,
+        expectedBuildId: original.buildId,
+      }),
+    );
+    expect(mocks.readiness).toHaveBeenCalledTimes(2);
+    expect(reader).not.toHaveBeenCalled();
+    expect(mocks.restart).not.toHaveBeenCalled();
+  });
+});
+
 // Component regression: an unavailable A certificate must stop preparation, not A.
 it.each([
   "missing-node",
   "missing-env",
   "missing-schema",
   "unverified-health",
-  "incomplete-observer",
   "operator-overrides",
   "unknown-overrides",
   "reload-pending",
@@ -705,11 +731,6 @@ it.each([
   }
   if (scenario === "unverified-health") {
     mocks.inspect.mockResolvedValue({ healthy: false, runtime: { status: "running" } });
-  }
-  if (scenario === "incomplete-observer") {
-    vi.spyOn(serviceCommand, "prepareUpdatedInstallGatewayReadiness").mockRejectedValueOnce(
-      new UpdateCommandRecoveryPendingError("Retained Gateway observer did not settle."),
-    );
   }
   mocks.package.mockImplementation(async (params) => {
     expect(params.honorPackageRoot).toBe(true);

@@ -75,6 +75,7 @@ export const UpdateReadinessObservationSchema = z.object({
     buildIdMismatch: mismatch.optional(),
     probeError: optionalText,
     authenticationError: optionalText,
+    protocolMismatch: optionalText,
     staleConnection: z.enum(["installation-replaced", "legacy-handler-unavailable"]).optional(),
     activatedPluginErrors: z
       .array(

@@ -125,7 +125,7 @@ function connect(
   hostDeps: GatewayClientHostDeps,
   options: Pick<
     GatewayClientOptions,
-    "preferBootstrapToken" | "bootstrapToken" | "token" | "password"
+    "preferBootstrapToken" | "bootstrapToken" | "token" | "password" | "assertConnectionCurrent"
   > = {},
   reportError?: ((error: Error) => void) | false,
 ) {
@@ -170,6 +170,50 @@ const hello = {
 };
 
 describe("GatewayClient host token storage", () => {
+  it("rejects closed connection authority before constructing a credentialed socket", () => {
+    const failure = new Error("connection owner retired");
+    const onConnectError = vi.fn();
+    const client = new GatewayClient({
+      url: "wss://gateway.example.invalid",
+      edgeAuthHeaders: { Authorization: "synthetic-edge-token" },
+      assertConnectionCurrent() {
+        throw failure;
+      },
+      onConnectError,
+    });
+    clients.push(client);
+    expect(() => client.start()).toThrow(failure.message);
+    expect(MockWebSocket.instances).toEqual([]);
+    expect(onConnectError).toHaveBeenCalledWith(
+      expect.objectContaining({ message: failure.message }),
+    );
+  });
+
+  it("rejects connection authority retired during asynchronous token loading", async () => {
+    const loaded = createDeferred<DeviceAuthTokenRecord | null>();
+    let current = true;
+    const failure = new Error("connection owner retired");
+    const { socket, onHelloOk, onConnectError } = connect(
+      { loadDeviceAuthToken: () => loaded.promise },
+      {
+        assertConnectionCurrent() {
+          if (!current) {
+            throw failure;
+          }
+        },
+      },
+    );
+    expect(socket.send).not.toHaveBeenCalled();
+    current = false;
+    loaded.resolve(storedToken);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(socket.send).not.toHaveBeenCalled();
+    expect(onHelloOk).not.toHaveBeenCalled();
+    expect(onConnectError).toHaveBeenCalledWith(
+      expect.objectContaining({ message: failure.message }),
+    );
+  });
+
   it("settles pending token loading after stop", async () => {
     const loaded = createDeferred<DeviceAuthTokenRecord | null>();
     const { client, socket, onHelloOk } = connect({ loadDeviceAuthToken: () => loaded.promise });

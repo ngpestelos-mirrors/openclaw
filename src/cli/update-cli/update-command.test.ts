@@ -244,7 +244,6 @@ describe("recoverInstalledLaunchAgentAfterUpdate", () => {
 
 describe("recoverLaunchAgentAndRecheckGatewayHealth", () => {
   beforeEach(() => {
-    mockProcessPlatform("darwin");
     vi.spyOn(gatewayService, "resolveGatewayService").mockReturnValue(
       createMockGatewayService({ isLoaded: async () => true }),
     );
@@ -258,7 +257,6 @@ describe("recoverLaunchAgentAndRecheckGatewayHealth", () => {
     async (probe) => {
       const env = { OPENCLAW_STATE_DIR: tempDirs.make("update-probe-failure-") };
       const run = { runId: createUpdateRun({ trigger: "cli" }, { env }).runId, env };
-      mockProcessPlatform("darwin");
       const service = createMockGatewayService();
       const readState = vi.spyOn(gatewayService, "readGatewayServiceState");
       const reason = "launchctl denied";
@@ -273,6 +271,18 @@ describe("recoverLaunchAgentAndRecheckGatewayHealth", () => {
           command: null,
         });
       }
+      const inspectLaunchAgent = launchAgentRecovery.recoverInstalledLaunchAgentAfterUpdate;
+      vi.spyOn(launchAgentRecovery, "recoverInstalledLaunchAgentAfterUpdate").mockImplementation(
+        (params) => {
+          // Select the LaunchAgent branch synchronously; filesystem owners keep the real OS.
+          const platform = vi.spyOn(process, "platform", "get").mockReturnValue("darwin");
+          try {
+            return inspectLaunchAgent(params);
+          } finally {
+            platform.mockRestore();
+          }
+        },
+      );
       const recover = vi
         .spyOn(nativeLaunchAgentRecovery, "recoverInstalledLaunchAgent")
         .mockResolvedValue(null);
@@ -388,7 +398,7 @@ describe("recoverLaunchAgentAndRecheckGatewayHealth", () => {
             expectedVersion: "2026.5.3",
             expectedBuildId: "new-build",
             env,
-            supervisorKeepsAlive: true,
+            supervisorKeepsAlive: process.platform === "darwin",
             requirePluginHealth: false,
             requireChannelHealth: false,
           }),

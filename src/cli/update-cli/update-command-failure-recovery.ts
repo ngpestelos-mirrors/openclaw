@@ -12,6 +12,7 @@ import { withCommandProcessScope } from "../../process/exec-spawn.js";
 import { defaultRuntime } from "../../runtime.js";
 import type { UpdateCommandOptions } from "./shared.js";
 import { appendPluginUpdateWarnings } from "./update-command-plugins-internals.js";
+import type { UpdateGatewayObservationContext } from "./update-command-readiness.js";
 import { UpdateCommandRecoveryPendingError } from "./update-command-recovery-error.js";
 import type {
   ManagedGatewayUpdateVerdict,
@@ -46,11 +47,13 @@ export async function verifyUpdateFailureRecovery(params: {
   invocationCwd?: string;
   waitForStartup?: boolean;
   assertCurrent?: () => void;
+  verifiedObservation?: UpdateGatewayObservationContext;
 }): Promise<UpdateRunResult> {
   params.assertCurrent?.();
   const startedAt = Date.now();
   const result = params.result;
-  const env = params.env ?? params.opts.run?.env ?? process.env;
+  const observation = params.verifiedObservation;
+  const env = observation?.serviceEnv ?? params.env ?? params.opts.run?.env ?? process.env;
   const root = params.root;
   const run = params.opts.run;
   const warnRecording = (message: string) => {
@@ -161,14 +164,17 @@ export async function verifyUpdateFailureRecovery(params: {
         }
         params.assertCurrent?.();
       }
-      const version = await readPackageVersion(root);
+      const version = observation ? observation.expectedVersion : await readPackageVersion(root);
       if (!version) {
         throw new Error(
           "The installed Gateway version could not be read for recovery verification.",
         );
       }
-      const buildId = await readBuiltGatewayBuildId(root);
+      const buildId = observation
+        ? observation.expectedBuildId
+        : await readBuiltGatewayBuildId(root);
       const gatewayPort =
+        observation?.gatewayPort ??
         (await readActiveGatewayLockPort({ env, requireInspection: true })) ??
         (await resolveUpdatedGatewayRestartPort({
           serviceEnv: env,
@@ -198,7 +204,10 @@ export async function verifyUpdateFailureRecovery(params: {
         params.assertCurrent?.();
       }
       const validation = await verifyUpdatedGateway({
-        nodeRunner: params.nodeRunner,
+        // An undefined selected root means the retained service, not the new package.
+        targetRoot: observation ? observation.targetRoot : root,
+        nodeRunner: observation ? observation.nodeRunner : params.nodeRunner,
+        requireRunningService: observation?.requireRunningService,
         result,
         opts: params.opts,
         purpose: "recovery",

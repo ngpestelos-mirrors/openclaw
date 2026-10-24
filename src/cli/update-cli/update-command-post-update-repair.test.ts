@@ -253,7 +253,12 @@ describe("post-activation failure settlement without inference", () => {
           { env: run.env },
         );
         if (ready) {
-          onVerified?.(Date.now());
+          onVerified?.(Date.now(), {
+            targetRoot: packageRoot,
+            serviceEnv: run.env,
+            gatewayPort: 19101,
+            expectedVersion: result.after?.version,
+          });
           return "ok";
         }
         result.steps.push({

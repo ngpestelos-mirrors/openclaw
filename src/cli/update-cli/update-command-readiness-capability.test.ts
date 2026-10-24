@@ -151,8 +151,8 @@ it("bounds target recovery while retaining the completed observation", async ({ 
     async (root, serviceEnv, runId) => {
       await withUpdateCommandExecutor(runId, async (owner) => {
         const executor = await owner.enter(root);
-        const release = createDeferred<void>();
-        const recovered = createDeferred<void>();
+        const release = createDeferred();
+        const recovered = createDeferred();
         const deadline = createGatewayRestartDeadline({ timeoutMs: 5_000 });
         const recoverHealth: NonNullable<
           Parameters<typeof observeUpdateGatewayReadiness>[0]["recoverHealth"]
@@ -204,30 +204,31 @@ it("bounds target recovery while retaining the completed observation", async ({ 
 
 it("preserves pending recovery for cancellation after capability negotiation", async () => {
   await withCandidate(currentCandidate, async (root, serviceEnv, runId) => {
-    await withUpdateCommandExecutor(runId, async (owner) => {
-      const executor = await owner.enter(root);
-      const controller = new AbortController();
-      const onProgress = vi.fn(() =>
-        controller.abort(new GatewayRestartDeadlineError("after-capability cancellation")),
-      );
-      const observation = observeUpdateGatewayReadiness({
-        targetRoot: root,
-        executor,
-        serviceEnv,
-        nodeRunner: process.execPath,
-        gatewayPort: 19101,
-        timeoutMs: 5_000,
-        signal: controller.signal,
-        waitForStartup: false,
-        onProgress,
-      });
-      await expect(observation).rejects.toBeInstanceOf(UpdateCommandRecoveryPendingError);
-      expect(onProgress).toHaveBeenCalledOnce();
-      await expect(fs.access(path.join(root, "entered-status"))).rejects.toMatchObject({
-        code: "ENOENT",
-      });
-      executor.assertCurrent();
-    });
+    await expect(
+      withUpdateCommandExecutor(runId, async (owner) => {
+        const executor = await owner.enter(root);
+        const controller = new AbortController();
+        const onProgress = vi.fn(() =>
+          controller.abort(new GatewayRestartDeadlineError("after-capability cancellation")),
+        );
+        const observation = observeUpdateGatewayReadiness({
+          targetRoot: root,
+          executor,
+          serviceEnv,
+          nodeRunner: process.execPath,
+          gatewayPort: 19101,
+          timeoutMs: 5_000,
+          signal: controller.signal,
+          waitForStartup: false,
+          onProgress,
+        });
+        await expect(observation).rejects.toBeInstanceOf(UpdateCommandRecoveryPendingError);
+        expect(onProgress).toHaveBeenCalledOnce();
+        await expect(fs.access(path.join(root, "entered-status"))).rejects.toMatchObject({
+          code: "ENOENT",
+        });
+      }),
+    ).rejects.toBeInstanceOf(UpdateCommandRecoveryPendingError);
   });
 });
 
@@ -265,7 +266,9 @@ it.each(["incomplete", "malformed-final", "completed-timeout"] as const)(
           const recoverHealth = vi.fn(() => {
             throw new Error("A pending observation must not initiate recovery");
           });
+          const initialVerification = getUpdateRun(runId, { env: serviceEnv })?.verification;
           const verification = verifyUpdatedGateway({
+            targetRoot: root,
             result: resultFixture(root),
             opts: { json: true, run: { runId, env: serviceEnv, executorFence } },
             serviceEnv,
@@ -277,7 +280,9 @@ it.each(["incomplete", "malformed-final", "completed-timeout"] as const)(
           if (outcome !== "completed-timeout") {
             await expect(verification).rejects.toBeInstanceOf(UpdateCommandRecoveryPendingError);
             await expect(verification).rejects.toThrow(/startup migration/);
-            expect(getUpdateRun(runId, { env: serviceEnv })?.verification).toBeUndefined();
+            expect(getUpdateRun(runId, { env: serviceEnv })?.verification).toEqual(
+              initialVerification,
+            );
           } else {
             await expect(verification).resolves.toMatchObject({
               ok: false,

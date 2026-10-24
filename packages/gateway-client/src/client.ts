@@ -170,6 +170,8 @@ export type GatewayClientOptions = GatewayWebSocketTargetOptions &
      * this to keep the connect-challenge watchdog aligned with the gateway.
      */
     preauthHandshakeTimeoutMs?: number;
+    /** Revalidate the caller's live authority before credential-bearing transport writes. */
+    assertConnectionCurrent?: () => void;
     tickWatchMinIntervalMs?: number;
     tickWatchTimeoutMs?: number;
     requestTimeoutMs?: number;
@@ -309,7 +311,11 @@ export class GatewayClient {
           : null;
         return storedAuth instanceof Promise ? storedAuth.then(assemble) : assemble(storedAuth);
       },
-      buildConnectParams: (assembled) => assembled.params,
+      buildConnectParams: (assembled) => {
+        // Device-token preparation may have yielded; ownership must still hold at send.
+        this.opts.assertConnectionCurrent?.();
+        return assembled.params;
+      },
       onConnectPlanError: (error) => {
         this.stopped = true;
         const marked = markGatewayConnectAssemblyError(error);
@@ -455,6 +461,7 @@ export class GatewayClient {
     // lifecycle and must remove it immediately after the socket is created.
     let unregisterGatewayLoopbackBypass: (() => void) | undefined;
     try {
+      this.opts.assertConnectionCurrent?.();
       unregisterGatewayLoopbackBypass = this.deps.registerGatewayLoopbackBypass(url);
     } catch (error) {
       throw new GatewayClientTransportPolicyError(

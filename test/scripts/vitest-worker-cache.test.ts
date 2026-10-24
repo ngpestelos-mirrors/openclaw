@@ -17,6 +17,7 @@ import {
   createVitestWorkerCache,
   retainVitestWorkerArtifacts,
 } from "../../scripts/lib/vitest-worker-cache.mts";
+import { vitestWorkerRuntimeAssets } from "../../scripts/lib/vitest-worker-declarations.mts";
 import { useAutoCleanupTempDirTracker } from "../helpers/temp-dir.js";
 import { writeWorkerFixtureManifest } from "./fixtures/vitest-worker-compiler.mjs";
 import { writeFixture } from "./vitest-worker-artifacts.test-support.js";
@@ -41,8 +42,16 @@ function fixture() {
     "src/entry.ts": 'import { value } from "./value.js"; console.log(value);\n',
     "src/value.js": 'export const value = "first";\n',
     "scripts/lib/fixture-compiler.mts": 'export const compilerRevision = "first";\n',
-    "node-host-launcher.mjs": 'export const launcher = "fixture";\n',
-    "cli-invocation.mjs": 'export const invocation = "fixture";\n',
+    // Real bootstrap imports must still resolve after retention and restoration.
+    ...Object.fromEntries(
+      [
+        "cli-invocation.mjs",
+        "cli-parent-lifetime.mjs",
+        "gateway-shutdown-budget.mjs",
+        "node-host-launcher.mjs",
+        "node-runtime-env.mjs",
+      ].map((name) => [name, fs.readFileSync(new URL(`../../${name}`, import.meta.url), "utf8")]),
+    ),
   };
   for (const [name, bytes] of Object.entries(sources)) {
     write(name, bytes);
@@ -67,10 +76,10 @@ function fixture() {
     const outputs = {
       "probe.js":
         "#!/usr/bin/env node\n" +
+        'import "../cli-invocation.mjs"; import "../node-runtime-env.mjs";\n' +
         read("src/value.js") +
         `console.log(JSON.stringify({value,generation:${JSON.stringify(pathToFileURL(directory).href)}}));\n`,
-      "../node-host-launcher.mjs": read("node-host-launcher.mjs"),
-      "../cli-invocation.mjs": read("cli-invocation.mjs"),
+      ...Object.fromEntries(vitestWorkerRuntimeAssets.map((name) => [`../${name}`, read(name)])),
       "build-info.json": "{}\n",
       "nested/deeper.js": 'export const nested = "fixture";\n',
     };

@@ -115,8 +115,6 @@ export async function verifyPreviousGatewayForUpdate(params: {
       const expectedVersion = params.expectedVersion ?? installedVersion;
       progress("readiness", `checking service and listener identity on port ${port}`);
       const { health, readyz, http } = await observeUpdateGatewayReadiness({
-        targetRoot: params.root,
-        executor: params.opts.run?.executorFence,
         serviceEnv: env,
         gatewayPort: port,
         expectedVersion: expectedVersion ?? undefined,
@@ -143,19 +141,10 @@ export async function verifyPreviousGatewayForUpdate(params: {
       );
     });
   } catch (error) {
-    if (
-      !(error instanceof GatewayRestartDeadlineError) &&
-      !(error instanceof UpdateCommandRecoveryPendingError)
-    ) {
+    if (!(error instanceof GatewayRestartDeadlineError)) {
       throw error;
     }
-    // The untouched incumbent is advisory rollback evidence, not activation proof.
-    // progress revalidates the parent before recording an unverified observation.
-    progress(
-      error instanceof GatewayRestartDeadlineError ? "budget exhausted" : "observation unavailable",
-      error instanceof UpdateCommandRecoveryPendingError ? error.message : lastReason,
-      true,
-    );
+    progress("budget exhausted", lastReason, true);
     return false;
   } finally {
     if (!sharedDeadline) {
@@ -233,6 +222,17 @@ export type UpdateGatewayReadinessParams = {
   }>;
 };
 
+export type UpdateGatewayObservationContext = Pick<
+  UpdateGatewayReadinessParams,
+  | "targetRoot"
+  | "nodeRunner"
+  | "serviceEnv"
+  | "gatewayPort"
+  | "expectedVersion"
+  | "expectedBuildId"
+  | "requireRunningService"
+>;
+
 export function gatewayReadinessPending(health: GatewayRestartSnapshot): boolean {
   if (health.waitOutcome === "still-starting") {
     return true;
@@ -281,6 +281,7 @@ export async function observeUpdateGatewayReadiness(params: UpdateGatewayReadine
   };
   const service = resolveGatewayService();
   const probeParams = {
+    assertCurrent,
     service,
     port: params.gatewayPort,
     expectedVersion: params.expectedVersion,

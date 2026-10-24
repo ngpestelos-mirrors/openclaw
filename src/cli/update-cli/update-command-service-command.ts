@@ -123,6 +123,7 @@ export async function isUpdatedInstallGatewayExecutorSupported(params: {
   signal?: AbortSignal;
   onDefinitionBackupCapability?: (supported: boolean) => void;
   onReadinessCapability?: (version: unknown) => void;
+  onDiagnostic?: (text: string) => void;
   requireOriginalDefinitionBinding?: boolean;
 }): Promise<boolean> {
   params.signal?.throwIfAborted();
@@ -131,6 +132,7 @@ export async function isUpdatedInstallGatewayExecutorSupported(params: {
   const entrypoint = await resolveGatewayInstallEntrypoint(params.root);
   params.executor.assertCurrent();
   if (!entrypoint) {
+    params.onDiagnostic?.(`Target CLI entrypoint not found under ${params.root}.`);
     return false;
   }
   const check = await runUpdatedGatewayChild({
@@ -166,6 +168,9 @@ export async function isUpdatedInstallGatewayExecutorSupported(params: {
       (capability.originalDefinitionBinding === true &&
         capability.originalRuntimePinBinding === true)) &&
     (!requiresRetainedOwner || capability.retainedOwnerBinding === true);
+  if (!supported) {
+    params.onDiagnostic?.(formatCommandFailure(check.stdout, check.stderr));
+  }
   params.onDefinitionBackupCapability?.(supported && capability?.definitionBackup === true);
   params.onReadinessCapability?.(capability?.readinessObservation);
   return supported;
