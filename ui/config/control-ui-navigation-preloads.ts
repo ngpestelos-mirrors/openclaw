@@ -1,16 +1,17 @@
 import type { IndexHtmlTransformContext, Plugin } from "vite";
 import { collectControlUiStaticAssets } from "./control-ui-boot-preloads.ts";
 
-// Critical component entries only; never walk optional dynamic imports such as
-// editors, terminals, or plugin runtimes from a page's static graph.
+// Name the entries needed for the initial presentation; never walk optional
+// dynamic children such as editors, terminals, or individual board widgets.
 const entries = {
   "new-session": [
+    "pages/new-session/route-loader.ts",
     "pages/new-session/new-session-page-entry.ts",
     "pages/new-session/creation-composer-render.tsx",
   ],
   claws: ["pages/claws/page.tsx"],
-  dashboards: ["pages/dashboards/dashboards-page.tsx"],
-  usage: ["pages/usage/usage-page.tsx"],
+  dashboards: ["pages/dashboards/dashboards-page.tsx", "components/board/board-document.tsx"],
+  usage: ["pages/usage/usage-page.tsx", "pages/usage/route-loader.ts"],
   cron: ["pages/cron/cron-page-entry.tsx", "pages/cron/cron-page.tsx"],
   sessions: ["pages/sessions/sessions-page.tsx"],
   systems: ["pages/systems/systems-route-view.tsx"],
@@ -21,8 +22,18 @@ const entries = {
   portals: ["pages/portals/portals-page.tsx"],
   palette: ["components/command-palette.tsx"],
   "model-picker": ["pages/chat/components/chat-model-picker-panel.tsx"],
+  appearance: [
+    "pages/config/config-page.tsx",
+    "components/settings-sidebar-shell.tsx",
+    "app/theme-catalog.ts",
+  ],
   shortcuts: ["components/keyboard-shortcuts-dialog.tsx"],
-  debug: ["pages/debug/debug-overlay.tsx", "pages/debug/debug-overlay-content.tsx"],
+  debug: [
+    "pages/debug/debug-overlay.ts",
+    "pages/debug/debug-overlay-content.ts",
+    "pages/debug/debug-overlay-frame.ts",
+    "pages/debug/debug-overlay-layout.runtime.ts",
+  ],
 };
 
 export function collectControlUiNavigationPreloads(
@@ -33,9 +44,14 @@ export function collectControlUiNavigationPreloads(
   for (const [name, sources] of Object.entries(entries)) {
     const assets = new Set<string>();
     for (const source of sources) {
-      const chunk = chunks.find((candidate) =>
-        Object.keys(candidate.modules).some((id) => id.endsWith(`/ui/src/${source}`)),
-      );
+      const modulePath = `/ui/src/${source}`;
+      // Grouping can leave a tiny import facade in front of the implementation.
+      // Warm the URL navigation imports, including that otherwise empty facade.
+      const chunk =
+        chunks.find((candidate) => candidate.facadeModuleId?.endsWith(modulePath)) ??
+        chunks.find((candidate) =>
+          Object.keys(candidate.modules).some((id) => id.endsWith(modulePath)),
+        );
       if (chunk) {
         collectControlUiStaticAssets(bundle, chunk.fileName, assets);
       }

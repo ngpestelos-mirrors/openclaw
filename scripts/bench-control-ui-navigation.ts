@@ -29,6 +29,7 @@ import {
   clipInteractionCpuProfile,
   summarizeInteractionTrace,
 } from "./lib/control-ui-interaction-trace.ts";
+import { emulateNavigationWorkerNetwork } from "./lib/control-ui-navigation-network.ts";
 
 const { values } = parseArgs({
   options: {
@@ -109,6 +110,12 @@ const allScenarios: Scenario[] = [
     id: "new-session",
     routeId: "new-session",
     selector: "openclaw-new-session-page .new-session-page__message",
+  },
+  {
+    id: "appearance",
+    routeId: "appearance",
+    selector: "openclaw-config-page .settings-theme-grid [data-theme-id]",
+    shortcut: "ControlOrMeta+Shift+Comma",
   },
   {
     id: "command-palette",
@@ -208,6 +215,12 @@ const browser = await chromium.launch({
   headless: true,
 });
 
+const workerNetwork = await emulateNavigationWorkerNetwork(browser, {
+  latency: 0,
+  downloadThroughput: -1,
+  uploadThroughput: -1,
+});
+
 function createFixture(buildId: string, version: string) {
   const fixture = createInteractionFixture(buildId, version);
   const config = {
@@ -262,7 +275,7 @@ async function prepareTarget(page: Page, scenario: Scenario): Promise<Locator | 
     await target.waitFor({ state: "visible" });
     return target;
   }
-  if (!scenario.routeId) {
+  if (scenario.shortcut || !scenario.routeId) {
     return undefined;
   }
   if (scenario.routeId === "new-session") {
@@ -352,8 +365,9 @@ try {
         acceptance:
           "At least 10 interleaved base/head pairs. Median regression <=5% and p95 no worse (sub-1% p95 movement is noise); repeat noisy cells and use A/A plus CPU. Remote chunk-cached navigation target <=100ms.",
         limitations: [
-          "Synthetic in-page Gateway RPC has no network latency; CDP 100ms / 10Mbps affects actual HTTP assets only.",
+          "Synthetic in-page Gateway RPC has no network latency; page and service-worker CDP 100ms / 10Mbps affect actual HTTP assets only.",
           "Vite production preview cache headers are recorded, not evidence of Gateway production cache headers.",
+          "Page response fromServiceWorker flags include cache hits and upstream fetches; page encoded bytes omit worker upstream bytes. Neither proves a cache hit.",
           "A proof-only document copy applies the Gateway's canonical root asset href rewrite; asset bytes are symlinked unchanged from the recorded bundle.",
           "No page.route interception; Chromium HTTP cache and service worker remain enabled.",
           "One context per bundle/pair: destinations share dependencies during each sweep. Order rotates and reverses across pairs, identically for both bundles.",
@@ -372,6 +386,7 @@ try {
     ),
   );
   for (const profile of profiles) {
+    await workerNetwork.setConditions(profile);
     for (let pair = 0; pair < pairs; pair++) {
       const observation = {
         profile: profile.id,
@@ -493,6 +508,7 @@ try {
           let profiling = false;
           let tracing = false;
           try {
+            workerNetwork.assertHealthy();
             if (values.trace) {
               cdp.on("Tracing.dataCollected", collectTrace);
               await cdp.send("Tracing.start", {
@@ -543,7 +559,7 @@ try {
                 {
                   selector: scenario.selector,
                   routeId: scenario.routeId,
-                  eventType: scenario.routeId || scenario.trigger ? "click" : "keydown",
+                  eventType: scenario.shortcut ? "keydown" : "click",
                 },
               );
             }
@@ -567,6 +583,7 @@ try {
               );
               Object.assign(row, timing);
             }
+            workerNetwork.assertHealthy();
             row.wallMs = row.readyAt! - row.startedAt!;
             const after = await metrics(cdp);
             row.cdpReadyAt = after.Timestamp;
@@ -751,6 +768,7 @@ try {
     }
   }
 } finally {
+  await workerNetwork.close();
   await browser.close();
   for (const slot of servers) {
     await slot.server.close();

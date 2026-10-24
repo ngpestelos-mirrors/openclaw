@@ -25,6 +25,7 @@ export function connectNavigationPrefetch(options: {
     ...SIDEBAR_NAV_ROUTES,
     "palette",
     "model-picker",
+    "appearance",
     "shortcuts",
     "debug",
   ]);
@@ -154,7 +155,9 @@ export function connectNavigationPrefetch(options: {
       ? "palette"
       : event.target.closest(".chat-controls__model-trigger")
         ? "model-picker"
-        : undefined;
+        : event.target.closest('[data-value="command:settings"]')
+          ? "appearance"
+          : undefined;
     if (key && pending.has(key)) {
       intent = key;
       if (!running && ready()) {

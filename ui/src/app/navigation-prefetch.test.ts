@@ -12,6 +12,7 @@ const manifest = {
   claws: ["assets/claws-1234abcd.js"],
   palette: ["assets/palette-1234abcd.js"],
   "model-picker": ["assets/model-picker-1234abcd.js"],
+  appearance: ["assets/appearance-1234abcd.js"],
 };
 
 beforeEach(() => {
@@ -152,6 +153,15 @@ it("prioritizes keyboard intent without mounting a dialog and rechecks Save-Data
   await idle();
   expect(hints().map((link) => link.href)).toContain(
     new URL("/control/assets/model-picker-1234abcd.js", location.origin).href,
+  );
+
+  trigger.className = "";
+  trigger.dataset.value = "command:settings";
+  trigger.dispatchEvent(new FocusEvent("focusin", { bubbles: true }));
+  hints().forEach((link) => link.dispatchEvent(new Event("load")));
+  await idle();
+  expect(hints().map((link) => link.href)).toContain(
+    new URL("/control/assets/appearance-1234abcd.js", location.origin).href,
   );
 
   const timers = new Map();
