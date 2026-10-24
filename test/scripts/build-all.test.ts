@@ -718,6 +718,7 @@ describe("resolveBuildAllSteps", () => {
         true,
       );
       expect(result.timings.map(({ label }) => label)).toEqual([
+        "runtime:scripts:check",
         "plugins:assets:build",
         STEP.compile,
         STEP.external,

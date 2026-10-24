@@ -130,6 +130,33 @@ function requireUnifiedDistGraph(): TsdownConfigEntry {
 afterEach(() => vi.unstubAllEnvs());
 
 describe("tsdown config", () => {
+  it("keeps isolated and unselected plugin workers out of the host build graph", async () => {
+    vi.stubEnv("OPENCLAW_BUILD_PRIVATE_QA", "0");
+    const { default: selectedConfigs } = await importFreshModule<
+      typeof import("../../tsdown.config.ts")
+    >(import.meta.url, "../../tsdown.config.ts?isolated-worker-build");
+    const host = expectDefined(
+      asConfigArray(selectedConfigs).find((config) =>
+        entryKeys(config).includes("plugins/runtime/index"),
+      ),
+      "host build graph",
+    );
+    const sources = Object.values(entrySources(host)).map((source) =>
+      path.relative(process.cwd(), path.resolve(source)).replaceAll(path.sep, "/"),
+    );
+    for (const plugin of [
+      "codex",
+      "discord",
+      "imessage",
+      "memory-lancedb",
+      "onnx",
+      "team-reports",
+      "qa-lab",
+    ]) {
+      expect(sources.filter((source) => source.startsWith(`extensions/${plugin}/`))).toEqual([]);
+    }
+  });
+
   it.each(["0", "1"])(
     "emits QA transport facades only for private QA builds (%s)",
     async (mode) => {
@@ -353,7 +380,9 @@ describe("tsdown config", () => {
       "extensions/telegram/src/telegram-ingress-worker.runtime.ts",
     ],
   ])("keeps %s behind its stable root dist entry", (entry, source) => {
-    expect(entrySources(requireUnifiedDistGraph())[entry]).toBe(source);
+    expect(path.resolve(expectDefined(entrySources(requireUnifiedDistGraph())[entry], entry))).toBe(
+      path.resolve(source),
+    );
   });
 
   it("emits the dist modules referenced by every Docker client", () => {
