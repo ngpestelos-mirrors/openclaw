@@ -274,26 +274,21 @@ export class ShellOwner
         ),
       );
       let active = true;
-      let disconnectFavicon: (() => void) | undefined;
+      let disconnectIdle: (() => void) | undefined;
       const startedAt = Date.now();
-      const favicon = createIdleImport(
-        () => import("./control-ui-favicon-status.runtime.ts"),
-        ({ connectControlUiFavicon }) => {
+      const idle = createIdleImport(
+        () => import("./app-shell-idle.runtime.ts"),
+        ({ connectShellIdle }) => {
           if (active) {
-            disconnectFavicon = connectControlUiFavicon(
-              this.element,
-              context,
-              () => this.queryRenderedElements("openclaw-chat-pane"),
-              startedAt,
-            );
+            disconnectIdle = connectShellIdle(this, context, startedAt);
           }
         },
       );
-      favicon.schedule();
+      idle.schedule();
       this.cleanups.push(() => {
         active = false;
-        favicon.dispose();
-        disconnectFavicon?.();
+        idle.dispose();
+        disconnectIdle?.();
       });
       if (this.pendingNativeNewSession) {
         this.pendingNativeNewSession = false;

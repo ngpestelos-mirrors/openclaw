@@ -1,3 +1,10 @@
+/** Save-Data applies to speculative code and data, including hover/focus intent. */
+export function canPreload(): boolean {
+  // SAFETY: Network Information is optional and is not in TypeScript's DOM library.
+  const connection = (navigator as Navigator & { connection?: { saveData?: boolean } }).connection;
+  return navigator.onLine && !connection?.saveData && document.visibilityState === "visible";
+}
+
 export function scheduleRoutePreload<TRouteId extends string>(
   timers: Map<EventTarget, ReturnType<typeof globalThis.setTimeout>>,
   routeId: TRouteId,
@@ -6,7 +13,7 @@ export function scheduleRoutePreload<TRouteId extends string>(
   disabled = false,
   immediate = false,
 ) {
-  if (disabled || !preload) {
+  if (disabled || !preload || !canPreload()) {
     return;
   }
   const target = event.currentTarget;
@@ -15,6 +22,9 @@ export function scheduleRoutePreload<TRouteId extends string>(
   }
   const start = () => {
     timers.delete(target);
+    if (!canPreload()) {
+      return;
+    }
     try {
       void Promise.resolve(preload(routeId)).catch(() => undefined);
     } catch {
