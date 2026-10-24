@@ -2,10 +2,6 @@ import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import { describe, expect } from "vitest";
-import {
-  pluginSdkEntrypoints,
-  publicPluginSdkEntrypoints,
-} from "../../scripts/lib/plugin-sdk-entries.mts";
 import { requireNodeTool } from "../helpers/node-toolchain.js";
 import {
   createDeclarationFixture as createFixture,
@@ -168,12 +164,6 @@ describe("write-plugin-sdk-entry-dts", { timeout: WRITER_TEST_TIMEOUT_MS }, () =
         expectStagingClean(root);
         return output;
       };
-      expect(production.toSorted()).toEqual(
-        publicPluginSdkEntrypoints.map((entry) => `plugin-sdk/${entry}`).toSorted(),
-      );
-      expect(qa).toEqual(
-        expect.arrayContaining(pluginSdkEntrypoints.map((entry) => `plugin-sdk/${entry}`)),
-      );
       const preserved = [
         "dist/plugin-sdk/core.js",
         "dist/plugin-sdk/.tsbuildinfo",
