@@ -25,11 +25,15 @@ export function connectShellIdle(
     transcriptsReady: () => {
       const panes = host
         .queryRenderedElements("openclaw-chat-pane")
-        .filter((pane) => pane.conversationPresented);
+        .filter((pane) => pane.presented && pane.visuallyPresented);
       const routeId = context.router.getState().matches[0]?.routeId;
       return (
         (!routeId || !isSessionRouteId(routeId) || panes.length > 0) &&
-        panes.every((pane) => pane.transcriptReady && !pane.transcriptLoading && pane.composerReady)
+        panes.every(
+          (pane) =>
+            !pane.conversationPresented ||
+            (pane.transcriptReady && !pane.transcriptLoading && pane.composerReady),
+        )
       );
     },
   });

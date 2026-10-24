@@ -62,8 +62,8 @@ function setup() {
     resourceBasePath: "/control",
     router: {
       getState: () => state,
-      subscribe: (listener: () => void) => {
-        notify = listener;
+      subscribe: (listener) => {
+        notify = () => listener(state);
         return () => true;
       },
     },
@@ -88,7 +88,10 @@ function setup() {
   return { state, outlet, transcript, shell, stop, notify: () => notify() };
 }
 
-const hints = () => [...document.head.querySelectorAll<HTMLLinkElement>("link")];
+const hints = () =>
+  [...document.head.querySelectorAll<HTMLLinkElement>("link")].filter((link) =>
+    link.href.startsWith(new URL("/control/assets/", location.origin).href),
+  );
 async function idle() {
   await vi.advanceTimersByTimeAsync(500);
   idleCallbacks.shift()?.();
