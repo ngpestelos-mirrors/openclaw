@@ -1,7 +1,7 @@
 // @vitest-environment node
 import type { SystemAgentChatQuestion } from "@openclaw/gateway-protocol";
 import { describe, expect, it } from "vitest";
-import { parseCustodianQuestion } from "./structured-question.ts";
+import { createCustodianReplyMessage } from "./transcript.ts";
 
 describe("custodian typed question", () => {
   it("accepts a valid typed question and keeps replies and recommendations", () => {
@@ -16,7 +16,14 @@ describe("custodian typed question", () => {
       isOther: true,
       skipAction: "exit",
     };
-    expect(parseCustodianQuestion(question)).toEqual({
+    expect(
+      createCustodianReplyMessage(1, {
+        sessionId: "custodian-session",
+        reply: "Ready",
+        action: "none",
+        question,
+      }).question,
+    ).toEqual({
       id: "onboarding-next-step",
       header: "Next step",
       question: "What would you like to do first?",
@@ -30,25 +37,41 @@ describe("custodian typed question", () => {
   });
 
   it("accepts wizard-style questions without any recommendation", () => {
-    const parsed = parseCustodianQuestion({
-      id: "channel",
-      header: "Channel",
-      question: "Which channel?",
-      options: [{ label: "WhatsApp" }, { label: "Telegram" }],
-    });
+    const parsed = createCustodianReplyMessage(1, {
+      sessionId: "custodian-session",
+      reply: "Ready",
+      action: "none",
+      question: {
+        id: "channel",
+        header: "Channel",
+        question: "Which channel?",
+        options: [{ label: "WhatsApp" }, { label: "Telegram" }],
+      },
+    }).question;
     expect(parsed?.options).toHaveLength(2);
     expect(parsed?.isOther).toBe(false);
   });
 
   it("omits absent questions and display text that is empty after trimming", () => {
-    expect(parseCustodianQuestion(undefined)).toBeNull();
     expect(
-      parseCustodianQuestion({
-        id: "blank-label",
-        header: "H",
-        question: "Q",
-        options: [{ label: "A" }, { label: "   " }],
-      }),
+      createCustodianReplyMessage(1, {
+        sessionId: "custodian-session",
+        reply: "Ready",
+        action: "none",
+      }).question,
+    ).toBeNull();
+    expect(
+      createCustodianReplyMessage(1, {
+        sessionId: "custodian-session",
+        reply: "Ready",
+        action: "none",
+        question: {
+          id: "blank-label",
+          header: "H",
+          question: "Q",
+          options: [{ label: "A" }, { label: "   " }],
+        },
+      }).question,
     ).toBeNull();
   });
 });
