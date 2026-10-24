@@ -55,6 +55,12 @@ Neither path publishes a lockfile:
 - `pnpm-lock.yaml` remains the reviewed source dependency graph;
 - npm package locks exist only transiently while OpenClaw validates package graphs or runs `npm ci` to assemble a bundled plugin.
 
+### Archive compression
+
+OpenClaw's runtime builds bundle `tar` so installed packages carry the same archive implementation as source builds. The pinned `minizlib` dependency is patched to let Node's zlib concatenate its output without temporarily replacing the global `Buffer.concat` function. This preserves gzip backup and artifact support in runtimes with read-only built-ins, and avoids a process-wide patch on Node and Bun.
+
+The `tar` patch selects its published unbundled entry points so its embedded copy of `minizlib` cannot bypass that repair. Remove both patches when an upstream release provides the same behavior; keep the runtime bundling until the published dependency also contains the fix.
+
 ## Validate npm dependency graphs
 
 The npm-lock checker generates `package-lock.json` in a temporary directory, applies workspace overrides, and rejects any generated registry version absent from `pnpm-lock.yaml`. It preserves `optional` metadata and verifies that every declared `os`, `cpu`, and `libc` constraint matches the pnpm lock. It does not write a lockfile into the checkout.
