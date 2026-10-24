@@ -1084,7 +1084,7 @@ const configs: UserConfig[] = [
   workerHelperBuildConfig({
     "worker/workspace-rsync-receiver": "src/worker/workspace-rsync-receiver.ts",
   }),
-  workerHelperBuildConfig({ "worker/github-exec-launcher": "src/agents/github-exec-launcher.ts" }),
+  workerDeployBuildConfig({ "worker/github-exec-launcher": "src/agents/github-exec-launcher.ts" }),
   ...["service-child-relay", "service-child-group-anchor"].map((name) =>
     workerHelperBuildConfig(
       { [`worker/${name}`]: `src/process/supervisor/${name}.ts` },
