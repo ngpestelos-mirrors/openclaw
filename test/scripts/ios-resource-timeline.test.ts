@@ -193,19 +193,19 @@ describe("iOS resource timeline workload boundary", () => {
         ["ok", "unavailable", "timeout"].includes(sample.probes.ps.outcome),
       );
       expect(
-        attempted.map((sample) =>
+        attempted.map((sample) => [
           sample.processes
             .filter((row: { pid: number }) => row.pid === 42)
             .map((row: { cpuPercent: number | null }) => row.cpuPercent),
-        ),
-      ).toEqual([[null], [100], [100], [], [null], []]);
-      expect(attempted.map((sample) => sample.processIntervalMs)).toEqual([
-        null,
-        90_000,
-        60_000,
-        60_000,
-        null,
-        60_000,
+          sample.processIntervalMs,
+        ]),
+      ).toEqual([
+        [[null], null],
+        [[100], 90_000],
+        [[100], 60_000],
+        [[], 60_000],
+        [[null], null],
+        [[], 60_000],
       ]);
       for (const index of [2, 3, 4, 6, 7, 8, 10, 11, 12, 14, 15, 16, 18, 19, 20, 21, 22, 23]) {
         expect(samples[index]).toMatchObject({
@@ -226,33 +226,23 @@ describe("iOS resource timeline workload boundary", () => {
         });
       }
       expect(samples[1].processes.map((row: { pid: number }) => row.pid)).not.toContain(83);
-      const expectedGroup = (
-        role: string,
-        count: number,
-        cpuDeltaMs: number,
-        origin = "simulator-runtime",
-      ) => ({
-        origin,
-        role,
-        count,
-        cpuObservedCount: count,
-        cpuDeltaMs,
-      });
       expect(samples[1].processSummary).toMatchObject({
         count: 21,
         runnableCount: 2,
         uninterruptibleCount: 1,
-        groups: expect.arrayContaining([
-          expectedGroup("CoreSpotlightService", 2, 45_900),
-          expectedGroup("modelcatalogd", 1, 90),
-          expectedGroup("launchd_sim", 1, 0, "xcode"),
-        ]),
       });
-      expect(
-        samples[1].processSummary.groups.filter(
-          (group: { role: string }) => group.role === "duetexpertd",
-        ),
-      ).toEqual([expectedGroup("duetexpertd", 1, 36_000)]);
+      const groups = samples[1].processSummary.groups;
+      for (const [role, count, cpuDeltaMs, origin] of [
+        ["CoreSpotlightService", 2, 45_900, "simulator-runtime"],
+        ["modelcatalogd", 1, 90, "simulator-runtime"],
+        ["launchd_sim", 1, 0, "xcode"],
+        ["duetexpertd", 1, 36_000, "simulator-runtime"],
+      ]) {
+        expect(groups).toContainEqual({ role, count, cpuDeltaMs, origin, cpuObservedCount: count });
+      }
+      expect(groups.filter((group: { role: string }) => group.role === "duetexpertd")).toHaveLength(
+        1,
+      );
       for (const [index, outcome] of [
         [3, "unavailable"],
         [5, "timeout"],

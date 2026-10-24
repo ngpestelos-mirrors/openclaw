@@ -21,22 +21,8 @@ const artifactRoot = "mantis/discord/pr-1/run-1";
 const rawBase = `https://qa.openclaw.ai/${artifactRoot}`;
 const marker = "<!-- mantis-discord-status-reactions -->";
 type ArtifactFetch = NonNullable<Parameters<typeof publishArtifactFiles>[0]["fetchImpl"]>;
-const links = {
-  artifactUrl: "https://github.com/openclaw/openclaw/actions/runs/1/artifacts/2",
-  requestSource: "workflow_dispatch",
-  runUrl: "https://github.com/openclaw/openclaw/actions/runs/1",
-  treeUrl: rawBase,
-};
-function render(
-  manifest: ReturnType<typeof loadEvidenceManifest>,
-  options: Partial<Parameters<typeof renderEvidenceComment>[0]> = {},
-) {
-  return renderEvidenceComment({
-    manifest,
-    marker,
-    rawBase,
-    ...options,
-  });
+function render(manifest: ReturnType<typeof loadEvidenceManifest>) {
+  return renderEvidenceComment({ manifest, marker, rawBase });
 }
 function contains(body: string, ...parts: string[]) {
   for (const part of parts) {
@@ -52,7 +38,12 @@ function upload(fetchImpl: ArtifactFetch, timeoutMs?: number) {
     manifest: loadEvidenceManifest(writeFixtureManifest()),
   });
 }
-function writeManifest(dir: string, manifest: object) {
+function writeManifest(manifest: object = {}, files: string[] = []) {
+  const dir = tempDirs.make("mantis-evidence-test-");
+  for (const name of files) {
+    mkdirSync(path.dirname(path.join(dir, name)), { recursive: true });
+    writeFileSync(path.join(dir, name), name);
+  }
   const file = path.join(dir, "mantis-evidence.json");
   writeFileSync(
     file,
@@ -70,41 +61,39 @@ function writeManifest(dir: string, manifest: object) {
 function lane(expected: string, sha: string, status: string, expectationMet = true) {
   return { expected, sha, status, expectationMet };
 }
-function timeline(laneName: string, label: string) {
+function timeline(laneName: string) {
   return {
     kind: "timeline",
     lane: laneName,
-    label,
-    alt: `${laneName} timeline`,
+    label: laneName,
     path: `${laneName}/timeline.png`,
     targetPath: `${laneName}.png`,
   };
 }
+const fixtureArtifacts = [
+  timeline("baseline"),
+  timeline("candidate"),
+  {
+    kind: "motionClip",
+    path: "baseline/change.mp4",
+    targetPath: "baseline-change.mp4",
+    label: "Baseline change MP4",
+  },
+];
 function writeFixtureManifest() {
-  const dir = tempDirs.make("mantis-evidence-test-");
-  for (const file of ["baseline/timeline.png", "candidate/timeline.png", "baseline/change.mp4"]) {
-    mkdirSync(path.dirname(path.join(dir, file)), { recursive: true });
-    writeFileSync(path.join(dir, file), file);
-  }
-  return writeManifest(dir, {
-    summary: "Mantis reran the scenario.",
-    comparison: {
-      baseline: lane("queued-only", "aaa", "fail"),
-      candidate: lane("queued -> thinking -> done", "bbb", "pass"),
-      pass: true,
-    },
-    artifacts: [
-      timeline("baseline", "Baseline queued-only"),
-      timeline("candidate", "Candidate queued -> thinking -> done"),
-      {
-        kind: "motionClip",
-        lane: "baseline",
-        path: "baseline/change.mp4",
-        targetPath: "baseline-change.mp4",
-        label: "Baseline change MP4",
+  return writeManifest(
+    {
+      summary: "Mantis reran the scenario.",
+      comparison: {
+        baseline: lane("queued-only", "aaa", "fail"),
+        candidate: { ...lane("queued -> thinking -> done", "bbb", "pass"), digest: "3 messages" },
+        differential: "bot messages 2→3 · deletes 1→0",
+        pass: true,
       },
-    ],
-  });
+      artifacts: fixtureArtifacts,
+    },
+    fixtureArtifacts.map(({ path: source }) => source),
+  );
 }
 
 describe("scripts/mantis/publish-pr-evidence", () => {
@@ -115,11 +104,7 @@ describe("scripts/mantis/publish-pr-evidence", () => {
   });
 
   it("keeps required booleans for sibling trusted evidence producers", () => {
-    const manifestPath = writeFixtureManifest();
-    const manifest = JSON.parse(readFileSync(manifestPath, "utf8"));
-    delete manifest.comparison.candidate.expectationMet;
-    writeFileSync(manifestPath, JSON.stringify(manifest));
-
+    const manifestPath = writeManifest({ comparison: { candidate: {}, pass: true } });
     expect(() => loadEvidenceManifest(manifestPath)).toThrow(
       "Mantis evidence comparison.candidate.expectationMet must be a boolean.",
     );
@@ -127,62 +112,58 @@ describe("scripts/mantis/publish-pr-evidence", () => {
 
   it("renders a manifest-driven PR comment with inline screenshots and video links", () => {
     const manifest = loadEvidenceManifest(writeFixtureManifest());
-    const body = render(manifest, links);
+    const body = renderEvidenceComment({
+      manifest,
+      marker,
+      rawBase,
+      artifactUrl: "https://example.test/artifact",
+      requestSource: "pull_request",
+      runUrl: "https://example.test/run",
+      treeUrl: "https://example.test/files",
+    });
     contains(
       body,
       marker,
+      "- Artifact: https://example.test/artifact",
+      "- Trigger: `pull_request`",
+      "- Run: https://example.test/run",
+      "Raw QA files: https://example.test/files",
       "Summary: Mantis reran the scenario.",
       '<table width="100%">',
-      '<th width="50%">Baseline queued-only</th>',
-      '<th width="50%">Candidate queued -> thinking -> done</th>',
+      '<th width="50%">baseline</th>',
+      '<th width="50%">candidate</th>',
       `<td width="50%" align="center"><img src="${rawBase}/baseline.png" width="100%"`,
       `[Baseline change MP4](${rawBase}/baseline-change.mp4)`,
-      "- Overall: `pass`",
+      "- Baseline: `fail` at `aaa`, expected queued-only",
+      "- Candidate (PR merged onto main): `pass` at `bbb` — queued -> thinking -> done · facts: 3 messages",
+      "- Differential (trusted facts): bot messages 2→3 · deletes 1→0\n- Overall: `pass`",
     );
     expect(body).not.toContain("raw.githubusercontent.com");
   });
 
-  it("renders trusted lane digests and their count differential", () => {
-    const manifest = loadEvidenceManifest(writeFixtureManifest());
-    manifest.comparison = {
-      baseline: { ...lane("baseline behavior", "aaa", "pass"), digest: "2 messages" },
-      candidate: { ...lane("candidate behavior", "bbb", "pass"), digest: "3 messages" },
-      differential: "bot messages 2→3 · deletes 1→0",
-      outcome: "pass",
-      pass: true,
-    };
-
-    contains(
-      render(manifest),
-      "- Baseline: `pass` at `aaa` — baseline behavior · facts: 2 messages",
-      "- Candidate (PR merged onto main): `pass` at `bbb` — candidate behavior · facts: 3 messages",
-      "- Differential (trusted facts): bot messages 2→3 · deletes 1→0\n- Overall: `pass`",
-    );
-  });
-
   it("uploads manifest artifacts to R2-compatible object storage", async () => {
     const requests: Array<Parameters<ArtifactFetch>[1] & { url: string }> = [];
-    const fetchImpl: ArtifactFetch = async (url, init) => {
+    const published = await upload(async (url, init) => {
       requests.push({ ...init, url: url.toString() });
       return new Response("", { status: 200 });
-    };
-
-    const published = await upload(fetchImpl);
+    });
 
     expect(published).toEqual({ artifactRoot, rawBase, treeUrl: `${rawBase}/index.json` });
-    expect(requests.map(({ method, signal, url }) => ({ method, signal, url }))).toEqual(
+    expect(requests.map(({ url }) => url)).toEqual(
       [
-        "baseline.png",
-        "candidate.png",
-        "baseline-change.mp4",
+        ...fixtureArtifacts.map(({ targetPath }) => targetPath),
         "mantis-evidence.json",
         "index.json",
-      ].map((file) => ({
+      ].map(
+        (target) => `${storageConfig.endpoint}/${storageConfig.bucket}/${artifactRoot}/${target}`,
+      ),
+    );
+    for (const request of requests) {
+      expect(request).toMatchObject({
         method: "PUT",
         signal: expect.any(AbortSignal),
-        url: `${storageConfig.endpoint}/${storageConfig.bucket}/${artifactRoot}/${file}`,
-      })),
-    );
+      });
+    }
     expect(requests[0]?.headers).toMatchObject({
       "content-type": "image/png",
       "x-amz-date": expect.any(String),
@@ -221,16 +202,13 @@ describe("scripts/mantis/publish-pr-evidence", () => {
       },
     });
 
-    const result = upload(
-      async () => new Response(body, { status: 503, statusText: "Service Unavailable" }),
-    );
-
-    await expect(result).rejects.toMatchObject({
+    await expect(
+      upload(async () => new Response(body, { status: 503, statusText: "Service Unavailable" })),
+    ).rejects.toMatchObject({
       message: expect.stringMatching(
         /^Failed to upload Mantis artifact baseline\.png: 503 Service Unavailable\nMantis upload error response body exceeded 65536 bytes$/u,
       ),
     });
-    // Unbounded response.text() would keep pulling forever; the bound cancels after ~64 KiB.
     expect(enqueuedBytes).toBeGreaterThan(64 * 1024);
     expect(enqueuedBytes).toBeLessThanOrEqual(256 * 1024);
   });
@@ -246,15 +224,12 @@ describe("scripts/mantis/publish-pr-evidence", () => {
       },
     });
 
-    const result = upload(
-      async () => new Response(body, { status: 503, statusText: "Service Unavailable" }),
-      50,
+    await expect(upload(async () => new Response(body, { status: 503 }), 50)).rejects.toMatchObject(
+      {
+        cause: { name: "TimeoutError" },
+        message: "Timed out uploading Mantis artifact baseline.png after 50ms.",
+      },
     );
-
-    await expect(result).rejects.toMatchObject({
-      cause: { name: "TimeoutError" },
-      message: "Timed out uploading Mantis artifact baseline.png after 50ms.",
-    });
     await new Promise((resolve) => {
       setTimeout(resolve, 0);
     });
@@ -262,22 +237,16 @@ describe("scripts/mantis/publish-pr-evidence", () => {
   });
 
   it("reads small non-ok upload error response bodies within the bound", async () => {
-    const smallBody = "access denied: invalid credentials";
-
-    const result = upload(
-      async () => new Response(smallBody, { status: 403, statusText: "Forbidden" }),
-    );
-
-    await expect(result).rejects.toMatchObject({
-      message: expect.stringMatching(
-        /^Failed to upload Mantis artifact baseline\.png: 403 Forbidden\naccess denied: invalid credentials$/u,
-      ),
+    await expect(
+      upload(async () => new Response("access denied", { status: 403 })),
+    ).rejects.toMatchObject({
+      message: "Failed to upload Mantis artifact baseline.png: 403 \naccess denied",
     });
   });
 
   it("allows failure manifests to omit optional visual artifacts", () => {
     const manifest = loadEvidenceManifest(
-      writeManifest(tempDirs.make("mantis-evidence-test-"), {
+      writeManifest({
         comparison: {
           candidate: lane("Slack QA and VM gateway setup pass", "bbb", "fail", false),
           pass: false,
@@ -290,13 +259,13 @@ describe("scripts/mantis/publish-pr-evidence", () => {
     expect(manifest.artifacts.map((artifact) => artifact.targetPath)).toEqual([
       "mantis-evidence.json",
     ]);
-    const body = render(manifest, links);
+    const body = render(manifest);
     contains(body, "- Overall: `fail`");
     expect(body).not.toContain("<img ");
   });
 
   it("rejects artifact paths that escape the manifest directory", () => {
-    const manifestPath = writeManifest(tempDirs.make("mantis-evidence-test-"), {
+    const manifestPath = writeManifest({
       artifacts: [{ kind: "metadata", path: "../outside.json" }],
     });
 
