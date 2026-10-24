@@ -766,6 +766,7 @@ describe("package-openclaw-for-docker", () => {
       "cli-invocation.mjs",
       "cli-parent-lifetime.mjs",
       "gateway-shutdown-budget.mjs",
+      "node-runtime-env.mjs",
       "packages/normalization-core/src/number-coercion.ts",
       "packages/normalization-core/src/string-coerce.ts",
       "scripts/package-openclaw-for-docker.mts",
