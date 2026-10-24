@@ -7,7 +7,6 @@ const cacheKeyFor = (key: string, textHash: string) => `cache:${key}:${textHash}
 const strings = (entries: Record<string, string>) => new Map(Object.entries(entries));
 const memoryMap = (...rows: sync.TranslationMemoryEntry[]) =>
   new Map(rows.map((row) => [row.cache_key, row]));
-const json = (value: unknown) => `${JSON.stringify(value, null, 2)}\n`;
 
 function memoryEntry(
   overrides: Partial<sync.TranslationMemoryEntry> = {},
@@ -225,9 +224,11 @@ describe("createControlUiLocaleSyncPlan", () => {
       "group.pending": "Pending source",
       "group.reused": "Shared",
     });
-    const exactCacheKey = cacheKeyFor("group.cached", hashText("Cached source"));
     const exactCache = memoryEntry(
-      { cache_key: exactCacheKey, segment_id: "group.cached" },
+      {
+        cache_key: cacheKeyFor("group.cached", hashText("Cached source")),
+        segment_id: "group.cached",
+      },
       "Cached source",
       "En cache",
     );
@@ -251,25 +252,21 @@ describe("createControlUiLocaleSyncPlan", () => {
       workflow: 1,
     });
 
-    const expectedMeta = localeMeta({
+    expect(JSON.parse(artifacts.meta)).toMatchObject({
       fallbackKeys: ["group.cached", "group.pending"],
       generatedAt: "2026-02-02T00:00:00.000Z",
       sourceHash: "next-source",
       totalKeys: 4,
       translatedKeys: 2,
     });
-    expect(artifacts.meta).toBe(json(expectedMeta));
-    expect(artifacts.glossary).toBe(json([{ source: "OpenClaw", target: "OpenClaw" }]));
-    const reusedCache = memoryEntry({
-      cache_key: cacheKeyFor("group.reused", hashText("Shared")),
-      segment_id: "group.reused",
-    });
-    expect(artifacts.translationMemory).toBe(
-      `${[reusedCache, exactCache]
-        .toSorted((left, right) => left.cache_key.localeCompare(right.cache_key))
-        .map((value) => JSON.stringify(value))
-        .join("\n")}\n`,
-    );
+    expect(JSON.parse(artifacts.glossary)).toEqual([{ source: "OpenClaw", target: "OpenClaw" }]);
+    expect(readMemory(artifacts.translationMemory)).toEqual([
+      exactCache,
+      memoryEntry({
+        cache_key: cacheKeyFor("group.reused", hashText("Shared")),
+        segment_id: "group.reused",
+      }),
+    ]);
     expect(artifacts.translationMemory + artifacts.meta).not.toContain("private-");
   });
 

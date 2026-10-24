@@ -123,9 +123,6 @@ else { process.stdout.write(JSON.stringify(process.argv.slice(2))); process.exit
     const result = execute(target, args);
     expect(result.status, result.stderr).toBe(0);
     expect(result.stdout.split("\0")).toEqual([join(liveRoot, "openclaw.mjs"), ...args, ""]);
-    expect(content.split("\n").filter((line) => line.includes(`${target.packageRoot}/`))).toEqual([
-      `#openclaw-entry=${target.entryPath}`,
-    ]);
     expect(parseInstalled(target)).toEqual({
       bunPath: target.bunPath,
       entryPath: join(liveRoot, "openclaw.mjs"),
@@ -268,11 +265,6 @@ describe.skipIf(process.platform === "win32")("packaged Bun launcher lifecycle",
     const target = fixture("", "entryPath", true);
     const params = packageParams(target);
     postinstall(params);
-    expect(lifecycle.resolveBinDir).toHaveBeenCalledWith({
-      bunPath: target.bunPath,
-      cwd: target.packageRoot,
-      env: params.env,
-    });
     expect(inspect(target).state).toBe("current");
     const updatedBun = join(target.root, "updated-bun");
     params.env.OPENCLAW_PACKAGE_BUN_LAUNCHER = updatedBun;

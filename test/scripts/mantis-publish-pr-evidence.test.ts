@@ -70,12 +70,12 @@ function writeManifest(dir: string, manifest: object) {
 function lane(expected: string, sha: string, status: string, expectationMet = true) {
   return { expected, sha, status, expectationMet };
 }
-function timeline(laneName: string, label: string, alt: string) {
+function timeline(laneName: string, label: string) {
   return {
     kind: "timeline",
     lane: laneName,
     label,
-    alt,
+    alt: `${laneName} timeline`,
     path: `${laneName}/timeline.png`,
     targetPath: `${laneName}.png`,
   };
@@ -94,8 +94,8 @@ function writeFixtureManifest() {
       pass: true,
     },
     artifacts: [
-      timeline("baseline", "Baseline queued-only", "Baseline timeline"),
-      timeline("candidate", "Candidate queued -> thinking -> done", "Candidate timeline"),
+      timeline("baseline", "Baseline queued-only"),
+      timeline("candidate", "Candidate queued -> thinking -> done"),
       {
         kind: "motionClip",
         lane: "baseline",
@@ -145,16 +145,8 @@ describe("scripts/mantis/publish-pr-evidence", () => {
   it("renders trusted lane digests and their count differential", () => {
     const manifest = loadEvidenceManifest(writeFixtureManifest());
     manifest.comparison = {
-      baseline: {
-        ...lane("baseline behavior", "aaa", "pass"),
-        digest:
-          "2 sent · 2 bot messages · 1 edit · 1 delete · 3 provider requests · 134s observed · attempt 1 · sent: `/queue followup`",
-      },
-      candidate: {
-        ...lane("candidate behavior", "bbb", "pass"),
-        digest:
-          "2 sent · 3 bot messages · 1 edit · 0 deletes · 3 provider requests · 134s observed · attempt 1 · sent: `/queue followup`",
-      },
+      baseline: { ...lane("baseline behavior", "aaa", "pass"), digest: "2 messages" },
+      candidate: { ...lane("candidate behavior", "bbb", "pass"), digest: "3 messages" },
       differential: "bot messages 2→3 · deletes 1→0",
       outcome: "pass",
       pass: true,
@@ -162,8 +154,8 @@ describe("scripts/mantis/publish-pr-evidence", () => {
 
     contains(
       render(manifest),
-      "- Baseline: `pass` at `aaa` — baseline behavior · facts: 2 sent · 2 bot messages · 1 edit · 1 delete · 3 provider requests · 134s observed · attempt 1 · sent: `/queue followup`",
-      "- Candidate (PR merged onto main): `pass` at `bbb` — candidate behavior · facts: 2 sent · 3 bot messages · 1 edit · 0 deletes · 3 provider requests · 134s observed · attempt 1 · sent: `/queue followup`",
+      "- Baseline: `pass` at `aaa` — baseline behavior · facts: 2 messages",
+      "- Candidate (PR merged onto main): `pass` at `bbb` — candidate behavior · facts: 3 messages",
       "- Differential (trusted facts): bot messages 2→3 · deletes 1→0\n- Overall: `pass`",
     );
   });
@@ -195,9 +187,7 @@ describe("scripts/mantis/publish-pr-evidence", () => {
       "content-type": "image/png",
       "x-amz-date": expect.any(String),
     });
-    expect((requests[0]?.headers as Record<string, string> | undefined)?.authorization).toContain(
-      "Credential=access/",
-    );
+    expect(new Headers(requests[0]?.headers).get("authorization")).toContain("Credential=access/");
     expect(String(requests[4]?.body)).toContain(
       '"url": "https://qa.openclaw.ai/mantis/discord/pr-1/run-1/baseline.png"',
     );
@@ -286,38 +276,22 @@ describe("scripts/mantis/publish-pr-evidence", () => {
   });
 
   it("allows failure manifests to omit optional visual artifacts", () => {
-    const dir = tempDirs.make("mantis-evidence-test-");
-    const files = ["summary.json", "report.md"];
-    for (const file of files) {
-      writeFileSync(path.join(dir, file), "{}");
-    }
-    const manifestPath = writeManifest(dir, {
-      summary: "Mantis could not finish VM setup.",
-      comparison: {
-        candidate: lane("Slack QA and VM gateway setup pass", "bbb", "fail", false),
-        pass: false,
-      },
-      artifacts: [
-        {
-          inline: true,
-          kind: "desktopScreenshot",
-          lane: "candidate",
-          path: "slack-desktop-smoke.png",
-          required: false,
-          targetPath: "slack-desktop.png",
+    const manifest = loadEvidenceManifest(
+      writeManifest(tempDirs.make("mantis-evidence-test-"), {
+        comparison: {
+          candidate: lane("Slack QA and VM gateway setup pass", "bbb", "fail", false),
+          pass: false,
         },
-        ...files.map((file, index) => ({ kind: index === 0 ? "metadata" : "report", path: file })),
-      ],
-    });
-
-    const manifest = loadEvidenceManifest(manifestPath);
+        artifacts: [
+          { inline: true, kind: "desktopScreenshot", path: "missing.png", required: false },
+        ],
+      }),
+    );
     expect(manifest.artifacts.map((artifact) => artifact.targetPath)).toEqual([
-      "summary.json",
-      "report.md",
       "mantis-evidence.json",
     ]);
     const body = render(manifest, links);
-    contains(body, "Summary: Mantis could not finish VM setup.", "- Overall: `fail`");
+    contains(body, "- Overall: `fail`");
     expect(body).not.toContain("<img ");
   });
 

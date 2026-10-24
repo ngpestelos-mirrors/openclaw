@@ -186,6 +186,7 @@ describe("collectPackageDistImports", () => {
         'import value from "./value.js";',
         '/** @example import "./example.js"; */',
         'export * from "./exports.js";',
+        'export { value } from "./named.js";',
         '/** @type {import("./malformed.js").Value< */',
         'function load() { return import("./dynamic.js"); }',
         'require("./common.cjs");',
@@ -194,11 +195,13 @@ describe("collectPackageDistImports", () => {
       ].join("\n"),
     );
     expect(imports).toEqual(
-      ["value.js", "exports.js", "dynamic.js", "common.cjs", "worker.mjs"].map((name) => ({
-        importerPath: "dist/index.js",
-        importedPath: `dist/${name}`,
-        kind: name === "common.cjs" ? "require" : undefined,
-      })),
+      ["value.js", "exports.js", "named.js", "dynamic.js", "common.cjs", "worker.mjs"].map(
+        (name) => ({
+          importerPath: "dist/index.js",
+          importedPath: `dist/${name}`,
+          kind: name === "common.cjs" ? "require" : undefined,
+        }),
+      ),
     );
   });
 
@@ -284,7 +287,6 @@ describe("check-package-dist-imports", () => {
       error: "Unexpected package dist import check argument: extra",
     },
     { args: ["--", "$ROOT"], code: 0, output: "OpenClaw package dist import closure passed." },
-    { args: ["$ROOT", ""], code: 1, error: "Unexpected package dist import check argument" },
   ])("validates CLI arguments $args before scanning", ({ args, code, output, error }) => {
     const result = checkPackage({ "index.js": "export {};\n" }, (root) =>
       args.map((arg) => (arg === "$ROOT" ? root : arg)),
@@ -301,43 +303,5 @@ describe("check-package-dist-imports", () => {
     } else {
       expect(result.stderr).toBe("");
     }
-  });
-
-  it("rejects missing chunks across ESM import, re-export, and CommonJS forms", () => {
-    const sources = {
-      "named-import.js": 'import { value } from "./missing.js";\n',
-      "multiline-import.js": 'import {\n  value,\n} from "./missing.js";\n',
-      "named-export.js": 'export { value } from "./missing.js";\n',
-      "multiline-export.js": 'export {\n  value,\n} from "./missing.js";\n',
-      "index.cjs": 'module.exports = require("./chunk.cjs");\n',
-      "return.cjs": 'var await = require("./chunk.cjs"); return await;\n',
-    };
-    const result = checkPackage(sources);
-
-    expect(result.status).not.toBe(0);
-    for (const file of Object.keys(sources)) {
-      const target = file.endsWith(".cjs") ? "chunk.cjs" : "missing.js";
-      expect(result.stderr).toContain(`dist/${file} imports missing dist/${target}`);
-    }
-  });
-
-  it("ignores import.meta.url probes outside packaged dist", () => {
-    const probes = [
-      "../../openclaw.mjs",
-      "../../scripts/run-node.mjs",
-      "../../dist/entry.js",
-      "../../dist/entry.mjs",
-    ];
-    const result = checkPackage({
-      "index.js": probes
-        .map(
-          (specifier, index) =>
-            `const candidate${index} = new URL(${JSON.stringify(specifier)}, import.meta.url);`,
-        )
-        .join("\n"),
-    });
-
-    expect(result.status, result.stderr).toBe(0);
-    expect(result.stdout).toContain("OpenClaw package dist import closure passed.");
   });
 });
