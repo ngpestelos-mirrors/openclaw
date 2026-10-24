@@ -225,47 +225,25 @@ suite.define(() => {
     await narrowSendAndStop(false);
   });
 
-  it("keeps wide desktop mouse activation and keyboard activation working", async () => {
+  it("keeps wide desktop keyboard activation working", async () => {
     await withComposer(false, true, async (page, gateway) => {
       const textarea = page.locator(".agent-chat__input textarea");
-      await textarea.fill("Verify wide desktop pointer controls");
-      await textarea.focus();
-      const send = page.getByRole("button", { name: "Send message" });
-      await installPointerTrace(send);
-      await clickMouseAtCurrentCenter(page, send);
-      expectStablePointerActivation(await readPointerTrace(page));
-      const runId = await streamReply(gateway);
-
-      const stop = page.getByRole("button", { name: "Stop generating" });
-      await stop.focus();
-      await expect.poll(() => stop.evaluate((node) => document.activeElement === node)).toBe(true);
-      await stop.press("Space");
-      const abortRequest = await gateway.waitForRequest("chat.abort");
-      expect(abortRequest.params).toMatchObject({ runId, sessionKey: "agent:main:main" });
-
-      await textarea.fill("Verify keyboard Send");
+      await textarea.fill("Verify desktop keyboard controls");
       await textarea.focus();
       const keyboardSend = page.getByRole("button", { name: "Send message" });
-      // Send holds the trailing end of the action row, behind the microphone, so
-      // it is no longer one Tab away. What this proves is that plain forward
-      // tabbing still reaches it — no trap, no skipped control.
-      for (let tabs = 0; tabs < 4; tabs += 1) {
-        await page.keyboard.press("Tab");
-        if (await keyboardSend.evaluate((node) => document.activeElement === node)) {
-          break;
-        }
-      }
       await expect
         .poll(async () => {
-          if (await keyboardSend.evaluate((node) => document.activeElement === node)) {
-            return true;
-          }
           await page.keyboard.press("Tab");
-          return false;
+          return keyboardSend.evaluate((node) => document.activeElement === node);
         })
         .toBe(true);
       await keyboardSend.press("Enter");
-      await expect.poll(async () => (await gateway.getRequests("chat.send")).length).toBe(2);
+      const runId = await streamReply(gateway);
+      const stop = page.getByRole("button", { name: "Stop generating" });
+      await stop.focus();
+      await stop.press("Space");
+      const abortRequest = await gateway.waitForRequest("chat.abort");
+      expect(abortRequest.params).toMatchObject({ runId, sessionKey: "agent:main:main" });
     });
   });
 

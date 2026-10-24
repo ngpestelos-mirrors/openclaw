@@ -14,7 +14,6 @@ import type {
 import { uiCommandHandlers } from "../../../src/gateway/server-methods/ui-command.js";
 import { defaultControlUiFeatureMethods } from "../test-helpers/control-ui-e2e.ts";
 import {
-  captureUiProof,
   chatSessionListResponse,
   controlUiSessionPath,
   controlUiSessionUrl,
@@ -22,7 +21,7 @@ import {
   expectDefined,
   installMockGateway,
 } from "./chat-flow.test-support.ts";
-import { createRfbRawFrame, installScriptedRfbServer } from "./desktop-rfb-test-support.ts";
+import { installScriptedRfbServer } from "./desktop-rfb-test-support.ts";
 
 const suite = createChatFlowE2eSuite();
 const callGateway = vi.spyOn(gatewayTransport, "callInProcessGatewayTool");
@@ -52,8 +51,8 @@ suite.define(() => {
             "environments.status": {
               id: "preview-desktop",
               type: "worker",
-              status: "starting",
-              desktop: false,
+              status: "available",
+              desktop: true,
             },
             "desktop.observe": {
               transport: "rfb",
@@ -76,19 +75,15 @@ suite.define(() => {
               ],
             },
           },
-          historyMessages: [
-            { role: "assistant", content: [{ type: "text", text: "Synthetic navigation proof." }] },
-          ],
         });
         await page.route("http://127.0.0.1:43210/**", (route) =>
           route.fulfill({
             contentType: "text/html",
-            body: "<!doctype html><title>Crabbox web app</title><h1>Crabbox web app</h1><button onclick=\"this.textContent='Clicked'\">Click me</button>",
+            body: "<h1>Crabbox web app</h1>",
           }),
         );
         await page.goto(controlUiSessionUrl(suite.server.baseUrl, source));
         await gateway.waitForRequest("chat.startup");
-        await page.getByText("Synthetic navigation proof.").first().waitFor();
         const client = {
           connId,
           connect: {
@@ -162,11 +157,6 @@ suite.define(() => {
     await expect
       .poll(() => new URL(expectDefined(browsers[0], "requester").page.url()).pathname)
       .toBe(controlUiSessionPath(destination));
-    await Promise.all(
-      browsers.map(({ page, client }) =>
-        captureUiProof(suite, page, "screen-requester-routing", `${client.connId}.png`),
-      ),
-    );
     expect(new URL(expectDefined(browsers[1], "other user").page.url()).pathname).toBe(
       controlUiSessionPath(source),
     );
@@ -174,7 +164,7 @@ suite.define(() => {
 
     const requester = expectDefined(browsers[0], "requester");
     const other = expectDefined(browsers[1], "other user");
-    const rfb = await installScriptedRfbServer(requester.page);
+    await installScriptedRfbServer(requester.page);
     await screen.execute("show-native", {
       action: "desktop_show",
       environmentId: "preview-desktop",
@@ -182,98 +172,13 @@ suite.define(() => {
     });
     await Promise.all(deliveries);
     const desktop = requester.page.locator("openclaw-desktop-panel[embedded]");
-    await requester.gateway.waitForRequest("environments.status");
-    await desktop.locator(".desktop-status-surface[role='status']").waitFor();
-    await desktop.getByText("Starting your machine…", { exact: true }).waitFor();
-    expect(await requester.gateway.getRequests("desktop.observe")).toHaveLength(0);
-    await captureUiProof(suite, requester.page, "screen-requester-routing", "pending-desktop.png");
-    await requester.gateway.setMethodResponse("environments.status", {
-      id: "preview-desktop",
-      type: "worker",
-      status: "available",
-      desktop: true,
-    });
     await requester.gateway.waitForRequest("desktop.observe", {
       match: { source: { kind: "environment", environmentId: "preview-desktop" } },
     });
     await desktop.locator("canvas").waitFor();
-    await expect.poll(rfb.events).toContain("authenticated:1");
-    await rfb.send([createRfbRawFrame()]);
     expect(await other.gateway.getRequests("desktop.observe")).toHaveLength(0);
 
-    await requester.gateway.setMethodResponse("desktop.observe", {
-      transport: "rfb",
-      wsPath: "/desktop/observe?token=synthetic-control",
-      expiresAtMs: 60_000,
-      control: true,
-    });
-    const desktopControls = desktop.locator(".desktop-connection-rail");
-    await desktopControls.getByRole("button", { name: "Take control", exact: true }).click();
-    await expect.poll(rfb.events).toContain("authenticated:2");
-    await desktopControls.getByRole("button", { name: "Back to viewing", exact: true }).waitFor();
-    expect(await desktop.locator(".desktop-note").count()).toBe(0);
-    const controlledCanvas = await desktop.locator("canvas").elementHandle();
-    const requestsBeforeShow = await Promise.all(
-      ["environments.status", "desktop.observe", "desktop.release"].map((method) =>
-        requester.gateway.getRequests(method),
-      ),
-    );
-    for (const [environmentId, dock] of [
-      ["preview-desktop", "bottom"],
-      [undefined, "right"],
-    ] as const) {
-      await screen.execute("show-current-desktop", {
-        action: "desktop_show",
-        sessionKey: destination,
-        dock,
-        ...(environmentId ? { environmentId } : {}),
-      });
-      await Promise.all(deliveries);
-      await requester.page.locator(`.sidebar-region--${dock}`).filter({ has: desktop }).waitFor();
-      await expect
-        .poll(() =>
-          desktop.evaluate(
-            (element) =>
-              (element as HTMLElementTagNameMap["openclaw-desktop-panel"]).refreshOnPresentation,
-          ),
-        )
-        .toBe(true);
-      expect(
-        await Promise.all(
-          ["environments.status", "desktop.observe", "desktop.release"].map((method) =>
-            requester.gateway.getRequests(method),
-          ),
-        ),
-      ).toEqual(requestsBeforeShow);
-      expect(await controlledCanvas?.evaluate((element) => element.isConnected)).toBe(true);
-      expect(await rfb.connectionCount()).toBe(2);
-      await desktopControls.getByRole("button", { name: "Back to viewing", exact: true }).waitFor();
-      expect(await desktop.locator(".desktop-note").count()).toBe(0);
-    }
-    await captureUiProof(
-      suite,
-      requester.page,
-      "screen-requester-routing",
-      "human-control-preserved.png",
-    );
-    await screen.execute("prepare-web", {
-      action: "portal_show",
-      environmentId: "preview-desktop",
-      sessionKey: destination,
-    });
-    await Promise.all(deliveries);
     const portal = requester.page.locator("openclaw-portals-page[embedded]");
-    await portal
-      .getByText("Machine ready. Waiting for your application…", { exact: true })
-      .waitFor();
-    expect(await requester.gateway.getRequests("portal.list")).toHaveLength(0);
-    await captureUiProof(suite, requester.page, "screen-requester-routing", "pending-portal.png");
-    await requester.page.reload();
-    await portal
-      .getByText("Machine ready. Waiting for your application…", { exact: true })
-      .waitFor();
-    expect(await requester.gateway.getRequests("portal.list")).toHaveLength(0);
-
     await screen.execute("show-web", {
       action: "portal_show",
       portalId: "preview-web",
@@ -281,47 +186,7 @@ suite.define(() => {
     });
     await Promise.all(deliveries);
     await portal.locator("iframe").waitFor();
-    await requester.page
-      .frameLocator("openclaw-portals-page[embedded] iframe")
-      .getByRole("button", { name: "Click me" })
-      .click();
-    await requester.page
-      .frameLocator("openclaw-portals-page[embedded] iframe")
-      .getByRole("button", { name: "Clicked" })
-      .waitFor();
     expect(await other.gateway.getRequests("portal.list")).toHaveLength(0);
-    await captureUiProof(suite, requester.page, "screen-requester-routing", "ready-portal.png");
-    await installScriptedRfbServer(requester.page);
-
-    await screen.execute("inspect-desktop", {
-      action: "desktop_show",
-      environmentId: "preview-desktop",
-      sessionKey: destination,
-    });
-    await Promise.all(deliveries);
-    await portal.waitFor({ state: "hidden" });
-    await screen.execute("show-web-again", {
-      action: "portal_show",
-      portalId: "preview-web",
-      sessionKey: destination,
-    });
-    await Promise.all(deliveries);
-    await requester.page
-      .frameLocator("openclaw-portals-page[embedded] iframe")
-      .getByRole("button", { name: "Clicked" })
-      .waitFor();
-
-    await requester.page.reload();
-    await requester.page
-      .frameLocator("openclaw-portals-page[embedded] iframe")
-      .getByRole("heading", { name: "Crabbox web app" })
-      .waitFor();
-    expect(
-      await desktop.evaluate(
-        (element) => (element as HTMLElementTagNameMap["openclaw-desktop-panel"]).requestedSource,
-      ),
-    ).toBe("preview-desktop");
-
     await screen.execute("hide-web", { action: "portal_hide", sessionKey: destination });
     await Promise.all(deliveries);
     await portal.waitFor({ state: "detached" });

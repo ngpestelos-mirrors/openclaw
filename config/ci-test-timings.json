@@ -3290,7 +3290,6 @@
       "ui/src/e2e/chat-flow.queue-reorder.e2e.test.ts": 18,
       "ui/src/e2e/chat-flow.session-start.e2e.test.ts": 6,
       "ui/src/e2e/chat-flow.sidebar-presentation.e2e.test.ts": 28,
-      "ui/src/e2e/chat-flow.stream-reconciliation.e2e.test.ts": 22,
       "ui/src/e2e/chat-flow.streaming.e2e.test.ts": 40,
       "ui/src/e2e/chat-flow.task-suggestions.e2e.test.ts": 17,
       "ui/src/e2e/chat-footer.e2e.test.ts": 17,

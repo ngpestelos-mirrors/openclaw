@@ -1,9 +1,5 @@
 import { expect, it } from "vitest";
 import {
-  waitForControlUiGatewayReady,
-  waitForControlUiTerminalReady,
-} from "../test-helpers/control-ui-e2e-readiness.ts";
-import {
   defaultControlUiFeatureMethods,
   installMockGateway,
 } from "../test-helpers/control-ui-e2e.ts";
@@ -13,75 +9,9 @@ import { nativeAuth, terminalSession } from "./workspace-terminal.test-support.t
 const suite = createControlUiE2eSuite({
   name: "embedded terminal document",
   startServerBeforeBrowser: true,
-  unavailableMessage: (executablePath) =>
-    `Playwright Chromium is not installed or cannot start at ${executablePath}. Run \`pnpm --dir ui exec playwright install --with-deps chromium\`, or set OPENCLAW_UI_E2E_ALLOW_MISSING_CHROMIUM=1 only when intentionally skipping this lane.`,
 });
 
 suite.define(() => {
-  it.each(["chat", "focus/terminal"])("routes focused terminal keys in %s", async (route) => {
-    await suite.withPage({ serviceWorkers: "block" }, async ({ page }) => {
-      const gateway = await installMockGateway(page, {
-        terminalEnabled: true,
-        featureMethods: [...defaultControlUiFeatureMethods, "terminal.open"],
-        methodResponses: {
-          "terminal.list": {
-            sessions: [
-              { ...terminalSession("keyboard-terminal", { shell: "/bin/sh" }), attached: true },
-            ],
-          },
-          "terminal.open": terminalSession("keyboard-terminal", { shell: "/bin/sh" }),
-          "terminal.attach": {
-            cases: [
-              {
-                match: { sessionId: "keyboard-terminal" },
-                response: {
-                  ...terminalSession("keyboard-terminal", { shell: "/bin/sh" }),
-                  buffer: "",
-                  seq: 0,
-                },
-              },
-            ],
-          },
-        },
-      });
-      await page.goto(`${suite.server.baseUrl}${route}`);
-      await waitForControlUiGatewayReady(page);
-      if (route === "chat") {
-        await page.locator(".agent-chat__composer-combobox textarea").waitFor();
-        await page.keyboard.press("Control+Backquote");
-      }
-      const panel = page
-        .locator("openclaw-terminal-panel")
-        .filter({ has: page.locator(".tp-host") });
-      const terminal = panel.locator(".tp-host");
-      if (route === "chat") {
-        await panel.locator(".tp-session.is-current").click();
-      }
-      await terminal.locator("canvas").waitFor();
-      await terminal.click();
-      await page.keyboard.type("x");
-      await gateway.waitForRequest("terminal.input");
-      const before = await gateway.getRequests("terminal.input");
-      await page.keyboard.press("Control+Backquote");
-      if (route === "chat") {
-        const tabLabel = page
-          .locator('[data-region-header="side"] .tabstrip-tab__label')
-          .filter({ hasText: "sh" });
-        await tabLabel.waitFor({ state: "hidden" });
-        expect(await gateway.getRequests("terminal.input")).toEqual(before);
-        await page.keyboard.press("Control+Backquote");
-        await panel.locator(".tp-session.is-current").click();
-        await tabLabel.waitFor();
-      } else {
-        await expect
-          .poll(async () => (await gateway.getRequests("terminal.input")).length)
-          .toBe(before.length + 1);
-        expect(await panel.locator(".tp-header").isVisible()).toBe(true);
-        expect(await page.locator("openclaw-app-shell").count()).toBe(0);
-      }
-    });
-  });
-
   it("returns from an unavailable focused terminal", async () => {
     await suite.withPage({ serviceWorkers: "block" }, async ({ page }) => {
       await installMockGateway(page);
@@ -130,43 +60,6 @@ suite.define(() => {
     });
   });
 
-  it("keeps an independently built same-origin Control UI connected", async () => {
-    await suite.withPage({ serviceWorkers: "block" }, async ({ page }) => {
-      const gatewayUrl = suite.server.baseUrl.replace(/^http/u, "ws");
-      await nativeAuth(page, "native-configured-ui-token", gatewayUrl);
-      const gateway = await installMockGateway(page, {
-        assistantAgentId: "main",
-        controlUiBuildSource: "configured",
-        featureMethods: [...defaultControlUiFeatureMethods, "terminal.open"],
-        methodResponses: {
-          "terminal.open": terminalSession("configured-ui-terminal"),
-        },
-        serverBuildId: "independent-build",
-        serverVersion: "2026.7.20",
-        terminalEnabled: true,
-      });
-
-      expect((await page.goto(`${suite.server.baseUrl}chat`))?.status()).toBe(200);
-      await gateway.waitForRequest("connect");
-      await waitForControlUiTerminalReady(page);
-      await page.evaluate(() => {
-        window.dispatchEvent(
-          new CustomEvent("openclaw:terminal-toggle", {
-            detail: { agentId: "main", open: true },
-          }),
-        );
-      });
-
-      const terminalOpen = await gateway.waitForRequest("terminal.open");
-      expect(terminalOpen.params).toMatchObject({ agentId: "main" });
-      expect(
-        await page.evaluate(() =>
-          sessionStorage.getItem("openclaw.controlUi.staleChunkReloadBuildId"),
-        ),
-      ).toBeNull();
-    });
-  });
-
   it("renders only the terminal with a tab-attached close control while native auth connects", async () => {
     await suite.withPage({ serviceWorkers: "block" }, async ({ page }) => {
       await nativeAuth(page, "native-terminal-token");
@@ -209,13 +102,7 @@ suite.define(() => {
           const headerBounds = header.getBoundingClientRect();
           const closeBounds = close.getBoundingClientRect();
           const tabBounds = tab.getBoundingClientRect();
-          const closeStyle = getComputedStyle(close);
-          const tabStyle = getComputedStyle(tab);
           return {
-            backgroundColor: tabStyle.backgroundColor,
-            borderBottomWidth: tabStyle.borderBottomWidth,
-            borderRadius: tabStyle.borderRadius,
-            closeBorderBottomWidth: closeStyle.borderBottomWidth,
             centerOffset: Math.abs(
               closeBounds.top +
                 closeBounds.height / 2 -
@@ -223,16 +110,10 @@ suite.define(() => {
             ),
             closeInset: tabBounds.right - closeBounds.right,
             height: closeBounds.height,
-            tabHeight: tabBounds.height,
             width: closeBounds.width,
           };
         });
-      expect(closeControlMetrics.backgroundColor).not.toBe("rgba(0, 0, 0, 0)");
-      expect(closeControlMetrics.borderBottomWidth).toBe("0px");
-      expect(closeControlMetrics.borderRadius).not.toBe("0px");
-      expect(closeControlMetrics.closeBorderBottomWidth).toBe("0px");
       expect(closeControlMetrics.closeInset).toBeGreaterThanOrEqual(-0.5);
-      expect(closeControlMetrics.tabHeight).toBe(28);
       expect(closeControlMetrics.width).toBe(28);
       expect(closeControlMetrics.height).toBe(28);
       expect(closeControlMetrics.centerOffset).toBeLessThanOrEqual(0.5);

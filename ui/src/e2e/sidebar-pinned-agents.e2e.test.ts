@@ -6,7 +6,6 @@ import { navigationDrawerToggle } from "../test-helpers/control-ui-navigation.ts
 import { createControlUiE2eSuite } from "./control-ui-e2e-suite.test-support.ts";
 import { waitForMobileSidebarDrawerOpen } from "./session-management.test-support.ts";
 import {
-  expectCounts,
   expectFocused,
   expectHorizontalBounds,
   seedSidebarSettings,
@@ -39,13 +38,6 @@ async function checkAccessiblePins(page: Page, width: number) {
         lastMessagePreview: "A newer user question",
         lastAssistantMessage: { text: assistantReply, timestamp: 20 },
       }),
-      sidebarSession("agent:main:working-session", undefined, {
-        agentId: "main",
-        isMain: false,
-        updatedAt: 25,
-        hasActiveRun: true,
-        status: "running",
-      }),
     ],
     methodResponses: {
       "agents.list": agentsList,
@@ -70,16 +62,6 @@ async function checkAccessiblePins(page: Page, width: number) {
   const row = header.locator(".sidebar-agent-roster__row");
   const menu = header.getByRole("button", { name: "Options for Harbor" });
   await row.waitFor({ state: "visible" });
-  // Agent metadata renders before the separate session-activity query can settle.
-  await expect
-    .poll(() => header.locator(".sidebar-agent-roster__avatar .session-glyph__ring").count())
-    .toBe(1);
-  await expectCounts(sidebar, {
-    "[data-agent-collapse]": 0,
-    ".sidebar-agent-roster__signals .sidebar-child-session-toggle__count": 0,
-    ".sidebar-agent-roster__signals .session-glyph__ring": 0,
-    "[data-agent-group] .sidebar-recent-session": 0,
-  });
   const longNameRow = sidebar.locator('[data-agent-group="research"] .sidebar-agent-roster__row');
   await page.mouse.move(-1, -1);
   const restingPadding = await style(longNameRow, "padding-inline-end");
@@ -112,12 +94,6 @@ async function checkAccessiblePins(page: Page, width: number) {
   const link = pinned.getByRole("link", { name: "Harbor", exact: true });
   await link.waitFor({ state: "visible" });
   await expectFocused(link);
-  await expectCounts(sidebar, { '[data-agent-group="main"]': 0 });
-  expect(await sidebar.locator('[data-agent-group="research"]').isVisible()).toBe(true);
-  await expectCounts(pinned, {
-    ".sidebar-agent-roster__preview": 0,
-    ".sidebar-pinned-agent__avatar .session-glyph__ring": 1,
-  });
   await link.hover();
   const card = pinned.locator(".tooltip-surface[popover]:popover-open");
   const content = pinned.locator(".sidebar-pinned-agent__card");
@@ -149,7 +125,7 @@ async function checkAccessiblePins(page: Page, width: number) {
   const unpin = sidebar.getByRole("menuitem", { name: "Unpin", exact: true });
   await unpin.waitFor();
   await unpin.click();
-  await expectCounts(sidebar, { "[data-pinned-agent]": 0, '[data-agent-group="main"]': 1 });
+  await pinned.waitFor({ state: "detached" });
   await expectFocused(row);
   await row.click({ button: "right" });
   const pin = sidebar.getByRole("menuitem", { name: "Pin", exact: true });

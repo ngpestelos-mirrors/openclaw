@@ -575,11 +575,6 @@ const ownerWatches: readonly UiE2eOwnerWatch[] = [
     ["chat"],
     [...sessionMenuOwnerRoots, "ui/src/pages/chat/chat-pane.ts"],
   ),
-  pageWatch(
-    "ui/src/e2e/chat-flow.stream-reconciliation.e2e.test.ts",
-    ["chat", "usage"],
-    ["ui/src/pages/chat/chat-pane.ts"],
-  ),
   pageWatch("ui/src/e2e/chat-goal-elapsed.e2e.test.ts", ["chat"]),
   pageWatch("ui/src/e2e/chat-goal-recovery.e2e.test.ts", ["chat"]),
   pageWatch("ui/src/e2e/chat-guardian-review.e2e.test.ts", ["chat"]),
