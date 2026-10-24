@@ -274,13 +274,12 @@ export class ShellOwner
         ),
       );
       let active = true;
-      let disconnectIdle: (() => void) | undefined;
       const startedAt = Date.now();
       const idle = createIdleImport(
         () => import("./app-shell-idle.runtime.ts"),
         ({ connectShellIdle }) => {
           if (active) {
-            disconnectIdle = connectShellIdle(this, context, startedAt);
+            this.cleanups.push(connectShellIdle(this, context, startedAt));
           }
         },
       );
@@ -288,7 +287,6 @@ export class ShellOwner
       this.cleanups.push(() => {
         active = false;
         idle.dispose();
-        disconnectIdle?.();
       });
       if (this.pendingNativeNewSession) {
         this.pendingNativeNewSession = false;
