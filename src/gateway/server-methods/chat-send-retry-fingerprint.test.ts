@@ -1,6 +1,10 @@
 import { describe, expect, it } from "vitest";
 import { registerAgentSessionLoopTestLifecycle } from "../../agents/sessions/agent-session-loop-correctness.test-support.js";
-import { listSessionPendingInputs } from "../../config/sessions/session-accessor.js";
+import {
+  deleteSessionEntryLifecycle,
+  listSessionPendingInputs,
+  loadSessionEntry,
+} from "../../config/sessions/session-accessor.js";
 import {
   resolveSqliteScope,
   toDatabaseOptions,
@@ -21,14 +25,28 @@ const createFixture = useBrowserFollowupFixture();
 
 describe("chat.send persisted request identity", () => {
   it.each([
-    { mode: "ordinary", queueMode: undefined },
-    { mode: "steer", queueMode: "steer" as const },
-  ])("refuses a replaced physical session for $mode input", async ({ queueMode }) => {
-    await using fixture = await createFixture({ preserveContent: true });
+    { mode: "ordinary", queueMode: undefined, state: "replaced" },
+    { mode: "steer", queueMode: "steer" as const, state: "replaced" },
+    { mode: "ordinary", queueMode: undefined, state: "missing" },
+    { mode: "steer", queueMode: "steer" as const, state: "missing" },
+  ])("refuses a $state physical session for $mode input", async ({ queueMode, state }) => {
+    await using fixture = await createFixture({
+      preserveContent: true,
+      active: state !== "missing",
+    });
+    if (state === "missing") {
+      await deleteSessionEntryLifecycle({
+        agentId: fixture.scope.agentId,
+        storePath: fixture.scope.storePath,
+        archiveTranscript: false,
+        target: { canonicalKey: fixture.scope.sessionKey, storeKeys: [fixture.scope.sessionKey] },
+      });
+      expect(loadSessionEntry(fixture.scope)).toBeUndefined();
+    }
     const transcript = fixture.readTranscript();
     const receipts = await listSessionPendingInputs(fixture.scope);
     fixture.params.queueMode = queueMode;
-    fixture.params.sessionId = "replaced-session";
+    fixture.params.sessionId = state === "missing" ? fixture.scope.sessionId : "replaced-session";
 
     expect(await fixture.send()).toHaveBeenCalledWith(
       false,
@@ -40,8 +58,15 @@ describe("chat.send persisted request identity", () => {
     expect(dispatchInboundMessageMock).not.toHaveBeenCalled();
     expect(fixture.readTranscript()).toEqual(transcript);
     expect(await listSessionPendingInputs(fixture.scope)).toEqual(receipts);
+    if (state === "missing") {
+      expect(loadSessionEntry(fixture.scope)).toBeUndefined();
+    }
 
-    fixture.params.sessionId = fixture.scope.sessionId;
+    if (state === "missing") {
+      delete fixture.params.sessionId;
+    } else {
+      fixture.params.sessionId = fixture.scope.sessionId;
+    }
     fixture.params.idempotencyKey = "current-physical-session";
     expect(await fixture.send()).toHaveBeenCalledWith(
       true,

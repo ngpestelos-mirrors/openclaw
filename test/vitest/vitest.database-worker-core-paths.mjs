@@ -129,6 +129,7 @@ export const databaseWorkerCoreTestFiles = [
   "src/config/sessions/session-canonical-key.test.ts",
   "src/config/sessions/session-canonical-reader-continuation.test.ts",
   "src/config/sessions/session-accessor.sqlite-schema-probes.test.ts",
+  "src/config/sessions/session-accessor.sqlite-lifecycle-artifacts.postgres.test.ts",
   "src/config/sessions/session-accessor.sqlite-transcript-store.test.ts",
   "src/config/sessions/session-accessor.sqlite-entry-revalidation.test.ts",
   "src/config/sessions/startup-migration.registry-recovery.test.ts",
