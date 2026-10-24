@@ -749,6 +749,7 @@ async function normalizeOpenClawTarballModes(
   tarballPath: string,
   sourceDir: string,
   normalizeModes: boolean,
+  pluginIds: readonly string[],
 ) {
   // npm can retain restrictive source read bits. Normalize those for non-root
   // installers while preserving the archive's executable intent.
@@ -761,6 +762,7 @@ async function normalizeOpenClawTarballModes(
       sourceDir,
       path.join(stageDir, "package"),
       resolveTimeoutMs("OPENCLAW_DOCKER_PACKAGE_PACK_TIMEOUT_MS", DEFAULT_PACKAGE_PACK_TIMEOUT_MS),
+      pluginIds.map((id) => path.join(sourceDir, "extensions", id)),
     );
     if (!normalizeModes && !repaired) {
       return;
@@ -1042,13 +1044,22 @@ export async function packOpenClawPackageForDocker(
       }
     }
     const { hasMissingBundledDependencies } = await import("./lib/package-bundled-links.mts");
-    // Preserve complete pnpm archives exactly. Only npm's source modes or an
-    // omitted declared bundle require rebuilding the private extracted archive.
-    if (!packageOptions.pnpmPack || (await hasMissingBundledDependencies(tarball))) {
+    // Complete selected plugin bundles from their owners, even when the packer
+    // found a same-version root copy. Other complete pnpm archives stay unchanged.
+    if (
+      !packageOptions.pnpmPack ||
+      packageOptions.bundlePlugins?.length ||
+      (await hasMissingBundledDependencies(tarball))
+    ) {
       if (packageOptions.normalizeTarballModes) {
         await packageOptions.normalizeTarballModes(tarball);
       } else {
-        await normalizeOpenClawTarballModes(tarball, sourcePath, !packageOptions.pnpmPack);
+        await normalizeOpenClawTarballModes(
+          tarball,
+          sourcePath,
+          !packageOptions.pnpmPack,
+          packageOptions.bundlePlugins ?? [],
+        );
       }
     }
     if (packageOptions.packJsonPath) {

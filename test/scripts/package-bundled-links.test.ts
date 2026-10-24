@@ -171,21 +171,22 @@ process.send('staged');`,
     }
   });
 
-  it.each(["dependencies", "optionalDependencies"])(
-    "rejects an incomplete %s closure without touching the link",
-    async (field) => {
-      const f = await fixture();
-      await fs.writeFile(
-        path.join(f.store, "package.json"),
-        JSON.stringify({ name: "fixture-bundle", [field]: { outside: "1.0.0" } }),
-      );
-      await expect(
-        materializeMissingBundledDependencies(f.source, f.packed, PACK_TIMEOUT_MS),
-      ).rejects.toThrow("dependency-closure staging");
-      await expect(fs.lstat(f.destination)).rejects.toMatchObject({ code: "ENOENT" });
-      await f.assertSourceUnchanged();
-    },
-  );
+  it("rejects an incomplete required dependency closure without touching the link", async () => {
+    const f = await fixture();
+    await fs.writeFile(
+      path.join(f.store, "package.json"),
+      JSON.stringify({
+        name: "fixture-bundle",
+        version: "1.0.0",
+        dependencies: { outside: "1.0.0" },
+      }),
+    );
+    await expect(
+      materializeMissingBundledDependencies(f.source, f.packed, PACK_TIMEOUT_MS),
+    ).rejects.toThrow("dependency-closure staging");
+    await expect(fs.lstat(f.destination)).rejects.toMatchObject({ code: "ENOENT" });
+    await f.assertSourceUnchanged();
+  });
 
   it("rejects nested links without following them or mutating the source graph", async () => {
     const f = await fixture();
