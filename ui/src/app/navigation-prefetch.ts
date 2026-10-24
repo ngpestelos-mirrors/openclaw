@@ -157,7 +157,9 @@ export function connectNavigationPrefetch(options: {
         ? "model-picker"
         : event.target.closest('[data-value="command:settings"]')
           ? "appearance"
-          : undefined;
+          : event.target.closest('[data-value="command:debug-overlay"]')
+            ? "debug"
+            : undefined;
     if (key && pending.has(key)) {
       intent = key;
       if (!running && ready()) {
