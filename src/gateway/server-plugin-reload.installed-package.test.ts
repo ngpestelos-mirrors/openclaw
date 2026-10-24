@@ -967,22 +967,20 @@ module.exports = { id: ${JSON.stringify(id)}, register(api) {
       const originalBundled = await probe("bundled-probe");
       const unchangedBundled = await reload(changedSettings, ["bundled-probe"]);
       expect(unchangedBundled.runtime.restartRequired).toBe(true);
-      const freshBundled = await probe("bundled-probe");
+      const freshBundled = await probe("bundled-probe", { starts: 2, stops: 1 });
       expect(freshBundled).toMatchObject({
         helper: "A",
         instance: originalBundled.instance,
-        starts: 2,
-        stops: 1,
       });
       fs.writeFileSync(path.join(bundledDir, "dist", "helper.cjs"), 'module.exports = "B";');
       const bundledReload = await reload(changedSettings, ["bundled-probe"]);
-      expect(await probe("bundled-probe")).toMatchObject({ helper: "A", starts: 3, stops: 2 });
+      expect(await probe("bundled-probe", { starts: 3, stops: 2 })).toMatchObject({ helper: "A" });
       expect(bundledReload.runtime.restartRequired).toBe(true);
       expect(bundledReload.runtime.pluginIds).toEqual(["bundled-probe"]);
       expect(bundledReload.runtime.generation).toBeGreaterThan(configReceipt.runtime.generation);
       const repeatedBundled = await reload(changedSettings, ["bundled-probe"]);
       expect(repeatedBundled.runtime.restartRequired).toBe(true);
-      expect(await probe("bundled-probe")).toMatchObject({ helper: "A", starts: 4, stops: 3 });
+      expect(await probe("bundled-probe", { starts: 4, stops: 3 })).toMatchObject({ helper: "A" });
       expect(await probe("sibling")).toEqual(sibling);
     }
   });
