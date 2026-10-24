@@ -106,6 +106,7 @@ describe("Control UI build chunking", () => {
     const pluginLoader = modulePath("../plugins/control-ui-loader.ts");
     const mutations = modulePath("../lib/sessions/session-mutation-operations.runtime.ts");
     const receipts = modulePath("../lib/sessions/session-patch-row-facts.ts");
+    const creation = modulePath("../lib/sessions/create.ts");
     const unread = modulePath("../../../src/shared/session-unread.ts");
     const sharedStyle = modulePath("../styles/select-picker.css");
     const transcriptStyle = modulePath("../styles/chat/grouped.css");
@@ -131,7 +132,11 @@ describe("Control UI build chunking", () => {
       [sharedUi, `import inline from ${JSON.stringify(inlineStyle)}; export const label = inline;`],
       [pluginActions, "export const action = (label) => label;"],
       [pluginLoader, `export { action } from ${JSON.stringify(pluginActions)};`],
-      [mutations, `export { patch } from ${JSON.stringify(receipts)};`],
+      [
+        mutations,
+        `export { patch } from ${JSON.stringify(receipts)}; export { create } from ${JSON.stringify(creation)};`,
+      ],
+      [creation, "export const create = () => 'created';"],
       [receipts, `export { patch } from ${JSON.stringify(unread)};`],
       [unread, "export const patch = (value) => value;"],
       [sharedStyle, ".shared-fixture { color: red; }"],
@@ -177,6 +182,7 @@ describe("Control UI build chunking", () => {
                           sidebarStyle,
                           mutations,
                           receipts,
+                          creation,
                           unread,
                         ].includes(id) || group.test(id),
                     }

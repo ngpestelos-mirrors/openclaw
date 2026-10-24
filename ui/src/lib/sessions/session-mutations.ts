@@ -7,12 +7,7 @@ import type {
 } from "../../../../packages/gateway-protocol/src/index.js";
 import type { GatewaySessionRow, SessionsListResult } from "../../api/types.ts";
 import { formatUiError } from "../format-error.ts";
-import {
-  requestSessionCreate,
-  resolveSessionCreateParams,
-  type SessionCreateParams,
-  type SessionCreateRequestOptions,
-} from "./create.ts";
+import type { SessionCreateParams, SessionCreateRequestOptions } from "./create.ts";
 import type {
   SessionPatch,
   SessionPatchOptions,
@@ -121,41 +116,14 @@ export function createSessionMutations(host: SessionMutationsHost) {
       return null;
     }
     try {
-      const { currentSessionKey, ...requestParams } = params;
-      const result = await requestSessionCreate(
-        scope.client,
-        {
-          ...requestParams,
-          ...resolveSessionCreateParams(currentSessionKey, params.agentId),
-        },
-        options,
+      return await withSessionMutationOperations((runtime) =>
+        runtime.createSessionResult(host, scope, params, options, {
+          preparedWorkSessionKeys,
+          modelOverrides,
+          reconcileConfirmedPreviousConnection,
+          reportError,
+        }),
       );
-      if (!host.connection.isCurrent(scope)) {
-        return (await reconcileConfirmedPreviousConnection(scope, params.agentId)) ? result : null;
-      }
-      // Creation precedes canonical rows; claim placement before any event or
-      // list publication can assign this key an ordinary roster position.
-      host.notifyCreated(result.key, result.entry, requestParams.agentId);
-      if (requestParams.worktree === true || Boolean(requestParams.execNode?.trim())) {
-        preparedWorkSessionKeys.add(result.key.trim());
-      }
-      if (requestParams.model?.trim()) {
-        modelOverrides.set(result.key, requestParams.model, true);
-      } else if (preparedWorkSessionKeys.has(result.key)) {
-        host.publish({ ...host.readState() });
-      }
-      const reconciliation = host.reconcileMutation(params.agentId, undefined, true);
-      if (options.reconciliation === "background") {
-        void reconciliation.catch((error: unknown) => reportError(scope, error));
-      } else {
-        await reconciliation;
-        if (!host.connection.isCurrent(scope)) {
-          return (await reconcileConfirmedPreviousConnection(scope, params.agentId))
-            ? result
-            : null;
-        }
-      }
-      return result;
     } catch (error) {
       if (options.signal?.aborted || !host.connection.isCurrent(scope)) {
         return null;

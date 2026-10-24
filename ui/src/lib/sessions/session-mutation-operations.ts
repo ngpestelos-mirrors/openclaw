@@ -5,6 +5,7 @@ export type SessionMutationOperations = Pick<
   | "prepareSessionPatch"
   | "prepareSessionDelete"
   | "patchSessionBatch"
+  | "createSessionResult"
   | "projectSessionPatchRowFields"
 >;
 

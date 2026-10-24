@@ -6,13 +6,21 @@ import { SESSION_ARCHIVE_REQUEST_OPTIONS } from "../../../../src/shared/session-
 import type { GatewaySessionRow } from "../../api/types.ts";
 import { formatUiError } from "../format-error.ts";
 import { showToast } from "../toast.ts";
+import {
+  requestSessionCreate,
+  resolveSessionCreateParams,
+  type SessionCreateParams,
+  type SessionCreateRequestOptions,
+} from "./create.ts";
 import type { SessionPatch, SessionPatchOptions, SessionPatchRoute } from "./patch.ts";
 import { projectSessionArchiveFields } from "./session-archive-state.ts";
 import type { Deletion, SessionDeferredDeletionHost } from "./session-deletions.ts";
+import type { createSessionModelOverrides } from "./session-model-overrides.ts";
 import {
   registerSessionMutationOperations,
   type PreparedSessionMutation,
 } from "./session-mutation-operations.ts";
+import type { createSessionMutationRefresh } from "./session-mutation-refresh.ts";
 import type { SessionMutationsHost } from "./session-mutations-host.ts";
 import { projectSessionPatchRowFields } from "./session-patch-row-facts.ts";
 import {
@@ -22,7 +30,11 @@ import {
   type SessionPinFields,
   resolvePendingConversation,
 } from "./session-pending-rows.ts";
-import type { SessionConnectionScope, SessionRequestClient } from "./session-types.ts";
+import type {
+  SessionConnectionScope,
+  SessionCreateReconciliation,
+  SessionRequestClient,
+} from "./session-types.ts";
 
 type MetadataField = "label" | "icon" | "color" | "category";
 type MetadataFieldOwner = ReturnType<typeof createOptimisticRowField<MetadataField>>;
@@ -145,6 +157,62 @@ export function prepareSessionDelete(
   };
 }
 
+export async function createSessionResult(
+  host: SessionMutationsHost,
+  scope: SessionConnectionScope,
+  params: SessionCreateParams,
+  options: SessionCreateRequestOptions & { reconciliation?: SessionCreateReconciliation },
+  owner: {
+    preparedWorkSessionKeys: Set<string>;
+    modelOverrides: Pick<ReturnType<typeof createSessionModelOverrides>, "set">;
+    reconcileConfirmedPreviousConnection: ReturnType<
+      typeof createSessionMutationRefresh
+    >["reconcileConfirmedPreviousConnection"];
+    reportError: (scope: SessionConnectionScope, error: unknown) => void;
+  },
+) {
+  if (!host.connection.isCurrent(scope) || options.signal?.aborted) {
+    return null;
+  }
+  const { currentSessionKey, ...requestParams } = params;
+  const result = await requestSessionCreate(
+    scope.client,
+    {
+      ...requestParams,
+      ...resolveSessionCreateParams(currentSessionKey, params.agentId),
+    },
+    options,
+  );
+  if (!host.connection.isCurrent(scope)) {
+    return (await owner.reconcileConfirmedPreviousConnection(scope, params.agentId))
+      ? result
+      : null;
+  }
+  // Creation precedes canonical rows; claim placement before any event or
+  // list publication can assign this key an ordinary roster position.
+  host.notifyCreated(result.key, result.entry, requestParams.agentId);
+  if (requestParams.worktree === true || Boolean(requestParams.execNode?.trim())) {
+    owner.preparedWorkSessionKeys.add(result.key.trim());
+  }
+  if (requestParams.model?.trim()) {
+    owner.modelOverrides.set(result.key, requestParams.model, true);
+  } else if (owner.preparedWorkSessionKeys.has(result.key)) {
+    host.publish({ ...host.readState() });
+  }
+  const reconciliation = host.reconcileMutation(params.agentId, undefined, true);
+  if (options.reconciliation === "background") {
+    void reconciliation.catch((error: unknown) => owner.reportError(scope, error));
+  } else {
+    await reconciliation;
+    if (!host.connection.isCurrent(scope)) {
+      return (await owner.reconcileConfirmedPreviousConnection(scope, params.agentId))
+        ? result
+        : null;
+    }
+  }
+  return result;
+}
+
 export async function patchSessionBatch(
   host: SessionMutationsHost,
   scope: SessionConnectionScope,
@@ -220,5 +288,6 @@ registerSessionMutationOperations({
   prepareSessionPatch,
   prepareSessionDelete,
   patchSessionBatch,
+  createSessionResult,
   projectSessionPatchRowFields,
 });
