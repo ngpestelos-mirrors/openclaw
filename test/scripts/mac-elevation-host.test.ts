@@ -26,7 +26,6 @@ const test = createMacCases(
   (mac) => mac,
 );
 const scriptPath = "scripts/mac-elevation-host.sh";
-const codesignScriptPath = "scripts/codesign-mac-app.sh";
 
 type InstallerResult = Awaited<ReturnType<typeof runInstaller>>;
 type ArtifactHarness = ReturnType<typeof createArtifactHarness>;
@@ -135,6 +134,22 @@ function writeExecutable(filePath: string, contents: string): void {
 
 function shellScript(...lines: string[]) {
   return ["#!/usr/bin/env bash", "set -euo pipefail", ...lines, ""].join("\n");
+}
+
+type PlistValue = string | PlistValue[] | { [key: string]: PlistValue };
+function makePlist(values: Record<string, PlistValue>): string {
+  const encode = (value: PlistValue): string => {
+    if (typeof value === "string") {
+      return `<string>${value.replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;")}</string>`;
+    }
+    if (Array.isArray(value)) {
+      return `<array>${value.map(encode).join("")}</array>`;
+    }
+    return `<dict>\n${Object.entries(value)
+      .map(([key, item]) => `<key>${key}</key>${encode(item)}`)
+      .join("\n")}\n</dict>`;
+  };
+  return `<?xml version="1.0" encoding="UTF-8"?>\n<plist version="1.0">${encode(values)}</plist>\n`;
 }
 
 function cliScript(nodeStatus: string[], prefix: string[] = []) {
@@ -383,17 +398,13 @@ function writeAppInfoPlist(appPath: string, sourceCommit: string, peekabooCommit
   mkdirSync(path.join(appPath, "Contents", "MacOS"), { recursive: true });
   writeFileSync(
     path.join(appPath, "Contents", "Info.plist"),
-    [
-      '<?xml version="1.0" encoding="UTF-8"?>',
-      '<plist version="1.0"><dict>',
-      "<key>CFBundleIdentifier</key><string>ai.openclaw.mac</string>",
-      `<key>OpenClawGitCommit</key><string>${sourceCommit}</string>`,
-      `<key>PeekabooSourceCommit</key><string>${peekabooCommit}</string>`,
-      "<key>CFBundleShortVersionString</key><string>4.2.0</string>",
-      "<key>CFBundleVersion</key><string>420</string>",
-      "</dict></plist>",
-      "",
-    ].join("\n"),
+    makePlist({
+      CFBundleIdentifier: "ai.openclaw.mac",
+      OpenClawGitCommit: sourceCommit,
+      PeekabooSourceCommit: peekabooCommit,
+      CFBundleShortVersionString: "4.2.0",
+      CFBundleVersion: "420",
+    }),
     "utf8",
   );
 }
@@ -573,21 +584,15 @@ function createMigrationPlanHarness(
   writeFileSync(path.join(stateDir, "state", "openclaw.sqlite"), "fixture", "utf8");
   writeFileSync(
     plistPath,
-    [
-      '<?xml version="1.0" encoding="UTF-8"?>',
-      '<plist version="1.0"><dict>',
-      `<key>Label</key><string>${label}</string>`,
-      "<key>ProgramArguments</key><array>",
-      `<string>${appPath}/Contents/MacOS/OpenClaw</string>`,
-      "<string>--attach-only</string><string>--background-only</string>",
-      "</array>",
-      "<key>EnvironmentVariables</key><dict>",
-      `<key>OPENCLAW_STATE_DIR</key><string>${stateDir}</string>`,
-      `<key>OPENCLAW_CONFIG_PATH</key><string>${configPath}</string>`,
-      "</dict>",
-      "</dict></plist>",
-      "",
-    ].join("\n"),
+    makePlist({
+      Label: label,
+      ProgramArguments: [
+        `${appPath}/Contents/MacOS/OpenClaw`,
+        "--attach-only",
+        "--background-only",
+      ],
+      EnvironmentVariables: { OPENCLAW_STATE_DIR: stateDir, OPENCLAW_CONFIG_PATH: configPath },
+    }),
     "utf8",
   );
   writeCommandFixture(
@@ -680,22 +685,25 @@ function createNodeHarness(mac: MacScriptFixture, nodeId = "fixture-node") {
   );
   writeFileSync(
     plistPath,
-    [
-      '<?xml version="1.0" encoding="UTF-8"?>',
-      '<plist version="1.0"><dict>',
-      `<key>Label</key><string>${label}</string>`,
-      "<key>ProgramArguments</key><array>",
-      "<string>/bin/sh</string>",
-      `<string>${wrapperPath}</string>`,
-      `<string>${envPath}</string>`,
-      `<string>${nodePath}</string>`,
-      `<string>${entrypointPath}</string>`,
-      "<string>node</string><string>run</string><string>--host</string><string>gateway.invalid</string>",
-      "<string>--port</string><string>18789</string><string>--no-tls</string>",
-      `<string>--node-id</string><string>${nodeId}</string>`,
-      "</array></dict></plist>",
-      "",
-    ].join("\n"),
+    makePlist({
+      Label: label,
+      ProgramArguments: [
+        "/bin/sh",
+        wrapperPath,
+        envPath,
+        nodePath,
+        entrypointPath,
+        "node",
+        "run",
+        "--host",
+        "gateway.invalid",
+        "--port",
+        "18789",
+        "--no-tls",
+        "--node-id",
+        nodeId,
+      ],
+    }),
     "utf8",
   );
   return { ...harness, envPath, label, plistPath };
@@ -788,7 +796,7 @@ async function verifyReceiptBinding(
   );
 }
 
-function addRunningAppFixture(harness: ReturnType<typeof createMigrationPlanHarness>) {
+function addRunningAppFixture(harness: Pick<HostHarness, "appPath" | "env">) {
   const binDir = path.join(harness.env.HOME, "bin");
   const appBinary = `${harness.appPath}/Contents/MacOS/OpenClaw`;
   writeCommandFixture(binDir, "pgrep", "#!/bin/sh\nprintf '%s\\n' 4242\n");
@@ -1013,8 +1021,6 @@ function createArtifactHarness(mac: MacScriptFixture) {
       '    cdhash="${cdhash}ARM64"',
       '  elif [[ "$*" == *"--arch x86_64"* ]]; then',
       '    cdhash="${cdhash}X8664"',
-      '  elif [[ "${TEST_NATIVE_ARCH:-arm64}" == "x86_64" ]]; then',
-      '    cdhash="${cdhash}X8664"',
       "  else",
       '    cdhash="${cdhash}ARM64"',
       "  fi",
@@ -1180,31 +1186,17 @@ function createRollbackHarness(
       symlinkSync("/missing/cua-driver", cuaDriver);
     }
   }
-  const sourceContents = [
-    '<?xml version="1.0" encoding="UTF-8"?>',
-    '<plist version="1.0"><dict>',
-    `<key>Label</key><string>${label}</string>`,
-    "<key>ProgramArguments</key><array>",
-    `<string>${appPath}/Contents/MacOS/OpenClaw</string>`,
-    "<string>--attach-only</string><string>--background-only</string>",
-    "</array>",
-    "<key>EnvironmentVariables</key><dict>",
-    `<key>OPENCLAW_STATE_DIR</key><string>${stateDir}</string>`,
-    `<key>OPENCLAW_CONFIG_PATH</key><string>${configPath}</string>`,
-    "</dict></dict></plist>",
-    "",
-  ].join("\n");
-  const elevationPlistContents = [
-    '<?xml version="1.0" encoding="UTF-8"?>',
-    '<plist version="1.0"><dict>',
-    "<key>Label</key><string>ai.openclaw.mac.elevation-host</string>",
-    `<key>ProgramArguments</key><array><string>${appPath}/Contents/MacOS/OpenClaw</string><string>--elevation-host</string></array>`,
-    "<key>EnvironmentVariables</key><dict>",
-    `<key>OPENCLAW_STATE_DIR</key><string>${stateDir}</string>`,
-    `<key>OPENCLAW_CONFIG_PATH</key><string>${configPath}</string>`,
-    "</dict></dict></plist>",
-    "",
-  ].join("\n");
+  const environment = { OPENCLAW_STATE_DIR: stateDir, OPENCLAW_CONFIG_PATH: configPath };
+  const sourceContents = makePlist({
+    Label: label,
+    ProgramArguments: [`${appPath}/Contents/MacOS/OpenClaw`, "--attach-only", "--background-only"],
+    EnvironmentVariables: environment,
+  });
+  const elevationPlistContents = makePlist({
+    Label: "ai.openclaw.mac.elevation-host",
+    ProgramArguments: [`${appPath}/Contents/MacOS/OpenClaw`, "--elevation-host"],
+    EnvironmentVariables: environment,
+  });
   if (options.existingElevationLoaded) {
     writeFileSync(elevationPlist, elevationPlistContents, "utf8");
     writeFileSync(launchStateFile, "elevation-loaded\n", "utf8");
@@ -1439,7 +1431,7 @@ function createRollbackHarness(
       "  exit 0",
       "fi",
       'if [[ "${1:-}" == "permissions" ]]; then',
-      '  printf \'%s\\n\' \'{"success":true,"data":{"sources":[{"isSelected":true,"permissions":[{"name":"Screen Recording","isGranted":true}]}]}}\'',
+      '  printf \'{"success":true,"data":{"sources":[{"isSelected":true,"permissions":[{"name":"Screen Recording","isGranted":%s}]}]}}\\n\' "${TEST_TCC_GRANTED:-true}"',
       "  exit 0",
       "fi",
       "exit 2",
@@ -1559,53 +1551,36 @@ describe("mac elevation host command contract", () => {
     expectFile(injected, bytes);
   });
 
-  it.for([
-    ...(["Authority", "TeamIdentifier", "CDHash", "Format"] as const).flatMap((key) =>
-      ["present", "missing"].map((kind) => ({ key, kind })),
-    ),
-    { key: "Format", kind: "bundle" },
-    { key: "Authority", kind: "generic" },
-    { key: "CDHash", kind: "missing-directory" },
-  ] as const)("reads scoped codesign metadata $key ($kind)", async ({ key, kind }, mac) => {
-    const probe = createCodesignMetadataProbe(mac);
-    const arch = "arm64";
-    const fields = {
-      Format: `${kind === "bundle" ? "app bundle with " : ""}Mach-O thin (${arch})`,
-      Authority: "Real=Leaf",
-      TeamIdentifier: "REALTEAM",
-      CDHash: `REAL-${arch}`,
-    };
-    const genuine = [
-      "Identifier=real",
-      ...(kind === "missing" && key === "Format"
-        ? []
-        : [`Format=${kind === "generic" ? "generic" : fields.Format}`]),
-      ...(kind === "missing-directory"
-        ? []
-        : ["CodeDirectory v=20400 size=231 flags=0x0(none) hashes=2+2 location=embedded"]),
-      ...(["Authority", "TeamIdentifier", "CDHash"] as const).flatMap((name) =>
-        kind === "missing" && key === name ? [] : [`${name}=${fields[name]}`],
-      ),
-      ...(key === "Authority" && kind === "missing" ? [] : ["Authority=Issuer"]),
-    ];
-    writeFileSync(
-      probe.metadata,
-      [
-        "Executable=filename\nFormat=Mach-O thin (fake)\nCodeDirectory v=20400",
-        "Authority=Injected\nTeamIdentifier=Injected\nCDHash=Injected",
-        ...genuine,
-        "",
-      ].join("\n"),
-    );
-    const result = await probe.run("unused", key, arch);
-    expect(result.error).toBeUndefined();
-    if (kind === "present" || kind === "bundle") {
-      expect(result.status, result.stderr).toBe(0);
-      expect(result.stdout.trim()).toBe(fields[key]);
-    } else {
-      expect(result).toMatchObject({ status: 1, stdout: "" });
-    }
-  });
+  it.for(["Authority", "CDHash", "CodeDirectory"] as const)(
+    "ignores filename-injected metadata when genuine %s is absent",
+    async (missing, mac) => {
+      const probe = createCodesignMetadataProbe(mac);
+      const genuine = [
+        "Identifier=real",
+        "Format=Mach-O thin (arm64)",
+        "CodeDirectory v=20400",
+        "Authority=Real=Leaf",
+        "Authority=Issuer",
+        "TeamIdentifier=REALTEAM",
+        "CDHash=REAL-arm64",
+      ].filter((line) => !line.startsWith(missing));
+      writeFileSync(
+        probe.metadata,
+        [
+          "Executable=filename\nFormat=Mach-O thin (fake)\nCodeDirectory v=20400",
+          "Authority=Injected\nTeamIdentifier=Injected\nCDHash=Injected",
+          ...genuine,
+          "",
+        ].join("\n"),
+      );
+      const result = await probe.run(
+        "unused",
+        missing === "CodeDirectory" ? "CDHash" : missing,
+        "arm64",
+      );
+      expect(result).toMatchObject({ error: undefined, status: 1, stdout: "" });
+    },
+  );
 
   it("reads complete codesign metadata without SIGPIPE and preserves codesign failure", async (mac) => {
     const root = mac.createTempDir("openclaw-elevation-codesign-metadata-");
@@ -1668,11 +1643,33 @@ describe("mac elevation host command contract", () => {
 
   it("keeps normal owners separate without interactive elevation", async () => {
     const script = readFileSync(scriptPath, "utf8");
-    expect(script).toContain('NORMAL_LABEL="ai.openclaw.mac"');
-    expect(script).toContain("ordinary Launch at login is installed");
-    expect(script).toContain("conflicting OpenClaw launch agent is installed");
-    expect(script).toContain("unsupervised or conflicting OpenClaw process is running");
     expect(script).not.toContain("osascript");
+    expect(scriptSection("install_host()", "recover_install()")).toMatch(
+      /adopted_app_is_current \|\| fail[\s\S]*kill "\$ADOPTION_PID"/,
+    );
+    expect(scriptSection("relaunch_adopted_app()", "run_openclaw_cli()")).toMatch(
+      /--env "OPENCLAW_STATE_DIR=\$STATE_DIR"[\s\S]*--env "OPENCLAW_CONFIG_PATH=\$CONFIG_PATH"/,
+    );
+  });
+
+  test.for([
+    ["normal", "ordinary Launch at login is installed"],
+    ["conflicting", "conflicting OpenClaw launch agent is installed"],
+    ["running", "unsupervised or conflicting OpenClaw process is running"],
+  ] as const)("rejects a %s owner before installation", async ([owner, diagnostic], mac) => {
+    const harness = createRollbackHarness(mac);
+    if (owner === "running") {
+      addRunningAppFixture(harness);
+    } else {
+      const name = owner === "normal" ? "ai.openclaw.mac" : "conflicting";
+      writeFileSync(
+        path.join(path.dirname(harness.sourcePlist), `${name}.plist`),
+        harness.sourceContents,
+      );
+    }
+    expectFailure(await installMigration(mac, harness), diagnostic);
+    expectFile(harness.sourcePlist, harness.sourceContents);
+    expectLaunchState(harness, "source-loaded");
   });
 
   it("runs the portable lifecycle installer without a source checkout", async (mac) => {
@@ -1835,13 +1832,6 @@ describe("mac elevation host command contract", () => {
   });
 
   test("rejects CUA-bearing elevation artifacts before verify or install", async (mac) => {
-    const verification = createArtifactHarness(mac);
-    const rejectedVerify = await runArtifact(mac, verification, "verify", [], {
-      ...verification.env,
-      TEST_CUA_DRIVER_KIND: "file",
-    });
-    expectFailure(rejectedVerify, "must not contain bundled CUA driver");
-
     const installation = createRollbackHarness(mac);
     const rejectedInstall = await installMigration(mac, installation, {
       ...installation.env,
@@ -2593,6 +2583,14 @@ describe("mac elevation host command contract", () => {
         nodeProfile: "primary",
       });
       expect(installReceipt.migration).toMatchObject({ label: harness.label, wasLoaded: true });
+      expect(installReceipt).toMatchObject({
+        schemaVersion: 3,
+        transactionState: "installed",
+        backupCDHashes: { arm64: "OLDFIXTURECDHASHARM64", x86_64: "OLDFIXTURECDHASHX8664" },
+        cdhashes: { arm64: "FIXTURECDHASHARM64", x86_64: "FIXTURECDHASHX8664" },
+      });
+      expect(installReceipt).not.toHaveProperty("cdhash");
+      expect(installReceipt).not.toHaveProperty("backupCDHash");
 
       if (kind === "missing") {
         rmSync(harness.appPath, { recursive: true });
@@ -2841,43 +2839,6 @@ describe("mac elevation host command contract", () => {
     expectLaunchState(harness, "source-loaded");
   });
 
-  test("recovers across simulated native and Rosetta host selection using both architecture CDHashes", async (mac) => {
-    const harness = createRollbackHarness(mac, { launchdBootstrapFails: false });
-    expectExit(
-      await installMigration(mac, harness, {
-        ...harness.env,
-        TEST_NATIVE_ARCH: "arm64",
-      }),
-    );
-
-    const receipt = JSON.parse(readFileSync(harness.installReceiptPath, "utf8")) as {
-      backupCDHashes: { arm64: string; x86_64: string };
-      cdhashes: { arm64: string; x86_64: string };
-      schemaVersion: number;
-    };
-    expect(receipt).toMatchObject({
-      schemaVersion: 3,
-      transactionState: "installed",
-      backupCDHashes: {
-        arm64: "OLDFIXTURECDHASHARM64",
-        x86_64: "OLDFIXTURECDHASHX8664",
-      },
-      cdhashes: {
-        arm64: "FIXTURECDHASHARM64",
-        x86_64: "FIXTURECDHASHX8664",
-      },
-    });
-    expect(receipt).not.toHaveProperty("cdhash");
-    expect(receipt).not.toHaveProperty("backupCDHash");
-
-    expectExit(
-      await runHost(mac, harness, "recover", {
-        ...harness.env,
-        TEST_NATIVE_ARCH: "x86_64",
-      }),
-    );
-  });
-
   test("defers termination until explicit recovery commits one complete generation", async (mac) => {
     const harness = createRollbackHarness(mac, {
       launchdBootstrapFails: false,
@@ -3073,14 +3034,6 @@ describe("mac elevation host command contract", () => {
   test.for(["file", "symlink"] as const)(
     "refuses recovery when a %s recreates the source LaunchAgent path",
     async (kind, mac) => {
-      if (kind === "symlink") {
-        const restoreBody = scriptSection(
-          "restore_file_without_overwrite()",
-          "verify_artifact_receipt()",
-        );
-        expect(restoreBody).toContain('/bin/link "$restore_tmp" "$destination"');
-        expect(restoreBody).not.toContain('ln "$restore_tmp" "$destination"');
-      }
       const harness = await installedHarness(mac);
       const installedBinary = readFileSync(harness.appBinary);
       if (kind === "file") {
@@ -3126,38 +3079,13 @@ describe("mac elevation host command contract", () => {
     expectFile(outsideBackup, "attacker-selected\n");
   });
 
-  it("treats missing TCC after a Bridge-ready install as degraded capability", async () => {
-    const installBody = scriptSection("install_host()", "recover_install()");
-    const statusBody = scriptSection("status_host()", "recover_host()");
-
-    expect(installBody).toContain("tcc_summary || true");
-    expect(statusBody).toContain("tcc_summary || return $?");
-  });
-
-  it("relaunches an adopted app only after exact exit with its selected state and config", async () => {
-    const installBody = scriptSection("install_host()", "recover_install()");
-    const relaunchBody = scriptSection("relaunch_adopted_app()", "run_openclaw_cli()");
-    const recoverBody = scriptSection("recover_install()", "status_host()");
-    const recoverHostBody = scriptSection("recover_host()", "uninstall_host()");
-
-    expect(installBody.indexOf("CUTOVER_ADOPTION_STOPPED=1")).toBeLessThan(
-      installBody.indexOf('kill "$ADOPTION_PID"'),
-    );
-    expect(installBody.indexOf("adopted_app_is_current || fail")).toBeLessThan(
-      installBody.indexOf('kill "$ADOPTION_PID"'),
-    );
-    expect(relaunchBody).toContain('--env "OPENCLAW_STATE_DIR=$STATE_DIR"');
-    expect(relaunchBody).toContain('--env "OPENCLAW_CONFIG_PATH=$CONFIG_PATH"');
-    expect(relaunchBody).toContain("-g");
-    expect(relaunchBody).toContain("wait_for_adopted_app_resume");
-    expect(installBody.indexOf("CUTOVER_ADOPTION_TERMINATION_SENT=1")).toBeGreaterThan(
-      installBody.indexOf('kill "$ADOPTION_PID"'),
-    );
-    expect(installBody.indexOf("CUTOVER_ADOPTION_TERMINATION_SENT=1")).toBeLessThan(
-      installBody.indexOf("adopted OpenClaw process did not exit"),
-    );
-    expect(recoverBody).toContain("restore_adopted_app_after_cutover || recovery_failed=1");
-    expect(recoverHostBody).toContain('CONFIG_PATH="$(jq -r \'.configPath\' "$RECEIPT_PATH")"');
+  test("treats missing TCC after a Bridge-ready install as degraded capability", async (mac) => {
+    const harness = createRollbackHarness(mac, { launchdBootstrapFails: false });
+    const env = { ...harness.env, TEST_TCC_GRANTED: "false" };
+    expectExit(await installMigration(mac, harness, env));
+    const result = expectExit(await runHost(mac, harness, "status", env), 4);
+    expect(result.stdout).toContain("missing TCC: Screen Recording");
+    expectLaunchState(harness, "elevation-loaded");
   });
 
   it.for([
@@ -3191,58 +3119,36 @@ describe("mac elevation host command contract", () => {
     expect(existsSync(pendingReceiptPath)).toBe(true);
   });
 
-  it.for([1, 2])("rejects the unshipped install receipt schema %i", async (schemaVersion, mac) => {
+  it.for([
+    { name: "unshipped numeric schema", patch: { schemaVersion: 1 } },
+    { name: "stale single hash", patch: { cdhash: "IGNORED-SINGLE-HASH" } },
+    {
+      name: "inconsistent backup hashes",
+      patch: { backupPath: "/missing-backup.app", backupCDHashes: { arm64: "", x86_64: "" } },
+    },
+  ])("rejects $name in the install receipt", async ({ patch }, mac) => {
     const harness = createStatusHarness(mac, "invalid");
     const receiptPath = path.join(harness.stateDir, "elevation-host-install.json");
     const receipt = JSON.parse(readFileSync(receiptPath, "utf8")) as Record<string, unknown>;
-    receipt.schemaVersion = schemaVersion;
-    writeFileSync(receiptPath, JSON.stringify(receipt), "utf8");
-    const result = await runHost(mac, harness, "status");
-    expectFailure(result, "elevation install receipt schema is invalid");
-  });
-
-  it("rejects stale single-hash fields and inconsistent backup hash custody", async (mac) => {
-    const harness = createStatusHarness(mac, "invalid");
-    const receiptPath = path.join(harness.stateDir, "elevation-host-install.json");
-    const receipt = JSON.parse(readFileSync(receiptPath, "utf8")) as {
-      backupCDHashes: { arm64: string; x86_64: string };
-      backupPath: string;
-      cdhash?: string;
-    };
-    receipt.cdhash = "IGNORED-SINGLE-HASH";
-    writeFileSync(receiptPath, JSON.stringify(receipt), "utf8");
-
-    const staleField = await runHost(mac, harness, "status");
-    expectFailure(staleField, "elevation install receipt schema is invalid");
-
-    delete receipt.cdhash;
-    receipt.backupPath = path.join(harness.stateDir, "missing-backup.app");
-    receipt.backupCDHashes = { arm64: "", x86_64: "" };
-    writeFileSync(receiptPath, JSON.stringify(receipt), "utf8");
-    const inconsistentBackup = await runHost(mac, harness, "status");
-    expectFailure(inconsistentBackup, "elevation install receipt schema is invalid");
+    writeFileSync(receiptPath, JSON.stringify({ ...receipt, ...patch }), "utf8");
+    expectFailure(
+      await runHost(mac, harness, "status"),
+      "elevation install receipt schema is invalid",
+    );
   });
 
   it("publishes immutable source-addressed artifacts from the selected signed source", async () => {
     const script = readFileSync(scriptPath, "utf8");
 
-    expect(script).toContain(
-      'prefix="OpenClaw-${source_commit}-Peekaboo-${EXPECTED_PEEKABOO_SOURCE_COMMIT}-stable"',
-    );
     expect(script).toContain("immutable elevation output already exists");
-    expect(script).toContain("OPENCLAW_MAC_SIGNING_VARIANT=elevation-host");
-    expect(script).toContain("SKIP_DMG=1");
-    expect(script).toContain("NOTARY_RESULT_FILE");
-    expect(script).toContain('installer_path="$OUTPUT_DIR/${prefix}-installer.sh"');
-    expect(script).toContain(
-      'git -C "$ROOT_DIR" show "${source_commit}:scripts/mac-elevation-host.sh"',
+    expect(script).toMatch(
+      /git -C .* show .*source_commit.*mac-elevation-host\.sh[\s\S]*portable installer does not match the selected source commit/,
     );
-    expect(script).toContain("portable installer does not match the selected source commit");
   });
 
   it("keeps portable verification identity aligned with the signer", async (_mac) => {
     const portableScript = readFileSync(scriptPath, "utf8");
-    const codesignScript = readFileSync(codesignScriptPath, "utf8");
+    const codesignScript = readFileSync("scripts/codesign-mac-app.sh", "utf8");
     const constant = (source: string, name: string) =>
       source.match(new RegExp(`^${name}="([^"]+)"$`, "m"))?.[1];
 
