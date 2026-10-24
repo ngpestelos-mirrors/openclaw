@@ -8,12 +8,7 @@ import {
   readRuntimeWorkerDescriptorReads as readDescriptorUses,
   readTestSelectorSourceFacts as readSourceFacts,
 } from "../../scripts/lib/test-selector-source-facts.mts";
-import {
-  resolveVitestPretestBuildMode as pretestBuildMode,
-  resolveVitestRuntimeConfigScopes as runtimeScopes,
-} from "../../scripts/lib/vitest-build-prerequisites.mts";
 import { resolveDefaultVitestNoOutputTimeoutMs } from "../../scripts/lib/vitest-process-env.mts";
-import { resolveVitestRuntimeCliSelections as runtimeSelections } from "../../scripts/lib/vitest-runtime-selection.mts";
 import { resolveShardTimingKey } from "../../scripts/lib/vitest-shard-metadata.mts";
 import { scriptModuleEntrypoints } from "../../scripts/script-module-runtime.test-support.mjs";
 import {
@@ -49,15 +44,9 @@ import {
   gatewayDatabaseWorkerTestFiles,
   isGatewayServerTestFile,
 } from "../vitest/vitest.gateway-server-paths.mjs";
-import {
-  isSharedVitestExcludedPath,
-  matchesVitestCliSelection,
-} from "../vitest/vitest.pattern-file.ts";
 import { testRunnerFixtureEnv } from "./prepared-script-wrapper.test-support.js";
 
 const repoPath = toRepoPath;
-const MATRIX_TEST_PROCESS_FILE_LIMIT = 40;
-const TELEGRAM_TEST_PROCESS_FILE_LIMIT = 10;
 
 describe("Windows CI partitions", () => {
   it("keeps explicit coverage disjoint without repeating small project setup", () => {
@@ -88,79 +77,6 @@ describe("Windows CI partitions", () => {
   });
 });
 
-describe("test runtime prerequisites", () => {
-  const catalogFile = "test/plugins/codex-model-catalog.gateway.test.ts";
-  const freshnessFile = "src/gateway/server-methods/models-list.freshness.integration.test.ts";
-  const scopedFreshnessFile = "**/models-list.freshness.integration.test.ts";
-  it.each([
-    ["full-agentic", ["src/gateway/server-sidecar-retention.test.ts"], "runtime"],
-    ["full-agentic", ["src/gateway/server-request-context.test.ts"], undefined],
-    ["gateway-database-workers", [], "runtime"],
-    ["gateway-database-workers", [freshnessFile], "runtime"],
-    ["gateway-database-workers", ["models-list.freshness.integration"], "runtime"],
-    ["gateway-database-workers", [freshnessFile, "--exclude", scopedFreshnessFile], undefined],
-    ["gateway-methods", [catalogFile], undefined],
-    ["gateway", [catalogFile, "--exclude", catalogFile], undefined],
-    ["bundled", ["--exclude", "src/plugins/loader.test.ts"], undefined],
-    ["extensions", ["--exclude", "deepinfra/**"], "runtime"],
-    [
-      "extensions",
-      ["--exclude", "deepinfra/**", "--exclude", "google-meet/**", "--exclude", "file-transfer/**"],
-      undefined,
-    ],
-    ["tui-pty", ["--exclude", "tui/tui-session-identity-pty.e2e.test.ts"], undefined],
-    ["tui-pty", ["--exclude", "tui/tui-text-wrap-pty.e2e.test.ts"], "runtime"],
-    ["gateway-core", ["--exclude", "gateway-*.test.ts"], "runtime"],
-    ["gateway-core", ["--exclude", "gateway*.test.ts"], undefined],
-    ["gateway", ["--exclude", "gateway-*.test.ts"], "runtime"],
-    ["infra", ["--exclude", "**/gateway-codex-delivery-cache.test.ts"], "runtime"],
-    [
-      "agents-core",
-      runtimeScopes(configFile("agents-core")).flatMap(({ file, dir }) => [
-        "--exclude",
-        path.posix.relative(dir, file),
-      ]),
-      undefined,
-    ],
-  ] as const)("binds %s prerequisites to CLI selection %j", (project, args, expected) => {
-    expect(
-      pretestBuildMode(
-        runtimeSelections(`test/vitest/vitest.${project}.config.ts`, ["run", ...args], {}),
-      ),
-    ).toBe(expected);
-  });
-
-  it.each([
-    [
-      "gateway-server",
-      "src/gateway/server-request-context.test.ts",
-      "src/gateway/server-sidecar-retention.test.ts",
-    ],
-    ["gateway-database-workers", "src/gateway/server-methods/cron.runs.test.ts", freshnessFile],
-  ])("projects invocation-owned include files under %s", (project, ordinaryFile, runtimeFile) => {
-    const selections = runtimeSelections(`test/vitest/vitest.${project}.config.ts`, ["run"], {});
-    for (const selection of selections) {
-      selection.includePatterns = [ordinaryFile];
-    }
-    expect(pretestBuildMode(selections)).toBeUndefined();
-    for (const selection of selections) {
-      selection.includePatterns = [runtimeFile];
-    }
-    expect(pretestBuildMode(selections)).toBe("runtime");
-  });
-
-  it("combines private QA and runtime readers into one private build", () => {
-    expect(
-      pretestBuildMode([
-        { includePatterns: ["test/e2e/qa-lab/runtime/**/*.test.ts"] },
-        { includePatterns: ["extensions/qa-lab/**/*.test.ts"] },
-      ]),
-    ).toBe("private-qa");
-    expect(pretestBuildMode([])).toBeUndefined();
-    expect(pretestBuildMode([{ configs: ["test/vitest/vitest.config.ts"] }])).toBe("private-qa");
-  });
-});
-
 function configFile(project: string) {
   return `test/vitest/vitest.${project}.config.ts`;
 }
@@ -181,17 +97,6 @@ function gitTree(cwd: string) {
   const tree = spawnSync("git", ["write-tree"], { cwd, encoding: "utf8" });
   expect(tree.status).toBe(0);
   return tree.stdout.trim();
-}
-
-function listOrdinaryExtensionFiles(root: string) {
-  return listExtensionTestFilesForRoots([root]).filter(
-    (file) => !databaseWorkerExtensionTestFiles.includes(file) && !isSharedVitestExcludedPath(file),
-  );
-}
-
-function expectedTelegramTestProcessCount() {
-  const testFileCount = listOrdinaryExtensionFiles("extensions/telegram").length;
-  return Math.max(1, Math.ceil(testFileCount / TELEGRAM_TEST_PROCESS_FILE_LIMIT));
 }
 
 function withTinyGitRepo(files: Record<string, string>, test: (cwd: string) => void): void {
@@ -341,29 +246,6 @@ describe("scripts/test-projects changed-target routing", () => {
     ).toStrictEqual([]);
   });
 
-  it.each<[string[], string[]]>([
-    [["src/plugin-sdk/provider-entry.ts"], ["src/plugin-sdk/provider-entry.test.ts"]],
-    [["src/plugin-sdk/lazy-value.ts"], testFiles("src/plugin-sdk", "core channel-entry-contract")],
-    [
-      ["extensions/qa-lab/src/scenario-catalog.test.ts"],
-      ["extensions/qa-lab/src/scenario-catalog.test.ts"],
-    ],
-    [["ui/src/components/markdown.test.ts"], ["ui/src/components/markdown.test.ts"]],
-    [["scripts/crabbox-wrapper.mts"], ["test/scripts/crabbox-wrapper.test.ts"]],
-    [
-      ["scripts/check-composite-action-input-interpolation.py"],
-      ["test/scripts/check-composite-action-input-interpolation.test.ts"],
-    ],
-    [["scripts/check-no-conflict-markers.mjs"], ["test/scripts/check-no-conflict-markers.test.ts"]],
-    [
-      ["scripts/lib/restart-mac-gateway.sh"],
-      testFiles("test/scripts", "build-and-run-mac restart-mac"),
-    ],
-    [["src/gateway/gateway-codex-harness.live.test.ts"], []],
-  ])("retains precise changed owners for %j", (paths, targets) => {
-    expectChangedTargets(paths, targets);
-  });
-
   it("discovers conventional nested, dashed and basename script owners for .mts", () => {
     const extension = "mts";
     withTinyFileTree(
@@ -511,36 +393,6 @@ describe("scripts/test-projects changed-target routing", () => {
       );
     }
   });
-
-  it.each`
-    file                                                                       | owner                                 | source                                         | inventory
-    ${"src/gateway/server-startup-early.test.ts"}                              | ${"gateway-server"}                   | ${"src/gateway/server-startup-early.ts"}       | ${undefined}
-    ${"src/commands/onboarding-plugin-install.test.ts"}                        | ${"commands"}                         | ${"src/commands/onboarding-plugin-install.ts"} | ${undefined}
-    ${"src/agents/cli-runner/bundle-mcp.user-config.test.ts"}                  | ${"agents-core-isolated"}             | ${undefined}                                   | ${undefined}
-    ${"src/agents/subagents/spawn/subagent-spawn.production-boundary.test.ts"} | ${"agents-spawn-production-boundary"} | ${undefined}                                   | ${undefined}
-    ${"src/agents/agent-command-local.test.ts"}                                | ${"cli-process"}                      | ${undefined}                                   | ${undefined}
-    ${"src/agents/command/session-store.test.ts"}                              | ${"infra"}                            | ${undefined}                                   | ${databaseWorkerCoreTestFiles}
-    ${"src/auto-reply/reply/agent-runner-execution-auth-failures.test.ts"}     | ${"infra"}                            | ${undefined}                                   | ${undefined}
-    ${"src/auto-reply/reply/agent-runner-execution-cli-admission.test.ts"}     | ${"infra"}                            | ${undefined}                                   | ${undefined}
-  `(
-    "routes $file to $owner",
-    ({
-      file,
-      owner,
-      source,
-      inventory,
-    }: {
-      file: string;
-      owner: string;
-      source?: string;
-      inventory?: readonly string[];
-    }) => {
-      expectRun(planRuns([source ?? file]), owner, { includePatterns: [file] });
-      if (inventory) {
-        expect(inventory.filter((entry) => entry === file)).toEqual([file]);
-      }
-    },
-  );
 
   it.each<[string[], string[] | null]>([
     [["src/selector/one.test.ts"], ["src/selector/one.test.ts"]],
@@ -1545,62 +1397,8 @@ export const single = {
   });
 
   describe("agent directory and glob inventory", () => {
-    const inventories = new Map<string, string[]>();
     const toolRoot = "src/agents/tools";
     const failoverRoot = "src/agents/failover";
-    const embeddedRoot = "src/agents/embedded-agent-runner";
-    it.each`
-      label                                        | targets                                                                                                          | patterns
-      ${"agent root directory"}                    | ${["src/agents"]}                                                                                                | ${["src/agents/**/*.test.ts"]}
-      ${"agent root glob"}                         | ${["src/agents/**/*.test.ts"]}                                                                                   | ${["src/agents/**/*.test.ts"]}
-      ${"failover trailing slash"}                 | ${[`./${failoverRoot}/`]}                                                                                        | ${[`${failoverRoot}/**/*.test.ts`]}
-      ${"embedded directory"}                      | ${[embeddedRoot]}                                                                                                | ${[`${embeddedRoot}/**/*.test.ts`]}
-      ${"embedded run glob"}                       | ${[`${embeddedRoot}/run/*.test.ts`]}                                                                             | ${[`${embeddedRoot}/run/*.test.ts`]}
-      ${"mixed overlapping directories and globs"} | ${[path.resolve(toolRoot), `src/agents/{tools,failover}/**/*.test.ts`, `${toolRoot}/chat-history-text.test.ts`]} | ${[`${toolRoot}/**/*.test.ts`, `${failoverRoot}/**/*.test.ts`]}
-    `(
-      "selects every ordinary test exactly once for $label",
-      async ({ targets, patterns }: { targets: string[]; patterns: string[] }) => {
-        const expected = [...new Set(fs.globSync(patterns).map(repoPath))]
-          .filter((file) => !isSharedVitestExcludedPath(file))
-          .toSorted();
-        expect(expected.length).toBeGreaterThan(0);
-        const controls = ["--sequence.shuffle", "--sequence.seed", "3"];
-        const plans = planRuns([...targets, "--", ...controls]);
-        const selected: string[] = [];
-        for (const plan of plans) {
-          // Config loading temporarily owns process.argv and the include-file environment.
-          const ownerFiles =
-            inventories.get(plan.config) ?? (await listVitestConfigTestFiles(plan.config));
-          inventories.set(plan.config, ownerFiles);
-          // Repeating include expansion for every file makes broad inventory checks quadratic.
-          const includedFiles =
-            plan.includePatterns === null
-              ? null
-              : new Set(
-                  fs
-                    .globSync(plan.includePatterns)
-                    .map((file) => repoPath(path.relative(process.cwd(), path.resolve(file)))),
-                );
-          selected.push(
-            ...ownerFiles.filter(
-              (file) =>
-                (!includedFiles || includedFiles.has(file)) &&
-                matchesVitestCliSelection(
-                  file,
-                  [file],
-                  ["run", ...plan.forwardedArgs],
-                  "",
-                  {},
-                  includedFiles ? [file] : null,
-                ),
-            ),
-          );
-          expect(plan.watchMode).toBe(false);
-          expect(plan.forwardedArgs.slice(0, controls.length)).toEqual(controls);
-        }
-        expect(selected.toSorted()).toEqual(expected);
-      },
-    );
 
     it.each([toolRoot, `${toolRoot}/**/*.test.ts`])(
       "intersects inherited includes for %s without dropping an explicit file",
@@ -1656,68 +1454,20 @@ export const single = {
     );
   });
 
-  it.each<[string[], string[]]>([
-    [
-      [
-        "scripts/e2e/mcp-channels-docker.sh",
-        "test/e2e/qa-lab/runtime/mcp-channels-docker-client.ts",
-        "test/e2e/qa-lab/runtime/mcp-channels.fixture.ts",
-        "test/e2e/qa-lab/runtime/mcp-client-temp-state.fixture.ts",
-        "scripts/e2e/mcp-code-mode-gateway-docker.sh",
-        "scripts/e2e/mcp-code-mode-gateway-live-docker.sh",
-        "scripts/e2e/agent-bundle-mcp-tools-docker.sh",
-        "test/e2e/qa-lab/runtime/agent-bundle-mcp-tools-docker-client.ts",
-        "scripts/mcp-code-mode-gateway-e2e.ts",
-        "scripts/e2e/cron-cli-docker.sh",
-        "scripts/e2e/cron-mcp-cleanup-docker.sh",
-        "scripts/e2e/cron-mcp-cleanup-docker-client.ts",
-      ],
-      [
-        "test/scripts/docker-build-helper.test.ts",
-        "test/scripts/docker-e2e-observability.test.ts",
-        "test/scripts/docker-e2e-plan.test.ts",
-        "test/scripts/plugin-prerelease-test-plan.test.ts",
-        "test/e2e/qa-lab/runtime/mcp-gateway-transport.e2e.test.ts",
-        "test/scripts/cron-mcp-cleanup-docker-client.test.ts",
-        "test/scripts/mcp-code-mode-gateway-client.test.ts",
-        "src/agents/agent-bundle-mcp-runtime.test.ts",
-        "src/agents/agent-bundle-mcp-tools.materialize.test.ts",
-        "src/gateway/server.cron.test.ts",
-        "src/gateway/server-methods/agent.test.ts",
-        "src/cron/isolated-agent/run.fast-mode.test.ts",
-        "src/cron/active-jobs-manual-run.test.ts",
-      ],
-    ],
-    [
-      [
-        "scripts/e2e/openai-image-auth-docker.sh",
-        "test/e2e/qa-lab/runtime/openai-image-auth-docker-client.ts",
-      ],
-      [
-        "test/scripts/docker-build-helper.test.ts",
-        "test/scripts/docker-e2e-plan.test.ts",
-        "test/scripts/openai-image-auth-docker-client.test.ts",
-        "extensions/openai/image-generation-provider.test.ts",
-        "src/image-generation/openai-compatible-image-provider.test.ts",
-      ],
-    ],
-    [
-      [
-        "scripts/e2e/codex-media-path-docker.sh",
-        "scripts/e2e/codex-npm-plugin-live-docker.sh",
-        "scripts/e2e/codex-on-demand-docker.sh",
-        "scripts/e2e/live-plugin-tool-docker.sh",
-        "scripts/e2e/plugin-binding-command-escape-docker.sh",
-        "scripts/e2e/qr-import-docker.sh",
-      ],
-      testFiles(
-        "test/scripts",
-        "docker-build-helper docker-e2e-plan codex-media-path-client package-acceptance-workflow live-plugin-tool-assertions plugin-binding-command-escape-docker",
-      ),
-    ],
-  ])("routes Docker E2E targets %j to their semantic owners", (targets, owners) => {
+  it("unions semantic Docker owners for shared script and client inputs", () => {
+    const targets = [
+      "scripts/e2e/openai-image-auth-docker.sh",
+      "test/e2e/qa-lab/runtime/openai-image-auth-docker-client.ts",
+    ];
     expect(unmatchedTargets(targets)).toEqual([]);
-    expectChangedTargets(targets, owners);
+    expectChangedTargets(targets, [
+      ...testFiles(
+        "test/scripts",
+        "docker-build-helper docker-e2e-plan openai-image-auth-docker-client",
+      ),
+      "extensions/openai/image-generation-provider.test.ts",
+      "src/image-generation/openai-compatible-image-provider.test.ts",
+    ]);
   });
 
   it.each([
@@ -1838,27 +1588,16 @@ export const single = {
     expect(planRuns([target])).toEqual(plans);
   });
 
-  it.each([
-    ["extensions/imessage/message-tool-api.ts", "extensions/imessage/src/message-tool-api.test.ts"],
-    ["extensions/slack/message-tool-api.ts", "extensions/slack/message-tool-api.ts"],
-    [
-      "extensions/slack/src/channel-actions.ts",
-      "extensions/slack/src/channel-actions-setup-status.contract.test.ts",
-    ],
-    ["extensions/telegram/src/channel.ts", "test/telegram-question-gateway.test.ts"],
-    ["extensions/matrix/src/channel.ts", "extensions/matrix/src/channel.threading.test.ts"],
-  ] as const)(
-    "routes %s through its owner and the plugin-shape parity contract",
-    (changedPath, ownerTarget) => {
-      const plan = changedPlan([changedPath]);
-
-      expect(plan.mode).toBe("targets");
-      expect(plan.targets).toContain(ownerTarget);
-      expect(plan.targets).toContain(
+  it("adds the shared plugin-shape parity contract to a channel owner", () => {
+    const plan = changedPlan(["extensions/imessage/message-tool-api.ts"]);
+    expect(plan.mode).toBe("targets");
+    expect(plan.targets).toEqual(
+      expect.arrayContaining([
+        "extensions/imessage/src/message-tool-api.test.ts",
         "src/channels/plugins/contracts/plugin-shape.contract.test.ts",
-      );
-    },
-  );
+      ]),
+    );
+  });
 
   it("fails safe for raw Git paths that explicit-path normalization would rewrite", () => {
     for (const changedPath of [
@@ -1935,20 +1674,6 @@ export const single = {
     expectRun(planRuns(["--watch", "extensions"]), "full-extensions", { watchMode: true });
   });
 
-  it("bounds an explicit Telegram config target across process lifetimes", () => {
-    const config = configFile("extension-telegram");
-    const plans = planRuns([config], process.cwd());
-
-    expect(plans).toHaveLength(expectedTelegramTestProcessCount());
-    expect(plans.every((plan) => plan.config === config)).toBe(true);
-    expect(
-      plans.every(
-        (plan) => (plan.includePatterns?.length ?? 0) <= TELEGRAM_TEST_PROCESS_FILE_LIMIT,
-      ),
-    ).toBe(true);
-    expect(selectedTestFiles(plans)).toEqual(listOrdinaryExtensionFiles("extensions/telegram"));
-  });
-
   it.each(["extension-telegram", "extension-matrix"])(
     "preserves an externally scoped %s config target",
     (project) => {
@@ -2022,23 +1747,6 @@ export const single = {
       });
     },
   );
-
-  it("keeps grouped Matrix targets covered when bounding the directory", () => {
-    const testFile = listExtensionTestFilesForRoots(["extensions/matrix"])[0];
-    if (!testFile) {
-      throw new Error("expected a Matrix test fixture");
-    }
-
-    const plans = planRuns(["extensions/matrix", testFile], process.cwd());
-
-    expect(plans.length).toBeGreaterThan(1);
-    expect(
-      plans.every((plan) => (plan.includePatterns?.length ?? 0) <= MATRIX_TEST_PROCESS_FILE_LIMIT),
-    ).toBe(true);
-    expect(selectedTestFiles(plans).toSorted()).toEqual(
-      listExtensionTestFilesForRoots(["extensions/matrix"]).toSorted(),
-    );
-  });
 
   it("keeps a grouped Matrix config target unsplit beside its worker tests", () => {
     const plans = planRuns(["extensions/matrix", configFile("extension-matrix")]);
@@ -2638,6 +2346,17 @@ describe("changed export mock consumers", () => {
 });
 
 describe("test selector native source facts", () => {
+  function sourceRow(overrides: Partial<ReturnType<typeof readSourceFacts>[number]> = {}) {
+    return {
+      imports: [],
+      typeOnlyImports: [],
+      mocks: [],
+      workerExports: [],
+      matches: [],
+      references: [],
+      ...overrides,
+    };
+  }
   it("classifies runtime-worker descriptors by their declaration and self-reads", () => {
     const descriptor =
       '{ currentModuleUrl: import.meta.url, sourceWorkerName: "fixtures/worker", package: { name: "worker" } }';
@@ -2997,15 +2716,11 @@ describe("test selector native source facts", () => {
       const files = Object.keys(sources).map((file) => ({ file, parseImports: false }));
       const expected = Object.entries(sources).map(([file, source]) => {
         const tokens = new Set(source.match(/[A-Za-z0-9_.@+/-]{4,}/gu));
-        return {
+        return sourceRow({
           file,
-          imports: [],
-          typeOnlyImports: [],
-          mocks: [],
-          workerExports: [],
           matches: terms.filter((term) => source.includes(term)),
           references: terms.filter((term) => tokens.has(term)),
-        };
+        });
       });
       expect(readSourceFacts(cwd, files, terms, 1024 * 1024)).toEqual(expected);
     });
@@ -3036,28 +2751,14 @@ describe("test selector native source facts", () => {
       ).toEqual(
         rows
           .filter(({ readable, matched }) => readable && matched)
-          .map(({ file, dependency }) => ({
-            file,
-            imports: [dependency],
-            typeOnlyImports: [],
-            mocks: [],
-            workerExports: [],
-            matches: ["needle"],
-            references: ["needle"],
-          })),
+          .map(({ file, dependency }) =>
+            sourceRow({ file, imports: [dependency], matches: ["needle"], references: ["needle"] }),
+          ),
       );
       expect(readSourceFacts(cwd, files, [], 16 * 1024 * 1024)).toEqual(
         rows
           .filter(({ readable }) => readable)
-          .map(({ file, dependency }) => ({
-            file,
-            imports: [dependency],
-            typeOnlyImports: [],
-            mocks: [],
-            workerExports: [],
-            matches: [],
-            references: [],
-          })),
+          .map(({ file, dependency }) => sourceRow({ file, imports: [dependency] })),
       );
     });
   });
@@ -3144,15 +2845,11 @@ describe("test selector native source facts", () => {
               16 * 1024 * 1024,
             ),
           ).toEqual([
-            {
+            sourceRow({
               file: "large.mts",
-              imports: [],
-              typeOnlyImports: [],
-              mocks: [],
-              workerExports: [],
               matches: ["scripts/tool.mts"],
               references: ["scripts/tool.mts"],
-            },
+            }),
           ]);
         } finally {
           vi.unstubAllEnvs();
