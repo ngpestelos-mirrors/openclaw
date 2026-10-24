@@ -6,6 +6,53 @@ export type NavigationNetworkConditions = {
   uploadThroughput: number;
 };
 
+export type NavigationWorkerRequest = {
+  id: string;
+  sessionId: string;
+  requestId: string;
+  url: string;
+  type: string;
+  requestedAt: number;
+  responseAt?: number;
+  finishedAt?: number;
+  status?: number;
+  networkStatus?: number;
+  fromDiskCache?: boolean;
+  fromServiceWorker?: boolean;
+  servedFromCache?: boolean;
+  receivedBytes: number;
+  encodedBytes?: number;
+  error?: string;
+  canceled?: boolean;
+};
+
+type WorkerEvents = {
+  "Network.requestWillBeSent": {
+    requestId: string;
+    request: { url: string };
+    type?: string;
+    timestamp: number;
+  };
+  "Network.requestServedFromCache": { requestId: string };
+  "Network.responseReceived": {
+    requestId: string;
+    timestamp: number;
+    response: { status: number; fromDiskCache?: boolean; fromServiceWorker?: boolean };
+  };
+  "Network.responseReceivedExtraInfo": { requestId: string; statusCode: number };
+  "Network.dataReceived": { requestId: string; timestamp: number; encodedDataLength: number };
+  "Network.loadingFinished": { requestId: string; timestamp: number; encodedDataLength: number };
+  "Network.loadingFailed": {
+    requestId: string;
+    timestamp: number;
+    errorText: string;
+    canceled?: boolean;
+  };
+};
+type WorkerEvent = {
+  [Method in keyof WorkerEvents]: { method: Method; params: WorkerEvents[Method] };
+}[keyof WorkerEvents];
+
 /** Page-target emulation does not reach fetches made by the production service worker. */
 export async function emulateNavigationWorkerNetwork(
   browser: Browser,
@@ -16,6 +63,9 @@ export async function emulateNavigationWorkerNetwork(
   let closed = false;
   const attaching = new Set<string>();
   const failures: Error[] = [];
+  const requests: NavigationWorkerRequest[] = [];
+  const activeRequests = new Map<string, NavigationWorkerRequest>();
+  const events: Array<WorkerEvent & { sessionId: string }> = [];
   const pending = new Map<
     number,
     {
@@ -52,8 +102,78 @@ export async function emulateNavigationWorkerNetwork(
       uploadThroughput: conditions.uploadThroughput,
     });
   cdp.on("Target.receivedMessageFromTarget", (event: { sessionId: string; message: string }) => {
-    const message: { id?: number; error?: { message: string } } = JSON.parse(event.message);
-    if (message.id === undefined) {
+    const message: { id: number; error?: { message: string } } | WorkerEvent = JSON.parse(
+      event.message,
+    );
+    if (!("id" in message)) {
+      // Other enabled domains may notify without params. Only the Network
+      // events below carry the request identity this collector understands.
+      if (
+        ![
+          "Network.requestWillBeSent",
+          "Network.requestServedFromCache",
+          "Network.responseReceived",
+          "Network.responseReceivedExtraInfo",
+          "Network.dataReceived",
+          "Network.loadingFinished",
+          "Network.loadingFailed",
+        ].includes(message.method)
+      ) {
+        return;
+      }
+      const key = `${event.sessionId}:${message.params.requestId}`;
+      const request = activeRequests.get(key);
+      switch (message.method) {
+        case "Network.requestWillBeSent": {
+          const next: NavigationWorkerRequest = {
+            id: `${key}:${requests.length}`,
+            sessionId: event.sessionId,
+            requestId: message.params.requestId,
+            url: message.params.request.url,
+            type: message.params.type ?? "Other",
+            requestedAt: message.params.timestamp,
+            receivedBytes: 0,
+          };
+          requests.push(next);
+          activeRequests.set(key, next);
+          break;
+        }
+        case "Network.requestServedFromCache":
+          if (request) request.servedFromCache = true;
+          break;
+        case "Network.responseReceived":
+          if (request) {
+            Object.assign(request, {
+              responseAt: message.params.timestamp,
+              status: message.params.response.status,
+              fromDiskCache: message.params.response.fromDiskCache,
+              fromServiceWorker: message.params.response.fromServiceWorker,
+            });
+          }
+          break;
+        case "Network.responseReceivedExtraInfo":
+          if (request) request.networkStatus = message.params.statusCode;
+          break;
+        case "Network.dataReceived":
+          if (request) request.receivedBytes += message.params.encodedDataLength;
+          break;
+        case "Network.loadingFinished":
+          if (request) {
+            request.finishedAt = message.params.timestamp;
+            request.encodedBytes = message.params.encodedDataLength;
+          }
+          break;
+        case "Network.loadingFailed":
+          if (request) {
+            request.finishedAt = message.params.timestamp;
+            request.error = message.params.errorText;
+            request.canceled = message.params.canceled;
+          }
+          break;
+        default:
+          return;
+      }
+      events.push({ ...message, sessionId: event.sessionId });
       return;
     }
     const request = pending.get(message.id);
@@ -109,6 +229,20 @@ export async function emulateNavigationWorkerNetwork(
     filter: [{ type: "service_worker" }, { exclude: true }],
   });
   return {
+    snapshot() {
+      return {
+        requests: requests.map((request) => ({ ...request })),
+        // Finished totals include headers; incomplete/aborted transfers retain
+        // their observed body bytes instead of falsely appearing free.
+        observedBytes: requests.reduce(
+          (total, request) => total + Math.max(request.encodedBytes ?? 0, request.receivedBytes),
+          0,
+        ),
+      };
+    },
+    events() {
+      return events;
+    },
     assertHealthy() {
       if (failures.length) {
         throw new AggregateError(failures, "Service worker network emulation failed");

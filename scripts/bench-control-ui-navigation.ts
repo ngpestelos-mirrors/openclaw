@@ -29,7 +29,10 @@ import {
   clipInteractionCpuProfile,
   summarizeInteractionTrace,
 } from "./lib/control-ui-interaction-trace.ts";
-import { emulateNavigationWorkerNetwork } from "./lib/control-ui-navigation-network.ts";
+import {
+  emulateNavigationWorkerNetwork,
+  type NavigationWorkerRequest,
+} from "./lib/control-ui-navigation-network.ts";
 
 const { values } = parseArgs({
   options: {
@@ -159,7 +162,11 @@ const metricNames = [
   "assetRequests",
   "assetWireBytes",
   "cachedAssetRequests",
+  "serviceWorkerAssetRequests",
   "revalidatedAssetRequests",
+  "workerRequests",
+  "workerObservedBytes",
+  "workerUnmeasuredFailures",
 ] as const;
 type MetricName = (typeof metricNames)[number];
 type Asset = {
@@ -194,7 +201,13 @@ type Result = {
   assetRequests?: number;
   assetWireBytes?: number;
   cachedAssetRequests?: number;
+  serviceWorkerAssetRequests?: number;
   revalidatedAssetRequests?: number;
+  workerRequests?: number;
+  workerObservedBytes?: number;
+  workerUnmeasuredFailures?: number;
+  workerAssets?: NavigationWorkerRequest[];
+  workerPendingAtStart?: NavigationWorkerRequest[];
   startedAt?: number;
   cdpStartedAt?: number;
   cdpReadyAt?: number;
@@ -358,6 +371,8 @@ try {
           "Synthetic in-page Gateway RPC has no network latency; page and service-worker CDP 100ms / 10Mbps affect actual HTTP assets only.",
           "Vite production preview cache headers are recorded, not evidence of Gateway production cache headers.",
           "Page response fromServiceWorker flags include cache hits and upstream fetches; page encoded bytes omit worker upstream bytes. Neither proves a cache hit.",
+          "Worker upstream Network events and requests are recorded separately per context. Observed worker bytes use completed encoded totals (including headers), or incremental encoded body bytes for incomplete/aborted requests; action deltas include work already pending at action start. Failed requests without completion totals are counted separately: CDP can buffer partial bytes until completion, so observed bytes are a lower bound, never evidence that an aborted request used no network.",
+          "Worker network events do not measure worker script CPU. A cache hit is only established by a separate CacheStorage probe, not by a page response flag or zero page bytes.",
           "A proof-only document copy applies the Gateway's canonical root asset href rewrite; asset bytes are symlinked unchanged from the recorded bundle.",
           "No page.route interception; Chromium HTTP cache and service worker remain enabled.",
           "One context per bundle/pair: destinations share dependencies during each sweep. Order rotates and reverses across pairs, identically for both bundles.",
@@ -520,6 +535,11 @@ try {
             artifact,
           };
           const initialIds = new Set(assets.keys());
+          const workerBefore = workerNetwork.snapshot();
+          const initialWorkerIds = new Set(workerBefore.requests.map((request) => request.id));
+          row.workerPendingAtStart = workerBefore.requests.filter(
+            (request) => request.finishedAt === undefined,
+          );
           row.pendingAtStart = [...assets.values()]
             .filter((asset) => !asset.finishedAt)
             .map((asset) => asset.url);
@@ -695,10 +715,28 @@ try {
               0,
             );
             row.cachedAssetRequests = row.assets.filter(
-              (asset) => asset.servedFromCache || asset.fromDiskCache || asset.fromServiceWorker,
+              (asset) => asset.servedFromCache || asset.fromDiskCache,
+            ).length;
+            row.serviceWorkerAssetRequests = row.assets.filter(
+              (asset) => asset.fromServiceWorker,
             ).length;
             row.revalidatedAssetRequests = row.assets.filter(
               (asset) => asset.networkStatus === 304,
+            ).length;
+            const workerAfter = workerNetwork.snapshot();
+            row.workerAssets = workerAfter.requests.filter(
+              (request) => !initialWorkerIds.has(request.id),
+            );
+            row.workerRequests = row.workerAssets.length;
+            row.workerObservedBytes = workerAfter.observedBytes - workerBefore.observedBytes;
+            const priorFailures = new Set(
+              workerBefore.requests.filter((request) => request.error).map((request) => request.id),
+            );
+            row.workerUnmeasuredFailures = workerAfter.requests.filter(
+              (request) =>
+                request.error &&
+                request.encodedBytes === undefined &&
+                !priorFailures.has(request.id),
             ).length;
             if (values.screenshots || row.status === "failed") {
               await page.screenshot({ path: path.join(output, `${artifact}.png`) }).catch(() => {});
@@ -709,7 +747,13 @@ try {
               JSON.stringify({ ...row, errors }, null, 2),
             );
             await writeFile(path.join(output, "results.json"), JSON.stringify(results, null, 2));
-            console.log(JSON.stringify({ ...row, assets: row.assets.length }));
+            console.log(
+              JSON.stringify({
+                ...row,
+                assets: row.assets.length,
+                workerAssets: row.workerRequests,
+              }),
+            );
           }
           if (row.status === "failed") {
             throw new Error(`${artifact}: ${row.error}`);
@@ -795,6 +839,14 @@ try {
           await writeFile(
             path.join(output, `${profile.id}-${pair + 1}-${bundle}-network.json`),
             JSON.stringify([...assets.values()], null, 2),
+          );
+          await writeFile(
+            path.join(output, `${profile.id}-${pair + 1}-${bundle}-worker-network.json`),
+            JSON.stringify(
+              { ...workerNetwork.snapshot(), events: workerNetwork.events() },
+              null,
+              2,
+            ),
           );
           await cdp.detach().catch(() => {});
           await context.close();

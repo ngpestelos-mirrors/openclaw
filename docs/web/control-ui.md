@@ -129,10 +129,13 @@ After the current page and transcript are ready, the browser can prepare code fo
 Pages, New Session, and common dialogs during idle time. Hovering or focusing a
 navigation link, the Settings menu item, the command-palette button, or the model picker prepares
 that destination sooner.
-Background preparation pauses while a page loads, the tab is hidden, or the
+Navigation preparation pauses while a page loads, the tab is hidden, or the
 connection is offline, and respects the browser's Save-Data setting. Page data
 still loads through its normal navigation flow. Hashed assets remain cached for
 repeat visits without revalidation; an update uses new asset URLs.
+The service worker owns [offline asset storage](/web/control-ui/offline-and-reconnect);
+navigation hints also prepare modules for the open page. These hints take priority
+over the worker's bulk download, which resumes after page requests settle.
 
 If the selected session changes while its message subscription is being admitted, chat retries that read with fresh access checks for up to one minute. Saved replies load after the subscription succeeds, without resending your message. Switching chats or losing access stops recovery; a persistent failure leaves **Retry** available.
 
