@@ -80,17 +80,12 @@ function timeline(laneName: string, label: string, alt: string) {
     targetPath: `${laneName}.png`,
   };
 }
-function runArtifact(kind: string, file: string, label: string) {
-  return { kind, lane: "run", path: file, targetPath: file, label };
-}
-
 function writeFixtureManifest() {
   const dir = tempDirs.make("mantis-evidence-test-");
-  mkdirSync(path.join(dir, "baseline"), { recursive: true });
-  mkdirSync(path.join(dir, "candidate"), { recursive: true });
-  writeFileSync(path.join(dir, "baseline", "timeline.png"), "baseline timeline");
-  writeFileSync(path.join(dir, "candidate", "timeline.png"), "candidate timeline");
-  writeFileSync(path.join(dir, "baseline", "change.mp4"), "baseline clip");
+  for (const file of ["baseline/timeline.png", "candidate/timeline.png", "baseline/change.mp4"]) {
+    mkdirSync(path.dirname(path.join(dir, file)), { recursive: true });
+    writeFileSync(path.join(dir, file), file);
+  }
   return writeManifest(dir, {
     summary: "Mantis reran the scenario.",
     comparison: {
@@ -182,21 +177,19 @@ describe("scripts/mantis/publish-pr-evidence", () => {
 
     const published = await upload(fetchImpl);
 
-    expect(published).toEqual({
-      artifactRoot,
-      rawBase,
-      treeUrl: `${rawBase}/index.json`,
-    });
-    expect(requests.map((request) => request.method)).toEqual(["PUT", "PUT", "PUT", "PUT", "PUT"]);
-    expect(requests.every((request) => request.signal instanceof AbortSignal)).toBe(true);
-    expect(requests.map((request) => request.url)).toEqual(
+    expect(published).toEqual({ artifactRoot, rawBase, treeUrl: `${rawBase}/index.json` });
+    expect(requests.map(({ method, signal, url }) => ({ method, signal, url }))).toEqual(
       [
         "baseline.png",
         "candidate.png",
         "baseline-change.mp4",
         "mantis-evidence.json",
         "index.json",
-      ].map((file) => `${storageConfig.endpoint}/${storageConfig.bucket}/${artifactRoot}/${file}`),
+      ].map((file) => ({
+        method: "PUT",
+        signal: expect.any(AbortSignal),
+        url: `${storageConfig.endpoint}/${storageConfig.bucket}/${artifactRoot}/${file}`,
+      })),
     );
     expect(requests[0]?.headers).toMatchObject({
       "content-type": "image/png",
@@ -294,30 +287,26 @@ describe("scripts/mantis/publish-pr-evidence", () => {
 
   it("allows failure manifests to omit optional visual artifacts", () => {
     const dir = tempDirs.make("mantis-evidence-test-");
-    writeFileSync(path.join(dir, "summary.json"), JSON.stringify({ status: "fail" }));
-    writeFileSync(path.join(dir, "report.md"), "bootstrap failed before screenshot");
+    const files = ["summary.json", "report.md"];
+    for (const file of files) {
+      writeFileSync(path.join(dir, file), "{}");
+    }
     const manifestPath = writeManifest(dir, {
-      id: "slack-desktop-smoke",
-      title: "Mantis Slack Desktop Smoke QA",
       summary: "Mantis could not finish VM setup.",
-      scenario: "slack-openclaw-desktop-smoke",
       comparison: {
         candidate: lane("Slack QA and VM gateway setup pass", "bbb", "fail", false),
         pass: false,
       },
       artifacts: [
         {
-          alt: "Slack Web desktop screenshot from the Mantis VM",
           inline: true,
           kind: "desktopScreenshot",
-          label: "Slack desktop/VNC browser",
           lane: "candidate",
           path: "slack-desktop-smoke.png",
           required: false,
           targetPath: "slack-desktop.png",
         },
-        runArtifact("metadata", "summary.json", "Slack desktop summary"),
-        runArtifact("report", "report.md", "Slack desktop report"),
+        ...files.map((file, index) => ({ kind: index === 0 ? "metadata" : "report", path: file })),
       ],
     });
 
@@ -327,13 +316,7 @@ describe("scripts/mantis/publish-pr-evidence", () => {
       "report.md",
       "mantis-evidence.json",
     ]);
-    const slackBase = "https://qa.openclaw.ai/mantis/slack/pr-1/run-1";
-    const body = render(manifest, {
-      ...links,
-      marker: "<!-- mantis-slack-desktop-smoke -->",
-      rawBase: slackBase,
-      treeUrl: slackBase,
-    });
+    const body = render(manifest, links);
     contains(body, "Summary: Mantis could not finish VM setup.", "- Overall: `fail`");
     expect(body).not.toContain("<img ");
   });

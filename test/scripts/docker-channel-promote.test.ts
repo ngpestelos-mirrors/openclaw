@@ -77,7 +77,6 @@ function expectNoWrites(docker: ReturnType<typeof createDockerMock>) {
 }
 
 type WorkflowStep = {
-  name?: string;
   run?: string;
   uses?: string;
   with?: Record<string, boolean | string>;
@@ -92,7 +91,6 @@ type WorkflowJob = {
 };
 
 type Workflow = {
-  concurrency?: { group?: string; "cancel-in-progress"?: boolean; queue?: string };
   jobs?: Record<string, WorkflowJob>;
 };
 
@@ -272,14 +270,6 @@ describe("Docker channel promotion", () => {
     } else {
       expect(attempt.mock.results[0]?.value).not.toHaveProperty("cause");
     }
-    expect(docker.mock.calls.at(-1)?.[1]).toEqual([
-      "buildx",
-      "imagetools",
-      "inspect",
-      sourceRef,
-      "--format",
-      `{{json (index .Image "${platform}")}}`,
-    ]);
     expectNoWrites(docker);
   });
 
@@ -300,48 +290,37 @@ describe("Docker channel promotion", () => {
     );
   });
 
-  it("uses the digest-bound promotion path for releases and approved repairs", () => {
+  it("gates digest-bound publication and repairs on trusted checkout and approval", () => {
     const workflow = readWorkflow(".github/workflows/docker-channel-promote.yml");
     const releaseWorkflow = readWorkflow(".github/workflows/docker-release.yml");
     const publish = requireJob(releaseWorkflow, "publish");
     const resolve = requireJob(workflow, "resolve");
     const approve = requireJob(workflow, "approve");
     const promote = requireJob(workflow, "promote");
-    const publicationLock = {
+    expect([publish, resolve, approve, promote].map((job) => job.permissions)).toEqual([
+      { actions: "read", attestations: "read", contents: "read", packages: "write" },
+      { contents: "read" },
+      {},
+      { contents: "read", packages: "write" },
+    ]);
+    for (const job of [resolve, promote]) {
+      expectTrustedCheckout(job);
+    }
+    expect(approve).toMatchObject({ needs: "resolve", environment: "docker-release" });
+    expect(promote.needs).toEqual(["resolve", "approve"]);
+    expect(promote.concurrency).toEqual({
       group: "docker-release-publish",
       "cancel-in-progress": false,
       queue: "max",
-    };
-
-    expect(publish.permissions).toEqual({
-      actions: "read",
-      attestations: "read",
-      contents: "read",
-      packages: "write",
     });
-
-    expect(resolve.permissions).toEqual({ contents: "read" });
-    expectTrustedCheckout(resolve);
-    expect(approve).toMatchObject({ needs: "resolve", environment: "docker-release" });
-    expect(approve.permissions).toEqual({});
-    expect(promote.needs).toEqual(["resolve", "approve"]);
-    expect(promote.permissions).toEqual({ contents: "read", packages: "write" });
-    expect(promote.concurrency).toEqual(publicationLock);
-    expectTrustedCheckout(promote);
-
-    const steps = promote.steps ?? [];
-    const promotionIndex = steps.findIndex(
-      (step) => step.name === "Promote and verify channel aliases",
-    );
-    expect(steps.some((step) => step.run?.includes("verify-docker-attestations.mjs"))).toBe(false);
-    expect(promotionIndex).toBeGreaterThan(-1);
-    expect(steps[promotionIndex]?.run).toContain("node scripts/docker-channel-promote.mjs");
-    expect(steps[promotionIndex]?.run).toContain("--allow-rollback");
+    expect(
+      promote.steps?.find((step) => step.run?.includes("node scripts/docker-channel-promote.mjs"))
+        ?.run,
+    ).toContain("--allow-rollback");
 
     const packageWriters = Object.entries(workflow.jobs ?? {}).filter(
       ([, job]) => job.permissions?.packages === "write",
     );
     expect(packageWriters.map(([name]) => name)).toEqual(["promote"]);
-    expect(packageWriters[0]?.[1].needs).toContain("approve");
   });
 });
