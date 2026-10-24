@@ -12,6 +12,7 @@ import {
 } from "../../agents/tools/cron-tool.js";
 import { setRuntimeConfigSnapshot } from "../../config/config.js";
 import { replaceSessionEntry } from "../../config/sessions/session-accessor.js";
+import { invalidateGatewayDeviceRevocation } from "../../gateway/device-revocation.js";
 import { captureGatewayOperatorRunAuthority } from "../../gateway/operator-run-authority.js";
 import { createOperatorRecoveryFixture } from "../../gateway/operator-run-recovery.test-support.js";
 import {
@@ -92,6 +93,7 @@ it.each([
   "role revoked",
   "parent reset",
   "parent reset then device revoked",
+  "device revoked during the run",
   "no operator source",
 ] as const)("a Control UI child automation with %s", async (scenario) => {
   const config = await prepareAuthorityConfig({ tools: { allow: [AUTOMATIONS_TOOL_NAME] } });
@@ -237,6 +239,7 @@ it.each([
 
   let entered = 0;
   let operatorAdmitted = false;
+  let revokedDuringRun: boolean | undefined;
   let memoryParent: ReturnType<typeof readScheduledMemoryParent>;
   runEmbeddedAgentMock.mockImplementation(async (params: RunEmbeddedAgentParams) => {
     entered++;
@@ -244,7 +247,20 @@ it.each([
       "gateway",
       params.runId,
     );
-    operatorAdmitted = readAdmittedRunOperatorAuthority(admitted) !== undefined;
+    const operator = readAdmittedRunOperatorAuthority(admitted);
+    operatorAdmitted = operator !== undefined;
+    if (scenario === "device revoked during the run") {
+      // The Gateway's device-token revocation owner fences every capture of that device.
+      invalidateGatewayDeviceRevocation(context, DEVICE.deviceId, "operator");
+      revokedDuringRun = (() => {
+        try {
+          operator?.assertCurrent();
+          return false;
+        } catch {
+          return true;
+        }
+      })();
+    }
     memoryParent = readScheduledMemoryParent(admitted.operationalRunInstance);
     return { payloads: [{ text: "Deploy checked" }], meta: { agentMeta: {} } };
   });
@@ -272,6 +288,12 @@ it.each([
     await onTimer(state);
     await execution.waitForIdle();
     const after = expectDefined(execution.getJob(job.id), "settled job");
+    if (scenario === "device revoked during the run") {
+      expect(entered).toBe(1);
+      expect(operatorAdmitted).toBe(true);
+      expect(revokedDuringRun).toBe(true);
+      return;
+    }
     if (scenario === "valid" || scenario === "no operator source" || scenario === "parent reset") {
       expect(after.state.lastRunStatus, after.state.lastError).toBe("ok");
       expect(after.enabled).toBe(true);
