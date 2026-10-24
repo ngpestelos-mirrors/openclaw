@@ -133,27 +133,6 @@ function parseSignalAllowFromEntries(raw: string): { entries: string[]; error?: 
   });
 }
 
-export function buildSignalSetupPatch(input: SignalSetupInput) {
-  const account = normalizeSignalAccountInput(input.signalNumber);
-  const transport = input.httpUrl
-    ? {
-        // Bare --http-url is classified once by prepareAccountConfigInput. Keep the historical
-        // external-native default for direct adapter callers that already bypass preparation.
-        kind: input.signalTransport ?? ("external-native" as const),
-        url: normalizeSignalTransportUrl(input.httpUrl),
-      }
-    : input.cliPath || input.httpHost || input.httpPort
-      ? {
-          kind: "managed-native" as const,
-          ...managedTransportOverridesFromSetupInput(input),
-        }
-      : undefined;
-  return {
-    ...(account ? { account } : {}),
-    ...(transport ? { transport } : {}),
-  };
-}
-
 async function prepareSignalSetupInput(params: {
   cfg: OpenClawConfig;
   accountId: string;
@@ -345,7 +324,26 @@ const signalSetupAdapterBase = createPatchedAccountSetupAdapter<SignalSetupInput
       return null;
     },
   }),
-  buildPatch: buildSignalSetupPatch,
+  buildPatch: (input) => {
+    const account = normalizeSignalAccountInput(input.signalNumber);
+    const transport = input.httpUrl
+      ? {
+          // Bare --http-url is classified once by prepareAccountConfigInput. Keep the historical
+          // external-native default for direct adapter callers that already bypass preparation.
+          kind: input.signalTransport ?? ("external-native" as const),
+          url: normalizeSignalTransportUrl(input.httpUrl),
+        }
+      : input.cliPath || input.httpHost || input.httpPort
+        ? {
+            kind: "managed-native" as const,
+            ...managedTransportOverridesFromSetupInput(input),
+          }
+        : undefined;
+    return {
+      ...(account ? { account } : {}),
+      ...(transport ? { transport } : {}),
+    };
+  },
 });
 
 function restorePromotedSignalDefaultAccount(cfg: OpenClawConfig): OpenClawConfig {

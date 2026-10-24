@@ -9,15 +9,6 @@ export type NativeChatDrafts = {
   dispose: () => void;
 };
 
-function readNativeDraft(raw: unknown): string | null {
-  if (!raw || typeof raw !== "object" || !("type" in raw) || raw.type !== "draft-text") {
-    return null;
-  }
-  const payload = "payload" in raw ? raw.payload : null;
-  const text = payload && typeof payload === "object" && "text" in payload ? payload.text : null;
-  return typeof text === "string" ? text : null;
-}
-
 /**
  * WebView2's message-only bridge is not a DOM EventTarget. Subscribe before
  * the ready handshake and pair its native subscription with disposal below.
@@ -35,8 +26,13 @@ export function createNativeChatDrafts(): NativeChatDrafts {
   let pendingDraft: string | null = null;
   const listeners = new Set<(draft: string) => void>();
   const handler = (event: MessageEvent) => {
-    const draft = readNativeDraft(event.data);
-    if (draft === null) {
+    const raw: unknown = event.data;
+    if (!raw || typeof raw !== "object" || !("type" in raw) || raw.type !== "draft-text") {
+      return;
+    }
+    const payload = "payload" in raw ? raw.payload : null;
+    const draft = payload && typeof payload === "object" && "text" in payload ? payload.text : null;
+    if (typeof draft !== "string") {
       return;
     }
     if (listeners.size === 0) {
