@@ -1070,7 +1070,6 @@ src/agents/bash-tools.exec-run.ts	1
 src/agents/bash-tools.exec-script-preflight.ts	1
 src/agents/bash-tools.process.ts	5
 src/agents/bootstrap-files.ts	1
-src/agents/bootstrap-hooks.ts	1
 src/agents/btw-transcript.ts	5
 src/agents/cache-trace.ts	3
 src/agents/cli-credentials.ts	7

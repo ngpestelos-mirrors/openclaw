@@ -4,12 +4,17 @@ import type { ChatType } from "../channels/chat-type.js";
 import { prepareSessionTranscriptHydration } from "../config/sessions/session-transcript-hydration.js";
 import type { AgentContextInjection } from "../config/types.agent-defaults.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
+import {
+  createInternalHookEvent,
+  triggerInternalHook,
+  type AgentBootstrapHookContext,
+} from "../hooks/internal-hooks.js";
 import { rememberBoundedKey } from "../infra/dedupe.js";
 import { isMemoryOriginEligibleForAutomaticInjection } from "../memory-host-sdk/host/types.js";
 import { classifyActiveMemoryWorkspacePaths } from "../plugins/memory-runtime.js";
+import { resolveAgentIdFromSessionKey } from "../routing/session-key.js";
 import { resolveUserPath } from "../utils.js";
 import { resolveAgentConfig, resolveDefaultAgentId } from "./agent-scope.js";
-import { applyBootstrapHookOverrides } from "./bootstrap-hooks.js";
 import type { BootstrapContextRunKind } from "./bootstrap-mode.js";
 import { buildBootstrapContextForFiles } from "./embedded-agent-helpers/bootstrap.js";
 import type { EmbeddedContextFile } from "./embedded-agent-helpers/context-file.js";
@@ -369,17 +374,26 @@ async function resolveBootstrapFiles(
   // Lightweight runs omit bootstrap context.
   const bootstrapFiles = params.contextMode === "lightweight" ? [] : sessionFiles;
 
-  const hooked =
-    hooks === "registered"
-      ? await applyBootstrapHookOverrides({
-          files: bootstrapFiles,
-          workspaceDir: params.workspaceDir,
-          config: params.config,
-          sessionKey: params.sessionKey,
-          sessionId: params.sessionId,
-          agentId: params.agentId,
-        })
-      : bootstrapFiles;
+  let hooked = bootstrapFiles;
+  if (hooks === "registered") {
+    const hookSessionKey = params.sessionKey ?? params.sessionId ?? "unknown";
+    const agentId =
+      params.agentId ??
+      (params.sessionKey ? resolveAgentIdFromSessionKey(params.sessionKey) : undefined);
+    const context: AgentBootstrapHookContext = {
+      workspaceDir: params.workspaceDir,
+      bootstrapFiles,
+      cfg: params.config,
+      sessionKey: params.sessionKey,
+      sessionId: params.sessionId,
+      agentId,
+    };
+    const event = createInternalHookEvent("agent", "bootstrap", hookSessionKey, context);
+    await triggerInternalHook(event);
+    // SAFETY: This agent:bootstrap event uses the context contract supplied above.
+    const updated = (event.context as AgentBootstrapHookContext).bootstrapFiles;
+    hooked = Array.isArray(updated) ? updated : bootstrapFiles;
+  }
   const updated = typeof hooks === "object" ? [...hooked, ...hooks.projected] : hooked;
   const filteredUpdated = filterCompletedWorkspaceBootstrapFile(
     filterBootstrapFilesAfterHooks({
