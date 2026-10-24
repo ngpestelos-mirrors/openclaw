@@ -55,6 +55,10 @@ type Group =
   | "board"
   | "history-state"
   | "sender-identity";
+const additionalLintRules: Partial<Record<Group, string[]>> = {
+  activity: ["eslint/curly"],
+  approvals: ["unicorn/no-useless-length-check"],
+};
 const validators: Array<[name: string, schema: TSchema, type: string, group: Group]> = [
   [
     "BoardSnapshot",
@@ -383,6 +387,7 @@ async function main() {
           : `${outputBase}/${group}.${extension}`;
       const generatedHeader = standaloneValidatorHeader("pnpm ui:validators:gen", {
         declaration: extension === "d.ts",
+        additionalLintRules: additionalLintRules[group],
       });
       const formatted = await format(outputPath, generatedHeader + contents);
       if (formatted.errors.length) {
