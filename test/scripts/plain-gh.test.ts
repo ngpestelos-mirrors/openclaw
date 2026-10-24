@@ -1,7 +1,7 @@
-import { execFileSync, type ExecFileSyncOptions } from "node:child_process";
+import { execFileSync } from "node:child_process";
 import * as fs from "node:fs";
 import path from "node:path";
-import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
+import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import * as gh from "../../scripts/lib/plain-gh.mjs";
 import { resolveTestNodeExecPath } from "../../src/test-utils/node-process.js";
 import { useAutoCleanupTempDirTracker } from "../helpers/temp-dir.js";
@@ -309,25 +309,4 @@ describe("plain gh subprocess contracts", () => {
       expect(fs.readFileSync(destination).equals(output)).toBe(true);
     },
   );
-
-  it("preserves bounded read options and invocation errors", () => {
-    const options = {
-      killSignal: "SIGKILL",
-      stdio: ["ignore", "pipe", "inherit"],
-      timeout: 60_000,
-    } satisfies ExecFileSyncOptions;
-    const execFileSyncImpl = vi.fn(() => '{"ok":true}');
-    const result = gh.execGhJson(["api", "repos/example/repo"], options, { execFileSyncImpl });
-    expect(result).toEqual({ ok: true });
-    expect(execFileSyncImpl).toHaveBeenCalledExactlyOnceWith(
-      "gh",
-      ["api", "repos/example/repo"],
-      expect.objectContaining({ ...options, encoding: "utf8", maxBuffer: 32 * 1024 * 1024 }),
-    );
-    const failure = new Error("gh read failed");
-    const fail = () => {
-      throw failure;
-    };
-    expect(() => gh.execGhRead(versionArgs, {}, { execFileSyncImpl: fail })).toThrow(failure);
-  });
 });

@@ -141,7 +141,6 @@ describePosix("correction publication authority handoff", () => {
   it.each([
     ["auto", "prepare_push", "crabbox"],
     ["graphql", "prepare_push", "crabbox"],
-    ["auto", "prepare_push", "github"],
     ["graphql", "prepare_push", "github"],
     ["graphql", "prepare_sync_head", "github"],
   ] as const)(

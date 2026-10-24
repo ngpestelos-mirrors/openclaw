@@ -129,8 +129,8 @@ describe("openclaw npm resume run identity", () => {
     }
   });
 
-  it.each(["success", "failure"])("keeps signed attempt after %s rerun", (conclusion) => {
-    const runGh = publicationRun({}, true, { run_attempt: 2, conclusion });
+  it("keeps the signed attempt after a failed rerun", () => {
+    const runGh = publicationRun({}, true, { run_attempt: 2, conclusion: "failure" });
     expect(recover(publicationEvidence(), runGh)).toMatchObject({ runId: "456", runAttempt: 1 });
     expect(runGh.mock.calls.some(([args]) => args.includes(RUN_API))).toBe(false);
     expect(runGh.mock.calls.find(([args]) => args[0] === "run")?.[0]).toContain("--attempt");

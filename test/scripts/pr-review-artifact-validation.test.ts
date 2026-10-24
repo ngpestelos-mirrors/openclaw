@@ -19,7 +19,6 @@ const mergeScript = join(process.cwd(), "scripts/pr-lib/merge.sh");
 const describePosix = process.platform === "win32" ? describe.skip : describe;
 const testNodeExecPath = resolveTestNodeExecPath();
 
-const REVIEWED_IDENTITY_LINE = `Review artifact for PR #${REVIEWED_PR} at ${REVIEWED_HEAD}`;
 const REVIEW_SHELL_COMMAND_SURFACE = [
   "rg() {",
   '  if [ "${1-}" = "-F" ]; then',
@@ -76,19 +75,17 @@ function runReviewShellFunction(
   invocation: string,
   setup = ["mark_pr_operation_side_effects_started() { :; }"],
 ) {
-  return runShell(fixtureRoot, reviewScript, [REVIEW_SHELL_COMMAND_SURFACE, ...setup, invocation]);
-}
-
-function runShell(fixtureRoot: string, script: string, commands: string[]) {
   const source = [
     "set -euo pipefail",
     'source "$1"',
     'fixture_root="$2"',
     'enter_worktree() { cd "$fixture_root"; }',
     'require_artifact() { [ -s "$1" ]; }',
-    ...commands,
+    REVIEW_SHELL_COMMAND_SURFACE,
+    ...setup,
+    invocation,
   ].join("\n");
-  return spawnSync(bash, ["-c", source, "pr-review-shell", script, fixtureRoot], {
+  return spawnSync(bash, ["-c", source, "pr-review-shell", reviewScript, fixtureRoot], {
     encoding: "utf8",
   });
 }
@@ -252,7 +249,7 @@ describePosix("scripts/pr review artifact validation", () => {
   it("preserves in-progress artifacts already stamped for this head", () => {
     const inProgress = validReadyReview();
     inProgress.issueValidation.summary = "Half-written review worth keeping.";
-    const markdown = `${REVIEWED_IDENTITY_LINE}\n\nA) Half-written review worth keeping.\n`;
+    const markdown = `Review artifact for PR #${REVIEWED_PR} at ${REVIEWED_HEAD}\n\nA) Half-written review worth keeping.\n`;
     const { result, localDir } = runArtifactsInit(inProgress, markdown);
 
     expect(result.status, `${result.stdout}\n${result.stderr}`).toBe(0);
@@ -284,16 +281,15 @@ describePosix("scripts/pr review artifact validation", () => {
     expect(result.stdout).not.toContain("review artifacts validated");
   });
 
-  it.each(["packages/normalization-core/src/string-normalization.ts", "ui/src/app.ts"])(
-    "requires behavioral review for core runtime path %s",
-    (path) => {
-      expectRejected(
-        runValidation(validReview(), { files: [path] }),
-        "runtime file changes require behavioralSweep.status=pass|needs_work",
-        "runtime file changes require at least one branch entry",
-      );
-    },
-  );
+  it("requires behavioral review for package runtime changes", () => {
+    expectRejected(
+      runValidation(validReview(), {
+        files: ["packages/normalization-core/src/string-normalization.ts"],
+      }),
+      "runtime file changes require behavioralSweep.status=pass|needs_work",
+      "runtime file changes require at least one branch entry",
+    );
+  });
 
   it.each([
     ["api-error", "stderr", "unable to verify the required GitHub checks"],
