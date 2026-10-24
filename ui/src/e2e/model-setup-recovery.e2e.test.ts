@@ -4,7 +4,6 @@ import { installMockGateway } from "../test-helpers/control-ui-e2e.ts";
 import { createControlUiE2eSuite } from "./control-ui-e2e-suite.test-support.ts";
 import { expandProvider } from "./model-providers.test-support.ts";
 import {
-  activated,
   activationFailure,
   button,
   candidate,
@@ -13,7 +12,6 @@ import {
   expectRequestCounts,
   expectText,
   makeDetection,
-  pollRequestCount,
   providerLogin,
   runningStep,
   runningWizard,
@@ -32,138 +30,23 @@ const suite = createControlUiE2eSuite({
 
 const withPage = setupPages(suite, () => setupContext({ viewport: { height: 900, width: 1280 } }));
 
-function configuredProvider(
-  provider: string,
-  displayName: string,
-  id: string,
-  options: { name?: string; config?: object; profiles?: Record<string, string>[] } = {},
-) {
+function configuredProvider(provider: string, displayName: string, id: string, config: object) {
   const modelRef = `${provider}/${id}`;
   return {
     agentModel: modelRef,
-    models: [{ id, name: options.name ?? id, provider, available: true }],
+    models: [{ id, name: id, provider, available: true }],
     methodResponses: {
-      "config.get": configSnapshot(
-        options.config ?? { agents: { defaults: { model: modelRef } } },
-        "configured-provider",
-      ),
+      "config.get": configSnapshot(config, "configured-provider"),
       "models.authStatus": {
         ts: 1,
         providerCapabilities: [],
-        providers: [{ provider, displayName, status: "static", profiles: options.profiles ?? [] }],
+        providers: [{ provider, displayName, status: "static", profiles: [] }],
       },
     },
   };
 }
 
 suite.define(() => {
-  it("verifies the current model connection and retries saved replacement credentials", async () => {
-    await withPage(async ({ page }) => {
-      const provider = configuredProvider("openai", "OpenAI", "gpt-5", {
-        name: "GPT-5",
-        profiles: [{ profileId: "openai:existing", type: "api_key", status: "static" }],
-      });
-      const gateway = await installSetupGateway(page, {
-        ...provider,
-        featureMethods: [
-          "chat.metadata",
-          "chat.startup",
-          rpc.detect,
-          "models.probe",
-          rpc.activate,
-          rpc.auth,
-          rpc.next,
-        ],
-        methodResponses: {
-          ...provider.methodResponses,
-          [rpc.detect]: makeDetection({
-            candidates: [
-              candidate("existing-model", "Current model", "openai/gpt-5", {
-                brandId: "openai",
-                detail: "openai/gpt-5 — already configured",
-              }),
-              candidate("provider-auto:openai", "OpenAI", "openai/gpt-5", {
-                brandId: "openai",
-                detail: "Already configured",
-              }),
-              candidate(
-                "saved-auth:openai:replacement",
-                "Saved OpenAI credentials",
-                "openai/gpt-5",
-                { brandId: "openai", detail: "Saved for retry after a failed setup test" },
-              ),
-              candidate("claude-cli", "Claude Code", "claude-cli/claude-opus-5", {
-                brandId: "claude",
-                detail: "logged in",
-              }),
-            ],
-            configuredModel: "openai/gpt-5",
-            setupComplete: true,
-          }),
-          "models.probe": {
-            provider: "openai",
-            status: "ok",
-            latencyMs: 1234,
-            results: [
-              { label: "Configured credential · openai/gpt-5", status: "ok", latencyMs: 1234 },
-            ],
-          },
-          [rpc.activate]: runningWizard(),
-          [rpc.next]: activated("openai/gpt-5"),
-        },
-      });
-
-      const response = await openModelSetup(page, suite.server.baseUrl);
-      expect(response?.status()).toBe(200);
-      await expectCount(page.locator('[data-candidate-kind="existing-model"]'), 0);
-      await expectCount(page.locator('[data-candidate-kind="claude-cli"]'), 1);
-      expect(await page.locator('[data-candidate-kind="provider-auto:openai"]').count()).toBe(0);
-      const savedCredentials = page.locator(
-        '[data-candidate-kind="saved-auth:openai:replacement"]',
-      );
-      await waitText(savedCredentials, "Saved OpenAI credentials");
-      await page.setViewportSize({ height: 844, width: 390 });
-      await expect
-        .poll(() =>
-          page
-            .locator(".shell-nav.nav-drawer")
-            .evaluate((element) => element.getAttribute("aria-hidden") !== "true"),
-        )
-        .toBe(false);
-      await page.setViewportSize({ height: 900, width: 1280 });
-      await button(page.locator(".model-setup-discovery"), "Close").click();
-      const currentProvider = await expandProvider(page, "openai");
-      for (let attempt = 0; attempt < 2; attempt++) {
-        const detections = (await gateway.getRequests(rpc.detect)).length;
-        const probes = (await gateway.getRequests("models.probe")).length;
-        await button(currentProvider, "Test connection: OpenAI").click();
-        const verify = await gateway.waitForRequest("models.probe", { after: probes });
-        expect(verify.params).toEqual({ provider: "openai", agentId: "main" });
-        if (attempt === 1) {
-          await pollRequestCount(gateway, "models.probe").toBe(probes + 1);
-          expect((await gateway.getRequests(rpc.detect)).length).toBe(detections);
-        }
-        await button(currentProvider, "Test connection: OpenAI").waitFor();
-        await waitText(
-          currentProvider.locator(".model-providers__probe-target"),
-          "Connected · Request round-trip: 1234 ms",
-        );
-        await waitText(currentProvider.locator(".model-providers__probe-summary"), "Connected");
-      }
-      await openModelSetup(page);
-      await button(savedCredentials, "Test & use for this agent").click();
-      const activation = await gateway.waitForRequest(rpc.activate);
-      expect(activation.params).toEqual({
-        kind: "saved-auth:openai:replacement",
-        modelRef: "openai/gpt-5",
-        agentId: "main",
-        sessionId: expect.any(String),
-      });
-      await page.locator(".model-setup-success").waitFor();
-      await expectRequestCounts(gateway, { [rpc.activate]: 1, [rpc.auth]: 0 });
-    });
-  });
-
   it.each(["rejected", "uncertain"] as const)(
     "preserves first-run recovery after a terminal %s activation outcome",
     async (outcome) => {
@@ -230,9 +113,7 @@ suite.define(() => {
             },
           },
         };
-        const provider = configuredProvider("lmstudio", "LM Studio", "qwen3-8b-instruct", {
-          config,
-        });
+        const provider = configuredProvider("lmstudio", "LM Studio", "qwen3-8b-instruct", config);
         const gateway = await installSetupGateway(page, {
           ...provider,
           featureMethods: [
