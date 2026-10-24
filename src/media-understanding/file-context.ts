@@ -11,7 +11,7 @@ import { renderFileContextBlock } from "../media/file-context.js";
 import { extractFileContentFromBuffer } from "../media/input-files.js";
 import type { MediaFact } from "../media/media-facts.js";
 import { classifyMediaReferenceSource } from "../media/media-reference.js";
-import { resolveAttachmentKind } from "./attachments.js";
+import { resolveAttachmentKind } from "./attachments.normalize.js";
 import type { ExtractedFileImage } from "./extracted-file-images.js";
 import {
   type FileAttachmentOutcome,
