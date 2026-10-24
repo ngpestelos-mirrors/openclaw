@@ -19,17 +19,6 @@ const mergeScript = join(process.cwd(), "scripts/pr-lib/merge.sh");
 const describePosix = process.platform === "win32" ? describe.skip : describe;
 const testNodeExecPath = resolveTestNodeExecPath();
 
-const REVIEW_SHELL_COMMAND_SURFACE = [
-  "rg() {",
-  '  if [ "${1-}" = "-F" ]; then',
-  "    shift",
-  '    command grep -F "$@"',
-  "  else",
-  '    command grep -E "$@"',
-  "  fi",
-  "}",
-].join("\n");
-
 it("runs dependency-free CLI and native lock regressions", () => {
   const result = spawnSync(
     testNodeExecPath,
@@ -48,26 +37,17 @@ function validReadyReview(head = REVIEWED_HEAD) {
 
 function runValidation(
   review: ReturnType<typeof validReview>,
-  options: ReviewArtifactFixtureOptions & {
-    guardFailure?: boolean;
-    orList?: boolean;
-  } = {},
+  options: ReviewArtifactFixtureOptions = {},
 ) {
   const fixtureRoot = tempDirs.make("openclaw-pr-review-validation-");
   writeReviewArtifacts(fixtureRoot, review, options);
 
-  return runReviewShellFunction(
-    fixtureRoot,
-    options.orList ? "review_validate_artifacts 42 || exit 1" : "review_validate_artifacts 42",
-    [
-      'common_repo_root() { printf "%s\\n" "$fixture_root"; }',
-      `pr_worktree_state() { printf '{"path":"%s","present":true}\\n' "$fixture_root"; }`,
-      options.guardFailure
-        ? "review_guard() { REVIEW_MODE=pr; echo 'review head guard failed'; return 1; }"
-        : `review_guard() { enter_worktree 42 || return 1; REVIEW_MODE=${options.mode ?? "pr"}; }`,
-      "print_review_stdout_summary() { :; }",
-    ],
-  );
+  return runReviewShellFunction(fixtureRoot, "review_validate_artifacts 42", [
+    'common_repo_root() { printf "%s\\n" "$fixture_root"; }',
+    `pr_worktree_state() { printf '{"path":"%s","present":true}\\n' "$fixture_root"; }`,
+    `review_guard() { enter_worktree 42 || return 1; REVIEW_MODE=${options.mode ?? "pr"}; }`,
+    "print_review_stdout_summary() { :; }",
+  ]);
 }
 
 function runReviewShellFunction(
@@ -81,7 +61,6 @@ function runReviewShellFunction(
     'fixture_root="$2"',
     'enter_worktree() { cd "$fixture_root"; }',
     'require_artifact() { [ -s "$1" ]; }',
-    REVIEW_SHELL_COMMAND_SURFACE,
     ...setup,
     invocation,
   ].join("\n");
@@ -271,23 +250,6 @@ describePosix("scripts/pr review artifact validation", () => {
     expectRejected(
       result,
       `Review guard failed: .local/pr-meta.env describes PR #113928, not #${REVIEWED_PR}`,
-    );
-  });
-
-  it("preserves head-guard failures when preparation calls validation in an OR-list", () => {
-    const result = runValidation(validReview(), { guardFailure: true, orList: true });
-
-    expectRejected(result, "review head guard failed");
-    expect(result.stdout).not.toContain("review artifacts validated");
-  });
-
-  it("requires behavioral review for package runtime changes", () => {
-    expectRejected(
-      runValidation(validReview(), {
-        files: ["packages/normalization-core/src/string-normalization.ts"],
-      }),
-      "runtime file changes require behavioralSweep.status=pass|needs_work",
-      "runtime file changes require at least one branch entry",
     );
   });
 

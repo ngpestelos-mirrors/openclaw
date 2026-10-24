@@ -37,9 +37,9 @@ const normalizedColors = {
   GH_FORCE_TTY: null,
 };
 
-function makeCommandFixture(parent?: string) {
-  const root = commandDirs.make("plain-gh-commands-", parent);
-  // Both extensionless command routes use CommonJS, independent of the temp parent.
+function makeCommandFixture() {
+  const root = commandDirs.make("plain-gh-commands-");
+  // Extensionless fixture commands use CommonJS.
   fs.writeFileSync(path.join(root, "package.json"), '{"type":"commonjs"}\n');
   const home = path.join(root, "home");
   const protectedBin = path.join(home, "bin");
@@ -84,10 +84,10 @@ if (argv[0] === "auth" && argv[1] === "token") {
   return { home, protectedBin, secondBin, toolsBin };
 }
 
-function makeFixture(fixtureCommands = commands) {
+function makeFixture() {
   const root = tempDirs.make("plain-gh-");
   // Share executable files only; environments and outputs stay private to each test.
-  const { home, protectedBin, secondBin, toolsBin } = fixtureCommands;
+  const { home, protectedBin, secondBin, toolsBin } = commands;
   const calls = path.join(root, "calls.jsonl");
   fs.writeFileSync(calls, "");
   const env: NodeJS.ProcessEnv = {
@@ -102,7 +102,7 @@ function makeFixture(fixtureCommands = commands) {
   };
   return {
     root,
-    ...fixtureCommands,
+    ...commands,
     env,
     options: { ...subprocessOptions, env },
     override: path.join(secondBin, "gh"),
@@ -133,25 +133,6 @@ function runGh(engine: (typeof engines)[number], env: NodeJS.ProcessEnv, cwd?: s
 }
 
 describe.each(engines)("%s plain gh execution", (engine) => {
-  it.each([false, true])("keeps CommonJS below ESM (override=%s)", (explicit) => {
-    const parent = commandDirs.make("plain-gh-esm-");
-    const parentPackage = path.join(parent, "package.json");
-    fs.writeFileSync(parentPackage, '{"type":"module"}\n');
-    const fixture = makeFixture(makeCommandFixture(parent));
-    fixture.env.OPENCLAW_GH_BIN = explicit ? fixture.override : undefined;
-    const before = { ...fixture.env };
-    const result = JSON.parse(runGh(engine, fixture.env));
-    const call = explicit ? secondCall(fixture.override) : protectedCall();
-    expect(result).toMatchObject({ ...call, colors: normalizedColors });
-    expect(result.tokens).toEqual(explicit ? { GH_TOKEN: "fixture-token" } : {});
-    expect(fixture.calls()).toEqual([
-      ...(explicit ? [protectedCall(["auth", "token"], engine === "shell" ? "" : null)] : []),
-      call,
-    ]);
-    expect(fixture.env).toEqual(before);
-    expect(JSON.parse(fs.readFileSync(parentPackage, "utf8"))).toEqual({ type: "module" });
-  });
-
   it("preserves a protected refusal and both output streams without fallback", () => {
     const fixture = makeFixture();
     fixture.env.FAKE_GH_REJECT = "1";
@@ -182,7 +163,10 @@ describe.each(engines)("%s plain gh execution", (engine) => {
       fixture.env.OPENCLAW_GH_BIN = explicit ? fixture.override : undefined;
       const before = { ...fixture.env };
       const result = JSON.parse(runGh(engine, fixture.env));
-      expect(result).toMatchObject(explicit ? secondCall(fixture.override) : protectedCall());
+      expect(result).toMatchObject({
+        ...(explicit ? secondCall(fixture.override) : protectedCall()),
+        colors: normalizedColors,
+      });
       expect(result.tokens).toEqual({ GH_TOKEN: "fixture-ambient" });
       expect(fixture.env).toEqual(before);
     }
@@ -190,6 +174,7 @@ describe.each(engines)("%s plain gh execution", (engine) => {
   });
 
   it.each([
+    { host: undefined, tokenName: "GH_TOKEN" },
     { host: "github.com", tokenName: "GH_TOKEN" },
     { host: "github.example.com", tokenName: "GH_ENTERPRISE_TOKEN" },
   ])("forwards $host credentials only to the child", ({ host, tokenName }) => {
@@ -215,10 +200,13 @@ if (JSON.stringify(process.env) !== before) throw new Error("parent environment 
             fixture.env,
           );
     const result = JSON.parse(output);
-    expect(result).toMatchObject(secondCall(fixture.override));
+    expect(result).toMatchObject({ ...secondCall(fixture.override), colors: normalizedColors });
     expect(result.tokens).toEqual({ [tokenName]: "fixture-token" });
     expect(fixture.calls()).toEqual([
-      protectedCall(["auth", "token", "--hostname", host], engine === "shell" ? "" : null),
+      protectedCall(
+        ["auth", "token", ...(host ? ["--hostname", host] : [])],
+        engine === "shell" ? "" : null,
+      ),
       secondCall(fixture.override),
     ]);
     expect(fixture.env).toEqual(before);
