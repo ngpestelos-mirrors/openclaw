@@ -139,7 +139,9 @@ export async function emulateNavigationWorkerNetwork(
           break;
         }
         case "Network.requestServedFromCache":
-          if (request) request.servedFromCache = true;
+          if (request) {
+            request.servedFromCache = true;
+          }
           break;
         case "Network.responseReceived":
           if (request) {
@@ -152,10 +154,14 @@ export async function emulateNavigationWorkerNetwork(
           }
           break;
         case "Network.responseReceivedExtraInfo":
-          if (request) request.networkStatus = message.params.statusCode;
+          if (request) {
+            request.networkStatus = message.params.statusCode;
+          }
           break;
         case "Network.dataReceived":
-          if (request) request.receivedBytes += message.params.encodedDataLength;
+          if (request) {
+            request.receivedBytes += message.params.encodedDataLength;
+          }
           break;
         case "Network.loadingFinished":
           if (request) {
