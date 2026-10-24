@@ -693,10 +693,7 @@ async function finishSettledUpdate(
 
       return resultWithPostUpdate;
     } catch (error) {
-      if (
-        params.originalManagedServiceRuntime &&
-        error instanceof UpdateCommandRecoveryPendingError
-      ) {
+      if (error instanceof UpdateCommandRecoveryPendingError) {
         throw new UpdateCommandPendingRecoveryFailure(pendingResult, formatErrorMessage(error), {
           cause: error,
         });

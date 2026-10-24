@@ -244,6 +244,10 @@ describe("recoverInstalledLaunchAgentAfterUpdate", () => {
 
 describe("recoverLaunchAgentAndRecheckGatewayHealth", () => {
   beforeEach(() => {
+    mockProcessPlatform("darwin");
+    vi.spyOn(gatewayService, "resolveGatewayService").mockReturnValue(
+      createMockGatewayService({ isLoaded: async () => true }),
+    );
     vi.spyOn(tempRoot, "resolvePreferredOpenClawTmpDir").mockReturnValue(
       tempDirs.make("update-native-repair-locks-"),
     );
@@ -326,7 +330,7 @@ describe("recoverLaunchAgentAndRecheckGatewayHealth", () => {
         OPENCLAW_PORT: "18790",
       };
       const runId = createUpdateRun({ trigger: "cli" }, { env }).runId;
-      const service = {} as never;
+      const service = gatewayService.resolveGatewayService();
       const unhealthy = {
         runtime: { status: "stopped" },
         portUsage: { port: 18790, status: "free", listeners: [], hints: [] },
@@ -377,16 +381,18 @@ describe("recoverLaunchAgentAndRecheckGatewayHealth", () => {
       });
 
       if (outcome === "recovered") {
-        expect(waitForHealthy).toHaveBeenCalledWith({
-          service,
-          port: 18790,
-          expectedVersion: "2026.5.3",
-          expectedBuildId: "new-build",
-          env,
-          supervisorKeepsAlive: true,
-          requirePluginHealth: false,
-          requireChannelHealth: false,
-        });
+        expect(waitForHealthy).toHaveBeenCalledWith(
+          expect.objectContaining({
+            service,
+            port: 18790,
+            expectedVersion: "2026.5.3",
+            expectedBuildId: "new-build",
+            env,
+            supervisorKeepsAlive: true,
+            requirePluginHealth: false,
+            requireChannelHealth: false,
+          }),
+        );
       } else {
         expect(waitForHealthy).not.toHaveBeenCalled();
       }
@@ -408,7 +414,7 @@ describe("recoverLaunchAgentAndRecheckGatewayHealth", () => {
   );
 
   it("keeps the update unhealthy when LaunchAgent repair succeeds but health does not recover", async () => {
-    const service = {} as never;
+    const service = gatewayService.resolveGatewayService();
     const unhealthySnapshot = {
       runtime: { status: "stopped" },
       portUsage: { port: 18790, status: "free", listeners: [], hints: [] },

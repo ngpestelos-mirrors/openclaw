@@ -2683,13 +2683,33 @@ describe("scripts/lib/ci-node-test-plan.mts", () => {
 
   it("spends the hybrid CLI budget only on complete affordable non-build bins", () => {
     const originalProcessFiles = cliProcessTestFiles.slice();
+    const ordinaryFiles = [
+      "src/cli/help-exit.process.test.ts",
+      "src/cli/one-shot-exit.test.ts",
+      "src/cli/cron-output.process.test.ts",
+    ];
+    const runtimeFile = "src/cli/acp-cli-exit.process.test.ts";
+    const processInventory = [...ordinaryFiles, runtimeFile];
+    // Keep the admission boundary independent of unrelated CLI inventory growth.
+    let ordinarySeconds = 110;
+    const estimateSeconds = shardMetadata.estimateVitestTestFileSeconds;
+    vi.spyOn(shardMetadata, "estimateVitestTestFileSeconds").mockImplementation((file) =>
+      file === runtimeFile
+        ? 10
+        : ordinaryFiles.includes(file)
+          ? ordinarySeconds
+          : estimateSeconds(file),
+    );
     const configs = new Set([configPath("cli"), configPath("cli-process")]);
     const restore = selectFixtureProjects((config) => configs.has(config));
-    const timings = spyTimings().mockReturnValue({
+    const parentTimings = (profile: string) => ({
       "agentic-cli": 136,
+      "agentic-cli-process": profile === "github" ? 450 : 340,
     });
+    const timings = spyTimings().mockImplementation(parentTimings);
     const options = compactOptions("hybrid", "pull-request");
     try {
+      cliProcessTestFiles.splice(0, cliProcessTestFiles.length, ...processInventory);
       const plan = bundleTests(options);
       const combined = plan.filter(isCombinedUnbuiltCliJob);
       expect(combined).toHaveLength(2);
@@ -2709,12 +2729,11 @@ describe("scripts/lib/ci-node-test-plan.mts", () => {
       const processGroups = plan.flatMap((job) =>
         job.groups.filter((group) => group.configs.includes(configPath("cli-process"))),
       );
-      expectSameEntries(
-        processGroups.flatMap(optionalPatterns),
-        listMatchedTestFiles(createCliProcessVitestConfig({})),
-      );
+      expectSameEntries(processGroups.flatMap(optionalPatterns), processInventory);
       expectEvery(combined, (job) => job.predictedSeconds! <= 250 && job.planConcurrency === 1);
-      for (const job of plan.filter((candidate) => candidate.pretestBuildMode)) {
+      const runtimeJobs = plan.filter((candidate) => candidate.pretestBuildMode);
+      expect(runtimeJobs).toHaveLength(1);
+      for (const job of runtimeJobs) {
         expect(job.predictedSeconds).toBeLessThanOrEqual(150);
         expectEvery(job.groups, (group) => group.pretestBuildMode === "runtime");
       }
@@ -2727,7 +2746,10 @@ describe("scripts/lib/ci-node-test-plan.mts", () => {
       expect(processKeys).toHaveLength(combinedProcessGroups.length);
       expect(new Set(processKeys).size).toBe(processKeys.length);
       // Each child still fits its 150s limit, but two no longer fit a 250s bin.
-      timings.mockReturnValue(Object.fromEntries(processKeys.map((key) => [key, 160])));
+      timings.mockImplementation((profile) => ({
+        ...parentTimings(profile),
+        ...Object.fromEntries(processKeys.map((key) => [key, 140])),
+      }));
       const overBudget = bundleTests(options);
       expectEvery(
         overBudget,
@@ -2735,10 +2757,11 @@ describe("scripts/lib/ci-node-test-plan.mts", () => {
           job.groups.filter((group) => processKeys.includes(group.timing_key ?? "")).length <= 1,
       );
       // A truthful oversized child must remain alone even beside a tiny CLI.
-      timings.mockReturnValue({
+      timings.mockImplementation((profile) => ({
+        ...parentTimings(profile),
         "agentic-cli": 3,
         ...Object.fromEntries(processKeys.map((key) => [key, 200])),
-      });
+      }));
       const oversized = bundleTests(options).filter((job) =>
         job.groups.some((group) => processKeys.includes(group.timing_key ?? "")),
       );
@@ -2749,6 +2772,7 @@ describe("scripts/lib/ci-node-test-plan.mts", () => {
       // non-dist owner must not invalidate that earlier sibling exemption.
       const processFiles = ["src/cli/help-exit.process.test.ts", "src/cli/one-shot-exit.test.ts"];
       cliProcessTestFiles.splice(0, cliProcessTestFiles.length, ...processFiles);
+      ordinarySeconds = 26;
       const smallerConfigs = new Set([configPath("cli-process"), configPath("tooling-isolated")]);
       restore();
       useFixtureProjects((config) => smallerConfigs.has(config));

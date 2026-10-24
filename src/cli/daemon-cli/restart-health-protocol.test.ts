@@ -1,11 +1,15 @@
 import { expect, it } from "vitest";
-import { PROTOCOL_VERSION } from "../../../packages/gateway-protocol/src/version.js";
+import {
+  MIN_CLIENT_PROTOCOL_VERSION,
+  PROTOCOL_VERSION,
+} from "../../../packages/gateway-protocol/src/version.js";
 import { resolveReadOnlyLocalGatewayAuth } from "../../gateway/call-device-auth.js";
 import { callGateway } from "../../gateway/call.js";
 import { withOpenClawTestState } from "../../test-utils/openclaw-test-state.js";
 import { withProtocolGateway } from "./restart-health-protocol.test-support.js";
 
 // The old updater's transport must not decide whether the new Gateway is healthy.
+const retainedProtocol = MIN_CLIENT_PROTOCOL_VERSION - 1;
 it.each(["none", "token"] as const)(
   "old/current local readiness control with %s auth",
   async (mode) => {
@@ -29,7 +33,22 @@ it.each(["none", "token"] as const)(
               minProtocol: protocol,
               maxProtocol: protocol,
             });
-          await expect(probe(4)).rejects.toThrow(/protocol mismatch/);
+          const previous = await probe(retainedProtocol).then(
+            (value) => ({ value }),
+            (error: unknown) => ({ error }),
+          );
+          expect(observed).toHaveLength(1);
+          expect(observed[0]).toMatchObject({
+            minProtocol: retainedProtocol,
+            maxProtocol: retainedProtocol,
+            client:
+              mode === "none"
+                ? { id: "gateway-client", mode: "backend" }
+                : { id: "cli", mode: "cli" },
+          });
+          expect(previous).toMatchObject({
+            error: expect.objectContaining({ message: expect.stringMatching(/protocol mismatch/) }),
+          });
           await expect(probe(PROTOCOL_VERSION)).resolves.toMatchObject({ ok: true });
           expect(failures).toEqual(["protocol-mismatch"]);
           expect(observed.map((connect) => connect.client)).toEqual([

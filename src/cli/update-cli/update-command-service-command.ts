@@ -181,6 +181,7 @@ export async function prepareUpdatedInstallGatewayReadiness(params: {
   signal: AbortSignal;
   assertCurrent: () => void;
   onProgress?: (stage: string, reason: string) => void;
+  onDiagnostic?: (text: string) => void;
 }): Promise<
   ((request: UpdateReadinessRequest) => Promise<UpdateReadinessObservation>) | undefined
 > {
@@ -226,7 +227,10 @@ export async function prepareUpdatedInstallGatewayReadiness(params: {
       entrypoint,
       nodeRunner,
       args: ["gateway", "status", "--json"],
-      request: { action: "status", readiness: request },
+      request: {
+        action: "status",
+        readiness: { ...request, deadlineAtMs: Date.now() + request.timeoutMs },
+      },
       options: {
         env,
         timeoutMs: request.timeoutMs,
@@ -234,7 +238,10 @@ export async function prepareUpdatedInstallGatewayReadiness(params: {
         maxOutputBytes: 1024 * 1024,
         onOutputChunk: (chunk, stream) => {
           // The child's live lease suspends parent mutation; progress is diagnostic only.
-          if (stream === "stderr") process.stderr.write(chunk);
+          if (stream === "stderr") {
+            process.stderr.write(chunk);
+            params.onDiagnostic?.(chunk.toString("utf8"));
+          }
         },
       },
     });
@@ -249,21 +256,28 @@ export async function prepareUpdatedInstallGatewayReadiness(params: {
       result.outputErrorStream
     ) {
       const message = `Updated Gateway readiness observation failed: ${formatCommandFailure(result.stdout, result.stderr)}`;
-      if (message.includes("UPDATE_NATIVE_AUTHORITY:")) {
-        throw new UpdateCommandRecoveryPendingError(message);
-      }
-      throw new Error(message);
+      throw new UpdateCommandRecoveryPendingError(message);
     }
-    const observation = UpdateReadinessObservationSchema.parse(safeParseJsonRecord(result.stdout));
+    const parsed = UpdateReadinessObservationSchema.safeParse(safeParseJsonRecord(result.stdout));
+    if (!parsed.success) {
+      throw new UpdateCommandRecoveryPendingError(
+        "Target readiness returned no valid observation.",
+      );
+    }
+    const observation = parsed.data;
     if (observation.health.portUsage.port !== request.gatewayPort) {
-      throw new Error("Updated Gateway readiness observed a different port.");
+      throw new UpdateCommandRecoveryPendingError(
+        "Updated Gateway readiness observed a different port.",
+      );
     }
     if (
       observation.health.healthy &&
       ((request.expectedVersion && observation.health.gatewayVersion !== request.expectedVersion) ||
         (request.expectedBuildId && observation.health.gatewayBuildId !== request.expectedBuildId))
     ) {
-      throw new Error("Updated Gateway readiness did not match the requested runtime identity.");
+      throw new UpdateCommandRecoveryPendingError(
+        "Updated Gateway readiness did not match the requested runtime identity.",
+      );
     }
     return observation;
   };

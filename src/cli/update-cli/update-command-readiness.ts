@@ -14,6 +14,7 @@ import {
   hasCommandProcessCleanupError,
 } from "../../process/exec-result.js";
 import { defaultRuntime } from "../../runtime.js";
+import { formatCliCommand } from "../command-format.js";
 import {
   createGatewayRestartDeadline,
   GatewayRestartDeadlineError,
@@ -142,10 +143,19 @@ export async function verifyPreviousGatewayForUpdate(params: {
       );
     });
   } catch (error) {
-    if (!(error instanceof GatewayRestartDeadlineError)) {
+    if (
+      !(error instanceof GatewayRestartDeadlineError) &&
+      !(error instanceof UpdateCommandRecoveryPendingError)
+    ) {
       throw error;
     }
-    progress("budget exhausted", lastReason, true);
+    // The untouched incumbent is advisory rollback evidence, not activation proof.
+    // progress revalidates the parent before recording an unverified observation.
+    progress(
+      error instanceof GatewayRestartDeadlineError ? "budget exhausted" : "observation unavailable",
+      error instanceof UpdateCommandRecoveryPendingError ? error.message : lastReason,
+      true,
+    );
     return false;
   } finally {
     if (!sharedDeadline) {
@@ -289,6 +299,8 @@ export async function observeUpdateGatewayReadiness(params: UpdateGatewayReadine
     healthy: false,
     staleGatewayPids: [],
   };
+  let targetObservationPending = Boolean(params.targetRoot && params.executor);
+  let targetDiagnostic = "";
   let launchAgentRecovery: PostUpdateLaunchAgentRecoveryResult | null = null;
   let http: Awaited<ReturnType<typeof waitForGatewayHttpReadiness>> | undefined;
   const channelProbeTimeouts = new Map<string, { id: string; error: string }>();
@@ -348,13 +360,17 @@ export async function observeUpdateGatewayReadiness(params: UpdateGatewayReadine
               signal: deadline.signal,
               assertCurrent,
               onProgress: params.onProgress,
+              onDiagnostic: (text) => {
+                targetDiagnostic = (targetDiagnostic + text).slice(-8192);
+              },
             })
           : undefined;
       assertCurrent();
       if (target) {
-        const observe = (healthOnly = params.healthOnly) =>
-          deadline.read("target readiness", () => {
+        const observe = async (healthOnly = params.healthOnly) => {
+          const observed = await deadline.read("target readiness", () => {
             assertCurrent();
+            targetObservationPending = true;
             const request: UpdateReadinessRequest = {
               gatewayPort: params.gatewayPort,
               timeoutMs: Math.max(1, remainingMs()),
@@ -368,26 +384,31 @@ export async function observeUpdateGatewayReadiness(params: UpdateGatewayReadine
             };
             return target(request);
           });
+          assertCurrent();
+          targetObservationPending = false;
+          health = observed.health;
+          http = observed.http;
+          retainChannelTimeouts(health);
+          return observed;
+        };
         let observed = await observe();
         assertCurrent();
+        const recoverHealth = params.recoverHealth;
         // Read-only candidate work cannot perform the parent's admitted service recovery.
-        if (
-          !params.healthOnly &&
-          params.recoverHealth &&
-          !gatewayReadinessPending(observed.health)
-        ) {
-          const recovered = await params.recoverHealth(
-            observed.health,
-            async () => (await observe(true)).health,
-            assertCurrent,
+        if (!params.healthOnly && recoverHealth && !gatewayReadinessPending(observed.health)) {
+          const recovered = await deadline.read("Gateway recovery", () =>
+            recoverHealth(observed.health, async () => (await observe(true)).health, assertCurrent),
           );
           assertCurrent();
           launchAgentRecovery = recovered.launchAgentRecovery;
-          if (recovered.health !== observed.health) observed = await observe();
+          if (recovered.health !== observed.health) {
+            observed = await observe();
+          }
         }
         assertCurrent();
         return { ...observed, launchAgentRecovery };
       }
+      targetObservationPending = false;
       health = params.health ?? (await readHealth());
       retainChannelTimeouts(health);
       if (params.healthOnly) {
@@ -485,6 +506,23 @@ export async function observeUpdateGatewayReadiness(params: UpdateGatewayReadine
     }
     if (cleanup === "unknown") {
       throw new CommandProcessCleanupError({ cause: error });
+    }
+    if (targetObservationPending) {
+      // An incomplete target observation is not evidence that the Gateway failed.
+      // Preserve the admitted recovery owner instead of triggering compensation.
+      const diagnostic = redactSupportDiagnosticLine(
+        `${error instanceof Error ? error.message : String(error)} ${targetDiagnostic.trim()}`.slice(
+          -8192,
+        ),
+        {
+          env: params.serviceEnv,
+          stateDir: resolveStateDir(params.serviceEnv),
+        },
+      );
+      throw new UpdateCommandRecoveryPendingError(
+        `Target Gateway readiness remains unverified. Update state is retained; resume with ${formatCliCommand("openclaw update repair", params.serviceEnv)}.${diagnostic ? ` Last target diagnostic: ${diagnostic}` : ""}`,
+        { cause: error },
+      );
     }
     if (!(error instanceof GatewayRestartDeadlineError)) {
       throw error;

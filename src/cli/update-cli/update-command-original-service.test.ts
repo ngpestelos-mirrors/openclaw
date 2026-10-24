@@ -45,8 +45,10 @@ import {
 import { registerCurrentF3Controls } from "./update-command-original-service-current.test-support.js";
 import { observeOriginalManagedServiceRuntime } from "./update-command-original-service.js";
 import { finishUpdate } from "./update-command-post-update.js";
+import { UpdateCommandRecoveryPendingError } from "./update-command-recovery-error.js";
 import { rollbackFailedUpdate } from "./update-command-rollback.js";
 import { getNodeRuntimeFixture } from "./update-command-runtime-recovery.test-support.js";
+import * as serviceCommand from "./update-command-service-command.js";
 import type { PreManagedServiceStop } from "./update-command-service-context-types.js";
 import { revalidateManagedGatewayServiceAfterUpdate } from "./update-command-service-maintenance.js";
 import { createWindowsTaskAutoStartRecovery } from "./update-command-windows-task.js";
@@ -100,6 +102,8 @@ vi.mock("./update-command-service-command.js", async (original) => ({
   ...(await original<typeof import("./update-command-service-command.js")>()),
   runUpdatedInstallGatewayCommand: mocks.restart,
   isUpdatedInstallGatewayExecutorSupported: mocks.capability,
+  // A and B are legacy package fixtures, not executable current-runtime readiness receivers.
+  prepareUpdatedInstallGatewayReadiness: async () => undefined,
 }));
 vi.mock("../daemon-cli/restart-health.js", async (original) => ({
   ...(await original<typeof import("../daemon-cli/restart-health.js")>()),
@@ -669,6 +673,7 @@ it.each([
   "missing-env",
   "missing-schema",
   "unverified-health",
+  "incomplete-observer",
   "operator-overrides",
   "unknown-overrides",
   "reload-pending",
@@ -700,6 +705,11 @@ it.each([
   }
   if (scenario === "unverified-health") {
     mocks.inspect.mockResolvedValue({ healthy: false, runtime: { status: "running" } });
+  }
+  if (scenario === "incomplete-observer") {
+    vi.spyOn(serviceCommand, "prepareUpdatedInstallGatewayReadiness").mockRejectedValueOnce(
+      new UpdateCommandRecoveryPendingError("Retained Gateway observer did not settle."),
+    );
   }
   mocks.package.mockImplementation(async (params) => {
     expect(params.honorPackageRoot).toBe(true);

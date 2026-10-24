@@ -54,6 +54,8 @@ export function packageCandidate(root: string) {
 vi.mock(import("./update-command-service-command.js"), async (original) => ({
   ...(await original()),
   isUpdatedInstallGatewayExecutorSupported: mocks.nativeSupport,
+  // These legacy package fixtures retain the real parent-side readiness policy.
+  prepareUpdatedInstallGatewayReadiness: async () => undefined,
 }));
 
 afterEach(() => vi.restoreAllMocks());

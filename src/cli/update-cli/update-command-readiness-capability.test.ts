@@ -1,13 +1,20 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import { afterEach, expect, it, vi } from "vitest";
+import { createDeferred, withinTest } from "../../../test/helpers/promise.js";
 import * as temporaryState from "../../infra/tmp-openclaw-dir.js";
-import { createUpdateRun } from "../../infra/update-run-ledger.js";
+import { createUpdateRun, getUpdateRun } from "../../infra/update-run-ledger.js";
 import { withOpenClawTestState } from "../../test-utils/openclaw-test-state.js";
-import { GatewayRestartDeadlineError } from "../daemon-cli/restart-health-deadline.js";
+import {
+  createGatewayRestartDeadline,
+  GatewayRestartDeadlineError,
+} from "../daemon-cli/restart-health-deadline.js";
 import { withUpdateCommandExecutor } from "./update-command-executor.js";
+import { resultFixture } from "./update-command-fixtures.test-support.js";
 import { observeUpdateGatewayReadiness } from "./update-command-readiness.js";
+import { UpdateCommandRecoveryPendingError } from "./update-command-recovery-error.js";
 import { prepareUpdatedInstallGatewayReadiness } from "./update-command-service-command.js";
+import { verifyUpdatedGateway } from "./update-command-verification.js";
 
 afterEach(() => vi.restoreAllMocks());
 
@@ -74,11 +81,13 @@ it.each(capabilityCases)("readiness capability: $name", async (scenario) => {
           signal: new AbortController().signal,
           assertCurrent: executor.assertCurrent,
         });
-        if ("legacy" in scenario) await expect(prepared).resolves.toBeUndefined();
-        else
+        if ("legacy" in scenario) {
+          await expect(prepared).resolves.toBeUndefined();
+        } else {
           await expect(prepared).rejects.toThrow(
             "Target runtime cannot fence update-owned readiness observation.",
           );
+        }
       });
     },
   );
@@ -103,9 +112,11 @@ it.each(["closed-owner", "deadline"] as const)(
           assertCurrent: executor.assertCurrent,
         });
         expect(target).toBeTypeOf("function");
-        if (!target) throw new Error("Current capability did not prepare readiness");
+        if (!target) {
+          throw new Error("Current capability did not prepare readiness");
+        }
         if (fault === "deadline") {
-          await expect(invoke(target)).rejects.toThrow(/readiness observation failed|cleanup/i);
+          await expect(invoke(target)).rejects.toBeInstanceOf(UpdateCommandRecoveryPendingError);
           expect(await fs.readFile(path.join(root, "entered-status"), "utf8")).toBe("entered");
         }
         return target;
@@ -120,7 +131,78 @@ it.each(["closed-owner", "deadline"] as const)(
   },
 );
 
-it("returns canonical timeout for cancellation after capability negotiation", async () => {
+it("bounds target recovery while retaining the completed observation", async ({ signal }) => {
+  const receipt = {
+    health: {
+      runtime: { status: "stopped", detail: "fixture stopped before recovery" },
+      portUsage: { port: 19101, status: "free", listeners: [], hints: [] },
+      healthy: false,
+      staleGatewayPids: [],
+    },
+    readyz: false,
+    http: { healthz: 503, readyz: 503, coreReady: false },
+  };
+  await withCandidate(
+    `import { finished } from "node:stream/promises";
+     process.stdout.write(process.argv.includes("check")
+       ? ${JSON.stringify(JSON.stringify({ ...legacy, readinessObservation: 1 }))}
+       : ${JSON.stringify(JSON.stringify(receipt))});
+     await finished(process.stdin.resume());`,
+    async (root, serviceEnv, runId) => {
+      await withUpdateCommandExecutor(runId, async (owner) => {
+        const executor = await owner.enter(root);
+        const release = createDeferred<void>();
+        const recovered = createDeferred<void>();
+        const deadline = createGatewayRestartDeadline({ timeoutMs: 5_000 });
+        const recoverHealth: NonNullable<
+          Parameters<typeof observeUpdateGatewayReadiness>[0]["recoverHealth"]
+        > = vi.fn(async (health) => {
+          try {
+            await release.promise;
+            return { health, launchAgentRecovery: null };
+          } finally {
+            recovered.resolve();
+          }
+        });
+        const work = observeUpdateGatewayReadiness({
+          targetRoot: root,
+          executor,
+          serviceEnv,
+          nodeRunner: process.execPath,
+          gatewayPort: 19101,
+          deadline,
+          waitForStartup: false,
+          recoverHealth,
+        });
+        try {
+          const observation = await withinTest(work, signal);
+          expect(recoverHealth).toHaveBeenCalledOnce();
+          expect(observation).toMatchObject({
+            readyz: false,
+            health: {
+              runtime: { status: "stopped", detail: "fixture stopped before recovery" },
+              healthy: false,
+              waitOutcome: "timeout",
+              startupPhase: "timed out during Gateway recovery",
+            },
+            http: { healthz: 503, readyz: 503, coreReady: false },
+          });
+          expect(await deadline.cleanup).toBe("confirmed");
+          executor.assertCurrent();
+        } finally {
+          release.resolve();
+          if (vi.mocked(recoverHealth).mock.calls.length > 0) {
+            await recovered.promise;
+          }
+          await work.catch(() => undefined);
+          deadline.dispose();
+        }
+      });
+    },
+  );
+}, 15_000);
+
+it("preserves pending recovery for cancellation after capability negotiation", async () => {
   await withCandidate(currentCandidate, async (root, serviceEnv, runId) => {
     await withUpdateCommandExecutor(runId, async (owner) => {
       const executor = await owner.enter(root);
@@ -128,7 +210,7 @@ it("returns canonical timeout for cancellation after capability negotiation", as
       const onProgress = vi.fn(() =>
         controller.abort(new GatewayRestartDeadlineError("after-capability cancellation")),
       );
-      const observation = await observeUpdateGatewayReadiness({
+      const observation = observeUpdateGatewayReadiness({
         targetRoot: root,
         executor,
         serviceEnv,
@@ -139,15 +221,8 @@ it("returns canonical timeout for cancellation after capability negotiation", as
         waitForStartup: false,
         onProgress,
       });
+      await expect(observation).rejects.toBeInstanceOf(UpdateCommandRecoveryPendingError);
       expect(onProgress).toHaveBeenCalledOnce();
-      expect(observation).toMatchObject({
-        readyz: false,
-        health: {
-          healthy: false,
-          waitOutcome: "timeout",
-          probeError: expect.stringContaining("after-capability cancellation"),
-        },
-      });
       await expect(fs.access(path.join(root, "entered-status"))).rejects.toMatchObject({
         code: "ENOENT",
       });
@@ -155,3 +230,71 @@ it("returns canonical timeout for cancellation after capability negotiation", as
     });
   });
 });
+
+it.each(["incomplete", "malformed-final", "completed-timeout"] as const)(
+  "does not infer a failed Gateway from a %s target observation",
+  async (outcome) => {
+    const receipt = {
+      health: {
+        runtime: { status: "running", pid: process.pid },
+        portUsage: { port: 19101, status: "free", listeners: [], hints: [] },
+        healthy: false,
+        staleGatewayPids: [],
+        waitOutcome: "timeout",
+        startupPhase: "startup migration",
+      },
+      readyz: false,
+    };
+    await withCandidate(
+      `import { finished } from "node:stream/promises";
+       import { writeFileSync } from "node:fs";
+       import { setTimeout } from "node:timers/promises";
+       if (process.argv.includes("check")) {
+         process.stdout.write(${JSON.stringify(JSON.stringify({ ...legacy, readinessObservation: 1 }))});
+         await finished(process.stdin.resume());
+       } else {
+         await finished(process.stdin.resume());
+         await setTimeout(50);
+         writeFileSync("emitted-startup", "yes");
+         process.stderr.write("Gateway readiness (readiness): startup migration; service=running\\n");
+         ${outcome === "incomplete" ? "setInterval(() => {}, 1_000);" : `process.stdout.write(${JSON.stringify(JSON.stringify(outcome === "malformed-final" ? {} : receipt))});`}
+       }`,
+      async (root, serviceEnv, runId) => {
+        await withUpdateCommandExecutor(runId, async (owner) => {
+          const executorFence = await owner.enter(root);
+          const recoverHealth = vi.fn(() => {
+            throw new Error("A pending observation must not initiate recovery");
+          });
+          const verification = verifyUpdatedGateway({
+            result: resultFixture(root),
+            opts: { json: true, run: { runId, env: serviceEnv, executorFence } },
+            serviceEnv,
+            nodeRunner: process.execPath,
+            gatewayPort: 19101,
+            timeoutMs: 5_000,
+            recoverHealth,
+          });
+          if (outcome !== "completed-timeout") {
+            await expect(verification).rejects.toBeInstanceOf(UpdateCommandRecoveryPendingError);
+            await expect(verification).rejects.toThrow(/startup migration/);
+            expect(getUpdateRun(runId, { env: serviceEnv })?.verification).toBeUndefined();
+          } else {
+            await expect(verification).resolves.toMatchObject({
+              ok: false,
+              stopReason: "gateway-readiness-pending",
+            });
+            expect(getUpdateRun(runId, { env: serviceEnv })?.verification).toMatchObject({
+              serviceRunning: true,
+              pid: process.pid,
+              settled: false,
+              readyz: false,
+            });
+          }
+          expect(await fs.readFile(path.join(root, "emitted-startup"), "utf8")).toBe("yes");
+          expect(recoverHealth).not.toHaveBeenCalled();
+          executorFence.assertCurrent();
+        });
+      },
+    );
+  },
+);

@@ -1,6 +1,9 @@
 import fs from "node:fs/promises";
 import { afterEach, expect, it, vi } from "vitest";
-import { PROTOCOL_VERSION } from "../../../packages/gateway-protocol/src/version.js";
+import {
+  MIN_CLIENT_PROTOCOL_VERSION,
+  PROTOCOL_VERSION,
+} from "../../../packages/gateway-protocol/src/version.js";
 import { runtimeProcessEntrypoints } from "../../infra/runtime-process-entrypoints.js";
 import { resolveRuntimeWorkerUrl } from "../../infra/runtime-worker-url.js";
 import * as temporaryState from "../../infra/tmp-openclaw-dir.js";
@@ -10,16 +13,22 @@ import { withProtocolGateway } from "../daemon-cli/restart-health-protocol.test-
 import { prepareCandidateAuthorityRuntime } from "./update-command-candidate-authority.test-support.js";
 import { withUpdateCommandExecutor } from "./update-command-executor.js";
 import { resultFixture } from "./update-command-fixtures.test-support.js";
+import { observeUpdateGatewayReadiness } from "./update-command-readiness.js";
 import { verifyUpdatedGateway } from "./update-command-verification.js";
 
 // Only the retained parent has the old dialect. The separately executed installed
 // CLI uses its own unmodified client and authenticates to the real fixture socket.
+const retainedProtocol = MIN_CLIENT_PROTOCOL_VERSION - 1;
 vi.mock("../../gateway/call.js", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../../gateway/call.js")>();
   return {
     ...actual,
     callGateway: (options: Parameters<typeof actual.callGateway>[0]) =>
-      actual.callGateway({ ...options, minProtocol: 4, maxProtocol: 4 }),
+      actual.callGateway({
+        ...options,
+        minProtocol: retainedProtocol,
+        maxProtocol: retainedProtocol,
+      }),
   };
 });
 
@@ -57,21 +66,44 @@ it.skipIf(!compiledCandidate).each(["none", "token"] as const)(
           mode,
           async ({ port, config, observed, failures, httpRequests }) => {
             await state.writeConfig(config);
+            const readiness = {
+              serviceEnv: state.env,
+              nodeRunner: process.execPath,
+              gatewayPort: port,
+              expectedVersion: "2026.10.23",
+              expectedBuildId: "fixture-target",
+              timeoutMs: 10_000,
+              waitForStartup: false,
+              requireRunningService: false,
+            };
+            const previous = await observeUpdateGatewayReadiness(readiness);
+            expect(previous).toMatchObject({
+              readyz: false,
+              health: { healthy: false, probeError: expect.stringContaining("protocol mismatch") },
+            });
+            const previousConnections = observed.length;
+            expect(previousConnections).toBeGreaterThan(0);
+            for (const connect of observed) {
+              expect(connect).toMatchObject({
+                minProtocol: retainedProtocol,
+                maxProtocol: retainedProtocol,
+                client:
+                  mode === "none"
+                    ? { id: "gateway-client", mode: "backend" }
+                    : { id: "cli", mode: "cli" },
+              });
+            }
+            expect(failures).toEqual(
+              Array.from({ length: previousConnections }, () => "protocol-mismatch"),
+            );
             const runId = createUpdateRun({ trigger: "cli" }, { env: state.env }).runId;
             await withUpdateCommandExecutor(runId, async (owner) => {
               const executorFence = await owner.enter(root);
               const result = resultFixture(root);
               const verified = await verifyUpdatedGateway({
+                ...readiness,
                 result,
                 opts: { json: true, run: { runId, env: state.env, executorFence } },
-                serviceEnv: state.env,
-                nodeRunner: process.execPath,
-                gatewayPort: port,
-                expectedVersion: "2026.10.23",
-                expectedBuildId: "fixture-target",
-                timeoutMs: 10_000,
-                waitForStartup: false,
-                requireRunningService: false,
               });
               expect(verified.ok).toBe(true);
               expect(verified.pluginWarnings).toEqual([
@@ -89,10 +121,13 @@ it.skipIf(!compiledCandidate).each(["none", "token"] as const)(
               });
               executorFence.assertCurrent();
             });
-            expect(failures).toEqual([]);
-            expect(observed.length).toBeGreaterThan(0);
+            expect(failures).toEqual(
+              Array.from({ length: previousConnections }, () => "protocol-mismatch"),
+            );
+            const targetConnections = observed.slice(previousConnections);
+            expect(targetConnections.length).toBeGreaterThan(0);
             expect(
-              observed.every(
+              targetConnections.every(
                 (connect) =>
                   connect.minProtocol === PROTOCOL_VERSION &&
                   connect.maxProtocol === PROTOCOL_VERSION,

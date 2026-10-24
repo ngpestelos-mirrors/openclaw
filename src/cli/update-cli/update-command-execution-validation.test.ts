@@ -28,7 +28,9 @@ import { withUpdateCommandExecutor } from "./update-command-executor.js";
 import { admitSourceUpdateArtifacts } from "./update-command-git-admission.js";
 import { updateStep } from "./update-command-maintenance-fixtures.test-support.js";
 import * as readiness from "./update-command-readiness.js";
+import { UpdateCommandRecoveryPendingError } from "./update-command-recovery-error.js";
 import { stubNodeRuntime } from "./update-command-runtime-recovery.test-support.js";
+import * as serviceCommand from "./update-command-service-command.js";
 import {
   gatewayServiceCommandUsesRoot,
   inspectManagedGatewayServiceBeforeUpdate,
@@ -251,11 +253,17 @@ it.each([
   ["explicit allowance", 450_000, false, undefined],
   ["explicit deadline", 30_000, false, undefined],
   ["terminal version mismatch", undefined, false, "version"],
+  ["incomplete observer", undefined, false, undefined],
 ] as const)(
   "observes previous Gateway readiness before activation (%s)",
   async (allowance, timeoutMs, verified, failure) =>
     withTestDir({ prefix: "previous-gateway-readiness-" }, async (root) => {
       const installationDrift = allowance === "different service installation";
+      if (allowance === "incomplete observer") {
+        vi.spyOn(serviceCommand, "prepareUpdatedInstallGatewayReadiness").mockRejectedValueOnce(
+          new UpdateCommandRecoveryPendingError("Previous Gateway observer did not settle."),
+        );
+      }
       const cliRoot = installationDrift ? path.join(root, "cli-install") : root;
       const serviceRoot = installationDrift ? path.join(root, "service-install") : root;
       if (installationDrift) {
@@ -451,6 +459,12 @@ it.each([
         }
         expect(readyObservedAtMs).toBe(verified ? readyAtMs : undefined);
         expect(stoppedAtMs).toBe(installationDrift ? readyAtMs : 0);
+        if (allowance === "incomplete observer") {
+          expect(mocks.runPackageUpdate).toHaveBeenCalledOnce();
+          expect(mocks.runtimeError.mock.calls.flat().join("\n")).toContain(
+            "continuing with readiness unverified; automatic rollback cannot restart it",
+          );
+        }
       } finally {
         http.globalAgent = globalAgent;
         agent.destroy();

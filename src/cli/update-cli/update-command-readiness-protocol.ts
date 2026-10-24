@@ -11,6 +11,7 @@ const mismatch = z.object({ expected: text, actual: text.nullable() });
 export const UpdateReadinessRequestSchema = z.strictObject({
   gatewayPort: z.number().int().min(1).max(65535),
   timeoutMs: z.number().positive().finite(),
+  deadlineAtMs: z.number().finite(),
   probeTimeoutMs: z.number().positive().finite().optional(),
   expectedVersion: optionalText,
   expectedBuildId: optionalText,
@@ -105,5 +106,8 @@ export const UpdateReadinessObservationSchema = z.object({
     .optional(),
 });
 
-export type UpdateReadinessRequest = z.infer<typeof UpdateReadinessRequestSchema>;
+export type UpdateReadinessRequest = Omit<
+  z.infer<typeof UpdateReadinessRequestSchema>,
+  "deadlineAtMs"
+>;
 export type UpdateReadinessObservation = z.infer<typeof UpdateReadinessObservationSchema>;

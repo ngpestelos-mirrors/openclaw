@@ -11,6 +11,7 @@ import {
   withDelegatedUpdateCommandExecutor,
   type UpdateCommandChildGrant,
 } from "../update-cli/update-command-executor.js";
+import { createGatewayRestartDeadline } from "./restart-health-deadline.js";
 import { writeGatewayServiceUpdateCapability } from "./update-capability.js";
 
 type NativeUpdateAction = "install" | "restart" | "stop" | "status";
@@ -79,27 +80,38 @@ export async function runGatewayServiceUpdateCommand(
         await import("../update-cli/update-command-readiness-protocol.js");
       const request = UpdateReadinessRequestSchema.parse(input.readiness);
       await withDelegatedUpdateCommandExecutor(grant, grant.runId, grant.root, async (fence) => {
-        const { observeUpdateGatewayReadiness } =
-          await import("../update-cli/update-command-readiness.js");
-        fence.assertCurrent();
-        let lastProgressAt = -Infinity;
-        const observation = await observeUpdateGatewayReadiness({
-          ...request,
-          serviceEnv: process.env,
-          assertCurrent: fence.assertCurrent,
-          onProgress: (stage, reason) => {
-            if (performance.now() - lastProgressAt < 30_000) return;
-            lastProgressAt = performance.now();
-            process.stderr.write(
-              `Gateway readiness (${stage}): ${redactSupportDiagnosticLine(reason, {
-                env: process.env,
-                stateDir: resolveStateDir(process.env),
-              })}\n`,
-            );
-          },
+        // Child startup/imports consume the parent's budget; never restart its clock.
+        const deadline = createGatewayRestartDeadline({
+          timeoutMs: Math.max(0, Math.min(request.timeoutMs, request.deadlineAtMs - Date.now())),
         });
-        fence.assertCurrent();
-        process.stdout.write(JSON.stringify(UpdateReadinessObservationSchema.parse(observation)));
+        try {
+          const { observeUpdateGatewayReadiness } =
+            await import("../update-cli/update-command-readiness.js");
+          fence.assertCurrent();
+          let lastProgressAt = -Infinity;
+          const observation = await observeUpdateGatewayReadiness({
+            ...request,
+            deadline,
+            serviceEnv: process.env,
+            assertCurrent: fence.assertCurrent,
+            onProgress: (stage, reason) => {
+              if (performance.now() - lastProgressAt < 30_000) {
+                return;
+              }
+              lastProgressAt = performance.now();
+              process.stderr.write(
+                `Gateway readiness (${stage}): ${redactSupportDiagnosticLine(reason, {
+                  env: process.env,
+                  stateDir: resolveStateDir(process.env),
+                })}\n`,
+              );
+            },
+          });
+          fence.assertCurrent();
+          process.stdout.write(JSON.stringify(UpdateReadinessObservationSchema.parse(observation)));
+        } finally {
+          deadline.dispose();
+        }
       });
       return;
     }

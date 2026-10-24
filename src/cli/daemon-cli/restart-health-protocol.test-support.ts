@@ -2,7 +2,7 @@ import { once } from "node:events";
 import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
 import { vi } from "vitest";
-import { WebSocketServer } from "ws";
+import { WebSocketServer, type RawData } from "ws";
 import type { ConnectParams } from "../../../packages/gateway-protocol/src/index.js";
 import {
   buildMinimalGatewayHelloOkPayload,
@@ -22,6 +22,7 @@ import {
   shouldSkipLocalBackendSelfPairing,
 } from "../../gateway/server/ws-connection/handshake-auth-helpers.js";
 import { createAdmissionHandler } from "../../gateway/server/ws-connection/message-handler.admission.test-support.js";
+import { createGatewayWebSocketTransport } from "../../gateway/server/ws-transport.js";
 
 export async function withProtocolGateway<T>(
   mode: "none" | "token",
@@ -54,16 +55,18 @@ export async function withProtocolGateway<T>(
   gateway.on("connection", (socket, upgradeReq) => {
     let scopes: string[] = [];
     sendMinimalGatewayConnectChallenge(socket);
-    socket.on("message", async (data) => {
+    const handleMessage = async (data: RawData) => {
       const request = parseMinimalGatewayRequestFrame(data);
-      if (!request.id || !request.method) return;
-      const reject = (code: string, message: string, options?: object) => {
+      if (!request.id || !request.method) {
+        return;
+      }
+      const reject = (code: string, message: string, errorOptions?: object) => {
         socket.send(
           JSON.stringify({
             type: "res",
             id: request.id,
             ok: false,
-            error: { code, message, ...options },
+            error: { code, message, ...errorOptions },
           }),
         );
       };
@@ -71,7 +74,7 @@ export async function withProtocolGateway<T>(
         const connect = request.params as ConnectParams;
         observed.push(connect);
         const handler = createAdmissionHandler({
-          socket,
+          socket: createGatewayWebSocketTransport(socket, upgradeReq.socket, undefined),
           upgradeReq,
           buildRequestContext: () => {
             throw new Error("No application dispatch in admission fixture");
@@ -110,7 +113,9 @@ export async function withProtocolGateway<T>(
           broadcastNodePairingResult: vi.fn(),
           releasePendingNodePairingCleanup: async () => {},
         });
-        if (!admission) return;
+        if (!admission) {
+          return;
+        }
         const sharedAuthOk = mode === "token" && connect.auth?.token === "fixture-protocol-token";
         const policy = {
           connectParams: connect,
@@ -174,6 +179,12 @@ export async function withProtocolGateway<T>(
           ? { fixture: { probe: { ok: false, error: "fixture channel unavailable" } } }
           : {},
       });
+    };
+    socket.on("message", (data) => {
+      void handleMessage(data).catch((error: unknown) => {
+        failures.push(error instanceof Error ? error.message : String(error));
+        socket.terminate();
+      });
     });
   });
   try {
@@ -181,8 +192,8 @@ export async function withProtocolGateway<T>(
   } finally {
     await closeMinimalGatewayServer(gateway);
     http.closeAllConnections();
-    await new Promise<void>((resolve, reject) =>
-      http.close((error) => (error ? reject(error) : resolve())),
-    );
+    await new Promise<void>((resolve, reject) => {
+      http.close((error) => (error ? reject(error) : resolve()));
+    });
   }
 }
