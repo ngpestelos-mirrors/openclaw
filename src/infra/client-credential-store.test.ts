@@ -27,19 +27,11 @@ const dirs = useAutoCleanupTempDirTracker(afterEach);
 function fixture() {
   const root = dirs.make("client-credential-owner-");
   const env = { OPENCLAW_STATE_DIR: root };
-  const run = (
-    operation: Parameters<typeof runClientCredentialOperation>[1],
-    options?: Parameters<typeof runClientCredentialOperation>[2],
-  ) => runClientCredentialOperation(env, operation, options);
-  const read = (identity_key = identity.identity_key) =>
-    run({ kind: "identity.read", identity_key });
   return {
     root,
     env,
-    run,
-    read,
-    expectIdentity: (value: ClientIdentityRecord | null, key = "node") =>
-      expect(read(key)).toEqual({ kind: "identity", identity: value }),
+    run: (operation: Parameters<typeof runClientCredentialOperation>[1]) =>
+      runClientCredentialOperation(env, operation),
   };
 }
 
@@ -70,20 +62,25 @@ it("reports store creation for rollback attribution without claiming an existing
 it.each(["./../state/openclaw.sqlite", "./state//openclaw.sqlite", "./state\\openclaw.sqlite"])(
   "refuses an unsafe relative receipt binding: %s",
   (binding) => {
-    const { env, read } = fixture();
+    const { env } = fixture();
     {
       using owner = openClientCredentialCustody(env, { createIfMissing: true, migration: true })!;
       owner.database
         .prepare("INSERT INTO client_credential_migration VALUES (1, ?, 'complete', 0)")
         .run(JSON.stringify(emptyClientCredentialReceipt({ path: binding, dev: "1", ino: "2" })));
     }
-    expect(() => read("primary")).toThrow("invalid relative shared binding");
+    expect(() =>
+      runClientCredentialOperation(env, { kind: "identity.read", identity_key: "primary" }),
+    ).toThrow("invalid relative shared binding");
   },
 );
 
 it("keeps read-existing credential operations local and does not bootstrap missing state", () => {
-  const { root, run, expectIdentity } = fixture();
-  expectIdentity(null, "primary");
+  const { root, run } = fixture();
+  expect(run({ kind: "identity.read", identity_key: "primary" })).toEqual({
+    kind: "identity",
+    identity: null,
+  });
   expect(run({ kind: "token.read", key: token })).toEqual({ kind: "token", token: null });
   expect(run({ kind: "socket.read" })).toEqual({ kind: "socket", socket: null });
   expect(run({ kind: "token.remove", key: token, expectedToken: token.token })).toEqual({
@@ -96,13 +93,15 @@ it("keeps read-existing credential operations local and does not bootstrap missi
 it.each(["-wal", "-shm", "-journal"])(
   "refuses fresh credentials when only shared %s survives",
   (suffix) => {
-    const { root, env, run, read } = fixture();
+    const { root, env, run } = fixture();
     const shared = path.join(root, "state", "openclaw.sqlite");
     fs.mkdirSync(path.dirname(shared));
     const sidecar = `${shared}${suffix}`;
     const original = Buffer.from("synthetic retained SQLite family bytes");
     fs.writeFileSync(sidecar, original);
-    expect(read).toThrow("restore the matching main database");
+    expect(() => run({ kind: "identity.read", identity_key: "node" })).toThrow(
+      "restore the matching main database",
+    );
     expect(() => run({ kind: "identity.create", identity })).toThrow(
       "restore the matching main database",
     );
@@ -131,14 +130,26 @@ it("stores native socket material without creating or changing shared policy", (
   expect(fs.existsSync(path.join(root, "state", "openclaw.sqlite"))).toBe(false);
 });
 
+it("refuses newer local schemas without reopening or modifying shared state", () => {
+  const { env } = fixture();
+  withClientCredentialStore(env, true, (db) => db.exec("PRAGMA user_version=2"));
+  expect(() =>
+    runClientCredentialOperation(env, { kind: "identity.read", identity_key: "primary" }),
+  ).toThrow("unsupported schema version 2");
+  using db = openNodeSqliteDatabase(resolveClientCredentialStorePath(env), { readOnly: true });
+  expect(db.prepare("PRAGMA user_version").get()?.user_version).toBe(2);
+});
+
 it.runIf(process.platform === "darwin")(
   "rejects ACL access to existing private credentials",
   () => {
-    const { env, run, read } = fixture();
+    const { env, run } = fixture();
     run({ kind: "identity.create", identity });
     const pathname = resolveClientCredentialStorePath(env);
     execFileSync("/bin/chmod", ["+a", "everyone allow read", pathname]);
-    expect(read).toThrow("without ACL entries");
+    expect(() => run({ kind: "identity.read", identity_key: identity.identity_key })).toThrow(
+      "without ACL entries",
+    );
     execFileSync("/bin/chmod", ["-N", pathname]);
   },
 );
@@ -146,11 +157,13 @@ it.runIf(process.platform === "darwin")(
 it.runIf(process.platform !== "win32")(
   "rejects a credential directory accessible to other users",
   () => {
-    const { env, run, read } = fixture();
+    const { env, run } = fixture();
     run({ kind: "identity.create", identity });
     const directory = path.dirname(resolveClientCredentialStorePath(env));
     fs.chmodSync(directory, 0o777);
-    expect(read).toThrow("directory is unsafe");
+    expect(() => run({ kind: "identity.read", identity_key: identity.identity_key })).toThrow(
+      "directory is unsafe",
+    );
     fs.chmodSync(directory, 0o700);
   },
 );
@@ -181,7 +194,7 @@ it("retains exclusive custody across commits and rejects overlapping local owner
 });
 
 it("refuses missing, incomplete and replaced-source receipts without opening shared state", () => {
-  const { root, env, run, read, expectIdentity } = fixture();
+  const { root, env, run } = fixture();
   fs.mkdirSync(path.join(root, "state"));
   const shared = path.join(root, "state", "openclaw.sqlite");
   fs.writeFileSync(shared, "this is deliberately not SQLite");
@@ -189,12 +202,18 @@ it("refuses missing, incomplete and replaced-source receipts without opening sha
     "migration is incomplete or stale",
   );
   expect(fs.existsSync(resolveClientCredentialStorePath(env))).toBe(false);
-  for (const phase of ["copied", "complete"] as const) {
-    withClientCredentialStore(env, phase === "copied", (db) =>
-      writeClientCredentialReceipt(db, emptyClientCredentialReceipt(), phase),
-    );
-    expect(read).toThrow("migration is incomplete or stale");
-  }
+  withClientCredentialStore(env, true, (db) =>
+    writeClientCredentialReceipt(db, emptyClientCredentialReceipt(), "copied"),
+  );
+  expect(() => run({ kind: "identity.read", identity_key: "node" })).toThrow(
+    "migration is incomplete or stale",
+  );
+  withClientCredentialStore(env, false, (db) =>
+    writeClientCredentialReceipt(db, emptyClientCredentialReceipt(), "complete"),
+  );
+  expect(() => run({ kind: "identity.read", identity_key: "node" })).toThrow(
+    "migration is incomplete or stale",
+  );
   withClientCredentialStore(env, false, (db) =>
     writeClientCredentialReceipt(
       db,
@@ -202,11 +221,16 @@ it("refuses missing, incomplete and replaced-source receipts without opening sha
       "complete",
     ),
   );
-  expectIdentity(null);
+  expect(run({ kind: "identity.read", identity_key: "node" })).toEqual({
+    kind: "identity",
+    identity: null,
+  });
   const replacement = path.join(root, "state", "replacement.sqlite");
   fs.writeFileSync(replacement, "this is deliberately not SQLite");
   fs.renameSync(replacement, shared);
-  expect(read).toThrow("migration is incomplete or stale");
+  expect(() => run({ kind: "identity.read", identity_key: "node" })).toThrow(
+    "migration is incomplete or stale",
+  );
   expect(fs.readFileSync(shared, "utf8")).toBe("this is deliberately not SQLite");
 });
 
@@ -266,7 +290,7 @@ it("repairs identity metadata without changing key material or the requested tim
 });
 
 it("requires Doctor for pending legacy files while an existing canonical identity remains usable", () => {
-  const { root, env, run, expectIdentity } = fixture();
+  const { root, env, run } = fixture();
   const identityRoot = path.join(root, "identity");
   fs.mkdirSync(identityRoot);
   const legacy = path.join(identityRoot, "node-device.json.native-importing");
@@ -286,7 +310,10 @@ it("requires Doctor for pending legacy files while an existing canonical identit
     );
     writeClientCredentialReceipt(db, emptyClientCredentialReceipt(), "complete");
   });
-  expectIdentity(identity);
+  expect(run({ kind: "identity.read", identity_key: "node" })).toEqual({
+    kind: "identity",
+    identity,
+  });
 });
 
 it("does not create a read-only store and refuses writes through retained read-only custody", () => {
@@ -294,7 +321,9 @@ it("does not create a read-only store and refuses writes through retained read-o
   expect(
     openClientCredentialCustody(env, { createIfMissing: true, readOnly: true }),
   ).toBeUndefined();
-  expect(() => run({ kind: "identity.create", identity }, { readOnly: true })).toThrow("read-only");
+  expect(() =>
+    runClientCredentialOperation(env, { kind: "identity.create", identity }, { readOnly: true }),
+  ).toThrow("read-only");
   expect(fs.readdirSync(root)).toEqual([]);
   run({ kind: "identity.create", identity });
   using owner = openClientCredentialCustody(env, { readOnly: true });
@@ -306,9 +335,10 @@ it("does not create a read-only store and refuses writes through retained read-o
 });
 
 it("rolls back a cancelled operation before publishing new credential material", () => {
-  const { run } = fixture();
+  const { env, run } = fixture();
   expect(() =>
-    run(
+    runClientCredentialOperation(
+      env,
       { kind: "token.replace", key: token, token },
       {
         beforeCommit() {
@@ -323,7 +353,7 @@ it("rolls back a cancelled operation before publishing new credential material",
 it.runIf(process.platform !== "win32")(
   "creates through a state-root alias and keeps one credential owner through the real root",
   () => {
-    const { root, env, expectIdentity } = fixture();
+    const { root, env } = fixture();
     const alias = path.join(root, "root-alias");
     fs.symlinkSync(root, alias, "dir");
     {
@@ -336,6 +366,11 @@ it.runIf(process.platform !== "win32")(
         expect.objectContaining({ name: "ClientCredentialBusyError" }),
       );
     }
-    expectIdentity(identity);
+    expect(
+      runClientCredentialOperation(env, { kind: "identity.read", identity_key: "node" }),
+    ).toEqual({
+      kind: "identity",
+      identity,
+    });
   },
 );

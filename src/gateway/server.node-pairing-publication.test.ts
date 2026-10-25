@@ -226,9 +226,13 @@ test("delivers node commands and node requests during an unrelated pending pairi
     const originalInvoke = nodeInvokeReadiness.invokeNodeWithReadinessRetry;
     const invoke = vi
       .spyOn(nodeInvokeReadiness, "invokeNodeWithReadinessRetry")
-      .mockImplementationOnce((...args) =>
-        originalInvoke(...args).finally(dispatchSettled.resolve),
-      );
+      .mockImplementationOnce(async (...args) => {
+        try {
+          return await originalInvoke(...args);
+        } finally {
+          dispatchSettled.resolve();
+        }
+      });
     const originalAuthorize = requestAuthorization.authorizeGatewayRequestPreDispatch;
     const authorize = vi
       .spyOn(requestAuthorization, "authorizeGatewayRequestPreDispatch")
@@ -356,6 +360,7 @@ test.each(["token revoke", "token rotate", "unpair", "node reapproval"] as const
     const result = await invoked;
     expect(result.ok).toBe(false);
     expect(result.error?.message).toBe("node pairing changed while invocation was active");
+    expect(node.received).toEqual([]);
     if (change === "node reapproval") {
       // Reapproval refreshes the live session, while the old prepared invoke remains refused.
       await expect(node.client.request("node.event", unsupportedEvent)).resolves.toEqual(

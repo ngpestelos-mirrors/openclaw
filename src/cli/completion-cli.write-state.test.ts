@@ -8,7 +8,9 @@ import { createInvalidConfigError } from "../config/io.invalid-config.js";
 import { expectInstalledCompletionProfile } from "./completion-profile.test-support.js";
 import {
   COMPLETION_SHELLS,
+  formatCompletionReloadCommand,
   resolveCompletionCachePath,
+  resolveCompletionProfileHint,
   resolveCompletionProfilePath,
   type CompletionShell,
 } from "./completion-runtime.js";
@@ -91,6 +93,14 @@ async function seedCache(shell: CompletionShell = "zsh", contents = "# previous 
   return { cachePath, cacheDir };
 }
 
+async function expectCacheModes(cachePath: string, cacheDir: string) {
+  expect(await fs.readdir(cacheDir)).toEqual([path.basename(cachePath)]);
+  if (process.platform !== "win32") {
+    expect((await fs.stat(cachePath)).mode & 0o777).toBe(0o640);
+    expect((await fs.stat(cacheDir)).mode & 0o777).toBe(0o750);
+  }
+}
+
 function expectNoRegistration(): void {
   expect(programContext).not.toHaveBeenCalled();
   expect(coreGroups).not.toHaveBeenCalled();
@@ -100,11 +110,13 @@ function expectNoRegistration(): void {
 }
 
 function expectRegistrationWarning() {
-  expect(stderrWrites).toHaveBeenCalledWith(
-    expect.stringContaining(
-      "skipping subcommand `qa` while building completion cache: qa scenario pack not found",
-    ),
-  );
+  expect(subcliGroups).toHaveBeenCalledTimes(1);
+  expect(registerPlugins).toHaveBeenCalledTimes(1);
+  expect(stderrWrites.mock.calls).toEqual([
+    [
+      "[completion] skipping subcommand `qa` while building completion cache: qa scenario pack not found: qa/scenarios/index.yaml\n",
+    ],
+  ]);
 }
 
 const tempDirs = useAutoCleanupTempDirTracker(afterEach);
@@ -129,7 +141,10 @@ describe("completion-cli write-state", () => {
     );
     publishAtomically = actual.publishOutputFileAtomically;
     publish.mockReset().mockImplementation(publishAtomically);
-    vi.clearAllMocks();
+    stderrWrites.mockReset();
+    coreGroups.mockClear();
+    programContext.mockClear();
+    subcliGroups.mockClear();
     registerPlugins.mockReset().mockResolvedValue({});
     vi.spyOn(process.stderr, "write").mockImplementation(((chunk: string | Uint8Array) => {
       stderrWrites(chunk.toString());
@@ -140,6 +155,25 @@ describe("completion-cli write-state", () => {
   afterEach(() => {
     vi.restoreAllMocks();
     vi.unstubAllEnvs();
+  });
+
+  it("preserves zsh completion when staged publication fails", async () => {
+    const { cachePath, cacheDir } = await seedCache();
+    publish.mockImplementationOnce(async (params) => {
+      return await publishAtomically({
+        ...params,
+        writeTemp: async (tempPath) => {
+          await params.writeTemp(tempPath);
+          await fs.truncate(tempPath, 1);
+          throw new Error("injected completion cache write failure");
+        },
+      });
+    });
+
+    await expect(writeCache("zsh")).rejects.toThrow("injected completion cache write failure");
+
+    await expect(fs.readFile(cachePath, "utf8")).resolves.toBe("# previous completion\n");
+    await expectCacheModes(cachePath, cacheDir);
   });
 
   it.skipIf(process.platform === "win32").each(["cache", "temporary"] as const)(
@@ -188,40 +222,71 @@ describe("completion-cli write-state", () => {
     },
   );
 
-  it.each(["bash", "powershell", "fish"] as const)(
-    "installs cached %s completion idempotently without registering commands or plugins",
+  it.each(["bash", "powershell"] as const)(
+    "installs cached %s completion visibly and idempotently without registering commands or plugins",
     async (shell) => {
       const { cachePath } = await seedCache(shell, "# cached completion\n");
       const profilePath = resolveCompletionProfilePath(shell);
-      vi.spyOn(console, "log").mockImplementation(() => {});
+      const log = vi.spyOn(console, "log").mockImplementation(() => {});
       vi.spyOn(console, "warn").mockImplementation(() => {});
-      vi.stubEnv("SHELL", "/usr/bin/fish");
-      const args = [
-        "completion",
-        ...(shell === "fish" ? [] : ["--shell", shell]),
-        "--install",
-        "--yes",
-      ];
+      const args = ["completion", "--shell", shell, "--install", "--yes"];
       const program = await runCompletion(args.slice(1));
 
       const installedProfile = await fs.readFile(profilePath, "utf8");
       expectInstalledCompletionProfile(installedProfile, shell, cachePath);
+      expect(log).toHaveBeenCalledWith(
+        `Completion installed. Restart your shell or run: ${formatCompletionReloadCommand(shell, resolveCompletionProfileHint(shell))}`,
+      );
       await expect(fs.readFile(cachePath, "utf8")).resolves.toBe("# cached completion\n");
 
+      log.mockClear();
       await program.parseAsync(args, { from: "user" });
 
+      expect(log).toHaveBeenCalledWith(`Completion already installed in ${profilePath}`);
       await expect(fs.readFile(profilePath, "utf8")).resolves.toBe(installedProfile);
       expectNoRegistration();
     },
   );
 
-  it("generates all shells and installs after awaiting registrars, surviving a failed subcli", async () => {
+  it("detects the active shell for cached installation without registering commands", async () => {
+    vi.stubEnv("SHELL", "/usr/bin/fish");
+
+    const { cachePath } = await seedCache("fish", "# fish completion\n");
+    await runCompletion(["--install", "--yes"]);
+
+    expectInstalledCompletionProfile(
+      await fs.readFile(resolveCompletionProfilePath("fish"), "utf8"),
+      "fish",
+      cachePath,
+    );
+    expectNoRegistration();
+  });
+
+  it("generates and installs completion after registering commands and plugins", async () => {
     const { cachePath, cacheDir } = await seedCache();
     const profilePath = resolveCompletionProfilePath("zsh");
     await fs.writeFile(profilePath, "", { mode: 0o640 });
     const log = vi.spyOn(console, "log").mockImplementation(() => {});
     vi.spyOn(console, "warn").mockImplementation(() => {});
-    vi.stubEnv("SHELL", "/bin/zsh");
+    const program = await runCompletion(["--shell", "zsh", "--write-state", "--install", "--yes"]);
+
+    const { getCompletionScript } = await import("./completion-cli.js");
+    await expect(fs.readFile(cachePath, "utf8")).resolves.toBe(getCompletionScript("zsh", program));
+    expect(publish).toHaveBeenCalledWith(
+      expect.objectContaining({ filePath: cachePath, tempPrefix: ".openclaw-completion-cache" }),
+    );
+    await expectCacheModes(cachePath, cacheDir);
+    await expect(fs.readFile(profilePath, "utf8")).resolves.toContain(cachePath);
+    if (process.platform !== "win32") {
+      expect((await fs.stat(profilePath)).mode & 0o777).toBe(0o640);
+    }
+    expect(log).toHaveBeenCalledWith(
+      "Completion installed. Restart your shell or run: source ~/.zshrc",
+    );
+    expectRegistrationWarning();
+  });
+
+  it("keeps completion cache generation alive when a subcli fails to register", async () => {
     subcliGroups.mockReturnValueOnce([
       qaGroup,
       {
@@ -240,25 +305,20 @@ describe("completion-cli write-state", () => {
       program.command("async-plugin").option("--plugin-ready", "Async plugin option");
       return {};
     });
-    const program = await runCompletion(["--write-state", "--install", "--yes"]);
+    await runCompletion(["--write-state"]);
 
-    const { getCompletionScript } = await import("./completion-cli.js");
+    const cacheDir = path.dirname(resolveCompletionCachePath("zsh", "openclaw"));
+    expect((await fs.readdir(cacheDir)).toSorted()).toEqual([
+      "openclaw.bash",
+      "openclaw.fish",
+      "openclaw.ps1",
+      "openclaw.zsh",
+    ]);
     for (const shell of COMPLETION_SHELLS) {
       const script = await fs.readFile(resolveCompletionCachePath(shell, "openclaw"), "utf8");
-      expect(script).toBe(getCompletionScript(shell, program));
       expect(script, shell).toContain("subcli-ready");
       expect(script, shell).toContain("plugin-ready");
     }
-    await expect(fs.readFile(profilePath, "utf8")).resolves.toContain(cachePath);
-    if (process.platform !== "win32") {
-      for (const file of [profilePath, cachePath]) {
-        expect((await fs.stat(file)).mode & 0o777).toBe(0o640);
-      }
-      expect((await fs.stat(cacheDir)).mode & 0o777).toBe(0o750);
-    }
-    expect(log).toHaveBeenCalledWith(
-      "Completion installed. Restart your shell or run: source ~/.zshrc",
-    );
     expectRegistrationWarning();
   });
 
@@ -286,6 +346,23 @@ describe("completion-cli write-state", () => {
     expect(publish).not.toHaveBeenCalled();
   });
 
+  it("structures completion registration warnings for JSON console output", async () => {
+    const logging = await import("../logging.js");
+    try {
+      logging.setLoggerOverride({ level: "silent", consoleLevel: "info", consoleStyle: "json" });
+
+      await runCompletion(["--write-state"]);
+
+      expect(stderrWrites).toHaveBeenCalledTimes(1);
+      expect(JSON.parse(String(stderrWrites.mock.calls[0]?.[0]))).toMatchObject({
+        level: "warn",
+        message: expect.stringContaining("skipping subcommand `qa`"),
+      });
+    } finally {
+      logging.resetLogger();
+    }
+  });
+
   it("skips plugin registration during cache writes through the nodes registrar", async () => {
     const { COMPLETION_SKIP_PLUGIN_COMMANDS_ENV } = await import("./completion-runtime.js");
     const { getSubCliCompletionGroups } = await vi.importActual<
@@ -296,6 +373,13 @@ describe("completion-cli write-state", () => {
         ({ name }) => name === "nodes",
       ),
     );
+    registerPlugins.mockImplementation((program) => {
+      const nodes = program.commands.find((command) => command.name() === "nodes");
+      if (nodes && !nodes.commands.some((command) => command.name() === "plugin-fixture")) {
+        nodes.command("plugin-fixture");
+      }
+      return Promise.resolve({});
+    });
 
     vi.stubEnv(COMPLETION_SKIP_PLUGIN_COMMANDS_ENV, "1");
 
@@ -306,6 +390,7 @@ describe("completion-cli write-state", () => {
       const script = await fs.readFile(resolveCompletionCachePath(shell, "openclaw"), "utf8");
       expect(script).toContain("nodes");
       expect(script).toContain("invoke");
+      expect(script).not.toContain("plugin-fixture");
     }
   });
 });

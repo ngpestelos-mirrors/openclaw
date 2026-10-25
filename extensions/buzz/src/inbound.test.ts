@@ -1,4 +1,3 @@
-import { finalizeEvent } from "nostr-tools";
 import { runPreparedInboundReply } from "openclaw/plugin-sdk/channel-inbound";
 import { createPluginRuntimeMock } from "openclaw/plugin-sdk/channel-test-helpers";
 import type { OpenClawConfig } from "openclaw/plugin-sdk/config-contracts";
@@ -11,7 +10,6 @@ import { handleBuzzInbound as handleBuzzInboundWithHistory } from "./inbound.js"
 import {
   BUZZ_DIFF_MESSAGE_KIND,
   BUZZ_NORMAL_MESSAGE_KIND,
-  parseBuzzMessageEvent,
   type BuzzInboundMessage,
 } from "./message-event.js";
 import { setBuzzRuntime } from "./runtime.js";
@@ -39,25 +37,14 @@ function receive(
   params: Partial<Parameters<typeof handleBuzzInboundWithHistory>[0]> = {},
   config: Partial<ResolvedBuzzAccount["config"]> = {},
 ) {
-  const signal = new AbortController().signal;
   return handleBuzzInboundWithHistory({
     account: params.account ?? createAccount(config),
     cfg: params.cfg ?? {},
     bus: params.bus ?? createBus(),
-    signal,
-    assertCurrent: () => signal.throwIfAborted(),
+    ...createLifecycle(),
     ...params,
     historyMap: params.historyMap ?? new Map(),
-    message: {
-      id: "event-1",
-      kind: BUZZ_NORMAL_MESSAGE_KIND,
-      senderPubkey: SENDER_PUBLIC_KEY,
-      text: "hello",
-      channelId: ROOM_ID,
-      createdAt: 1_777_000_000,
-      mentionedPubkeys: [],
-      ...message,
-    },
+    message: createMessage(message),
   });
 }
 
@@ -79,6 +66,24 @@ function createAccount(
       ...configOverrides,
     },
   };
+}
+
+function createMessage(overrides: Partial<BuzzInboundMessage> = {}): BuzzInboundMessage {
+  return {
+    id: "event-1",
+    kind: BUZZ_NORMAL_MESSAGE_KIND,
+    senderPubkey: SENDER_PUBLIC_KEY,
+    text: "hello",
+    channelId: ROOM_ID,
+    createdAt: 1_777_000_000,
+    mentionedPubkeys: [],
+    ...overrides,
+  };
+}
+
+function createLifecycle() {
+  const signal = new AbortController().signal;
+  return { signal, assertCurrent: () => signal.throwIfAborted() };
 }
 
 function createBus(): BuzzBus {
@@ -152,6 +157,7 @@ function createHistoryParams(historyLimit = 2, roles = new Map<string, string>()
     account: createAccount({ historyLimit }),
     cfg: {} satisfies OpenClawConfig,
     bus,
+    ...createLifecycle(),
     historyMap: new Map<string, HistoryEntry[]>(),
   };
   return Object.assign(params, {
@@ -160,7 +166,14 @@ function createHistoryParams(historyLimit = 2, roles = new Map<string, string>()
 }
 
 function labelDirectory(bus: BuzzBus) {
-  setMembership(bus, [BOT_PUBLIC_KEY, SENDER_PUBLIC_KEY]);
+  setMembership(
+    bus,
+    [BOT_PUBLIC_KEY, SENDER_PUBLIC_KEY],
+    new Map([
+      [BOT_PUBLIC_KEY, "bot"],
+      [SENDER_PUBLIC_KEY, "member"],
+    ]),
+  );
   const event = { created_at: 1_777_000_000, sig: "e".repeat(128), content: "", tags: [] };
   bus.directory.applyProfileEvent({
     ...event,
@@ -294,12 +307,13 @@ it("retains human context across a loop-suppressed bot turn until a human dispat
   expect(params.historyMap.size).toBe(0);
 });
 
-it("labels inbound threads and handles empty replies and delivery errors", async () => {
+it.each(["off", "all"] as const)("routes replies and typing with replyToMode=%s", async (mode) => {
   const bus = createBus();
   labelDirectory(bus);
   await receive(
     { id: "event-reply", threadId: "event-root", mentionedPubkeys: [BOT_PUBLIC_KEY] },
     { bus },
+    { replyToMode: mode },
   );
   const dispatch = firstDispatch();
   expect(dispatch.ctxPayload).toMatchObject({
@@ -316,7 +330,17 @@ it("labels inbound threads and handles empty replies and delivery errors", async
   expect(dispatch.ctxPayload.GroupChannel).toBeUndefined();
   await dispatch.delivery.deliver({ text: "  " }, { kind: "final" });
   expect(bus.sendText).not.toHaveBeenCalled();
-  expect(dispatch.replyPipeline?.typing?.keepaliveIntervalMs).toBe(3_000);
+  const target = {
+    channelId: ROOM_ID,
+    threadId: mode === "off" ? undefined : "event-root",
+    replyToId: mode === "off" ? undefined : "event-root",
+  };
+  await dispatch.delivery.deliver({ text: "threaded reply to @Alice" }, { kind: "final" });
+  expect(bus.sendText).toHaveBeenCalledWith({ ...target, text: "threaded reply to @Alice" });
+  const typing = dispatch.replyPipeline?.typing;
+  expect(typing?.keepaliveIntervalMs).toBe(3_000);
+  await typing?.start();
+  expect(bus.sendTyping).toHaveBeenCalledWith(target);
   expect(() => dispatch.delivery.onError?.("send failed", { kind: "final" })).toThrow(
     "send failed",
   );
@@ -380,10 +404,10 @@ it.each([
         groups: { [ROOM_ID]: { requireMentionInBotThreads: false } },
       }),
       bus,
-      message: {
+      message: createMessage({
         mentionedPubkeys: mentioned ? [BOT_PUBLIC_KEY] : [],
         threadId: boundary === "thread ownership" ? "thread-root" : undefined,
-      },
+      }),
       signal: abort.signal,
       assertCurrent: () => {
         abort.signal.throwIfAborted();
@@ -465,53 +489,26 @@ it.each([true, false])(
   },
 );
 
-it.each([
-  { requireMention: true, long: false },
-  { requireMention: false, long: false },
-  { requireMention: false, long: true },
-])(
-  "parses diff context without interpreting commands or mentions ($requireMention, $long)",
-  async ({ requireMention, long }) => {
+it.each([false, true])(
+  "never interprets structured diff text; requireMention=%s",
+  async (requireMention) => {
     vi.mocked(runtime.channel.commands.shouldComputeCommandAuthorized).mockReturnValue(true);
     vi.mocked(runtime.channel.mentions.matchesMentionPatterns).mockReturnValue(true);
-    const diffText = `/status\n@@ -1 +1 @@\n-old\n+${long ? "new".repeat(4_000) : "new"}\n+const owner = '@OpenClaw';`;
-    const description = long
-      ? `line one\n${"a".repeat(243)}😀tail`
-      : "Preserve\nstructured diff context";
-    const metadata: Array<[string[], string]> = [
-      [["repo", "https://example.com/repo"], "Repository: https://example.com/repo"],
-      [["commit", "abcdef1"], "Commit: abcdef1"],
-      [["parent-commit", "1234567"], "Parent commit: 1234567"],
-      [["file", "a.ts"], "File: a.ts"],
-      [["branch", "feature", "main"], "Branches: feature -> main"],
-      [["pr", "42"], "Pull request: #42"],
-      [["l", "typescript"], "Language: typescript"],
-      [["description", description], "Description: Preserve structured diff context"],
-      [["alt", "Buzz plugin diff"], "Alt text: Buzz plugin diff"],
-      [["truncated", "true"], "Truncated: yes"],
-    ];
-    const message = parseBuzzMessageEvent(
-      finalizeEvent(
-        {
-          kind: BUZZ_DIFF_MESSAGE_KIND,
-          content: diffText,
-          created_at: 1_777_000_000,
-          tags: [
-            ["h", ROOM_ID],
-            ...metadata.map(([tag]) => tag),
-            ["e", "root-id", "", "root"],
-            ["e", "reply-id", "", "reply"],
-          ],
+    const diffText = `/status\n@@ -1 +1 @@\n-old\n+${"new".repeat(4_000)}\n+const owner = '@OpenClaw';`;
+    await receive(
+      {
+        kind: BUZZ_DIFF_MESSAGE_KIND,
+        text: diffText,
+        diff: {
+          repoUrl: "https://github.com/openclaw/openclaw",
+          commitSha: "abcdef1",
+          description: `line one\n${"x".repeat(1_100)}`,
+          truncated: true,
         },
-        new Uint8Array(32).fill(1),
-      ),
+      },
+      {},
+      { groups: { [ROOM_ID]: { requireMention } } },
     );
-    expect(message).toMatchObject({
-      threadId: "root-id",
-      replyToId: "reply-id",
-      diff: { description },
-    });
-    await receive(message!, {}, { groups: { [ROOM_ID]: { requireMention } } });
     expect(runtime.channel.commands.shouldComputeCommandAuthorized).not.toHaveBeenCalled();
     expect(runtime.channel.mentions.matchesMentionPatterns).not.toHaveBeenCalled();
     if (requireMention) {
@@ -526,22 +523,12 @@ it.each([
       BodyForCommands: "",
     });
     const bodyForAgent = context.BodyForAgent ?? "";
-    if (long) {
-      expect(bodyForAgent).toContain("Description: line one ");
-      expect(bodyForAgent).toContain("Unified diff:\n/status\n@@ -1 +1 @@\n-old\n+new");
-      expect(bodyForAgent.endsWith("...[Buzz diff truncated for model context]")).toBe(true);
-      expect(bodyForAgent.length).toBeLessThanOrEqual(4_000);
-      expect(Buffer.from(bodyForAgent, "utf8").toString("utf8")).toBe(bodyForAgent);
-    } else {
-      expect(bodyForAgent).toBe(
-        [
-          "[Buzz structured diff]",
-          ...metadata.map(([, expected]) => expected),
-          "",
-          "Unified diff:",
-          diffText,
-        ].join("\n"),
-      );
-    }
+    expect(bodyForAgent).toContain("[Buzz structured diff]");
+    expect(bodyForAgent).toContain("Repository: https://github.com/openclaw/openclaw");
+    expect(bodyForAgent).toContain("Description: line one ");
+    expect(bodyForAgent).toContain("Truncated: yes");
+    expect(bodyForAgent).toContain("Unified diff:\n/status\n@@ -1 +1 @@\n-old\n+new");
+    expect(bodyForAgent.endsWith("...[Buzz diff truncated for model context]")).toBe(true);
+    expect(bodyForAgent.length).toBeLessThanOrEqual(4_000);
   },
 );

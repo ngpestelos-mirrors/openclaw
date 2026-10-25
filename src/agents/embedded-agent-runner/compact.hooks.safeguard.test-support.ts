@@ -228,7 +228,10 @@ export function registerCompactionSafeguardTests({
 
     it.each([
       ["provider timeout", "request timed out", "fallback"],
+      ["intentional quality rejection", undefined, "degrade"],
       ["explicit model timeout", "request timed out", "cancel"],
+      // A corrective failure reuses the successful earlier summary on the same model.
+      ["corrective 408", "408", "degrade"],
       [
         "reasoning-mandatory rejection",
         "400 Reasoning is mandatory for this endpoint and cannot be disabled.",
@@ -261,11 +264,16 @@ export function registerCompactionSafeguardTests({
         const stream = vi.fn<StreamFn>((activeModel, _context, options) => {
           requestedModels.push(activeModel.id);
           requestedThinking.push(options?.reasoning);
+          const corrective = scenario === "corrective 408";
           const rejected =
             activeModel.id === primary &&
             errorMessage &&
-            !(outcome === "thinking" && options?.reasoning === "minimal");
-          const text = outcome === "cancel" ? "Missing required sections." : fallbackSummary;
+            !(outcome === "thinking" && options?.reasoning === "minimal") &&
+            !(corrective && requestedModels.length === 1);
+          const text =
+            outcome === "cancel" || outcome === "degrade" || corrective
+              ? "Missing required sections."
+              : fallbackSummary;
           return createAssistantResultStream(
             rejected
               ? { ...createAssistant(activeModel, [], "error"), errorMessage }
@@ -279,7 +287,7 @@ export function registerCompactionSafeguardTests({
             model,
             recentTurnsPreserve: 0,
             qualityGuardEnabled: true,
-            qualityGuardMaxRetries: 0,
+            qualityGuardMaxRetries: scenario === "corrective 408" ? 1 : 0,
           });
           return [];
         });
@@ -297,7 +305,7 @@ export function registerCompactionSafeguardTests({
                 thinkingLevel: "off" as const,
                 ...(explicitModel ? { model: `openai/${primary}` } : {}),
                 recentTurnsPreserve: 0,
-                qualityGuard: { enabled: true, maxRetries: 0 },
+                qualityGuard: { enabled: true, maxRetries: scenario === "corrective 408" ? 1 : 0 },
               },
             },
           },
@@ -315,10 +323,16 @@ export function registerCompactionSafeguardTests({
           fallback ? [primary, backup] : [primary],
         );
         expect(config).toEqual(configBefore);
-        const compaction = sessionManager
-          .getBranch()
-          .findLast((entry) => entry.type === "compaction");
-        if (outcome !== "cancel") {
+        if (outcome === "degrade") {
+          expect(result).toMatchObject({ ok: true, compacted: true });
+          expect(
+            sessionManager.getBranch().findLast((entry) => entry.type === "compaction"),
+          ).toMatchObject({
+            summary: expect.stringContaining("Missing required sections."),
+            details: { qualityDegraded: true },
+          });
+          expect(sessionManager.buildSessionContext().messages).not.toEqual(originalMessages);
+        } else if (outcome !== "cancel") {
           if (outcome === "thinking") {
             expect([...new Set(requestedThinking)]).toEqual(["off", "minimal"]);
           }
@@ -330,7 +344,9 @@ export function registerCompactionSafeguardTests({
           expect(result.result?.summary).toContain(
             "Review the deployment checklist before rollout.",
           );
-          expect(compaction).toMatchObject({
+          expect(
+            sessionManager.getBranch().findLast((entry) => entry.type === "compaction"),
+          ).toMatchObject({
             summary: expect.stringContaining(expectedSummaryRequest),
             details: { latestUnresolvedUserRequest: "Keep the rollout notes." },
           });
