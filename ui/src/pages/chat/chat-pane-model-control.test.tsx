@@ -18,12 +18,29 @@ import { cacheChatSessionSnapshot, readChatSessionSnapshot } from "./session-mes
 
 afterEach(cleanupSolid);
 
-it.each([true, false])(
-  "retains the selection when catalog arrives before history (default: %s)",
-  async (inherited) => {
+it.each([
+  { inherited: true, supported: false, tiers: ["default"], speed: "Standard", active: false },
+  {
+    inherited: false,
+    supported: true,
+    tiers: ["default", "priority"],
+    speed: "Fast",
+    active: true,
+  },
+])(
+  "retains selection and effective speed before history ($speed)",
+  async ({ inherited, supported, tiers, speed: expectedSpeed, active }) => {
     const saved = { id: "saved", provider: "openai", name: "Saved model" };
     const catalog = {
-      models: [saved, { id: "default", provider: "openai", name: "Default model" }],
+      models: [
+        {
+          ...saved,
+          supportsFastMode: supported,
+          supportsServiceTierRecovery: true,
+          serviceTiers: tiers,
+        },
+        { id: "default", provider: "openai", name: "Default model" },
+      ],
     };
     const agentsList: AgentsListResult = {
       defaultId: "main",
@@ -75,6 +92,7 @@ it.each([true, false])(
           sessionId: "session",
           kind: "direct",
           updatedAt: 1,
+          fastMode: "ultrafast",
           ...(inherited ? {} : { model: "saved", modelProvider: "openai" }),
         },
         defaults: { model: "saved", modelProvider: "openai", contextTokens: 8192 },
@@ -89,6 +107,35 @@ it.each([true, false])(
             ?.name,
         ).toBe("Saved model"),
       );
+      const remembered = readChatSessionSnapshot(state.chatMessagesBySession, state, {
+        sessionKey,
+      })?.composer;
+      const liveModel = {
+        ...createComposerControlsFixture().model,
+        connected: true,
+        gatewayAvailable: true,
+        sessionKey,
+        modelCatalog: catalog.models,
+        modelCatalogState: { hasSnapshot: true, status: "ready" as const },
+        selectedSession: state.sessionsResult?.sessions[0],
+        fastModeTarget: state.sessionsResult?.sessions[0],
+        sessionsResult: state.sessionsResult,
+      };
+      const [model, setModel] = createSignal<Parameters<typeof ChatPaneModelControl>[0]["model"]>({
+        ...liveModel,
+        snapshot: remembered ?? undefined,
+      });
+      const view = mountSolid(() => <ChatPaneModelControl model={model()} />);
+      const speed = () => view.container.querySelector("[data-chat-fast-mode]");
+      await waitForSolid(() =>
+        expect(speed()?.getAttribute("aria-label")).toContain(expectedSpeed),
+      );
+      expect(speed()?.getAttribute("data-chat-fast-mode")).toBe(String(active));
+      setModel(liveModel);
+      await waitForSolid(() =>
+        expect(speed()?.getAttribute("aria-label")).toContain(expectedSpeed),
+      );
+      expect(speed()?.getAttribute("data-chat-fast-mode")).toBe(String(active));
     } finally {
       retireChatMetadataRequests(state);
       sessions.dispose();

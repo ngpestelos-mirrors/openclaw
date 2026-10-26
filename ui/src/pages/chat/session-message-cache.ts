@@ -5,6 +5,7 @@ import {
 } from "@openclaw/gateway-client/browser";
 import type { ProgressCard } from "@openclaw/gateway-protocol";
 import type { GatewaySessionRow, ModelCatalogEntry } from "../../api/types.ts";
+import type { ChatFastModePresentation } from "../../lib/chat/model-select-state.ts";
 import { readPairingQrContent } from "../../lib/chat/pairing-qr.ts";
 import type { ChatHistoryCursor, ChatHistoryPagination } from "./chat-history-pagination.ts";
 import type { ChatHistoryState, ChatTranscriptMetadata } from "./chat-transcript-metadata.ts";
@@ -52,13 +53,14 @@ export function projectChatTranscriptMetadata(row: GatewaySessionRow): ChatTrans
 // Display only: the live catalog and session owners still admit every action.
 export type ChatComposerSnapshot = Pick<
   ModelCatalogEntry,
-  "id" | "provider" | "name" | "reasoning" | "supportsFastMode" | "effectiveFastMode"
+  "id" | "provider" | "name" | "reasoning"
 > &
   Pick<
     GatewaySessionRow,
-    "thinkingLevel" | "thinkingLevels" | "thinkingDefault" | "fastMode" | "permissionMode"
+    "thinkingLevel" | "thinkingLevels" | "thinkingDefault" | "permissionMode"
   > & {
     defaultPermissionMode?: GatewaySessionRow["permissionMode"];
+    speed?: ChatFastModePresentation;
   };
 
 export type ChatSessionSnapshot = {

@@ -29,7 +29,7 @@ export function ChatPaneModelControl(props: {
             : props.model.modelCatalogState
         }
         thinkingSession={savedSession() ?? props.model.thinkingSession}
-        fastModeTarget={savedSession() ?? props.model.fastModeTarget}
+        fastModeDisplay={props.model.snapshot?.speed}
         selectedSession={
           props.model.snapshot
             ? {

@@ -164,9 +164,7 @@ describe("persistent chat session snapshots", () => {
       provider: "openai",
       name: "Remembered model",
       reasoning: true,
-      supportsFastMode: true,
-      effectiveFastMode: "auto",
-      fastMode: false,
+      speed: { active: false, currentOverride: "off", label: "Standard", supported: true },
       thinkingLevel: "high",
       thinkingDefault: "medium",
       thinkingLevels: [{ id: "high", label: "High" }],
@@ -458,17 +456,17 @@ describe("persistent chat session snapshots", () => {
     expect(await new SessionSnapshotStore().read(privateKey)).toBeNull();
   });
 
-  it.each(["direct", "prewarmed"])(
-    "discards a superseded unbounded projection (%s)",
-    async (mode) => {
-      await persist(writer, sessionKey, snapshot("current"));
-      await putRawRecord(envelope(sessionKey, snapshot("old"), 2));
-      if (mode === "prewarmed") {
-        void prewarmChatSnapshot(sessionKey);
-      }
-      expect(await new SessionSnapshotStore().read(sessionKey)).toBeNull();
-    },
-  );
+  it.each([
+    [2, "direct"],
+    [3, "prewarmed"],
+  ] as const)("discards obsolete projection v%s (%s)", async (projectionVersion, mode) => {
+    await persist(writer, sessionKey, snapshot("current"));
+    await putRawRecord(envelope(sessionKey, snapshot("old"), projectionVersion));
+    if (mode === "prewarmed") {
+      void prewarmChatSnapshot(sessionKey);
+    }
+    expect(await new SessionSnapshotStore().read(sessionKey)).toBeNull();
+  });
 
   it("purges all legacy unscoped history rather than adopting an unknown account", async () => {
     const privateKey = "agent:main:dashboard:incognito-old";

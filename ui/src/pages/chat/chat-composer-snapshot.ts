@@ -1,5 +1,8 @@
 import type { AgentsListResult, ModelCatalogResult } from "../../api/types.ts";
-import { resolveChatModelSelectState } from "../../lib/chat/model-select-state.ts";
+import {
+  resolveChatFastModeSelectState,
+  resolveChatModelSelectState,
+} from "../../lib/chat/model-select-state.ts";
 import { resolveThinkingProfileForSession } from "../../lib/chat/thinking.ts";
 import { chatHistoryRequests, getAcceptedChatHistorySession } from "./chat-history-state.ts";
 import type { ChatPageHost } from "./chat-state-host.ts";
@@ -60,6 +63,15 @@ export function cacheChatComposerSnapshot(host: ChatPageHost, result: ModelCatal
       host.sessionsResult?.defaults,
       result.models,
     );
+    const { active, currentOverride, label, supported } = resolveChatFastModeSelectState({
+      catalog: result.models,
+      connected: host.connected,
+      currentModelOverride: selection.currentOverride,
+      fastModeTarget: session,
+      gatewayAvailable: Boolean(host.client),
+      loading: host.chatLoading,
+      sessionsResult: host.sessionsResult,
+    });
     const previous = readChatSessionSnapshot(host.chatMessagesBySession, host, target);
     const composer = entry
       ? {
@@ -67,12 +79,10 @@ export function cacheChatComposerSnapshot(host: ChatPageHost, result: ModelCatal
           provider: entry.provider,
           name: entry.name,
           reasoning: entry.reasoning,
-          supportsFastMode: entry.supportsFastMode,
-          effectiveFastMode: session.effectiveFastMode ?? entry.effectiveFastMode,
-          fastMode: session.fastMode,
+          speed: { active, currentOverride, label, supported },
           thinkingLevel: session.thinkingLevel,
-          thinkingLevels: profile?.thinkingLevels?.slice(0, 30),
           thinkingDefault: profile?.thinkingDefault,
+          thinkingLevels: profile?.thinkingLevels?.slice(0, 30),
           permissionMode: session.permissionMode,
           defaultPermissionMode: agent?.defaultPermissionMode,
         }

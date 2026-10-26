@@ -77,10 +77,6 @@ const paginationSchema = {
       : completePaginationSchema.parse(value);
   },
 };
-const fastModeSchema = json.checked(
-  (value): value is boolean | "auto" | "ultrafast" =>
-    typeof value === "boolean" || value === "auto" || value === "ultrafast",
-);
 const permissionModeSchema = json.enumeration(["read-only", "guarded", "workspace", "full"]);
 const snapshotSchema = json.object(
   {
@@ -91,9 +87,14 @@ const snapshotSchema = json.object(
           provider: json.text,
           name: json.text,
           reasoning: json.optional(json.boolean),
-          supportsFastMode: json.optional(json.boolean),
-          effectiveFastMode: json.optional(fastModeSchema),
-          fastMode: json.optional(fastModeSchema),
+          speed: json.optional(
+            json.object({
+              active: json.boolean,
+              currentOverride: json.enumeration(["", "on", "off", "auto", "ultrafast"]),
+              label: json.text,
+              supported: json.boolean,
+            }),
+          ),
           thinkingLevel: json.optional(json.text),
           thinkingDefault: json.optional(json.text),
           thinkingLevels: json.optional(
