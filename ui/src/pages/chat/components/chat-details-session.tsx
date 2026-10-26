@@ -466,7 +466,7 @@ export const ChatDetailsSession = defineSolidBridge<Props>(
                           fallback={
                             <ChatDetailsDesktopSection
                               section="pull-requests"
-                              title={t("sessionHovercard.pullRequests")}
+                              title={t("chat.sessionDetails.pullRequests")}
                               expanded={requestsExpanded()}
                               presented={active()}
                               onExpandedChange={(expanded) => {
@@ -491,7 +491,7 @@ export const ChatDetailsSession = defineSolidBridge<Props>(
                             }}
                           >
                             <summary class="chat-details__caption">
-                              {t("sessionHovercard.pullRequests")}
+                              {t("chat.sessionDetails.pullRequests")}
                               <span>{props.props?.pullRequests?.length || null}</span>
                               <Icon name="chevronDown" />
                             </summary>
