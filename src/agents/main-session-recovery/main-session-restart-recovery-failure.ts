@@ -196,6 +196,41 @@ export async function settleTerminalPendingFinalRecovery(
   return result.outcome === "settled";
 }
 
+/** A terminal placement settles the saved turn without entering a worker dispatch lane. */
+export async function settleFailedWorkerRestartRecovery(
+  params: Omit<Parameters<typeof tombstoneMainRestartRecoveryWithNotice>[0], "reason"> & {
+    placementSessionKey: string;
+    shouldContinue?: () => boolean;
+  },
+): Promise<"settled" | "failed" | "skipped" | undefined> {
+  const placement = await params.gatewayRuntime.prepareFailedWorkerPlacement({
+    agentId: params.agentId,
+    sessionId: params.entry.sessionId,
+    sessionKey: params.placementSessionKey,
+  });
+  if (!placement) {
+    return undefined;
+  }
+  const assertCurrent = () => {
+    if (params.shouldContinue?.() === false || !placement.isCurrent()) {
+      throw new Error("Failed worker placement changed before restart settlement");
+    }
+  };
+  try {
+    const outcome = await tombstoneMainRestartRecoveryWithNotice({
+      ...params,
+      reason: placement.reason,
+      assertCurrent,
+    });
+    if (outcome === "tombstoned") {
+      await notifyInterruptedChildParent({ ...params, reason: placement.reason, assertCurrent });
+    }
+    return outcome === "notice_failed" ? "failed" : outcome === "skipped" ? "skipped" : "settled";
+  } finally {
+    placement.release();
+  }
+}
+
 /** Sender loss retires one input only when no other execution or delivery custody remains. */
 export async function finishDelegatedRestartRecovery(
   params: Parameters<typeof tombstoneMainRestartRecoveryWithNotice>[0] & {
@@ -304,6 +339,7 @@ export async function tombstoneMainRestartRecoveryWithNotice(params: {
   reason: string;
   sessionKey: string;
   storePath: string;
+  assertCurrent?: () => void;
 }): Promise<"notice_failed" | "skipped" | "tombstoned"> {
   const deliveryContext = resolveRestartRecoveryDeliveryContext({
     cfg: params.cfg,
@@ -360,6 +396,7 @@ export async function tombstoneMainRestartRecoveryWithNotice(params: {
       reason: params.reason,
     },
     requireWriteSuccess: true,
+    assertCommitAllowed: params.assertCurrent,
     target: params,
   });
   if (claim.transition.kind !== "tombstoned" || !claim.entry) {

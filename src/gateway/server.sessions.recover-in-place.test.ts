@@ -204,14 +204,22 @@ async function recover(
 test.for([
   "interrupted",
   "settled",
+  "placement-failed",
+  "ordinary-failed",
+  "failed-replacement",
   "cancelled",
   "replacement",
   "cli-full",
   "cli-restricted",
 ] as const)(
-  "sessions.recover resumes only the original restart-interrupted native child (%s)",
+  "sessions.recover resumes only the original native child owned by restart recovery (%s)",
   async (scenario, { signal }) => {
     const cli = scenario === "cli-full" || scenario === "cli-restricted";
+    const failed =
+      scenario === "placement-failed" ||
+      scenario === "ordinary-failed" ||
+      scenario === "failed-replacement";
+    const terminal = scenario === "settled" || failed;
     const current = await fixture(`child-recovery-${scenario}`, cli ? "claude-cli" : undefined);
     if (cli) {
       const previousRegistry = { ...getTestPluginRegistry() };
@@ -236,8 +244,8 @@ test.for([
     const lifecycleRevision = `child-revision-${scenario}`;
     await patchSessionEntryCore(current.scope, () => ({
       mainRestartRecovery: undefined,
-      status: scenario === "cancelled" ? "killed" : "interrupted",
-      abortedLastRun: true,
+      status: scenario === "cancelled" ? "killed" : failed ? "failed" : "interrupted",
+      abortedLastRun: failed ? undefined : true,
       lastRunId: runId,
       lifecycleRevision,
       spawnedBy: "agent:main:main",
@@ -256,19 +264,22 @@ test.for([
       childSessionKey: current.key,
       childAgentId: "main",
       childSessionIdentity: {
-        sessionId: scenario === "replacement" ? "retired-child-session" : current.sessionId,
+        sessionId:
+          scenario === "replacement" || scenario === "failed-replacement"
+            ? "retired-child-session"
+            : current.sessionId,
         lifecycleRevision,
       },
       requesterAgentId: "main",
       execution: {
-        status: scenario === "settled" ? "terminal" : "interrupted",
+        status: terminal ? "terminal" : "interrupted",
         startedAt: 1,
-        interruptionReason: "gateway-restart",
-        ...(scenario === "settled"
+        interruptionReason: failed ? undefined : "gateway-restart",
+        ...(terminal
           ? { endedAt: 2, outcome: { status: "error", error: "Interrupted by Gateway restart" } }
           : {}),
       },
-      ...(scenario === "settled"
+      ...(terminal && scenario !== "ordinary-failed"
         ? { endedReason: "subagent-error", terminalOwner: "interrupted-recovery" }
         : {}),
     });
@@ -279,7 +290,12 @@ test.for([
     const before = await current.transcript();
     const entryBefore = current.entry();
     const response = await recover(current, { automaticIdentity: true });
-    if (scenario === "cancelled" || scenario === "replacement") {
+    if (
+      scenario === "cancelled" ||
+      scenario === "replacement" ||
+      scenario === "failed-replacement" ||
+      scenario === "ordinary-failed"
+    ) {
       expect(response).toMatchObject({ ok: false });
       expect(dispatchInboundMessageMock).not.toHaveBeenCalled();
       expect(await current.transcript()).toEqual(before);
