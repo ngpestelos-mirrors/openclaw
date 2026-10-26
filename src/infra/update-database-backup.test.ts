@@ -17,7 +17,6 @@ import { listDirectoryTreeStrict } from "./directory-walk.js";
 import * as diskSpace from "./disk-space.js";
 import * as fileDescriptor from "./file-descriptor.js";
 import * as sqliteIntegrity from "./sqlite-integrity.js";
-import * as readOnlyLocation from "./sqlite-readonly-location.js";
 import * as sqliteSource from "./sqlite-snapshot-source.js";
 import * as sqliteSnapshot from "./sqlite-snapshot.js";
 import * as inspection from "./update-candidate-state.inspection.js";
@@ -28,6 +27,7 @@ import {
   createUpdateDatabaseBackup,
   createUpdateDatabaseBackupInProcess,
 } from "./update-database-backup.js";
+import * as generationReads from "./update-database-generations.js";
 import * as databaseGenerations from "./update-physical-database-generations.js";
 import type { UpdateRecoveryBaselineRef } from "./update-recovery-baseline-capture.js";
 import type { UpdateRecoveryCaptureAcquisition } from "./update-recovery-capture-acquisition.js";
@@ -214,7 +214,7 @@ it.each(["auto", "off"] as const)(
     const f = await fixture(true);
     const previous = getFsSafeNativeConfig();
     const audit = vi.spyOn(sqliteIntegrity, "assertSqliteIntegrity");
-    const generations = vi.spyOn(readOnlyLocation, "prepareSqliteReadOnlyLocationSyncInProcess");
+    const generations = vi.spyOn(generationReads, "readUpdateDatabaseGenerations");
     try {
       configureFsSafeNative({ mode });
       const backup = await f.capture({ stopped: true });
@@ -330,10 +330,7 @@ it.each(["original-custody", "rollback", "ordinary", "maintenance"] as const)(
       "INSERT INTO payload VALUES ('checkpoint pending');",
     );
     const parentImages = vi.spyOn(sqliteSource, "prepareSqliteReadOnlyLocationSync");
-    const generationImages = vi.spyOn(
-      readOnlyLocation,
-      "prepareSqliteReadOnlyLocationSyncInProcess",
-    );
+    const generations = vi.spyOn(generationReads, "readUpdateDatabaseGenerations");
     await using scope =
       mode === "ordinary" || mode === "maintenance" ? maintenanceScope() : undefined;
     const input = { ...f.input, preserveSourceArtifacts: true };
@@ -361,7 +358,7 @@ it.each(["original-custody", "rollback", "ordinary", "maintenance"] as const)(
       expect(parentImages.mock.calls.map(([file]) => file)).toEqual(
         mode === "original-custody" ? [f.shared] : [],
       );
-      expect(generationImages.mock.calls.map(([file]) => file)).toEqual(
+      expect(generations.mock.calls.flatMap(([files]) => files)).toEqual(
         mode === "original-custody" ? [] : [f.shared, f.shared],
       );
     }
