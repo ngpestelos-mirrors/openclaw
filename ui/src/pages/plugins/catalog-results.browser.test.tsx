@@ -3,6 +3,7 @@ import { createSignal, flush } from "solid-js";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { page, userEvent } from "vitest/browser";
 import { mountSolid, cleanupSolid } from "../../test-helpers/mount-solid.ts";
+import { waitForSolid } from "../../test-helpers/solid-settle.ts";
 import { baseProps, plugin } from "./catalog-results.test-support.ts";
 import {
   renderPluginCatalogResults as PluginCatalogResults,
@@ -82,6 +83,92 @@ async function renderCatalog(props: Partial<PluginCatalogResultsProps>) {
   render(() => PluginCatalogResults({ ...catalogProps(), ...props }));
   await nextFrame();
 }
+
+it("windows large catalogs without losing keyboard traversal, reordered cards, or resized rows", async () => {
+  container.className = "content";
+  Object.assign(container.style, { height: "500px", width: "1100px", overflow: "auto" });
+  const entries = Array.from({ length: 1_000 }, (_, index) =>
+    plugin(`window-${String(index).padStart(4, "0")}`),
+  );
+  const [items, setItems] = createSignal(entries);
+  const [messages, setMessages] = createSignal<PluginCatalogResultsProps["messages"]>({});
+  render(() => (
+    <PluginCatalogResults
+      {...catalogProps()}
+      query=""
+      category="tools"
+      result={{ items: items() }}
+      messages={messages()}
+    />
+  ));
+  const card = (index: number) =>
+    find(`[data-plugin-id="window-${String(index).padStart(4, "0")}"]`);
+  const cards = () => [...container.querySelectorAll<HTMLElement>(".plugin-catalog-card")];
+  await waitForSolid(() => {
+    expect(cards().length).toBeLessThan(100);
+    expect(cards().length).toBeGreaterThan(4);
+    expect(container.scrollHeight).toBeGreaterThan(10_000);
+  });
+  await nextFrame();
+  const boundary = Math.max(
+    ...cards()
+      .map((node) => Number(node.dataset.pluginId!.slice(-4)))
+      .filter((index) => index < 100),
+  );
+  const focused = card(boundary).querySelector<HTMLButtonElement>("button")!;
+  focused.focus();
+  flush();
+  expect(card(boundary + 1)).not.toBeNull();
+  await userEvent.keyboard("{Tab}");
+  expect(document.activeElement).toBe(
+    card(boundary + 1).querySelector(".plugin-catalog-card__primary-link"),
+  );
+  await userEvent.keyboard("{Shift>}{Tab}{/Shift}");
+  expect(document.activeElement).toBe(focused);
+  const retainedCard = card(boundary);
+  setItems([plugin("ranked-first"), ...entries]);
+  await waitForSolid(() => {
+    expect(card(boundary)).toBe(retainedCard);
+    expect(document.activeElement).toBe(focused);
+    expect(retainedCard.parentElement!.getAttribute("aria-posinset")).toBe(String(boundary + 2));
+    expect(retainedCard.parentElement!.getAttribute("aria-setsize")).toBe("1001");
+  });
+
+  container.scrollTop = 0;
+  await nextFrame();
+  setMessages({
+    "install:window-0000": { kind: "error", text: "Visible error details. ".repeat(30) },
+  });
+  await waitForSolid(() => {
+    const tall = card(0).getBoundingClientRect();
+    const nextRow = card(3).getBoundingClientRect();
+    expect(tall.height).toBeGreaterThan(150);
+    expect(Math.abs(tall.height - card(1).getBoundingClientRect().height)).toBeLessThan(1);
+    expect(nextRow.top).toBeGreaterThanOrEqual(tall.bottom);
+  });
+  const expandedHeight = card(0).getBoundingClientRect().height;
+  setMessages({});
+  await waitForSolid(() => {
+    expect(card(0).getBoundingClientRect().height).toBeLessThan(expandedHeight);
+    expect(card(3).getBoundingClientRect().top).toBeGreaterThanOrEqual(
+      card(0).getBoundingClientRect().bottom,
+    );
+  });
+  container.style.width = "360px";
+  await page.viewport(390, 844);
+  await waitForSolid(() => {
+    expect(card(1).getBoundingClientRect().top).toBeGreaterThanOrEqual(
+      card(0).getBoundingClientRect().bottom,
+    );
+    expect(cards().length).toBeLessThan(100);
+  });
+  card(999).querySelector<HTMLAnchorElement>(".plugin-catalog-card__primary-link")!.focus();
+  await nextFrame();
+  const bounds = card(999).getBoundingClientRect();
+  const viewport = container.getBoundingClientRect();
+  expect(bounds.top).toBeLessThan(viewport.bottom);
+  expect(bounds.bottom).toBeGreaterThan(viewport.top);
+});
 
 it.each([263, 362])(
   "keeps long identity text clear of the action within a %ipx card",
