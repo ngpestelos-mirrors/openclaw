@@ -17,6 +17,7 @@ import { listDirectoryTreeStrict } from "./directory-walk.js";
 import * as diskSpace from "./disk-space.js";
 import * as fileDescriptor from "./file-descriptor.js";
 import * as sqliteIntegrity from "./sqlite-integrity.js";
+import * as readOnlyLocation from "./sqlite-readonly-location.js";
 import * as sqliteSource from "./sqlite-snapshot-source.js";
 import * as sqliteSnapshot from "./sqlite-snapshot.js";
 import * as inspection from "./update-candidate-state.inspection.js";
@@ -213,10 +214,12 @@ it.each(["auto", "off"] as const)(
     const f = await fixture(true);
     const previous = getFsSafeNativeConfig();
     const audit = vi.spyOn(sqliteIntegrity, "assertSqliteIntegrity");
+    const generations = vi.spyOn(readOnlyLocation, "prepareSqliteReadOnlyLocationSyncInProcess");
     try {
       configureFsSafeNative({ mode });
       const backup = await f.capture({ stopped: true });
       expect(audit).not.toHaveBeenCalled();
+      expect(generations).not.toHaveBeenCalled();
       expect(backup.databases).toHaveLength(3);
       for (const entry of backup.databases) {
         const bytes = await fs.readFile(entry.snapshotPath);
@@ -327,6 +330,10 @@ it.each(["original-custody", "rollback", "ordinary", "maintenance"] as const)(
       "INSERT INTO payload VALUES ('checkpoint pending');",
     );
     const parentImages = vi.spyOn(sqliteSource, "prepareSqliteReadOnlyLocationSync");
+    const generationImages = vi.spyOn(
+      readOnlyLocation,
+      "prepareSqliteReadOnlyLocationSyncInProcess",
+    );
     await using scope =
       mode === "ordinary" || mode === "maintenance" ? maintenanceScope() : undefined;
     const input = { ...f.input, preserveSourceArtifacts: true };
@@ -348,6 +355,15 @@ it.each(["original-custody", "rollback", "ordinary", "maintenance"] as const)(
         mode === "maintenance" ? [f.shared] : [],
       );
       expect(backup.originalCaptureSourcePaths).toBeUndefined();
+    } else {
+      // Automatic capture classifies its generation image; manual originals acquire
+      // only the engine image and never perform generation work.
+      expect(parentImages.mock.calls.map(([file]) => file)).toEqual(
+        mode === "original-custody" ? [f.shared] : [],
+      );
+      expect(generationImages.mock.calls.map(([file]) => file)).toEqual(
+        mode === "original-custody" ? [] : [f.shared, f.shared],
+      );
     }
     expect(await readFiles(files)).toEqual(family);
     expect(backup.databases).toHaveLength(1);
