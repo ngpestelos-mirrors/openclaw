@@ -79,7 +79,10 @@ except desktop 1× (two events, 4.56 ms total). The desktop 4× idle outlier abo
 contained two events totaling 34.72 ms; mobile idle contained one short event at
 each rate (0.61/1.37 ms). GC does not explain the continuous active-frame cost.
 
-### Paired stationary-tooltip results
+### Initial stationary-tooltip results (v2; provisional)
+
+These observations predate the strict in-window network check. The completed v4
+confirmation below is the acceptance evidence; this table is retained history.
 
 Twenty interleaved pairs per viewport, untraced three-second intervals at 4×.
 All 320 observations passed. CPU entries are median / p95 in ms/s.
@@ -121,8 +124,8 @@ Cold native playback is noisy on this shared host. Candidate maxima reached
 807.5 ms desktop and 2,378.4 ms mobile; unchanged A/A maxima reached 1,686.4 ms
 and 730.8 ms. The mobile candidate tail is outside the band in this early partial-interval
 measurement. It is retained here as adverse evidence. The final whole-gesture
-check below supplies the acceptance result; neither probe measures end-to-end
-acoustic audio latency.
+check below supplies a second unlock-clip observation, not remote-stream
+acceptance; neither probe measures end-to-end acoustic audio latency.
 
 ### Stationary tooltip diagnostic
 
@@ -168,9 +171,9 @@ transforms outside Solid. One desktop 4× diagnostic pair changed speaking
 script CPU increased. A single-canvas 30 Hz prototype instead changed speaking
 161.83 → 85.52 (−47.2%) and responding 143.79 → 65.22 (−54.6%). Inspected
 synthetic frame captures looked consistent. These are single diagnostic pairs,
-not acceptance results; the canvas still needs production integration, full
-visual/state coverage, and repeated A/B and A/A proof. Neither prototype is
-part of the tooltip change.
+not acceptance results. The subsequent production canvas, visual coverage, and
+repeated 4× comparison are recorded below. Neither prototype is part of the
+tooltip change.
 
 A direct `transform` binding in place of the seven inherited `--talk-bar-scale`
 properties did not remove the active rendering cost. In a single instrumented
@@ -234,7 +237,8 @@ Same-host frozen production builds: startup JavaScript 271,312 → 271,570 B gzi
 and one request. Chat boot grows 1,233,436 → 1,234,299 B (+863 B); New Session
 grows 750,062 → 751,016 B (+954 B). The strict checker reports no violations
 or warnings. This small shared-owner cost accompanies the measured 78–87%
-stationary-tooltip CPU reduction; no audio or transcript owner changes.
+stationary-tooltip CPU reduction in the initial comparison; the final v4 table
+below supersedes that effect size. No audio or transcript owner changes.
 
 ## Reveal attribution
 
@@ -255,34 +259,35 @@ so only browser-local clocks are used here.
 
 Relaxing hidden parking would change lifecycle behavior. A naive shallow
 projection of all ChatProps also eagerly reads its live `stream` getter,
-subscribing hidden panes to each delta. Neither change is accepted. A bounded
-experiment excluding that getter is prepared separately for measurement.
+subscribing hidden panes to each delta. Neither change is accepted; the paired
+results below do not justify changing the hidden-parking contract.
 
-## Final-head calibration
+## Final-head reveal calibration
 
 Two serial ten-pair runs: 160/160 observations passed, all natively hidden and
 all retaining their caption row through reveal. Each cell has 20 samples per
 side. One-minute host load ranged 15.77–49.39. Values are median / p95.
 
-| Viewport / comparison |        Cold play base → head (ms) |     Reveal frame base → head (ms) |      Reveal task base → head (ms) |
+| Viewport / comparison |      Unlock play base → head (ms) |     Reveal frame base → head (ms) |      Reveal task base → head (ms) |
 | --------------------- | --------------------------------: | --------------------------------: | --------------------------------: |
 | Desktop / AB          | 280.95 / 324.00 → 297.20 / 368.60 | 122.90 / 151.80 → 127.10 / 149.40 | 132.65 / 161.44 → 137.14 / 161.95 |
 | Desktop / AA          | 294.80 / 737.30 → 284.50 / 732.30 | 125.15 / 144.50 → 126.75 / 147.00 | 134.94 / 155.18 → 136.28 / 157.28 |
 | Mobile / AB           | 262.40 / 353.20 → 269.45 / 297.30 | 118.40 / 142.70 → 125.30 / 142.60 | 129.45 / 153.83 → 134.76 / 154.16 |
 | Mobile / AA           | 279.40 / 367.60 → 276.55 / 359.10 | 120.05 / 159.40 → 124.25 / 135.60 | 130.59 / 168.00 → 135.08 / 146.70 |
 
-| Viewport / comparison | Paired cold play median | Paired reveal frame median | Paired reveal task median | Paired reveal script median |
-| --------------------- | ----------------------: | -------------------------: | ------------------------: | --------------------------: |
-| Desktop / AB          |                 +18.84% |                     +1.91% |                    +2.38% |                      +4.59% |
-| Desktop / AA          |                  -3.64% |                     +1.69% |                    +2.36% |                      +3.89% |
-| Mobile / AB           |                  -0.34% |                     +0.84% |                    +0.61% |                      +0.08% |
-| Mobile / AA           |                  +4.04% |                     +1.96% |                    +3.08% |                      +1.91% |
+| Viewport / comparison | Paired unlock play median | Paired reveal frame median | Paired reveal task median | Paired reveal script median |
+| --------------------- | ------------------------: | -------------------------: | ------------------------: | --------------------------: |
+| Desktop / AB          |                   +18.84% |                     +1.91% |                    +2.38% |                      +4.59% |
+| Desktop / AA          |                    -3.64% |                     +1.69% |                    +2.36% |                      +3.89% |
+| Mobile / AB           |                    -0.34% |                     +0.84% |                    +0.61% |                      +0.08% |
+| Mobile / AA           |                    +4.04% |                     +1.96% |                    +3.08% |                      +1.91% |
 
 The mobile raw reveal-frame median rises 5.8%, while its paired median rises
 0.84% and p95 is unchanged. Reveal task medians remain within 5%; task p95
 changes below 1% are noise under the campaign rule. These isolated desktop play-duration samples fail the band and do not by
-themselves establish unchanged cold latency; the final whole-gesture probe below
-rechecks activation and native readiness on the same final builds.
+themselves establish unchanged cold latency; the whole-gesture probe below
+rechecks the unlock clip on the same final builds. Remote-stream readiness is a
+separate boundary, measured by the later source-classified probe.
 
 ## Playback interval attribution
 
@@ -292,8 +297,8 @@ CPU 200.29/213.41 ms; unchanged A/A was 531.36/451.19 and 223.96/191.70 ms.
 This tiny traced cell diagnoses the boundary and establishes no effect size.
 The first native play promise lasted 168.8/186.9 ms, while the wider measured
 interval lasted 706.28/611.96 ms. Unchanged A/A showed the same disagreement
-(206.8/276.5 ms versus 680.51/505.90 ms). The browser-local Start-gesture probe below separates that partial duration
-from user-visible readiness.
+(206.8/276.5 ms versus 680.51/505.90 ms). The browser-local Start-gesture probe
+below separates that partial duration from gesture-to-unlock readiness.
 
 The CPU profile itself extends beyond the bounded CDP metric interval. Its
 raw sampled totals must not be treated as interval CPU percentages.
@@ -305,13 +310,13 @@ Twenty serial interleaved A/B and A/A pairs on desktop at 4× completed all
 Start pointerdown and ends when the first native `play()` promise resolves.
 It uses the same frozen base-current and head-final builds as final calibration.
 
-| Metric (median / p95)      |        A/B base |        A/B head |       A/A first |      A/A second |
-| -------------------------- | --------------: | --------------: | --------------: | --------------: |
-| Gesture to audio ready, ms | 288.65 / 439.90 | 281.95 / 335.30 | 268.00 / 368.10 | 294.90 / 335.70 |
-| Native play duration, ms   | 271.90 / 419.20 | 265.40 / 320.20 | 252.00 / 351.50 | 276.35 / 319.70 |
-| Startup task CPU, ms       | 451.76 / 898.94 | 474.32 / 752.55 | 484.79 / 729.25 | 488.67 / 803.11 |
-| Startup script CPU, ms     | 200.83 / 219.00 | 196.91 / 219.69 | 196.05 / 225.25 | 199.74 / 217.23 |
-| Startup style CPU, ms      |   45.21 / 59.49 |   45.98 / 70.48 |   47.91 / 77.05 |   47.79 / 60.42 |
+| Metric (median / p95)       |        A/B base |        A/B head |       A/A first |      A/A second |
+| --------------------------- | --------------: | --------------: | --------------: | --------------: |
+| Gesture to unlock ready, ms | 288.65 / 439.90 | 281.95 / 335.30 | 268.00 / 368.10 | 294.90 / 335.70 |
+| Native play duration, ms    | 271.90 / 419.20 | 265.40 / 320.20 | 252.00 / 351.50 | 276.35 / 319.70 |
+| Startup task CPU, ms        | 451.76 / 898.94 | 474.32 / 752.55 | 484.79 / 729.25 | 488.67 / 803.11 |
+| Startup script CPU, ms      | 200.83 / 219.00 | 196.91 / 219.69 | 196.05 / 225.25 | 199.74 / 217.23 |
+| Startup style CPU, ms       |   45.21 / 59.49 |   45.98 / 70.48 |   47.91 / 77.05 |   47.79 / 60.42 |
 
 Paired median gesture changes are −2.14% A/B and +8.39% A/A. Paired startup
 task/script CPU changes are +1.14%/−2.26% A/B and −6.10%/+1.90% A/A.
@@ -319,10 +324,11 @@ One-minute host load ranged 15.18–41.02 (median 26.93).
 The style subphase has +5.12% paired median and +18.5% raw p95; this is
 disclosed rather than described as an all-subphase win. Overall task median
 changes +4.99%, with a lower p95; script median improves and its p95 changes
-+0.3%. No audio owner changed. Whole-gesture readiness is inside the acceptance
-band; the earlier isolated play-duration regression did not reproduce here.
-Its exact cause is not established, and this local native-readiness probe is
-still not acoustic, provider, codec, or network latency.
++0.3%. No audio owner changed. Gesture-to-unlock readiness is inside the
+acceptance band in this population; the earlier isolated play-duration
+regression did not reproduce here. Its exact cause is not established. This
+unlock probe does not establish remote-stream, acoustic, provider, codec, or
+network latency.
 
 ## Reproduction
 
@@ -426,3 +432,74 @@ Default startup remains cold and precedes precache completion. An explicit
 `--startup-warm-cache` mode measures a separate cache-settled population; it does
 not relabel or replace cold observations. Steady-state CPU and network windows
 retain the same v4 measurement boundaries.
+
+### Complete v4 canvas comparison at 4×
+
+The production canvas candidate at `2ddbaefcab1` is compared with its own merge
+base `a3151e39a94`; it does not include the separate overlay candidate. Twenty
+serial interleaved A/B and A/A pairs per viewport completed all 800 planned state
+windows. Every window passed the zero-asset-download check, all 160 browser/cache
+identities reconciled, and every hidden endpoint reported native hidden visibility.
+The unchanged A/A controls remain separate; none are subtracted from A/B.
+
+CPU entries below are task ms/s, median / nearest-rank p95. The change column is
+the median of each matched pair's percentage change, rather than a ratio of the
+two marginal medians.
+
+| Viewport / state          |            Base |        Canvas | Paired change | A/A paired change |
+| ------------------------- | --------------: | ------------: | ------------: | ----------------: |
+| Desktop, speaking         |  96.20 / 106.06 | 42.95 / 54.56 |       −56.08% |            +2.29% |
+| Mobile, speaking          | 105.20 / 118.57 | 44.93 / 52.52 |       −57.19% |            −0.65% |
+| Desktop, responding / TTS |   77.16 / 89.14 | 47.02 / 54.29 |       −41.78% |            +0.82% |
+| Mobile, responding / TTS  |   79.72 / 93.20 | 46.23 / 53.79 |       −41.49% |            +0.36% |
+| Desktop, listening        |     1.26 / 1.86 |   1.30 / 1.62 |        +0.90% |            +3.19% |
+| Mobile, listening         |     1.35 / 1.76 |   1.34 / 1.73 |        +2.71% |            +8.23% |
+| Desktop, idle             |     1.46 / 2.05 |   1.56 / 2.05 |        −1.18% |            +9.48% |
+| Mobile, idle              |    1.93 / 33.34 |  2.03 / 22.05 |       −10.31% |           +17.51% |
+| Desktop, hidden           |    0.48 / 93.32 |  0.47 / 46.63 |       −10.03% |           −18.20% |
+| Mobile, hidden            |    0.41 / 95.06 |  0.44 / 40.62 |        −6.90% |           +52.74% |
+
+The canvas trades some JavaScript drawing for much less native frame/style work.
+For example, desktop speaking script CPU is 3.00 → 5.87 ms/s and responding is
+0.42 → 5.03 ms/s; overall task CPU falls by 53.24 and 30.14 ms/s respectively
+when comparing marginal medians. The source-mapped diagnostic and removed style
+updates establish the owner of that saving. This is a main-thread CPU win, not a
+claim that JavaScript execution alone decreased.
+
+Ordinary listening is already near the page-task floor and has no demonstrated
+40% win. The canvas stops settled quiet/hidden painting. All 160 hidden rows have
+zero analyser reads. This acceptance run disables callback instrumentation;
+absence of timer/rAF counter values is not proof of zero callbacks. The separate
+diagnostic supplies those counts. Large hidden spikes also occur in unchanged
+A/A rows; their heap drops alone do not establish GC. Raw process CPU remains
+separately bracketed and is not a battery estimate.
+
+The cold first/unlock-play probe remains adverse: desktop ready median/p95 is
+283.45/352.10 → 301.60/565.80 ms; mobile is 312.75/406.50 → 321.80/530.30 ms.
+Startup task CPU paired medians rise 5.41% and 6.69%. These observations cannot
+be discarded because the active-state win is large. The source-separated probe
+is committed as `a5c58cd9f49`; remote-stream and unlock timing, followed by the
+1× comparison, remain required before accepting the canvas change's latency.
+
+### Final stationary-tooltip confirmation (v4)
+
+Ten serial interleaved A/B and unchanged A/A pairs per viewport completed all
+160 observations and 80 browser/precache identities. All three-second windows
+passed the zero-asset-traffic check. Task CPU improved in every one of the 40
+matched A/B state pairs. This run has no startup-latency instrumentation.
+
+Values are task CPU ms/s, median / nearest-rank p95. Changes are medians of
+matched-pair percentages. The A/A control is reported separately, never subtracted.
+
+| Viewport / state with Stop tooltip |            Base |           Head | Paired change | A/A paired change |
+| ---------------------------------- | --------------: | -------------: | ------------: | ----------------: |
+| Desktop, listening                 | 31.127 / 36.781 |  2.499 / 9.113 |      −92.405% |           −6.703% |
+| Desktop, idle                      | 30.800 / 47.209 |  1.513 / 2.585 |      −95.623% |          −12.061% |
+| Mobile, listening                  | 29.747 / 32.950 | 4.417 / 10.201 |      −85.586% |           +0.255% |
+| Mobile, idle                       | 26.110 / 33.350 |  2.224 / 3.113 |      −92.003% |           +5.580% |
+
+Script CPU paired medians fall 91.2–92.2%; head medians range 0.486–0.568 ms/s.
+The separate diagnostic establishes the removed recurring geometry rAF work;
+this uninstrumented confirmation establishes its CPU effect. These are page-task
+measurements, not audio latency or battery estimates. The unchanged A/A tails
+are noisy, but every A/B pair improves and both candidate p95s fall substantially.
