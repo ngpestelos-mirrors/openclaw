@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
   readSqliteDatabaseScopedWriteToken,
   readSqliteDatabasePendingScopedWriteToken,
@@ -24,9 +24,7 @@ describe("scoped SQLite write receipts", () => {
       );
       const before = readSqliteDatabaseScopedWriteToken(database, "entry");
       const statement = database.prepare("INSERT INTO original VALUES (?, zeroblob(?))");
-      let installed = false;
-      let rolledBack = false;
-      let invalidated = false;
+      const callbacks = { commit: vi.fn(), rollback: vi.fn(), invalidate: vi.fn() };
       let observedError: unknown;
       expect(() => {
         try {
@@ -35,17 +33,7 @@ describe("scoped SQLite write receipts", () => {
               withSqlitePreparedNativeMutation(
                 database,
                 () => {
-                  stageSqliteTransactionState(database, {
-                    commit: () => {
-                      installed = true;
-                    },
-                    rollback: () => {
-                      rolledBack = true;
-                    },
-                    invalidate: () => {
-                      invalidated = true;
-                    },
-                  });
+                  stageSqliteTransactionState(database, callbacks);
                   if (failure === "preparation") {
                     throw new Error("preparation rejected");
                   }
@@ -71,9 +59,9 @@ describe("scoped SQLite write receipts", () => {
               ? "UNIQUE constraint failed"
               : "Prepared SQLite mutation outcome is unknown",
       );
-      expect(installed).toBe(false);
-      expect(rolledBack).toBe(failure !== "full");
-      expect(invalidated).toBe(failure === "full");
+      expect(callbacks.commit).not.toHaveBeenCalled();
+      expect(callbacks.rollback.mock.calls.length > 0).toBe(failure !== "full");
+      expect(callbacks.invalidate.mock.calls.length > 0).toBe(failure === "full");
       expect(hasSqliteWorkerOutcomeUnknown(observedError)).toBe(failure === "full");
       if (failure === "full") {
         expect(observedError).toMatchObject({ cause: { message: "database or disk is full" } });

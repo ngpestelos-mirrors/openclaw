@@ -17,15 +17,16 @@ import {
 } from "./heartbeat-summary-snapshot.js";
 import { sqliteWorkerPreloadEnv } from "./sqlite-worker-preload.test-support.js";
 
+const cfg: OpenClawConfig = {
+  agents: {
+    ownership: "explicit",
+    defaults: { systemAgent: { agentId: "main" } },
+    entries: { main: {} },
+  },
+};
+
 it("keeps diagnostics available and reports paused cron when partition selection is unresolved", async () => {
   await withOpenClawTestState({ label: "heartbeat-unresolved-partition" }, async (state) => {
-    const cfg: OpenClawConfig = {
-      agents: {
-        ownership: "explicit",
-        defaults: { systemAgent: { agentId: "main" } },
-        entries: { main: {} },
-      },
-    };
     try {
       const storePath = state.path("old-state", "cron", "jobs.json");
       await saveProactiveJobsForTest(storePath, [createDefaultProactiveJob(cfg, "main", 1)]);
@@ -55,25 +56,11 @@ it("keeps diagnostics available and reports paused cron when partition selection
 
 it("reuses the selected partition without rereading its selection and observes committed changes", async () => {
   await withOpenClawTestState({ label: "heartbeat-selected-partition" }, async (state) => {
-    const cfg: OpenClawConfig = {
-      agents: {
-        ownership: "explicit",
-        defaults: { systemAgent: { agentId: "main" } },
-        entries: { main: {} },
-      },
-    };
     const selectedPath = state.statePath("selected", "jobs.json");
     const defaultPath = state.statePath("default", "jobs.json");
-    const selectedJob = {
-      ...createDefaultProactiveJob(cfg, "main", 1),
-      id: "selected-job",
-      name: "Selected partition",
-    };
-    const defaultJob = {
-      ...createDefaultProactiveJob(cfg, "main", 1),
-      id: "default-job",
-      name: "Default partition",
-    };
+    const job = createDefaultProactiveJob(cfg, "main", 1);
+    const selectedJob = { ...job, id: "selected-job", name: "Selected partition" };
+    const defaultJob = { ...job, id: "default-job", name: "Default partition" };
     await saveProactiveJobsForTest(selectedPath, [selectedJob]);
     await saveProactiveJobsForTest(defaultPath, [defaultJob]);
     writeConfigMachineState("cron.store", defaultPath);
@@ -118,23 +105,16 @@ if (!isMainThread) {
       try {
         // Admit the real read worker before measuring its steady-state work.
         await readHeartbeatSummarySnapshot(cfg);
-        const read = async (storePath?: string) => {
+        const expectRead = async (jobs: (typeof job)[], machine: number, storePath?: string) => {
           await fs.writeFile(trace, "");
-          const jobs = await readHeartbeatSummarySnapshot(cfg, storePath);
+          expect(await readHeartbeatSummarySnapshot(cfg, storePath)).toEqual(jobs);
           const buckets = (await fs.readFile(trace, "utf8")).trim().split("\n");
-          return {
-            jobs,
-            counts: {
-              machine: buckets.filter((bucket) => bucket === "machine").length,
-              jobs: buckets.filter((bucket) => bucket === "jobs").length,
-            },
-          };
+          expect(buckets.filter((bucket) => bucket === "machine")).toHaveLength(machine);
+          expect(buckets.filter((bucket) => bucket === "jobs")).toHaveLength(1);
         };
 
-        const selected = await read(selectedPath);
         // One receipt read remains; selecting cron.store would add a second read.
-        expect(selected.counts).toEqual({ machine: 1, jobs: 1 });
-        expect(selected.jobs).toEqual([selectedJob]);
+        await expectRead([selectedJob], 1, selectedPath);
 
         const changedJob = {
           ...selectedJob,
@@ -143,18 +123,11 @@ if (!isMainThread) {
           updatedAtMs: 2,
         };
         await saveCronJobsStore(selectedPath, { version: 1, jobs: [changedJob] });
-        const changed = await read(selectedPath);
-        expect(changed.jobs).toEqual([changedJob]);
-        expect(changed.counts).toEqual({ machine: 1, jobs: 1 });
-
-        const fallback = await read();
-        expect(fallback.jobs).toEqual([defaultJob]);
-        expect(fallback.counts).toEqual({ machine: 2, jobs: 1 });
+        await expectRead([changedJob], 1, selectedPath);
+        await expectRead([defaultJob], 2);
 
         writeConfigMachineState("cron.store", selectedPath);
-        const reselection = await read();
-        expect(reselection.jobs).toEqual([changedJob]);
-        expect(reselection.counts).toEqual({ machine: 2, jobs: 1 });
+        await expectRead([changedJob], 2);
       } finally {
         // Join workers before restoring the preload environment or deleting its files.
         await closeStateDatabaseForTest();
