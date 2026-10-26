@@ -25,6 +25,8 @@ const bindingParams = (credential: AuthProfileStore["profiles"][string]) => ({
 const authConfig = (provider: string, mode: "api_key" | "token") => ({
   auth: { profiles: { [profileId]: { provider, mode } } },
 });
+const accessToken = (accountId: string, signature: string) =>
+  `e30.${Buffer.from(JSON.stringify({ "https://api.openai.com/auth": { chatgpt_account_id: accountId } })).toString("base64url")}.${signature}`;
 
 describe("Codex app-server auth binding", () => {
   afterEach(() => {
@@ -39,7 +41,7 @@ describe("Codex app-server auth binding", () => {
         provider: "openai",
         email: "user@example.com",
         ...(storedAccountId ? { accountId } : {}),
-        access: `e30.${Buffer.from(JSON.stringify({ "https://api.openai.com/auth": { chatgpt_account_id: accountId } })).toString("base64url")}.${rotation}`,
+        access: accessToken(accountId, rotation),
         refresh: `fake-refresh-${rotation}`,
         expires: Date.now() + 60_000,
       });
@@ -70,7 +72,7 @@ describe("Codex app-server auth binding", () => {
   it.each(["api_key", "token"] as const)(
     "prepares %s login only when the selected request config owns the profile",
     async (type) => {
-      const token = `e30.${Buffer.from(JSON.stringify({ "https://api.openai.com/auth": { chatgpt_account_id: "workspace-a" } })).toString("base64url")}.signature`;
+      const token = accessToken("workspace-a", "signature");
       const params = bindingParams(
         type === "api_key"
           ? { type, provider: "openai", key: "work-key" }
@@ -108,16 +110,10 @@ describe("Codex app-server auth binding", () => {
 
     const prepared = await prepareCodexAppServerAuthBinding(params);
     expect(prepared?.authProfileStore).not.toBe(store);
-    expect(prepared?.authProfileStore.profiles[profileId]).toEqual({
-      type: "api_key",
-      provider: "openai",
-      key: "work-key-a",
-    });
-    expect(store.profiles[profileId]).toEqual({
-      type: "api_key",
-      provider: "openai",
-      keyRef,
-    });
+    expect(prepared?.authProfileStore).toEqual(
+      storeWith({ type: "api_key", provider: "openai", key: "work-key-a" }),
+    );
+    expect(store).toEqual(storeWith({ type: "api_key", provider: "openai", keyRef }));
     expect(await fingerprintCodexAppServerAuthBinding(params)).toBe(prepared?.fingerprint);
 
     publishRuntimeKey("work-key-b");

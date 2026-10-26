@@ -1,5 +1,3 @@
-import fs from "node:fs/promises";
-import os from "node:os";
 import path from "node:path";
 import {
   createParameterFreeTool,
@@ -10,6 +8,7 @@ import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { threadStartResult as nativeThreadStartResult } from "./codex-app-server.test-fixtures.js";
 import type { CodexThreadStartParams } from "./protocol.js";
 import { createCodexTestBindingStore } from "./session-binding.test-helpers.js";
+import { useAutoCleanupTempDirTracker } from "./test-support.js";
 import {
   createAppServerOptions as createBaseAppServerOptions,
   createLifecycleRequest,
@@ -20,6 +19,7 @@ import {
 
 let tempDir: string;
 let bindingStore: ReturnType<typeof createCodexTestBindingStore>;
+const tempDirs = useAutoCleanupTempDirTracker(afterEach);
 
 function threadStartResult(threadId = "thread-1", serviceTier: string | null = null) {
   const result = nativeThreadStartResult(threadId, tempDir);
@@ -55,14 +55,13 @@ function createRun(result = () => threadStartResult()) {
   return { request, start, workspaceDir };
 }
 
-beforeEach(async () => {
+beforeEach(() => {
   bindingStore = createCodexTestBindingStore();
-  tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "openclaw-codex-schema-contract-"));
+  tempDir = tempDirs.make("openclaw-codex-schema-contract-");
 });
 
-afterEach(async () => {
+afterEach(() => {
   resetThreadLifecycleTestFixtures();
-  await fs.rm(tempDir, { recursive: true, force: true });
   vi.restoreAllMocks();
 });
 
@@ -105,7 +104,7 @@ it.each([null, "priority"])(
 
 it("treats dynamic tool schema changes as thread-fingerprint changes", async () => {
   let nextThreadId = 1;
-  const { request, start } = createRun(() => threadStartResult(`thread-${nextThreadId++}`));
+  const { start } = createRun(() => threadStartResult(`thread-${nextThreadId++}`));
 
   const permissiveTool = createPermissiveTool("message");
   const tool = {
@@ -113,15 +112,7 @@ it("treats dynamic tool schema changes as thread-fingerprint changes", async () 
     name: permissiveTool.name,
     description: permissiveTool.description,
   };
-  await start([{ ...tool, inputSchema: { type: "object" } }]);
-  await start([{ ...tool, inputSchema: permissiveTool.parameters }]);
-
-  expect(request.mock.calls.map(([method]) => method)).toEqual([
-    "config/read",
-    "configRequirements/read",
-    "thread/start",
-    "config/read",
-    "configRequirements/read",
-    "thread/start",
-  ]);
+  const first = await start([{ ...tool, inputSchema: { type: "object" } }]);
+  const second = await start([{ ...tool, inputSchema: permissiveTool.parameters }]);
+  expect([first.threadId, second.threadId]).toEqual(["thread-1", "thread-2"]);
 });

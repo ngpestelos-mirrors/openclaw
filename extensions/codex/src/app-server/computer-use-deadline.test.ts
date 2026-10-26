@@ -1,15 +1,18 @@
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { installCodexComputerUse } from "./computer-use.js";
 import { createClientHarness } from "./test-support.js";
 
+beforeEach(() => {
+  vi.useFakeTimers({ toFake: ["Date", "performance", "setTimeout", "clearTimeout"] });
+});
 afterEach(() => {
   vi.restoreAllMocks();
   vi.useRealTimers();
 });
 
-describe("Computer Use request deadline", () => {
-  it.each([0, -120_000, 120_000])("keeps its budget with wall-clock offset %i", async (offset) => {
-    vi.useFakeTimers({ toFake: ["Date", "performance", "setTimeout", "clearTimeout"] });
+it.each([0, -120_000, 120_000])(
+  "keeps the request budget with wall-clock offset %i",
+  async (offset) => {
     vi.setSystemTime(1_700_000_000_000);
     let reads = 0;
     vi.spyOn(Date, "now").mockImplementation(
@@ -17,21 +20,12 @@ describe("Computer Use request deadline", () => {
     );
     const harness = createClientHarness();
     const timeouts: Array<number | undefined> = [];
-    let requestSettled = false;
-    let requestError: unknown;
+    const requestSettled = vi.fn<(result: unknown) => void>();
     const originalRequest = harness.client.request.bind(harness.client);
     vi.spyOn(harness.client, "request").mockImplementation((method, params, options) => {
       timeouts.push(options?.timeoutMs);
       const pending = originalRequest(method, params, options);
-      void pending.then(
-        () => {
-          requestSettled = true;
-        },
-        (error: unknown) => {
-          requestSettled = true;
-          requestError = error;
-        },
-      );
+      void pending.then(requestSettled, requestSettled);
       return pending;
     });
     // A written config mutation can keep install retirement waiting for process exit.
@@ -45,9 +39,10 @@ describe("Computer Use request deadline", () => {
       expect(JSON.parse(firstWrite).method).toBe("experimentalFeature/enablement/set");
       expect(timeouts).toEqual([1_000]);
       await vi.advanceTimersByTimeAsync(999);
-      expect(requestSettled).toBe(false);
+      expect(requestSettled).not.toHaveBeenCalled();
       await vi.advanceTimersByTimeAsync(2);
-      expect(requestSettled).toBe(true);
+      expect(requestSettled).toHaveBeenCalledOnce();
+      const requestError = requestSettled.mock.calls[0]?.[0];
       expect(requestError).toBeInstanceOf(Error);
       expect(requestError).toHaveProperty("message", expect.stringContaining("timed out"));
     } finally {
@@ -56,12 +51,11 @@ describe("Computer Use request deadline", () => {
       await vi.advanceTimersByTimeAsync(0);
       await operation;
     }
-  });
-});
-
-describe("Computer Use marketplace discovery deadline", () => {
-  it.each([-120_000, 120_000])("keeps its budget after a %i ms wall-clock step", async (offset) => {
-    vi.useFakeTimers({ toFake: ["Date", "performance", "setTimeout", "clearTimeout"] });
+  },
+);
+it.each([-120_000, 120_000])(
+  "keeps the marketplace discovery budget after a %i ms wall-clock step",
+  async (offset) => {
     const controller = new AbortController();
     const harness = createClientHarness({
       onWrite: (line, send) => {
@@ -80,7 +74,7 @@ describe("Computer Use marketplace discovery deadline", () => {
         });
       },
     });
-    let settled = false;
+    const settled = vi.fn((result: unknown) => result);
     const operation = installCodexComputerUse({
       client: harness.client,
       pluginConfig: { computerUse: { autoInstall: true, marketplaceDiscoveryTimeoutMs: 4_000 } },
@@ -88,10 +82,7 @@ describe("Computer Use marketplace discovery deadline", () => {
       signal: controller.signal,
     })
       .catch((error: unknown) => error)
-      .then((result) => {
-        settled = true;
-        return result;
-      });
+      .then(settled);
     try {
       await vi.advanceTimersByTimeAsync(0);
       expect(
@@ -101,9 +92,9 @@ describe("Computer Use marketplace discovery deadline", () => {
       ).toBe(true);
       vi.setSystemTime(Date.now() + offset);
       await vi.advanceTimersByTimeAsync(3_999);
-      expect(settled).toBe(false);
+      expect(settled).not.toHaveBeenCalled();
       await vi.advanceTimersByTimeAsync(1);
-      expect(settled).toBe(true);
+      expect(settled).toHaveBeenCalledOnce();
       expect(await operation).toMatchObject({
         name: "CodexComputerUseSetupError",
         status: { reason: "marketplace_missing" },
@@ -115,5 +106,5 @@ describe("Computer Use marketplace discovery deadline", () => {
       await vi.advanceTimersByTimeAsync(0);
       await operation;
     }
-  });
-});
+  },
+);

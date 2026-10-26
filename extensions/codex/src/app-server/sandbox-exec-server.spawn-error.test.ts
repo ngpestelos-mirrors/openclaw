@@ -1,13 +1,7 @@
 import { useIsolatedStateGuard } from "openclaw/plugin-sdk/test-env";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-const spawnFault = vi.hoisted(() => {
-  const state: {
-    errors: Error[];
-    close?: () => void;
-  } = { errors: [] };
-  return state;
-});
+const spawnFault = vi.hoisted((): { errors: Error[]; close?: () => void } => ({ errors: [] }));
 
 vi.mock("node:child_process", async (importOriginal) => {
   const actual = await importOriginal<typeof import("node:child_process")>();
@@ -21,9 +15,7 @@ vi.mock("node:child_process", async (importOriginal) => {
       }
       // Node 24/26 returns before assigning any stdio fields on EMFILE/ENFILE.
       const child = new EventEmitter();
-      const error = Object.assign(new Error(`spawn ${args[0]} EMFILE`), {
-        code: "EMFILE",
-      });
+      const error = Object.assign(new Error(`spawn ${args[0]} EMFILE`), { code: "EMFILE" });
       child.once("error", (emitted: Error) => spawnFault.errors.push(emitted));
       spawnFault.close = () => child.emit("close", -constants.errno.EMFILE, null);
       process.nextTick(() => child.emit("error", error));

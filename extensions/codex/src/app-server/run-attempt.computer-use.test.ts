@@ -21,12 +21,10 @@ import { attachSqliteSessionTarget } from "./sqlite-session.test-helpers.js";
 setupRunAttemptTestHooks();
 
 it("routes Computer Use MCP elicitations through the native bridge and cancels the turn", async () => {
+  const response = { action: "accept" as const, content: { approve: true }, _meta: null };
   const bridgeSpy = vi
     .spyOn(elicitationBridge, "routeCodexAppServerElicitationRequest")
-    .mockResolvedValue({
-      kind: "handled",
-      response: { action: "accept", content: { approve: true }, _meta: null },
-    });
+    .mockResolvedValue({ kind: "handled", response: structuredClone(response) });
   const marketplace = { name: "openai-bundled", path: "/marketplaces/openai-bundled" };
   const plugin = pluginSummary("computer-use@openai-bundled", {
     name: "computer-use",
@@ -45,18 +43,14 @@ it("routes Computer Use MCP elicitations through the native bridge and cancels t
       const detail = pluginDetail("computer-use", [], {
         marketplaceName: marketplace.name,
         marketplacePath: marketplace.path,
+        mcpServers: ["computer-use"],
       });
-      Object.assign(detail.plugin, { summary: plugin, mcpServers: ["computer-use"] });
+      detail.plugin.summary = plugin;
       return detail;
     }
     if (method === "mcpServerStatus/list") {
       return {
-        data: [
-          {
-            name: "desktop-control",
-            tools: { "computer-use.get_app_state": {} },
-          },
-        ],
+        data: [{ name: "desktop-control", tools: { "computer-use.get_app_state": {} } }],
         nextCursor: null,
       };
     }
@@ -94,7 +88,7 @@ it("routes Computer Use MCP elicitations through the native bridge and cancels t
       mode: "form",
     },
   });
-  expect(result).toEqual({ action: "accept", content: { approve: true }, _meta: null });
+  expect(result).toEqual(response);
   expect(bridgeSpy.mock.calls[0]?.[0]).toMatchObject({
     threadId: "thread-1",
     turnId: "turn-1",
@@ -109,11 +103,7 @@ it("routes Computer Use MCP elicitations through the native bridge and cancels t
   expect(elicitation.requests.filter(({ method }) => method === "turn/interrupt")).toEqual([
     { method: "turn/interrupt", params: { threadId: "thread-1", turnId: "turn-1" } },
   ]);
-  expect(terminal).toMatchObject({
-    aborted: true,
-    timedOut: false,
-    promptError: null,
-  });
+  expect(terminal).toMatchObject({ aborted: true, timedOut: false, promptError: null });
   expect(
     elicitation.requests.filter(({ method }) => method === "thread/backgroundTerminals/list"),
   ).toEqual([{ method: "thread/backgroundTerminals/list", params: { threadId: "thread-1" } }]);
