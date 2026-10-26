@@ -498,21 +498,22 @@ export async function recoverInterruptedSubagentRow(
     }
     const receipt = entry.execution.restartRecovery;
     let resumeFailure: string | undefined;
-    if (
+    const canResume =
       !legacy &&
       !replayTerminal &&
       !receipt &&
       isRestartInterruptedSubagent(entry) &&
       sessionEntry?.status === "interrupted" &&
-      sessionEntry.lastRunId === runId &&
-      params.gatewayRuntime
-    ) {
+      sessionEntry.lastRunId === runId;
+    if (!legacy && sessionEntry && (replayTerminal || canResume) && params.gatewayRuntime) {
       failedPlacement = await params.gatewayRuntime.prepareFailedWorkerPlacement({
         sessionId: sessionEntry.sessionId,
         sessionKey: childSessionKey,
         agentId: authority.childAgentId,
       });
       resumeFailure = failedPlacement?.reason;
+    }
+    if (canResume && params.gatewayRuntime) {
       if (!failedPlacement && !getUnrestorableSubagentCompletionSourceReason(entry)) {
         // Keep the task and its parent delivery with the registry. Ordinary admission
         // transfers that custody to the continuation before executing any model work.
@@ -634,9 +635,7 @@ export async function recoverInterruptedSubagentRow(
     retainPlacement = failedPlacement !== undefined;
     return {
       status: "terminal",
-      ...(failedPlacement || (replayTerminal && !entry.execution.interruptionReason)
-        ? { terminalStatus: "failed" }
-        : {}),
+      ...(failedPlacement ? { terminalStatus: "failed" } : {}),
       ...(failedPlacement ? { release: failedPlacement.release } : {}),
       recoveryCurrent: {
         isHostCurrent: isRecoveryHostCurrent,

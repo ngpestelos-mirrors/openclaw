@@ -15,11 +15,11 @@ import { resolveGatewaySessionStoreTargetInWorker } from "../../gateway/session-
 import { resolveAgentIdFromSessionKey } from "../../routing/session-key.js";
 import { readRestartRecoveryRequesterSource } from "../requester-run-recovery-source.js";
 import { buildMainSessionRecoverySettlementPatch } from "./main-session-recovery-clear.js";
-import type { MainSessionRecoveryObservation } from "./main-session-recovery-state.js";
 import {
-  commitMainSessionRecovery,
-  type MainSessionRecoveryStoreTarget,
-} from "./main-session-recovery-store.js";
+  transitionMainSessionRecovery,
+  type MainSessionRecoveryObservation,
+} from "./main-session-recovery-state.js";
+import type { MainSessionRecoveryStoreTarget } from "./main-session-recovery-store.js";
 import { resolveRestartRecoveryDeliveryContext } from "./main-session-restart-recovery-delivery.js";
 import {
   mainSessionRecoveryLog,
@@ -347,73 +347,68 @@ export async function tombstoneMainRestartRecoveryWithNotice(params: {
     includeSessionDeliveryFallback: true,
     sessionKey: params.sessionKey,
   });
-  if (!deliveryContext) {
-    // The transcript notice and tombstone share one SQLite transaction so a
-    // foreground takeover cannot leave behind a false terminal notice.
-    const { entry, observation } = params;
-    const recoveryState = entry.mainRestartRecovery;
-    if (
-      !recoveryState ||
-      recoveryState.cycleId !== observation.cycleId ||
-      recoveryState.revision !== observation.revision
-    ) {
-      return "skipped";
-    }
-    const now = Date.now();
-    const result = await appendAssistantMessageToSessionTranscript({
-      ...params,
-      expectedSessionState: buildRestartRecoveryExpectedState(entry, observation),
-      sessionLifecyclePatch: {
-        abortedLastRun: false,
-        endedAt: now,
-        lifecycleRunId: undefined,
-        lastRunId: resolveRestartRecoveryTerminalClientRunId(entry),
-        mainRestartRecovery: {
-          ...recoveryState,
-          revision: recoveryState.revision + 1,
-          tombstone: { reason: params.reason },
-        },
-        runtimeMs: Math.max(0, now - (entry.startedAt ?? now)),
-        status: "failed",
-        updatedAt: now,
-      },
-      expectedSessionId: entry.sessionId,
-      text: buildTombstonedSessionNotice(params.reason),
-      idempotencyKey: buildRestartRecoveryTombstoneNoticeKey(entry),
-    }).catch((error: unknown) => ({ ok: false as const, reason: String(error) }));
-    if (!result.ok) {
-      mainSessionRecoveryLog.warn(
-        `failed to write restart recovery tombstone notice ${params.sessionKey}: ${result.reason}`,
-      );
-    }
-    return result.ok ? "tombstoned" : "notice_failed";
-  }
-  const claim = await commitMainSessionRecovery({
-    command: {
-      kind: "tombstone",
-      now: Date.now(),
-      observation: params.observation,
-      reason: params.reason,
-    },
-    requireWriteSuccess: true,
-    assertCommitAllowed: params.assertCurrent,
-    target: params,
+  const { entry, observation } = params;
+  const tombstoned = { ...entry };
+  const transition = transitionMainSessionRecovery(tombstoned, {
+    kind: "tombstone",
+    now: Date.now(),
+    observation,
+    reason: params.reason,
   });
-  if (claim.transition.kind !== "tombstoned" || !claim.entry) {
+  if (transition.kind !== "tombstoned") {
     return "skipped";
+  }
+  const pending = entry.pendingFinalDelivery;
+  const retirePending =
+    pending?.kind === "replayable" && !pending.intentId && !pending.deliveries?.length;
+  const capturedReply = retirePending ? stripInternalMetadataForDisplay(pending.text).trim() : "";
+  // Save an ownerless final with the tombstone before retiring its replay marker.
+  // Identified delivery remains with its owner; a new turn cannot discard it.
+  const result = await appendAssistantMessageToSessionTranscript({
+    ...params,
+    expectedSessionState: {
+      ...buildRestartRecoveryExpectedState(entry, observation),
+      pendingFinalDelivery: pending ?? null,
+    },
+    sessionLifecyclePatch: {
+      abortedLastRun: tombstoned.abortedLastRun,
+      endedAt: tombstoned.endedAt,
+      lifecycleRunId: tombstoned.lifecycleRunId,
+      lastRunId: tombstoned.lastRunId,
+      mainRestartRecovery: tombstoned.mainRestartRecovery,
+      pendingFinalDelivery: retirePending ? undefined : pending,
+      runtimeMs: tombstoned.runtimeMs,
+      status: tombstoned.status,
+      updatedAt: tombstoned.updatedAt,
+    },
+    expectedSessionId: entry.sessionId,
+    text:
+      buildTombstonedSessionNotice(params.reason) +
+      (capturedReply ? `\n\nSaved reply (delivery unconfirmed):\n${capturedReply}` : ""),
+    idempotencyKey: buildRestartRecoveryTombstoneNoticeKey(entry),
+  }).catch((error: unknown) => ({ ok: false as const, reason: String(error) }));
+  if (!result.ok) {
+    mainSessionRecoveryLog.warn(
+      `failed to write restart recovery tombstone notice ${params.sessionKey}: ${result.reason}`,
+    );
+    return "notice_failed";
+  }
+  if (!deliveryContext) {
+    return "tombstoned";
   }
   mainSessionRecoveryLog.warn(
     `tombstoned main-session restart recovery: ${params.sessionKey} (${params.reason})`,
   );
   const { gatewayRuntime, reason, sessionKey } = params;
   try {
+    params.assertCurrent?.();
     await gatewayRuntime.sendRecoveryNotice({
       channel: deliveryContext.channel,
       to: deliveryContext.to,
       accountId: deliveryContext.accountId,
       threadId: deliveryContext.threadId,
       text: buildTombstonedSessionNotice(reason),
-      idempotencyKey: buildRestartRecoveryTombstoneNoticeKey(claim.entry),
+      idempotencyKey: buildRestartRecoveryTombstoneNoticeKey(tombstoned),
     });
     mainSessionRecoveryLog.info(
       `sent restart recovery tombstone notice: ${sessionKey} (${reason})`,

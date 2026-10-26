@@ -155,11 +155,19 @@ try {
       preparedEntries,
       handledSessionKeys: new Set(),
     });
+  const countRows = (entries: Awaited<ReturnType<typeof read>>) => ({
+    retained: entries.length,
+    archived: entries.filter(({ entry }) => entry.archivedAt !== undefined).length,
+  });
+  const seededRows = countRows(await read());
+  assert.equal(seededRows.retained, retained, "fixture must persist every retained row");
   if (warmup) {
     await recover(
       (await read()).filter(({ sessionKey }) => Number(sessionKey.split("-").at(-1)) < warmup),
     );
   }
+  const warmedRows = countRows(await read());
+  assert.equal(warmedRows.retained, retained, "warmup must retain the full fixture");
   global.gc();
   dispatches = placementObservations = 0;
   const memoryBefore = process.memoryUsage();
@@ -188,6 +196,8 @@ try {
   const allocated = (node: HeapProfiler.SamplingHeapProfileNode): number =>
     node.selfSize + node.children.reduce((sum, child) => sum + allocated(child), 0);
   const allocatedBytes = profile ? allocated(profile.head) : undefined;
+  const settledRows = countRows(await read());
+  assert.equal(settledRows.retained, retained, "both recovery passes must retain the full fixture");
   assert.equal(dispatches, iterations * expectedDispatches);
   assert.equal(dispatches, firstBootDispatches, "second boot must not dispatch again");
   assert.equal(firstBoot.failed, 0);
@@ -202,6 +212,8 @@ try {
   );
   assert(settled.pendingFinalDelivery?.kind === "replayable" || transcript.includes(savedAnswer));
   if (expectedDispatches === 0) {
+    assert.equal(settled.pendingFinalDelivery, undefined, "failed recovery must not block Resume");
+    assert(transcript.includes(savedAnswer), "saved answer must survive terminal settlement");
     assert.equal(transcript.split(reason).length, 2, "one persisted failure notice");
   }
   console.log(
@@ -212,6 +224,11 @@ try {
       host: hostname(),
       node: process.version,
       retained,
+      actualRows: {
+        seeded: seededRows,
+        warmed: warmedRows,
+        settled: settledRows,
+      },
       iterations,
       warmup,
       allocationSampling: values.allocations,

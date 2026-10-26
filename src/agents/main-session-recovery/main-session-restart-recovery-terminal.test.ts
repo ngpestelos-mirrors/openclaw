@@ -84,7 +84,7 @@ it("does not replay a terminally failed legacy pending final on the next boot", 
   });
 });
 
-it.each([false, true])(
+it.each(["none", "local", "channel"] as const)(
   "records a failed worker placement once across two restarts (saved final=%s)",
   async (savedFinal) => {
     await withOpenClawTestState({ label: "failed-placement-recovery" }, async (state) => {
@@ -98,15 +98,18 @@ it.each([false, true])(
       await replaceSessionEntry(target, {
         sessionId: "failed-worker-session",
         updatedAt: 100,
-        status: savedFinal ? "failed" : "interrupted",
+        status: savedFinal !== "none" ? "failed" : "interrupted",
         abortedLastRun: true,
         mainRestartRecovery: { cycleId: "failed-placement-cycle", revision: 1, chargedAttempts: 0 },
-        ...(savedFinal
+        ...(savedFinal !== "none"
           ? {
               pendingFinalDelivery: {
                 kind: "replayable" as const,
                 text: "Retained answer",
                 createdAt: 100,
+                ...(savedFinal === "channel"
+                  ? { context: { channel: "telegram", to: "synthetic-recipient" } }
+                  : {}),
               },
             }
           : {}),
@@ -119,13 +122,14 @@ it.each([false, true])(
         throw new Error("failed placement recovery must not wait or deliver");
       };
       const release = vi.fn();
+      const sendRecoveryNotice = vi.fn(async () => ({ suppressed: false }));
       const gatewayRuntime: GatewayRecoveryRuntime = {
         prepareRestartRecovery: () => undefined,
         prepareFailedWorkerPlacement: async () => ({ reason, isCurrent: () => true, release }),
         dispatchAgent: async <T>() => (await dispatch()) as T,
         dispatchSessionMethod: unexpectedCall,
         waitForAgent: unexpectedCall,
-        sendRecoveryNotice: unexpectedCall,
+        sendRecoveryNotice,
         resumeChatInput: unexpectedCall,
       };
       for (let boot = 0; boot < 2; boot++) {
@@ -145,14 +149,15 @@ it.each([false, true])(
         });
       }
       expect(release).toHaveBeenCalledOnce();
+      expect(sendRecoveryNotice).toHaveBeenCalledTimes(savedFinal === "channel" ? 1 : 0);
       const transcript = JSON.stringify(
         await loadTranscriptEvents({ ...target, sessionId: "failed-worker-session" }),
       );
       expect(transcript.split(reason)).toHaveLength(2);
-      if (savedFinal) {
-        expect(loadSessionEntry(target)?.pendingFinalDelivery).toMatchObject({
-          text: "Retained answer",
-        });
+      expect(loadSessionEntry(target)?.pendingFinalDelivery).toBeUndefined();
+      if (savedFinal !== "none") {
+        expect(transcript).toContain("Saved reply (delivery unconfirmed)");
+        expect(transcript).toContain("Retained answer");
       }
     });
   },
