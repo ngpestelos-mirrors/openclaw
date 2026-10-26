@@ -198,7 +198,10 @@ export async function settleTerminalPendingFinalRecovery(
 
 /** A terminal placement settles the saved turn without entering a worker dispatch lane. */
 export async function settleFailedWorkerRestartRecovery(
-  params: Omit<Parameters<typeof tombstoneMainRestartRecoveryWithNotice>[0], "reason"> & {
+  params: Omit<
+    Parameters<typeof tombstoneMainRestartRecoveryWithNotice>[0],
+    "reason" | "retireOwnerlessFinal"
+  > & {
     placementSessionKey: string;
     shouldContinue?: () => boolean;
   },
@@ -220,6 +223,7 @@ export async function settleFailedWorkerRestartRecovery(
     const outcome = await tombstoneMainRestartRecoveryWithNotice({
       ...params,
       reason: placement.reason,
+      retireOwnerlessFinal: true,
       assertCurrent,
     });
     if (outcome === "tombstoned") {
@@ -337,6 +341,7 @@ export async function tombstoneMainRestartRecoveryWithNotice(params: {
   gatewayRuntime: GatewayRecoveryRuntime;
   observation: MainSessionRecoveryObservation;
   reason: string;
+  retireOwnerlessFinal?: true;
   sessionKey: string;
   storePath: string;
   assertCurrent?: () => void;
@@ -360,9 +365,13 @@ export async function tombstoneMainRestartRecoveryWithNotice(params: {
   }
   const pending = entry.pendingFinalDelivery;
   const retirePending =
-    pending?.kind === "replayable" && !pending.intentId && !pending.deliveries?.length;
+    params.retireOwnerlessFinal === true &&
+    pending?.kind === "replayable" &&
+    !pending.intentId &&
+    !pending.deliveries?.length;
   const capturedReply = retirePending ? stripInternalMetadataForDisplay(pending.text).trim() : "";
-  // Save an ownerless final with the tombstone before retiring its replay marker.
+  // Failed placements save an ownerless final before retiring its replay marker.
+  // Other tombstones retain the saved delivery obligation.
   // Identified delivery remains with its owner; a new turn cannot discard it.
   const result = await appendAssistantMessageToSessionTranscript({
     ...params,

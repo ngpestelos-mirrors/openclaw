@@ -1,6 +1,6 @@
 import fs from "node:fs/promises";
 import path from "node:path";
-import { afterEach, expect, it, vi } from "vitest";
+import { afterAll, afterEach, beforeAll, expect, it, vi } from "vitest";
 import { createQaGatewayChild } from "../../../../extensions/qa-lab/api.js";
 import {
   GATEWAY_CLIENT_MODES,
@@ -31,6 +31,43 @@ import {
 } from "./gateway-node-mcp.test-support.js";
 
 const tempDirs = useAutoCleanupTempDirTracker(afterEach);
+const owner = createQaGatewayChild();
+let gateway: GatewayHandle;
+
+// Gateway bootstrap has its own hook budget; the test measures node routing.
+beforeAll(async () => {
+  const repoRoot = process.cwd();
+  gateway = await owner.start({
+    repoRoot,
+    command: {
+      executablePath: process.execPath,
+      argsPrefix: ["dist/index.js"],
+      cwd: repoRoot,
+      usePackagedPlugins: true,
+    },
+    transportBaseUrl: "http://127.0.0.1",
+    controlUiEnabled: false,
+    runtimeEnvPatch: {
+      OPENCLAW_SKIP_CHANNELS: "1",
+      OPENCLAW_SKIP_PROVIDERS: "1",
+      OPENCLAW_TEST_MINIMAL_GATEWAY: "1",
+    },
+    mutateConfig: (cfg) => ({
+      ...cfg,
+      plugins: { enabled: false },
+      gateway: {
+        ...cfg.gateway,
+        nodes: {
+          ...cfg.gateway?.nodes,
+          commands: { allow: ["system.run", "system.run.prepare", "canvas.present"] },
+          pairing: { autoApproveLocal: false, sshVerify: false },
+        },
+      },
+    }),
+  });
+});
+
+afterAll(() => stopQaGatewayFixture(owner));
 
 function quotePath(value: string): string {
   return process.platform === "win32" ? `"${value}"` : `'${value.replaceAll("'", "'\\''")}'`;
@@ -40,9 +77,7 @@ it(
   "exec routes real commands only to an eligible selected node",
   { timeout: TEST_TIMEOUT_MS },
   async () => {
-    const repoRoot = process.cwd();
     const root = tempDirs.make("openclaw-node-exec-routing-");
-    const owner = createQaGatewayChild();
     const children: CapturedChild[] = [];
     const canvasClients: GatewayClient[] = [];
     const probe = path.join(root, "probe.mjs");
@@ -65,7 +100,7 @@ it(
     const effects = (home: string) => fs.readFile(path.join(home, "exec-proof.txt"), "utf8");
     const nodeInvokes = () => requests.mock.calls.filter(([method]) => method === "node.invoke");
 
-    async function startExecutor(gateway: GatewayHandle, label: string) {
+    async function startExecutor(targetGateway: GatewayHandle, label: string) {
       const nodeRoot = path.join(root, label);
       const home = path.join(nodeRoot, "home");
       const state = path.join(nodeRoot, "state");
@@ -84,20 +119,20 @@ it(
           OPENCLAW_HOME: home,
           OPENCLAW_STATE_DIR: state,
           OPENCLAW_CONFIG_PATH: config,
-          OPENCLAW_GATEWAY_TOKEN: gateway.token,
+          OPENCLAW_GATEWAY_TOKEN: targetGateway.token,
           OPENCLAW_SKIP_CHANNELS: "1",
           OPENCLAW_SKIP_PROVIDERS: "1",
         },
       });
-      const port = Number(new URL(gateway.baseUrl).port);
+      const port = Number(new URL(targetGateway.baseUrl).port);
       const first = startNodeProcess(port, env);
       children.push(first);
-      const nodeId = await approvePairing(gateway, "device");
+      const nodeId = await approvePairing(targetGateway, "device");
       await stopChild(first);
       const child = startNodeProcess(port, env);
       children.push(child);
-      await approvePairing(gateway, "node", nodeId);
-      const node = await waitForNode(gateway, nodeId);
+      await approvePairing(targetGateway, "node", nodeId);
+      const node = await waitForNode(targetGateway, nodeId);
       if (!node.displayName) {
         throw new Error("Node fixture omitted its display name");
       }
@@ -106,34 +141,6 @@ it(
 
     await runQaGatewayFixture(
       async () => {
-        const gateway = await owner.start({
-          repoRoot,
-          command: {
-            executablePath: process.execPath,
-            argsPrefix: ["dist/index.js"],
-            cwd: repoRoot,
-            usePackagedPlugins: true,
-          },
-          transportBaseUrl: "http://127.0.0.1",
-          controlUiEnabled: false,
-          runtimeEnvPatch: {
-            OPENCLAW_SKIP_CHANNELS: "1",
-            OPENCLAW_SKIP_PROVIDERS: "1",
-            OPENCLAW_TEST_MINIMAL_GATEWAY: "1",
-          },
-          mutateConfig: (cfg) => ({
-            ...cfg,
-            plugins: { enabled: false },
-            gateway: {
-              ...cfg.gateway,
-              nodes: {
-                ...cfg.gateway?.nodes,
-                commands: { allow: ["system.run", "system.run.prepare", "canvas.present"] },
-                pairing: { autoApproveLocal: false, sshVerify: false },
-              },
-            },
-          }),
-        });
         const callerHome = path.join(root, "caller");
         const callerState = path.join(callerHome, "state");
         const callerConfig = path.join(callerHome, "openclaw.json");
@@ -268,7 +275,6 @@ it(
           throw new AggregateError(errors, "Node routing fixture cleanup failed");
         }
       },
-      () => stopQaGatewayFixture(owner),
       () => requests.mockRestore(),
       () => closeOpenClawStateDatabaseForTest(),
       () => clearRuntimeConfigSnapshot(),
