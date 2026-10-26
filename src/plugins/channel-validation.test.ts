@@ -1,6 +1,7 @@
 import { expect, it } from "vitest";
 import { getChatChannelMeta } from "../channels/chat-meta.js";
 import type { ChannelPlugin } from "../channels/plugins/types.public.js";
+import { channelFixture } from "./registry-registration.test-support.js";
 import { createTestPluginRegistry } from "./registry-runtime.test-helpers.js";
 import { createPluginRecord } from "./status.test-fixtures.js";
 
@@ -24,14 +25,7 @@ function createChannelRegistry(pluginId = "demo-plugin", source = "/tmp/demo/ind
 function createChannelPlugin(overrides?: Partial<ChannelPlugin>): ChannelPlugin {
   return {
     id: "demo",
-    meta: {
-      id: "demo",
-      label: "Demo",
-      selectionLabel: "Demo",
-      docsPath: "/channels/demo",
-      blurb: "demo channel",
-    },
-    capabilities: { chatTypes: ["direct"] },
+    ...channelFixture("demo", "Demo"),
     config: {
       listAccountIds: () => [],
       resolveAccount: () => ({ accountId: "default" }),
@@ -76,10 +70,8 @@ it("fills official external channel aliases omitted by the runtime plugin", () =
   const normalized = register({
     id: "openclaw-weixin",
     meta: {
-      id: "openclaw-weixin",
-      label: "openclaw-weixin",
+      ...channelFixture("openclaw-weixin").meta,
       selectionLabel: "openclaw-weixin (long-poll)",
-      docsPath: "/channels/openclaw-weixin",
       blurb: "Weixin channel",
     },
   });

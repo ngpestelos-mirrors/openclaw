@@ -68,24 +68,20 @@ describe("createProviderApiKeyAuthMethod", () => {
   });
 
   it.each([
-    {
-      name: "applies a key-scoped default model during non-interactive auth",
-      resolveDefaultModel: async () => "example/enabled-model",
-      expected: { primary: "example/enabled-model" },
-    },
-    {
-      name: "falls back to the static model when discovery fails",
-      resolveDefaultModel: async () => {
+    [
+      "uses discovered model",
+      async () => "example/enabled-model",
+      { primary: "example/enabled-model" },
+    ],
+    [
+      "falls back on discovery failure",
+      async () => {
         throw new Error("catalog unavailable");
       },
-      expected: { primary: "example/static-model" },
-    },
-    {
-      name: "leaves the model unset when discovery finds no safe default",
-      resolveDefaultModel: async () => undefined,
-      expected: undefined,
-    },
-  ])("$name", async ({ resolveDefaultModel, expected }) => {
+      { primary: "example/static-model" },
+    ],
+    ["leaves model unset without a safe default", async () => undefined, undefined],
+  ] as const)("%s", async (_name, resolveDefaultModel, expected) => {
     const resolve = vi.fn(resolveDefaultModel);
     const ctx = context();
     const config = await discoveredMethod(resolve).runNonInteractive?.(ctx);

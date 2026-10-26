@@ -20,7 +20,7 @@ describe.skipIf(!useNodeModuleHooks())("plugin generation demanded work", () => 
         ]),
       ),
     });
-    const write = vi.spyOn(fs, "writeFileSync");
+    using write = vi.spyOn(fs, "writeFileSync");
     const plugin = host(root).load("entry.ts") as {
       resolve(): string;
       read(): Promise<{ value: number }>;
@@ -32,19 +32,15 @@ describe.skipIf(!useNodeModuleHooks())("plugin generation demanded work", () => 
           path.basename(path.dirname(filename)).startsWith(".source-") &&
           content === "",
       );
-    try {
-      expect(placeholders()).toHaveLength(1);
-      const resolved = plugin.resolve();
-      expect(fs.existsSync(resolved)).toBe(true);
-      expect(fs.readFileSync(resolved, "utf8")).toBe("");
-      expect(plugin.resolve()).toBe(resolved);
-      expect(placeholders()).toHaveLength(2);
-      await expect(plugin.read()).resolves.toMatchObject({ value: 42 });
-      expect(plugin.resolve()).toBe(resolved);
-      expect(placeholders()).toHaveLength(2);
-    } finally {
-      write.mockRestore();
-    }
+    expect(placeholders()).toHaveLength(1);
+    const resolved = plugin.resolve();
+    expect(fs.existsSync(resolved)).toBe(true);
+    expect(fs.readFileSync(resolved, "utf8")).toBe("");
+    expect(plugin.resolve()).toBe(resolved);
+    expect(placeholders()).toHaveLength(2);
+    await expect(plugin.read()).resolves.toMatchObject({ value: 42 });
+    expect(plugin.resolve()).toBe(resolved);
+    expect(placeholders()).toHaveLength(2);
   });
 
   it("compiles sync and async TypeScript with only the selected Jiti transformer", async () => {
@@ -56,7 +52,7 @@ describe.skipIf(!useNodeModuleHooks())("plugin generation demanded work", () => 
     });
     // oxlint-disable-next-line typescript/unbound-method -- retain the intercepted receiver below.
     const originalRequire = Module.prototype.require;
-    const guard = vi.spyOn(Module.prototype, "require").mockImplementation(function (
+    using _ = vi.spyOn(Module.prototype, "require").mockImplementation(function (
       this: NodeJS.Module,
       id: string,
     ) {
@@ -65,18 +61,13 @@ describe.skipIf(!useNodeModuleHooks())("plugin generation demanded work", () => 
       }
       return originalRequire.call(this, id);
     });
-    try {
-      const plugin = host(root).load("entry.ts") as {
-        required: string;
-        shadowed: string;
-        read(): Promise<{ value: number }>;
-      };
-      expect(plugin.required).toBe(path.sep);
-      expect(plugin.shadowed).toBe("label");
-      await expect(plugin.read()).resolves.toMatchObject({ value: 43 });
-    } finally {
-      guard.mockRestore();
-    }
+    const plugin = host(root).load("entry.ts") as {
+      required: string;
+      shadowed: string;
+      read(): Promise<{ value: number }>;
+    };
+    expect(plugin).toMatchObject({ required: path.sep, shadowed: "label" });
+    await expect(plugin.read()).resolves.toMatchObject({ value: 43 });
   });
 
   it("reuses captured package metadata while new local demands still resolve dependencies", () => {
@@ -95,17 +86,13 @@ describe.skipIf(!useNodeModuleHooks())("plugin generation demanded work", () => 
       directory: string;
       read(name: string): number;
     };
-    const read = vi.spyOn(fs, "readFileSync");
-    try {
-      expect(plugin.read("./first.cjs")).toBe(41);
-      expect(plugin.read("./second.cjs")).toBe(42);
-      expect(
-        read.mock.calls.filter(
-          ([filename]) => filename === path.join(plugin.directory, "package.json"),
-        ),
-      ).toHaveLength(0);
-    } finally {
-      read.mockRestore();
-    }
+    using read = vi.spyOn(fs, "readFileSync");
+    expect(plugin.read("./first.cjs")).toBe(41);
+    expect(plugin.read("./second.cjs")).toBe(42);
+    expect(
+      read.mock.calls.filter(
+        ([filename]) => filename === path.join(plugin.directory, "package.json"),
+      ),
+    ).toHaveLength(0);
   });
 });

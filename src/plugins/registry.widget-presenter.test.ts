@@ -14,12 +14,13 @@ afterEach(resetPluginRuntimeStateForTest);
 
 function currentPresenter(
   description: string,
+  channel?: string,
 ): Extract<WidgetPresenter, { target: "current_channel" }> {
   return {
     target: "current_channel",
     description,
     capabilities: { sourceKinds: ["html"] },
-    match: () => true,
+    match: (context) => channel === undefined || context.messageChannel === channel,
     availability: async () => ({ ok: true, value: { available: true } }),
     present: async () => ({ ok: false, error: { code: "unavailable", message: "not used" } }),
   };
@@ -53,11 +54,7 @@ describe("plugin widget presenter registry", () => {
         const presenter =
           target === "node_panel"
             ? panel
-            : {
-                ...currentPresenter(`Present through ${id}`),
-                match: (context: Parameters<WidgetPresenter["availability"]>[0]) =>
-                  context.messageChannel === id.split("-")[0],
-              };
+            : currentPresenter(`Present through ${id}`, id.split("-")[0]);
         register({ id }, (api) => api.registerWidgetPresenter(presenter));
       }
       if (target === "current_channel") {
