@@ -1,17 +1,12 @@
 /* @vitest-environment jsdom */
 import { createSignal } from "solid-js";
 import { expect, it, vi } from "vitest";
-import {
-  createGatewayHarness,
-  createTestSessionCapability,
-} from "../../lib/sessions/session-capability.test-support.ts";
-import { createTestGatewayClient } from "../../test-helpers/gateway-client.ts";
 import { mountSolid } from "../../test-helpers/mount-solid.ts";
 import { waitForSolid } from "../../test-helpers/solid-settle.ts";
 import { createComposerControlsFixture } from "./chat-composer.test-support.ts";
 import type { ChatHistoryResult } from "./chat-history-snapshot.ts";
-import { createTestPageState } from "./chat-page-state.test-support.ts";
 import { ChatPaneModelControl } from "./chat-pane-model-control.tsx";
+import { makeChatPageHost } from "./chat-pending-inputs.test-support.ts";
 import { refreshPageChat, retireChatMetadataRequests } from "./chat-state-refresh.ts";
 import { cacheChatSessionSnapshot, readChatSessionSnapshot } from "./session-message-cache.ts";
 
@@ -25,16 +20,9 @@ it.each([true, false])(
       models: [saved, { id: "default", provider: "openai", name: "Default model" }],
     };
     const history = Promise.withResolvers<ChatHistoryResult>();
-    const client = createTestGatewayClient(async (method) =>
-      method === "models.list" ? catalog : method === "chat.startup" ? history.promise : {},
-    );
-    const harness = createGatewayHarness(client);
-    const sessions = createTestSessionCapability(harness.gateway, "main");
-    const state = createTestPageState({
-      client,
-      sessions,
+    const state = makeChatPageHost({
+      requestHandlers: { "models.list": catalog, "chat.startup": () => history.promise },
       sessionKey,
-      connected: true,
       assistantAgentId: "main",
       agentsList: {
         defaultId: "main",
@@ -42,7 +30,6 @@ it.each([true, false])(
         scope: "per-sender",
         agents: [{ id: "main", model: { primary: inherited ? "openai/saved" : "openai/default" } }],
       },
-      chatMessagesBySession: new Map(),
     });
     const composer = () =>
       readChatSessionSnapshot(state.chatMessagesBySession, state, { sessionKey })?.composer;
@@ -83,7 +70,7 @@ it.each([true, false])(
       await vi.waitFor(() => expect(composer()?.name).toBe("Saved model"));
     } finally {
       retireChatMetadataRequests(state);
-      sessions.dispose();
+      state.sessions.dispose();
     }
   },
 );

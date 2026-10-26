@@ -4,6 +4,7 @@ import { afterEach, expect, it } from "vitest";
 import type { QuestionPrompt } from "../../app/question-prompt.ts";
 import { mountSolid } from "../../test-helpers/solid-render.tsx";
 import { createComposerQuestionPrompt } from "./chat-composer.test-support.ts";
+import { message } from "./chat-thread-fixtures.test-support.ts";
 import { buildItems } from "./chat-thread.test-support.ts";
 import { resetChatThreadState } from "./chat-thread.ts";
 import { coalesceStreamRuns } from "./chat-turn-presentation.ts";
@@ -12,15 +13,6 @@ import { ChatQuestionSummary } from "./components/chat-question-summary.tsx";
 function prompt(status: QuestionPrompt["status"]): QuestionPrompt {
   return {
     ...createComposerQuestionPrompt("question-1", "Which format?"),
-    questions: [
-      {
-        questionId: "format",
-        header: "Format",
-        question: "Which format?",
-        options: [{ label: "Compact" }, { label: "Detailed" }],
-        isOther: true,
-      },
-    ],
     sessionKey: "agent:main:main",
     runId: "run-question",
     expiresAtMs: 60_000,
@@ -44,22 +36,14 @@ it("keeps a pending question out of the message stream", () => {
   const result = coalesceStreamRuns(items(prompt("pending"), true));
   const run = result.find((item) => item.kind === "stream-run");
 
-  expect(run?.kind).toBe("stream-run");
-  expect(run?.kind === "stream-run" ? run.parts.map((part) => part.kind) : []).toEqual([
-    "reading-indicator",
-  ]);
+  expect(run).toMatchObject({ kind: "stream-run", parts: [{ kind: "reading-indicator" }] });
 });
 
 it("keeps a terminal question between the surrounding transcript turns", () => {
   const result = items(prompt("answered"), false, [
-    {
-      role: "user",
-      content: "First prompt",
-      timestamp: 900,
-      __openclaw: { idempotencyKey: "run-question:user" },
-    },
-    { role: "assistant", content: "First reply", timestamp: 1_300 },
-    { role: "user", content: "Next prompt", timestamp: 2_000 },
+    message("user", "First prompt", 900, { __openclaw: { idempotencyKey: "run-question:user" } }),
+    message("assistant", "First reply", 1_300),
+    message("user", "Next prompt", 2_000),
   ]);
 
   expect(result.map((item) => (item.kind === "group" ? item.role : item.kind))).toEqual([
@@ -71,20 +55,20 @@ it("keeps a terminal question between the surrounding transcript turns", () => {
 });
 
 it.each([
-  ["answered", "Compact"],
+  ["answered", "Yes"],
   ["cancelled", "Skipped"],
   ["expired", "Expired"],
   ["unavailable", "Unavailable"],
 ] as const)("keeps the full question with its %s outcome", (status, outcome) => {
   const question = prompt(status);
   question.answeredElsewhere = true;
-  question.answers = { answers: { format: ["Compact"] } };
+  question.answers = { answers: { choice: ["Yes"] } };
   const container = document.createElement("div");
 
   mountSolid(ChatQuestionSummary, { prompt: question }, container);
   expect(
     container.querySelector(".chat-question-summary")?.textContent?.replace(/\s+/g, " "),
-  ).toContain(`Which format? Format: ${outcome}`);
+  ).toContain(`Which format? Choice: ${outcome}`);
   expect(container.querySelector(".chat-question-panel")).toBeNull();
 });
 

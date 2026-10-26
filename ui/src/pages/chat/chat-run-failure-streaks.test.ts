@@ -21,6 +21,8 @@ const message = (key: string, value: unknown): ChatItem => ({
   key,
   message: value,
 });
+const internalUpdate = (kind: string) =>
+  message(kind, { role: "user", content: "Update", provenance: { kind } });
 const summary = "Rate-limit recovery stopped";
 const persistedFailure = (runId: string, seq: number) => ({
   role: "custom",
@@ -33,16 +35,8 @@ it("keeps only the latest identical failure across internal updates and interrup
   const first = failure("first");
   const latest = failure("latest");
   const updates: ChatItem[] = [
-    message("agent-update", {
-      role: "user",
-      content: "Agent update",
-      provenance: { kind: "inter_session" },
-    }),
-    message("internal", {
-      role: "user",
-      content: "Retry prompt",
-      provenance: { kind: "internal_system" },
-    }),
+    internalUpdate("inter_session"),
+    internalUpdate("internal_system"),
     message("tool", {
       role: "user",
       content: [{ type: "tool_result", content: "Interrupted" }],

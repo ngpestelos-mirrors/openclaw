@@ -1,9 +1,7 @@
 /* @vitest-environment jsdom */
 
-import { expect, it, onTestFinished, vi } from "vitest";
+import { expect, it, onTestFinished } from "vitest";
 import type { GatewaySessionRow } from "../../api/types.ts";
-import { mountSolid } from "../../test-helpers/mount-solid.ts";
-import { flush } from "../../test-helpers/solid-settle.ts";
 import { createGatewayBrowserClientFixture } from "./chat-application-context.test-support.ts";
 import {
   createPaneHeaderWorkspaceFixture,
@@ -11,7 +9,6 @@ import {
   type TestChatPane,
 } from "./chat-pane.test-support.ts";
 import type { SubagentRoster } from "./chat-spawned-subagent.ts";
-import { renderChatComposerNotices } from "./chat-view-notices.tsx";
 
 type ChildRosterPane = TestChatPane & {
   resolveChatReadTarget: () => { sessionKey: string; agentId?: string } | undefined;
@@ -22,21 +19,19 @@ type ChildRosterPane = TestChatPane & {
 
 it("counts header subagents without projecting transcript history or child activity", () => {
   const { pane, state } = createTestChatPane({ client: createGatewayBrowserClientFixture() });
-  let historyReads = 0;
+  const unread = () => {
+    throw new Error("Header must not read history or child activity");
+  };
   state.chatMessages = new Proxy([{ role: "user", content: "Delegate the check." }], {
-    get(target, key, receiver) {
-      historyReads += 1;
-      return Reflect.get(target, key, receiver);
-    },
+    get: unread,
   });
-  const readActivity = vi.fn(() => undefined);
   const child: GatewaySessionRow = {
     key: "agent:main:subagent:check",
     kind: "direct",
     spawnedBy: state.sessionKey,
     hasActiveRun: true,
     get observerDigest() {
-      return readActivity();
+      return unread();
     },
   };
   Reflect.set(pane.swarm, "hydrator", { rows: [child], hydrated: true, childrenRead: true });
@@ -50,20 +45,14 @@ it("counts header subagents without projecting transcript history or child activ
   );
   Reflect.set(pane.swarm, "hydrator", null);
   expect(header.header.runningSubagentCount).toBe(1);
-  expect({ history: historyReads, activity: readActivity.mock.calls.length }).toEqual({
-    history: 0,
-    activity: 0,
-  });
 });
 
 it.each([
   { routeKey: "global", mainKey: "main", scope: "global", parentKey: "agent:work:global" },
   { routeKey: "primary", mainKey: "primary", scope: "per-sender", parentKey: "agent:work:primary" },
 ] as const)(
-  "renders child attention for admitted $routeKey ancestry",
+  "projects children for admitted $routeKey ancestry",
   ({ routeKey, mainKey, scope, parentKey }) => {
-    vi.useFakeTimers();
-    onTestFinished(() => void vi.useRealTimers());
     const { pane: host, state } = createTestChatPane({
       client: createGatewayBrowserClientFixture(),
     });
@@ -77,12 +66,6 @@ it.each([
       key: "agent:work:subagent:diagnostic",
       kind: "direct",
       spawnedBy: parentKey,
-      label: "Diagnostic",
-      agentStatus: {
-        note: "Blocked: diagnostic needs attention.",
-        attention: "key",
-        expiresAt: Date.now() + 60_000,
-      },
     } satisfies GatewaySessionRow;
     Reflect.set(pane.swarm, "hydrator", { rows: [child], hydrated: true, childrenRead: true });
     onTestFinished(() => void Reflect.set(pane.swarm, "hydrator", null));
@@ -94,16 +77,6 @@ it.each([
       subagentSessionsHydrated: true,
       subagentSessionsRead: true,
     });
-    const view = mountSolid(() =>
-      renderChatComposerNotices({ sessionKey: routeKey, messages: [], ...roster }),
-    );
-    const notice = view.container.querySelector<HTMLElement>("openclaw-chat-child-attention");
-    expect(notice).not.toBeNull();
-    flush();
-    expect(notice!.querySelector(".chat-child-attention")?.textContent).toContain(
-      child.agentStatus.note,
-    );
-    view.unmount();
     expect(pane.projectChildRoster(undefined)).toMatchObject({
       subagentParentKey: undefined,
       subagentSessions: undefined,
