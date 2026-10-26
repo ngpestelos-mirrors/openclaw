@@ -38,35 +38,24 @@ describe("msteams account config mutations", () => {
     }
   });
 
-  it("selects the sorted eligible account after deleting the configured default", () => {
+  it.each(["alpha", "default"])("selects %s after deleting the named default", (selected) => {
     const cfg = config({
+      ...(selected === "default" ? identity("legacy") : {}),
       defaultAccount: "support",
-      accounts: { support: identity("support"), zeta: identity("zeta"), alpha: identity("alpha") },
+      accounts: {
+        support: identity("support"),
+        ...(selected === "alpha" ? { zeta: identity("zeta"), alpha: identity("alpha") } : {}),
+      },
     });
-
     const updated = msteamsConfigAdapter.deleteAccount({ cfg, accountId: "support" });
-
     expect(updated.channels?.msteams?.defaultAccount).toBeUndefined();
-    expect(resolveMSTeamsAccount({ cfg: updated }).accountId).toBe("alpha");
-  });
-
-  it("falls back to a legacy root identity after deleting the last named default", () => {
-    const cfg = config({
-      ...identity("legacy"),
-      defaultAccount: "support",
-      accounts: { support: identity("explicit") },
-    });
-
-    const updated = msteamsConfigAdapter.deleteAccount({ cfg, accountId: "support" });
-
-    expect(updated.channels?.msteams).toMatchObject({
-      accounts: undefined,
-      defaultAccount: undefined,
-    });
     expect(resolveMSTeamsAccount({ cfg: updated })).toMatchObject({
-      accountId: "default",
+      accountId: selected,
       configured: true,
     });
+    if (selected === "default") {
+      expect(updated.channels?.msteams?.accounts).toBeUndefined();
+    }
   });
 
   it.each(["root", "environment-only"] as const)(
