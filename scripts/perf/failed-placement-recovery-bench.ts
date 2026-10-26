@@ -11,6 +11,8 @@
  * one candidate notice, and the saved answer remains available. Report CPU and
  * allocation per failed session, including both boots, without Gateway-wide claims.
  * Fixture creation, warmup, and outcome verification are outside measurements.
+ * Idle dashboards are seeded already archived at the common fixture timestamp;
+ * maintenance remains enabled, and exact archived/retained counts must stay fixed.
  * The placement observation is synthetic: this measures the recovery owner and
  * persistence, not placement lookup, Gateway RPC, providers, or a full restart.
  * The state directory must be fresh and is removed after owned databases close.
@@ -97,16 +99,18 @@ try {
   const storePath = path.join(stateDir, "agents", "main", "sessions", "sessions.json");
   const reason = "Worker setup failed. Use Stop cloud worker to finish cleanup, then retry.";
   const savedAnswer = "Synthetic retained answer.";
+  const fixtureAt = Date.now();
+  const expectedRows = { retained, archived: retained - iterations - warmup };
   const row = (index: number) => ({
     sessionKey: `agent:main:dashboard:synthetic-${index}`,
     entry: {
       sessionId: `synthetic-session-${index}`,
-      updatedAt: 100,
+      updatedAt: fixtureAt,
       status: index < iterations + warmup ? "failed" : "done",
       abortedLastRun: index < iterations + warmup,
       ...(index < iterations + warmup
-        ? { pendingFinalDelivery: { kind: "replayable", text: savedAnswer, createdAt: 100 } }
-        : {}),
+        ? { pendingFinalDelivery: { kind: "replayable", text: savedAnswer, createdAt: fixtureAt } }
+        : { archivedAt: fixtureAt, archiveReason: "manual" }),
     } satisfies SessionEntry,
   });
   const first = row(0);
@@ -160,14 +164,14 @@ try {
     archived: entries.filter(({ entry }) => entry.archivedAt !== undefined).length,
   });
   const seededRows = countRows(await read());
-  assert.equal(seededRows.retained, retained, "fixture must persist every retained row");
+  assert.deepEqual(seededRows, expectedRows, "fixture must persist the complete archived shape");
   if (warmup) {
     await recover(
       (await read()).filter(({ sessionKey }) => Number(sessionKey.split("-").at(-1)) < warmup),
     );
   }
   const warmedRows = countRows(await read());
-  assert.equal(warmedRows.retained, retained, "warmup must retain the full fixture");
+  assert.deepEqual(warmedRows, expectedRows, "warmup must preserve the archived fixture shape");
   global.gc();
   dispatches = placementObservations = 0;
   const memoryBefore = process.memoryUsage();
@@ -197,7 +201,11 @@ try {
     node.selfSize + node.children.reduce((sum, child) => sum + allocated(child), 0);
   const allocatedBytes = profile ? allocated(profile.head) : undefined;
   const settledRows = countRows(await read());
-  assert.equal(settledRows.retained, retained, "both recovery passes must retain the full fixture");
+  assert.deepEqual(
+    settledRows,
+    expectedRows,
+    "both recovery passes must preserve the archived fixture shape",
+  );
   assert.equal(dispatches, iterations * expectedDispatches);
   assert.equal(dispatches, firstBootDispatches, "second boot must not dispatch again");
   assert.equal(firstBoot.failed, 0);
@@ -224,6 +232,7 @@ try {
       host: hostname(),
       node: process.version,
       retained,
+      fixtureAt,
       actualRows: {
         seeded: seededRows,
         warmed: warmedRows,
