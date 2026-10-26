@@ -22,7 +22,16 @@ suite.define(() => {
         sessionKey,
         authMethod: "trusted-proxy",
         authMode: "trusted-proxy",
-        sessions: [{ key: sessionKey, sessionId, visibility: "shared", sharingRole: "owner" }],
+        subscriptionInitialHistory: false,
+        sessions: [
+          {
+            key: sessionKey,
+            sessionId,
+            kind: "direct",
+            visibility: "shared",
+            sharingRole: "owner",
+          },
+        ],
         heldMethods: ["chat.startup", "session.reactions.list"],
         historyMessages: [chatMessage("user", prompt, { __openclaw: { id: messageId, seq: 1 } })],
         sessionReactions: { [sessionKey]: { [messageId]: saved } },

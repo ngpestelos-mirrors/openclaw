@@ -48,7 +48,7 @@ it.each([
     showTimestamp: true,
   };
   const view = mountSolid(() => <ChatNotice item={item} />);
-  await expect.element(view.getByText(label)).toBeVisible();
+  await expect.element(page.getByText(label)).toBeVisible();
   const row = view.container.querySelector<HTMLDetailsElement>("details.chat-notice-inline")!;
   const summary = row.querySelector<HTMLElement>("summary")!;
   const body = row.querySelector<HTMLElement>(".chat-notice__body")!;

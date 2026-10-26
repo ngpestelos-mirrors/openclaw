@@ -68,8 +68,9 @@ export function createTeamScaleHistoryFixture(options: {
     const runId = "synthetic-row-facts-run";
     const tail = historyMessages.slice(-3);
     for (const message of tail) {
+      const { __openclaw: identity } = message;
       Object.assign(message, { runId });
-      Object.assign(message.__openclaw, { runId });
+      Object.assign(identity, { runId });
     }
     Object.assign(tail[0]!, { role: "user" });
     Object.assign(tail[1]!, {

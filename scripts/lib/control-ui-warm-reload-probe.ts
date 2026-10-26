@@ -389,9 +389,9 @@ export function warmReloadProbe(input: { rowFacts?: boolean; avatars?: boolean }
           rowWindows.push({ at, rowKeys });
         }
         observeSize(inner);
-        const height = sizes.get(inner);
-        if (height !== undefined && threadFrames.at(-1)?.height !== height) {
-          threadFrames.push({ at, height, rowKeys });
+        const threadHeight = sizes.get(inner);
+        if (threadHeight !== undefined && threadFrames.at(-1)?.height !== threadHeight) {
+          threadFrames.push({ at, height: threadHeight, rowKeys });
         }
         const changes: (typeof factFrames)[number]["changes"] = [];
         for (const row of currentRows) {
@@ -419,10 +419,12 @@ export function warmReloadProbe(input: { rowFacts?: boolean; avatars?: boolean }
             const changed = Object.keys(parts).filter(
               (part) =>
                 previous.parts[part] !== parts[part] ||
-                heights[part]!.some((height, index) => {
+                heights[part]!.some((partHeight, index) => {
                   const before = previous.heights[part]?.[index];
                   return (
-                    height !== undefined && before !== undefined && Math.abs(height - before) > 0.5
+                    partHeight !== undefined &&
+                    before !== undefined &&
+                    Math.abs(partHeight - before) > 0.5
                   );
                 }),
             );
@@ -489,8 +491,8 @@ export function warmReloadProbe(input: { rowFacts?: boolean; avatars?: boolean }
         };
       }
     }
-    const input = pane?.querySelector<HTMLTextAreaElement>("textarea");
-    if (input && !input.disabled && !input.readOnly) {
+    const composer = pane?.querySelector<HTMLTextAreaElement>("textarea");
+    if (composer && !composer.disabled && !composer.readOnly) {
       mark("inputReady");
     }
     const state = JSON.stringify({
@@ -501,7 +503,7 @@ export function warmReloadProbe(input: { rowFacts?: boolean; avatars?: boolean }
       sidebar: Boolean(document.querySelector("aside.sidebar")),
       header: pane?.querySelector(".chat-pane__session-title-text")?.textContent ?? null,
       rows: visible,
-      input: Boolean(input && !input.disabled),
+      input: Boolean(composer && !composer.disabled),
       board: Boolean(document.querySelector(".board-widget__frame")),
     });
     if (states.at(-1)?.state !== state) {

@@ -79,6 +79,7 @@ function FrameBody(props: {
   // Mount new ranges under the frame's owner, not the transient reconciliation effect.
   const owner = getOwner();
   const parent = document.createElement("div");
+  parent.className = "chat-agent-run-body";
   parent.style.display = "contents";
   const anchor = document.createComment("frame-body");
   parent.append(anchor);

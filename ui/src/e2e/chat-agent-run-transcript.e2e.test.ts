@@ -108,7 +108,7 @@ suite.define(() => {
       sessionInfo: { ...session, status: "done" },
       messages: [user, transcriptMessage("assistant", answer, runId, "reply", 2)],
     });
-    await page.getByText(answer, { exact: true }).waitFor();
+    await page.locator(".chat-group.assistant").getByText(answer, { exact: true }).waitFor();
     await failure.waitFor({ state: "detached" });
     expect(await page.getByText("Check the saved result.", { exact: true }).count()).toBe(1);
   });
@@ -150,16 +150,17 @@ suite.define(() => {
     });
     await gateway.waitForRequest("chat.startup");
     await gateway.resolveDeferred("chat.startup");
-    await page.getByText("Draft before reload.", { exact: true }).waitFor();
+    const assistant = page.locator(".chat-group.assistant");
+    await assistant.getByText("Draft before reload.", { exact: true }).waitFor();
     await flushSnapshot(page);
     await page.reload();
-    await page.getByText(commentary, { exact: true }).waitFor();
+    await assistant.getByText(commentary, { exact: true }).waitFor();
     await gateway.waitForRequest("chat.startup");
     await gateway.resolveDeferred("chat.startup", {
       ...history,
       inFlightRun: { runId, text: "Draft after reload." },
     });
-    await page.getByText("Draft after reload.", { exact: true }).waitFor();
+    await assistant.getByText("Draft after reload.", { exact: true }).waitFor();
     const text = "Draft after reload. More detail.";
     await gateway.emitGatewayEvent("chat", {
       sessionKey: key,
@@ -168,9 +169,9 @@ suite.define(() => {
       deltaText: text,
       message: { role: "assistant", content: [{ type: "text", text }] },
     });
-    await page.getByText(text, { exact: true }).waitFor();
-    expect(await page.getByText(commentary, { exact: true }).count()).toBe(1);
-    expect(await page.getByText("Draft before reload.", { exact: true }).count()).toBe(0);
+    await assistant.getByText(text, { exact: true }).waitFor();
+    expect(await assistant.getByText(commentary, { exact: true }).count()).toBe(1);
+    expect(await assistant.getByText("Draft before reload.", { exact: true }).count()).toBe(0);
     expect(
       await page.getByRole("button", { name: "Stop generating", exact: true }).isVisible(),
     ).toBe(true);
@@ -223,6 +224,13 @@ suite.define(() => {
     await page.getByText(commentary, { exact: true }).waitFor();
     const activity = page.locator(".chat-activity-group:not(.chat-work-group)");
     await expect.poll(() => activity.count()).toBe(1);
+    await activity.waitFor({ state: "visible" });
+    expect(
+      await activity.evaluate((element) => {
+        const preceding = element.previousElementSibling!;
+        return element.getBoundingClientRect().top - preceding.getBoundingClientRect().bottom;
+      }),
+    ).toBeCloseTo(8, 1);
     const summary = activity.locator(".chat-activity-group__summary");
     expect(await summary.getAttribute("aria-expanded")).toBe("false");
     expect(await activity.locator(".chat-activity-group__body").isVisible()).toBe(false);
