@@ -63,25 +63,18 @@ it("lets plugin threading adapters suppress the generic message-id fallback", ()
 
 it.each([
   [
-    "deny implicit",
-    "Hello",
+    "A",
     { replyToMode: "batched", replyThreading: { implicitCurrentMessage: "deny" } },
     { replyToId: undefined },
   ],
-  ["Slack off", "A", { replyToMode: "off", replyToChannel: "slack" }, { replyToId: undefined }],
+  ["A", { replyToMode: "off", replyToChannel: "slack" }, { replyToId: undefined }],
   [
-    "Telegram explicit",
     "[[reply_to_current]]A",
     { replyToMode: "off", replyToChannel: "telegram" },
     { replyToId: "42", replyToTag: true },
   ],
-  [
-    "explicit id",
-    "[[reply_to:mm-post-xyz789]] threaded reply",
-    { replyToMode: "all" },
-    { replyToId: "mm-post-xyz789", text: "threaded reply" },
-  ],
-] as const)("applyReplyThreading: %s", (_name, text, options, expected) => {
+  ["[[reply_to:id]]A", { replyToMode: "all" }, { replyToId: "id", text: "A" }],
+] as const)("threads %s with %j", (text, options, expected) => {
   const result = applyReplyThreading({
     payloads: [{ text }],
     currentMessageId: "42",
