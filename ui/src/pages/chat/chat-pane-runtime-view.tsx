@@ -27,7 +27,6 @@ import { projectTheme } from "../../lib/reactive/theme.ts";
 import { useVisiblePoll } from "../../lib/reactive/visible-poll.ts";
 import { parseAgentSessionKey } from "../../lib/sessions/session-key.ts";
 import { ChatComposerCapabilityDialogs } from "./chat-composer-capability-host.tsx";
-import { cacheChatComposerSnapshot } from "./chat-composer-snapshot.ts";
 import { projectChatFields } from "./chat-field-projection.ts";
 import { chatGoalOperations } from "./chat-goals.ts";
 import { chatPanePropertyKeys } from "./chat-pane-inputs.ts";
@@ -138,7 +137,6 @@ export function createChatPaneView(runtime: ChatPaneRuntime) {
     focusPending = false;
     runtime.afterRender(focus);
     runtime.chatState.commitRender();
-    if (runtime.state) cacheChatComposerSnapshot(runtime.state);
     if (runtime.presented && runtime.presentation.documentVisible) {
       notifyRenderLifecycleForTest(runtime.element, "commit");
     }

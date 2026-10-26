@@ -7,19 +7,8 @@ import { resolveChatAgentId, selectedChatSessionRow } from "./chat-state-route.t
 import { cacheChatSessionSnapshot, readChatSessionSnapshot } from "./session-message-cache.ts";
 import { resolveChatSnapshotKey } from "./session-snapshot-key.ts";
 
-const capturedInputs = new WeakMap<ChatPageHost, readonly unknown[]>();
-
-export function cacheChatComposerSnapshot(host: ChatPageHost, supplied?: ModelCatalogResult): void {
-  const result =
-    supplied ??
-    (host.chatModelCatalogInitialized && !host.chatModelCatalogRetired
-      ? {
-          models: host.chatModelCatalog,
-          modelSelectionPolicy: host.chatModelSelectionPolicy,
-          refreshFailed: host.chatModelCatalogRefreshFailed,
-        }
-      : undefined);
-  if (!host.connected || !host.client?.recoveryScopeReady || !result || result.refreshFailed) {
+export function cacheChatComposerSnapshot(host: ChatPageHost, result: ModelCatalogResult): void {
+  if (!host.connected || !host.client?.recoveryScopeReady || result.refreshFailed) {
     return;
   }
   const target = { sessionKey: host.sessionKey };
@@ -50,21 +39,6 @@ export function cacheChatComposerSnapshot(host: ChatPageHost, supplied?: ModelCa
     }
     const agents: AgentsListResult | null = host.agentsList;
     const agent = agents?.agents.find((row) => row.id === resolveChatAgentId(host));
-    const inputs = [
-      snapshotKey,
-      client,
-      epoch,
-      session,
-      result.models,
-      result.modelSelectionPolicy,
-      host.sessionsResult?.defaults,
-      agent,
-      host.sessions.state.modelOverrides[host.sessionKey],
-    ];
-    const previous = readChatSessionSnapshot(host.chatMessagesBySession, host, target);
-    if (previous && capturedInputs.get(host)?.every((value, index) => value === inputs[index]))
-      return;
-    capturedInputs.set(host, inputs);
     const selection = resolveChatModelSelectState({
       activeSession: session,
       agentDefaultModel: agent?.model?.primary,
@@ -86,6 +60,7 @@ export function cacheChatComposerSnapshot(host: ChatPageHost, supplied?: ModelCa
       host.sessionsResult?.defaults,
       result.models,
     );
+    const previous = readChatSessionSnapshot(host.chatMessagesBySession, host, target);
     const composer = entry
       ? {
           id: entry.id,

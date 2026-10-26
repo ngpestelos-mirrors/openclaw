@@ -19,6 +19,11 @@ suite.define(() => {
           thinkingLevel: "high",
           permissionMode: "full",
         });
+        const thinkingLevels = [
+          { id: "low", label: "Low" },
+          { id: "medium", label: "Medium" },
+          { id: "high", label: "High" },
+        ];
         const gateway = await installMockGateway(page, {
           sessionKey,
           authMethod: "trusted-proxy",
@@ -34,13 +39,16 @@ suite.define(() => {
               provider: "example",
               reasoning: true,
               thinkingDefault: "medium",
-              thinkingLevels: [
-                { id: "low", label: "Low" },
-                { id: "medium", label: "Medium" },
-                { id: "high", label: "High" },
-              ],
+              thinkingLevels,
             },
-            { id: "basic-example", name: "Basic example", provider: "example" },
+            {
+              id: "alternate-example",
+              name: "Alternate example",
+              provider: "example",
+              reasoning: true,
+              thinkingDefault: "medium",
+              thinkingLevels,
+            },
           ],
         });
         await page.goto(controlUiSessionUrl(suite.server.baseUrl, sessionKey));
@@ -63,7 +71,7 @@ suite.define(() => {
         const live = {
           ...cached,
           updatedAt: 2,
-          model: "basic-example",
+          model: "alternate-example",
           thinkingLevel: "low",
           permissionMode: "workspace",
         };
@@ -85,7 +93,7 @@ suite.define(() => {
         await gateway.resolveDeferred("connect");
         await expect
           .poll(() => model.getAttribute("data-chat-select-value"))
-          .toBe("example/basic-example");
+          .toBe("example/alternate-example");
         await expect.poll(() => effort.getAttribute("data-chat-thinking-value")).toBe("low");
         await expect
           .poll(() => permission.getAttribute("data-chat-select-value"))
@@ -110,7 +118,8 @@ suite.define(() => {
         expect(await permission.isDisabled()).toBe(true);
         await gateway.resolveDeferred("connect");
         await expect.poll(() => model.textContent()).toContain("Reasoning example");
-        await expect.poll(() => effort.getAttribute("data-chat-thinking-value")).toBe("medium");
+        await expect.poll(() => effort.getAttribute("data-chat-thinking-value")).toBe("");
+        await expect.poll(() => effort.textContent()).toContain("Medium");
         await expect.poll(() => permission.getAttribute("data-chat-select-value")).toBe("");
         await expect.poll(() => permission.isEnabled()).toBe(true);
         expect(await gateway.getRequests("sessions.patch")).toHaveLength(0);

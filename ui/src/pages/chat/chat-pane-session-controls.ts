@@ -220,14 +220,16 @@ export function renderChatPaneComposerControls(params: {
           ...settingsPreview,
         }
       : selectedSession;
-  const snapshot =
+  const sessionReady =
     state.connected &&
-    state.chatModelCatalogInitialized &&
     selectedSession &&
-    (!state.sessions.state.resultCached || getAcceptedChatHistorySession(state))
+    (!state.sessions.state.resultCached || getAcceptedChatHistorySession(state));
+  const snapshot =
+    sessionReady && state.chatModelCatalogInitialized
       ? undefined
       : (readChatSessionSnapshot(state.chatMessagesBySession, state, { sessionKey })?.composer ??
         undefined);
+  const permissionSnapshot = sessionReady ? undefined : snapshot;
   return {
     composerControls: {
       component: ChatPaneModelControl,
@@ -333,13 +335,15 @@ export function renderChatPaneComposerControls(params: {
     },
     permissionPicker: {
       canSelectFull,
-      defaultMode: snapshot ? snapshot.defaultPermissionMode : agentDefaultPermissionMode,
-      disabled: Boolean(snapshot) || !permissionAccess.allowed,
+      defaultMode: permissionSnapshot
+        ? permissionSnapshot.defaultPermissionMode
+        : agentDefaultPermissionMode,
+      disabled: Boolean(permissionSnapshot) || !permissionAccess.allowed,
       disabledReason: permissionAccess.allowed ? undefined : permissionAccess.reason,
       mode: currentChange
         ? currentChange.nextMode
-        : snapshot
-          ? snapshot.permissionMode
+        : permissionSnapshot
+          ? permissionSnapshot.permissionMode
           : selectedSession?.permissionMode,
       pending: permissionPending,
       onSelect: async (permissionMode) => {
