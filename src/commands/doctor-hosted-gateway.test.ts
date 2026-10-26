@@ -2,6 +2,7 @@ import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { resolveFinalDoctorHealthContributions } from "../flows/doctor-health-contributions-final.js";
 import * as gatewayCall from "../gateway/call.js";
 import { resolveLeastPrivilegeOperatorScopesForMethod } from "../gateway/method-scopes.js";
+import type { GatewayRequestHandlerOptions } from "../gateway/server-methods/types.js";
 import { createContext } from "../gateway/server-plugin-in-process-dispatch.test-support.js";
 import { withPluginRuntimeGatewayContextResolver } from "../plugins/runtime/gateway-request-scope.js";
 import { collectDevicePairingHealthFindings } from "./doctor-device-pairing.js";
@@ -30,7 +31,7 @@ async function withHosted<T>(
       name,
       resolveLeastPrivilegeOperatorScopesForMethod(name)[0]!,
       "test",
-      ({ respond }) => {
+      ({ respond }: GatewayRequestHandlerOptions) => {
         respond(true, payload);
       },
     ],

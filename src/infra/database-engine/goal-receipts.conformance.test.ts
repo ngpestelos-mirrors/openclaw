@@ -26,7 +26,7 @@ describe.skipIf(!mixedAgentConnection).each(["sqlite", "postgres"] as const)(
         sessionId,
         storePath,
       };
-      const request = (operation: SessionGoalOperation) => ({
+      const request = <Operation extends SessionGoalOperation>(operation: Operation) => ({
         ...scope,
         expectedSessionId: scope.sessionId,
         operation,
