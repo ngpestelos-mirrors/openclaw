@@ -124,35 +124,27 @@ export function useSkillLibraryFixture() {
           ),
         commit: (uploadId: string, who = owner) =>
           uploadSkillLibrary(who, { action: "commit", uploadId }, options),
-        begin: (bytes: Buffer, slug: string, who = owner) =>
-          beginZipUpload(who, bytes, slug, options),
+        begin: async (bytes: Buffer, slug: string, who = owner) => {
+          const begun = await uploadSkillLibrary(
+            who,
+            {
+              action: "begin",
+              slug,
+              sizeBytes: bytes.length,
+              sha256: createHash("sha256").update(bytes).digest("hex"),
+            },
+            options,
+          );
+          if (!("uploadId" in begun)) {
+            throw new Error("Expected upload ID");
+          }
+          expect(begun.offset).toBe(0);
+          return begun;
+        },
       },
     };
   };
   return { fixture, tempDirs };
-}
-
-async function beginZipUpload(
-  authority: SkillLibraryAuthority,
-  bytes: Buffer,
-  slug: string,
-  options: NonNullable<Parameters<typeof uploadSkillLibrary>[2]>,
-) {
-  const begun = await uploadSkillLibrary(
-    authority,
-    {
-      action: "begin",
-      slug,
-      sizeBytes: bytes.length,
-      sha256: createHash("sha256").update(bytes).digest("hex"),
-    },
-    options,
-  );
-  if (!("uploadId" in begun)) {
-    throw new Error("Expected upload ID");
-  }
-  expect(begun.offset).toBe(0);
-  return begun;
 }
 
 export async function zipBytes(oversized = false) {
