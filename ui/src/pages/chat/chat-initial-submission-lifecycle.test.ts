@@ -25,28 +25,25 @@ function initialSubmissionFixture() {
     },
   });
   const owner = expectDefined(host.client, "connected client");
-  const build = (text: string, createdAt: number, runId: string) =>
-    expectDefined(
+  const submit = (text: string, createdAt: number, runId: string) => {
+    const input = expectDefined(
       buildInitialChatSubmission(host.sessionKey, { text, createdAt }, owner, runId),
       "initial prompt",
     );
-  const input = build("original initial prompt", 1, "initial-run");
+    host.chatSubmissions.retain(input);
+    admitChatSubmission(host, undefined);
+    return input;
+  };
+  const input = submit("original initial prompt", 1, "initial-run");
   const readmit = () => {
     host.chatSubmissions.retain(input);
     admitChatSubmission(host, undefined);
   };
-  host.chatSubmissions.retain(input);
   const retained = expectDefined(
     host.chatSubmissions.readInitial(sessionKey, input.owner),
     "retained initial input",
   );
-  admitChatSubmission(host, undefined);
-  const submitNewer = () => {
-    const newer = build("new initial prompt", 2, "new-run");
-    host.chatSubmissions.retain(newer);
-    admitChatSubmission(host, undefined);
-    return newer.message;
-  };
+  const submitNewer = () => submit("new initial prompt", 2, "new-run").message;
   return { host, input, retained, readmit, submitNewer, replace: () => (sessionId = "physical-b") };
 }
 

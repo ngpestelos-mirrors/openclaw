@@ -21,6 +21,13 @@ const message = (key: string, value: unknown): ChatItem => ({
   key,
   message: value,
 });
+const summary = "Rate-limit recovery stopped";
+const persistedFailure = (runId: string, seq: number) => ({
+  role: "custom",
+  content: summary,
+  timestamp: seq,
+  openclawRunError: { runId, summary },
+});
 
 it("keeps only the latest identical failure across internal updates and interrupted output", () => {
   const first = failure("first");
@@ -51,34 +58,17 @@ it("keeps only the latest identical failure across internal updates and interrup
   expect(latest).not.toHaveProperty("repeatCount");
 });
 
-it("keeps both failures when real user input breaks the streak", () => {
-  const items = [
-    failure("first"),
-    message("user", { role: "USER", content: "Try once more" }),
-    failure("latest"),
-  ];
-  expect(projectRunFailureStreaks(items)).toEqual(items);
-});
-
-it("starts a new streak whenever the exact summary changes", () => {
-  const items = [
-    failure("first"),
-    failure("different", "Rate-limit recovery stopped "),
-    failure("latest"),
-  ];
+it.each([
+  ["real user input", message("user", { role: "USER", content: "Try once more" })],
+  ["a changed summary", failure("different", "Rate-limit recovery stopped ")],
+] as const)("starts a new streak after %s", (_reason, boundary) => {
+  const items = [failure("first"), boundary, failure("latest")];
   expect(projectRunFailureStreaks(items)).toEqual(items);
 });
 
 it.each([false, true])(
   "collapses failure streaks before search hides user boundaries (search: %s)",
   (searchOpen) => {
-    const summary = "Rate-limit recovery stopped";
-    const persistedFailure = (runId: string, timestamp: number) => ({
-      role: "custom",
-      content: summary,
-      timestamp,
-      openclawRunError: { runId, summary },
-    });
     const items = buildChatItems(
       createProps({
         messages: [
@@ -105,19 +95,15 @@ it.each([false, true])(
 );
 
 it("updates a cached failure's repeat count when older history loads", () => {
-  const summary = "Rate-limit recovery stopped";
-  const persistedFailure = (runId: string, seq: number) => ({
-    role: "custom",
-    content: summary,
-    timestamp: seq,
-    openclawRunError: { runId, summary },
+  const cachedFailure = (runId: string, seq: number) => ({
+    ...persistedFailure(runId, seq),
     __openclaw: { id: runId, seq },
   });
-  const latest = persistedFailure("latest", 2);
+  const latest = cachedFailure("latest", 2);
   const notices = (messages: unknown[]) =>
     buildItems({ messages }).filter((item) => item.kind === "notice" && item.runError);
   expect(notices([latest])).toMatchObject([{ runError: { runId: "latest" } }]);
-  expect(notices([persistedFailure("older", 1), latest])).toMatchObject([
+  expect(notices([cachedFailure("older", 1), latest])).toMatchObject([
     { runError: { runId: "latest" }, repeatCount: 2 },
   ]);
 });

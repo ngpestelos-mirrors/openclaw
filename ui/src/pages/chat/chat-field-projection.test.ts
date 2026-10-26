@@ -23,27 +23,25 @@ it("publishes fields independently while owner reads and array identity stay syn
     expect(projectChatFields(owner, ["loading", "messages"])).toBe(owner);
     return { messages: observe(() => owner.messages), loading: observe(() => owner.loading) };
   });
+  const expectPublished = (expectedMessages: string[][], expectedLoading: boolean[]) => {
+    flush();
+    expect({ messages, loading }).toEqual({ messages: expectedMessages, loading: expectedLoading });
+  };
   flush();
   const next = ["first", "second"];
   owner.messages = next;
   expect(owner.messages).toBe(next);
   expect(messages).toEqual([["first"]]);
-  flush();
-  expect(messages).toEqual([["first"], ["first", "second"]]);
+  expectPublished([["first"], ["first", "second"]], [false]);
   expect(messages[1]).toBe(next);
-  expect(loading).toEqual([false]);
 
   owner.messages = next;
   owner.unrelated += 1;
-  flush();
-  expect(messages).toHaveLength(2);
-  expect(loading).toEqual([false]);
+  expectPublished([["first"], ["first", "second"]], [false]);
 
   owner.loading = true;
   expect(owner.loading).toBe(true);
-  flush();
-  expect(loading).toEqual([false, true]);
-  expect(messages).toHaveLength(2);
+  expectPublished([["first"], ["first", "second"]], [false, true]);
 });
 
 it("keeps callback values and existing accessor ownership when selecting all fields", () => {
