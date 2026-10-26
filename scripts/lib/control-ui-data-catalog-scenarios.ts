@@ -658,6 +658,55 @@ export const dataCatalogScenarios: readonly InteractionScenario[] = [
   catalogEntryScenario(100),
   {
     ...fixture,
+    id: "data-catalog-category-first-render",
+    route: pathForRoute("plugins"),
+    expected: "Opening Tools presents the first 100 entries of the 1,000-entry catalog.",
+    rowSelector: ".plugin-catalog-card",
+    prepare: async (page, gateway) => {
+      await countRows(page, ".plugin-catalog-card", 8);
+      const requests = await gateway.getRequests("plugins.catalog.browse");
+      if (requests.length !== 1) {
+        throw new Error("Category setup must contain only the initial overview request");
+      }
+      await page.getByRole("button", { name: "Tools", exact: true }).waitFor();
+      await frames(page);
+    },
+    run: async (page, gateway) => {
+      const match = { intent: "all", category: "tools", pageSize: catalogPageSize };
+      await page.getByRole("button", { name: "Tools", exact: true }).click();
+      await gateway.waitForRequest("plugins.catalog.browse", { match, exactParams: true });
+      await catalogCount(page, catalogPageSize);
+      await frames(page);
+      const ids = await page
+        .locator(".plugin-catalog-card")
+        .evaluateAll((cards) => cards.map((card) => card.getAttribute("data-plugin-id")));
+      if (
+        ids[0] !== "data-catalog-0000" ||
+        ids.at(-1) !== "data-catalog-0099" ||
+        ids.some(
+          (id, index) =>
+            !id || !/^data-catalog-00\d{2}$/u.test(id) || (index > 0 && id <= ids[index - 1]!),
+        )
+      ) {
+        throw new Error("First category page lost its endpoints or canonical entry ordering");
+      }
+      const requests = await gateway.getRequests("plugins.catalog.browse", match, {
+        exactParams: true,
+      });
+      const allRequests = await gateway.getRequests("plugins.catalog.browse");
+      if (requests.length !== 1 || allRequests.length !== 2) {
+        throw new Error("Category entry must issue exactly one 100-entry browse request");
+      }
+      return {
+        fixturePlugins: inventorySize,
+        firstPageEntries: catalogPageSize,
+        mountedPlugins: ids.length,
+        catalogBrowseRequests: requests.length,
+      };
+    },
+  },
+  {
+    ...fixture,
     id: "data-plugins-render",
     route: pathForRoute("plugins"),
     expected: "Opening installed settings renders all 1,000 plugins.",

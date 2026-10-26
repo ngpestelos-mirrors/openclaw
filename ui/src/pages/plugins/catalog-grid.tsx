@@ -228,11 +228,9 @@ export function PluginCatalogGrid(props: {
           measure();
         }
       });
-      measure();
       return () => {
         release();
         mounted.delete(id);
-        measure();
       };
     });
     const index = () => indexes().get(card.plugin().id)!;
