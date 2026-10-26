@@ -6,10 +6,20 @@ import * as modelNormalization from "../../plugins/manifest-model-id-normalizati
 import * as providerStream from "../provider-stream.js";
 import { makeAssistantMessageFixture } from "../test-helpers/assistant-message-fixtures.js";
 import { makeProviderModelFixture } from "../test-helpers/provider-model-fixture.js";
-import { createImageTool } from "./image-tool.js";
-import { ONE_PIXEL_PNG_B64, testing } from "./image-tool.test-support.js";
+import { createRequiredImageTool, ONE_PIXEL_PNG_B64, testing } from "./image-tool.test-support.js";
 
 const tempDirs = useAutoCleanupTempDirTracker(afterEach);
+type Message = NonNullable<Parameters<typeof makeAssistantMessageFixture>[0]>;
+const response = (content: Message["content"], overrides: Message = {}) =>
+  makeAssistantMessageFixture({
+    stopReason: "stop",
+    errorMessage: undefined,
+    content,
+    ...overrides,
+  });
+const reasoning = (): Message["content"] => [
+  { type: "thinking", thinking: "", thinkingSignature: "reasoning_content" },
+];
 
 describe("image tool response validation", () => {
   beforeEach(() => {
@@ -55,45 +65,30 @@ describe("image tool response validation", () => {
   });
 
   async function executeImage() {
-    const tool = createImageTool({
+    const tool = createRequiredImageTool({
       agentDir: tempDirs.make("openclaw-image-response-"),
       config: { agents: { defaults: { imageModel: { primary: "openai/gpt-5.4-mini" } } } },
     });
-    if (!tool) {
-      throw new Error("expected image tool");
-    }
     return await tool.execute("image", { path: `data:image/png;base64,${ONE_PIXEL_PNG_B64}` });
   }
 
   it.each([
-    {
-      name: "rejects image-model responses with no final text",
-      message: makeAssistantMessageFixture({
-        stopReason: "stop",
-        errorMessage: undefined,
-        content: [{ type: "thinking", thinking: "hmm" }],
-      }),
-      expectedError: "Image model returned no text (openai/gpt-5.4-mini).",
-    },
-    {
-      name: "surfaces provider errors from image-model responses",
-      message: makeAssistantMessageFixture({
-        stopReason: "stop",
-        errorMessage: "  boom  ",
-        content: [{ type: "text", text: "must not hide the failure" }],
-      }),
-      expectedError: "Image model failed (openai/gpt-5.4-mini): boom",
-    },
-    ...(["error", "aborted"] as const).map((stopReason) => ({
-      name: `does not retry reasoning-only responses stopped with ${stopReason}`,
-      message: makeAssistantMessageFixture({
-        stopReason,
-        errorMessage: undefined,
-        content: [{ type: "thinking", thinking: "", thinkingSignature: "reasoning_content" }],
-      }),
-      expectedError: "Image model failed (openai/gpt-5.4-mini)",
-    })),
-  ])("$name", async ({ message, expectedError }) => {
+    [
+      response([{ type: "thinking", thinking: "hmm" }]),
+      "Image model returned no text (openai/gpt-5.4-mini).",
+    ],
+    [
+      response([{ type: "text", text: "must not hide the failure" }], { errorMessage: "  boom  " }),
+      "Image model failed (openai/gpt-5.4-mini): boom",
+    ],
+    ...(["error", "aborted"] as const).map(
+      (stopReason) =>
+        [
+          response(reasoning(), { stopReason }),
+          "Image model failed (openai/gpt-5.4-mini)",
+        ] as const,
+    ),
+  ] as const)("rejects invalid image response %# without retry", async (message, expectedError) => {
     vi.mocked(llmStream.complete).mockResolvedValue(message);
     await expect(executeImage()).rejects.toThrow(expectedError);
     expect(llmStream.complete).toHaveBeenCalledOnce();
@@ -101,18 +96,11 @@ describe("image tool response validation", () => {
 
   it("returns trimmed image text after a reasoning-only retry", async () => {
     vi.mocked(llmStream.complete)
+      .mockResolvedValueOnce(response(reasoning()))
       .mockResolvedValueOnce(
-        makeAssistantMessageFixture({
-          stopReason: "stop",
-          errorMessage: undefined,
-          content: [{ type: "thinking", thinking: "", thinkingSignature: "reasoning_content" }],
-        }),
-      )
-      .mockResolvedValueOnce(
-        makeAssistantMessageFixture({
+        response([{ type: "text", text: "  hello  " }], {
           stopReason: "length",
           errorMessage: "  ",
-          content: [{ type: "text", text: "  hello  " }],
         }),
       );
     const result = await executeImage();

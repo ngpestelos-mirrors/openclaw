@@ -20,7 +20,6 @@ export function registerSessionsSpawnVisibleCleanupTests({
   async function executeVisible(
     callGateway: NonNullable<Parameters<typeof createTool>[0]>["callGateway"],
     options: NonNullable<Parameters<typeof createTool>[0]> = {},
-    id = "visible-failure",
   ) {
     return (
       await createTool({
@@ -29,14 +28,15 @@ export function registerSessionsSpawnVisibleCleanupTests({
         countActiveRuns: () => 0,
         callGateway,
         ...options,
-      }).execute(id, { task: "inspect", visible: true })
+      }).execute("visible-failure", { task: "inspect", visible: true })
     ).details;
   }
-  function expectError(details: unknown, error: string) {
+  function expectError(details: unknown, error: string, extra: Record<string, unknown> = {}) {
     expect(details).toMatchObject({
       status: "error",
       error: expect.stringContaining(error),
       childSessionKey: key,
+      ...extra,
     });
   }
 
@@ -77,12 +77,7 @@ export function registerSessionsSpawnVisibleCleanupTests({
       const details = await executeVisible(callGateway, runStarted ? { registerRun } : {});
 
       expectError(details, runStarted ? "Session cleanup unconfirmed." : startError);
-      if (runId) {
-        expect(details).toMatchObject({ runId });
-      }
-      expect(details).toMatchObject({
-        error: expect.stringContaining("Session cleanup unconfirmed."),
-      });
+      expectError(details, "Session cleanup unconfirmed.", runId ? { runId } : {});
       expect(callGateway).toHaveBeenCalledTimes(2);
     },
   );
@@ -97,7 +92,7 @@ export function registerSessionsSpawnVisibleCleanupTests({
         runStarted: false,
         runError: "startup failed",
       });
-      const details = await executeVisible(callGateway, {}, "visible-missing-identity");
+      const details = await executeVisible(callGateway);
 
       expectError(details, "Session cleanup unconfirmed.");
       expect(callGateway).toHaveBeenCalledTimes(1);
@@ -113,11 +108,7 @@ export function registerSessionsSpawnVisibleCleanupTests({
         runId: "child-run",
       });
       const register = vi.fn();
-      const details = await executeVisible(
-        callGateway,
-        { registerRun: register },
-        "visible-missing-identity",
-      );
+      const details = await executeVisible(callGateway, { registerRun: register });
 
       expectError(details, "sessions.create did not return its sessionId");
       expect(details).toMatchObject({
