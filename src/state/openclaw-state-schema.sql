@@ -2362,6 +2362,10 @@ CREATE TABLE IF NOT EXISTS local_workspace_projections (
   revision INTEGER NOT NULL DEFAULT 0 CHECK (revision >= 0),
   created_at_ms INTEGER NOT NULL,
   checkpoint_json TEXT,
+  tree_root_digest BLOB,
+  source_paths_digest BLOB,
+  canonical_fingerprints BLOB,
+  projection_fingerprints BLOB,
   CHECK (baseline_json IS NULL OR baseline_ref IS NOT NULL),
   CHECK ((journal_json IS NULL) = (journal_pack IS NULL))
 ) STRICT;
@@ -2376,6 +2380,23 @@ CREATE TABLE IF NOT EXISTS local_workspace_manifest_nodes (
   FOREIGN KEY (worktree_id)
     REFERENCES local_workspace_projections(worktree_id) ON DELETE CASCADE
 ) STRICT;
+
+-- Immutable subtrees and source inventories are shared across projections and revisions.
+CREATE TABLE IF NOT EXISTS local_workspace_tree_nodes (
+  tree_digest BLOB NOT NULL PRIMARY KEY CHECK (length(tree_digest) = 32),
+  entry_json TEXT NOT NULL,
+  content_digest BLOB NOT NULL CHECK (length(content_digest) = 32),
+  left_digest BLOB CHECK (left_digest IS NULL OR length(left_digest) = 32),
+  right_digest BLOB CHECK (right_digest IS NULL OR length(right_digest) = 32),
+  children_digest BLOB CHECK (children_digest IS NULL OR length(children_digest) = 32),
+  sweep_epoch INTEGER NOT NULL
+) STRICT, WITHOUT ROWID;
+
+CREATE TABLE IF NOT EXISTS local_workspace_source_path_sets (
+  path_digest BLOB NOT NULL PRIMARY KEY CHECK (length(path_digest) = 32),
+  paths_zstd BLOB NOT NULL,
+  sweep_epoch INTEGER NOT NULL
+) STRICT, WITHOUT ROWID;
 
 -- A reconciliation journal is written before managed-worktree mutation. The
 -- bounded Git base snapshot repairs any subset left by an interrupted apply.

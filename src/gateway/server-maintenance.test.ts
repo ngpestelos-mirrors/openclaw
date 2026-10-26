@@ -65,6 +65,11 @@ vi.mock("./managed-image-attachments.js", () => ({
   cleanupManagedOutgoingMediaRecords: cleanupManagedOutgoingMediaRecordsMock,
 }));
 
+// mock-isolation: Timer fixtures have no shared-state broker; CAS sweep behavior has worker tests.
+vi.mock("./worker-environments/local-workspace-gc.js", () => ({
+  sweepLocalWorkspaceManifests: vi.fn(async () => {}),
+}));
+
 const MEDIA_CLEANUP_TTL_MS = 24 * 60 * 60_000;
 const fixtureSources: RpcSourceRef[] = [];
 

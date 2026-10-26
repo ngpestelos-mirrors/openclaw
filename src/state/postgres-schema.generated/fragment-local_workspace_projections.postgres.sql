@@ -26,6 +26,10 @@ CREATE TABLE "local_workspace_projections" (
   "revision" bigint NOT NULL DEFAULT 0,
   "created_at_ms" bigint NOT NULL,
   "checkpoint_json" text COLLATE "C",
+  "tree_root_digest" bytea,
+  "source_paths_digest" bytea,
+  "canonical_fingerprints" bytea,
+  "projection_fingerprints" bytea,
   PRIMARY KEY ("worktree_id"),
   CHECK (("pending_target" IN ('canonical', 'projection'))),
   CHECK ("journal_pack" IS NULL OR (octet_length("journal_pack") <= 268435456)),
@@ -33,6 +37,30 @@ CREATE TABLE "local_workspace_projections" (
   CHECK ("baseline_json" IS NULL OR "baseline_ref" IS NOT NULL),
   CHECK ((("journal_json" IS NULL) = ("journal_pack" IS NULL))),
   UNIQUE ("projection_path")
+);
+
+CREATE TABLE "local_workspace_source_path_sets" (
+  "path_digest" bytea NOT NULL,
+  "paths_zstd" bytea NOT NULL,
+  "sweep_epoch" bigint NOT NULL,
+  PRIMARY KEY ("path_digest"),
+  CHECK ((octet_length("path_digest") = 32))
+);
+
+CREATE TABLE "local_workspace_tree_nodes" (
+  "tree_digest" bytea NOT NULL,
+  "entry_json" text COLLATE "C" NOT NULL,
+  "content_digest" bytea NOT NULL,
+  "left_digest" bytea,
+  "right_digest" bytea,
+  "children_digest" bytea,
+  "sweep_epoch" bigint NOT NULL,
+  PRIMARY KEY ("tree_digest"),
+  CHECK ((octet_length("tree_digest") = 32)),
+  CHECK ((octet_length("content_digest") = 32)),
+  CHECK ("left_digest" IS NULL OR (octet_length("left_digest") = 32)),
+  CHECK ("right_digest" IS NULL OR (octet_length("right_digest") = 32)),
+  CHECK ("children_digest" IS NULL OR (octet_length("children_digest") = 32))
 );
 
 ALTER TABLE "local_workspace_manifest_nodes" ADD FOREIGN KEY ("worktree_id") REFERENCES "local_workspace_projections" ("worktree_id") ON UPDATE NO ACTION ON DELETE CASCADE NOT DEFERRABLE;

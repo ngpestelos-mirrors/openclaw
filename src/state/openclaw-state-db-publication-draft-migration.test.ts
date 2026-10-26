@@ -73,6 +73,7 @@ it.each([false, true])(
       { kind: "local-client-credentials-v29", path: pathname },
       { kind: "automation-policy-fence-v30", path: pathname },
       { kind: "local-workspace-manifests-v31", path: pathname },
+      { kind: "local-workspace-cas-v35", path: pathname },
     ]);
     await withStateMigrationBackupForTest(options, async () => {
       using witness = new DatabaseSync(pathname);

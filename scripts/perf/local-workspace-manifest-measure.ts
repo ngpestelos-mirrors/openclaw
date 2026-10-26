@@ -2,11 +2,14 @@
  * Real state-read worker manifest benchmark, using synthetic repository-shaped files.
  * Node 26.12: node --import ./scripts/tsx.mjs scripts/perf/local-workspace-manifest-measure.ts prepare .local/buf28 [count=24000]
  * Use `prepare-edited` instead of `prepare` to edit 1% of admitted files after
- * storing their original identities. Both versions repeatedly scan those same edits.
+ * storing their original stat hints. Both versions repeatedly scan those same edits.
  * Run: node --import ./scripts/tsx.mjs scripts/perf/local-workspace-manifest-measure.ts run .local/buf28 <label> <canonical|projection|materialize|replace> [allocation|cpu]
  * `cpu` writes a worker .cpuprofile; `allocation` writes a full .heapprofile.
  * Alternate baseline/candidate labels at least five times. Baseline runs set
  * OPENCLAW_BENCH_BASELINE_DIR to a directory containing the original source paths.
+ * Set that variable during prepare too: each version seeds its own schema/state
+ * through its public store before edits. Schema fencing forbids sharing one DB.
+ * The controller's internal `seed-baseline` subprocess runs only during prepare.
  * OPENCLAW_BENCH_TRACE_GC=1 selects a separate promotion pass, never timing gates.
  * Batch: OPENCLAW_BENCH_BASELINE_DIR=<original-source-dir> node --import ./scripts/tsx.mjs scripts/perf/local-workspace-manifest-measure.ts batch .local/buf28 <label>
  * Batch retains disjoint baseline/candidate processes per instrumentation pass,
@@ -30,14 +33,20 @@ import path from "node:path";
 import { setTimeout } from "node:timers/promises";
 import { serialize } from "node:v8";
 import type { LocalWorkspaceManifestAction } from "../../src/gateway/worker-environments/local-workspace-manifest-scan.js";
+import type { LocalWorkspaceStore } from "../../src/gateway/worker-environments/local-workspace-store.js";
 import type { WorkerWorkspaceManifest } from "../../src/gateway/worker-environments/workspace-manifest.js";
 
 const [mode, scratchArgument, label, actionName, instrument, callsArgument] = process.argv.slice(2);
-assert.ok(["prepare", "prepare-edited", "run", "serve", "batch"].includes(mode ?? ""));
+assert.ok(
+  ["prepare", "prepare-edited", "seed-baseline", "run", "serve", "batch"].includes(mode ?? ""),
+);
 assert.ok(scratchArgument);
 const scratch = path.resolve(scratchArgument);
 const root = path.join(scratch, "workspace");
-const state = path.join(scratch, "state");
+const historical =
+  mode === "seed-baseline" ||
+  ((mode === "run" || mode === "serve") && Boolean(process.env.OPENCLAW_BENCH_BASELINE_DIR));
+const state = path.join(scratch, historical ? "baseline-state" : "state");
 const id = "synthetic-workspace";
 const baseCommit = "a".repeat(40);
 const env = {
@@ -62,8 +71,106 @@ assert.ok(Number.isSafeInteger(operations) && operations > 0);
 const actionNames = ["materialize", "canonical", "projection", "replace"] as const;
 type ActionName = (typeof actionNames)[number];
 type MeasurementRequest = { kind: "warm" | "measure" | "stop"; action: ActionName; label: string };
+type ProjectionSeed = Parameters<LocalWorkspaceStore["create"]>[0];
+type LegacyProjectionSeed = Omit<
+  ProjectionSeed,
+  "tree_root_digest" | "source_paths_digest" | "canonical_fingerprints" | "projection_fingerprints"
+>;
 
-if (mode === "prepare" || mode === "prepare-edited") {
+async function seedState(rawManifest: string, paths: string[]) {
+  const { openOpenClawStateDatabase, closeOpenClawStateDatabaseAsync } =
+    await import("../../src/state/openclaw-state-db.js");
+  const { withLocalWorkspaceStore } =
+    await import("../../src/gateway/worker-environments/local-workspace-store.js");
+  const { drainGlobalSingletonLifecycleState } =
+    await import("../../src/shared/global-singleton.js");
+  const { buildCacheInputPaths } =
+    await import("../../src/gateway/worker-environments/workspace-path-exclusions.js");
+  openOpenClawStateDatabase({ env });
+  try {
+    return await withLocalWorkspaceStore({ worktreeId: id, env }, async (store) => {
+      const row: LegacyProjectionSeed = {
+        worktree_id: id,
+        agent_id: "main",
+        session_key: "agent:main:synthetic",
+        session_id: "synthetic",
+        lifecycle_revision: null,
+        projection_path: root,
+        base_commit: baseCommit,
+        source_paths_json: JSON.stringify(paths),
+        baseline_json: null,
+        baseline_ref: null,
+        checkpoint_json: null,
+        pending_ref: null,
+        pending_target: null,
+        journal_json: null,
+        journal_pack: null,
+        paused_runtimes_json: null,
+        created_at_ms: 1,
+      };
+      // The explicit historical overlay supplies the v31 create contract, without CAS columns.
+      const createLegacy = store.create as (
+        row: LegacyProjectionSeed,
+      ) => ReturnType<LocalWorkspaceStore["create"]>;
+      const created = historical
+        ? await createLegacy(row)
+        : await store.create({
+            ...row,
+            tree_root_digest: null,
+            source_paths_digest: null,
+            canonical_fingerprints: null,
+            projection_fingerprints: null,
+          });
+      await store.update(created, {}, undefined, {
+        rawManifest,
+        manifestRef: `sha256:${digest(rawManifest)}`,
+        buildCacheInputs: [...buildCacheInputPaths(paths)],
+      });
+      const resultingRoot = store.get()!.baseline_ref;
+      for (const target of ["canonical", "projection"] as const) {
+        const scan = await store.manifest(store.get()!, {
+          kind: "scan",
+          target,
+          canonicalRoot: root,
+        });
+        assert.ok(scan.kind === "scan");
+        assert.equal(scan.resultingRoot, resultingRoot, "seed scan must not change the baseline");
+        if (scan.observation) {
+          await store.accept(scan.observation);
+        }
+        // Match v31 synchronization: a stable root can still carry stat-only record updates.
+        if (historical && (scan.records.length || scan.removed.length)) {
+          await store.update(store.get()!, {}, undefined, scan);
+        }
+      }
+      return { revision: store.get()!.revision, resultingRoot };
+    });
+  } finally {
+    await closeOpenClawStateDatabaseAsync();
+    await drainGlobalSingletonLifecycleState();
+  }
+}
+
+if (mode === "seed-baseline") {
+  assert.ok(
+    process.env.OPENCLAW_BENCH_BASELINE_DIR,
+    "historical seeding requires a source overlay",
+  );
+  await import("./worker-retained-heap-preload.js");
+  const fixture = JSON.parse(await fs.readFile(path.join(scratch, "fixture.json"), "utf8"));
+  assert.equal(
+    fixture.editedFiles,
+    undefined,
+    "historical state must be seeded before fixture edits",
+  );
+  const rawManifest = await fs.readFile(path.join(scratch, "manifest.json"), "utf8");
+  const seeded = await seedState(rawManifest, fixture.paths);
+  assert.equal(seeded.resultingRoot, fixture.resultingRoot);
+  await fs.writeFile(
+    path.join(scratch, "fixture.json"),
+    JSON.stringify({ ...fixture, baselineRevision: seeded.revision }),
+  );
+} else if (mode === "prepare" || mode === "prepare-edited") {
   const count = Number(label ?? 24_000);
   assert.ok(Number.isSafeInteger(count) && count > 0);
   const paths = execFileSync("git", ["ls-files", "-z"], {
@@ -97,23 +204,15 @@ if (mode === "prepare" || mode === "prepare-edited") {
     await import("../../src/gateway/worker-environments/workspace-path-exclusions.js");
   const retained = [...buildCacheInputPaths(paths)];
   const nodes: Parameters<typeof createLocalWorkspaceManifestTree>[0][number][] = [];
-  const identities = new Map<string, string>();
   await scanActualWorkspaceManifest({
     root,
     baseCommit,
     buildCacheInputs: new Set(retained),
-    onEntry(node, identity) {
+    onEntry(node) {
       nodes.push(node);
-      if (identity) {
-        identities.set(node.path, identity);
-      }
     },
   });
   const records = createLocalWorkspaceManifestTree(nodes);
-  for (const record of records.values()) {
-    record.canonicalIdentity = identities.get(record.node.path);
-    record.projectionIdentity = record.canonicalIdentity;
-  }
   const resultingRoot = localWorkspaceManifestRootReference(records, baseCommit);
   const manifest: WorkerWorkspaceManifest = {
     version: 1,
@@ -123,46 +222,22 @@ if (mode === "prepare" || mode === "prepare-edited") {
     buildCacheInputs: retained,
   };
   const rawManifest = serializeWorkerWorkspaceManifest(manifest);
-  const { openOpenClawStateDatabase, closeOpenClawStateDatabaseAsync } =
-    await import("../../src/state/openclaw-state-db.js");
-  const { mutateLocalWorkspaceProjection } =
-    await import("../../src/gateway/worker-environments/local-workspace-store.kernel.js");
-  const database = openOpenClawStateDatabase({ env });
-  mutateLocalWorkspaceProjection(database.db, id, {
-    kind: "create",
-    row: {
-      worktree_id: id,
-      agent_id: "main",
-      session_key: "agent:main:synthetic",
-      session_id: "synthetic",
-      lifecycle_revision: null,
-      projection_path: root,
-      base_commit: baseCommit,
-      source_paths_json: JSON.stringify(paths),
-      baseline_json: null,
-      baseline_ref: null,
-      checkpoint_json: null,
-      pending_ref: null,
-      pending_target: null,
-      journal_json: null,
-      journal_pack: null,
-      paused_runtimes_json: null,
-      created_at_ms: 1,
-    },
-  });
-  mutateLocalWorkspaceProjection(database.db, id, {
-    kind: "update",
-    revision: 0,
-    patch: { baseline_ref: resultingRoot },
-    manifest: {
-      previousRoot: null,
-      resultingRoot,
-      records: [...records.values()],
-      removed: [],
-      replace: true,
-    },
-  });
+  const seeded = await seedState(rawManifest, paths);
+  assert.equal(seeded.resultingRoot, resultingRoot);
   await fs.writeFile(path.join(scratch, "manifest.json"), rawManifest);
+  await fs.writeFile(
+    path.join(scratch, "fixture.json"),
+    JSON.stringify({ paths, resultingRoot, revision: seeded.revision }),
+  );
+  if (process.env.OPENCLAW_BENCH_BASELINE_DIR) {
+    // A separate process loads the historical store before any source owner is imported.
+    execFileSync(
+      process.execPath,
+      ["--import", "./scripts/tsx.mjs", process.argv[1]!, "seed-baseline", scratch],
+      { stdio: "inherit" },
+    );
+  }
+  const fixture = JSON.parse(await fs.readFile(path.join(scratch, "fixture.json"), "utf8"));
   let expectedRoot = resultingRoot;
   let editedFiles = 0;
   if (mode === "prepare-edited") {
@@ -192,19 +267,15 @@ if (mode === "prepare" || mode === "prepare-edited") {
   await fs.writeFile(
     path.join(scratch, "fixture.json"),
     JSON.stringify({
+      ...fixture,
       files: paths.length,
       records: records.size,
       resultingRoot: expectedRoot,
       editedFiles,
       manifestRef: `sha256:${digest(rawManifest)}`,
       buildCacheInputs: retained,
-      revision: 1,
     }),
   );
-  await closeOpenClawStateDatabaseAsync();
-  const { drainGlobalSingletonLifecycleState } =
-    await import("../../src/shared/global-singleton.js");
-  await drainGlobalSingletonLifecycleState();
   console.log(
     JSON.stringify({
       prepared: paths.length,
@@ -328,6 +399,11 @@ if (mode === "prepare" || mode === "prepare-edited") {
   }
   await import("./worker-retained-heap-preload.js");
   const fixture = JSON.parse(await fs.readFile(path.join(scratch, "fixture.json"), "utf8"));
+  const revision = historical ? fixture.baselineRevision : fixture.revision;
+  assert.ok(
+    Number.isSafeInteger(revision),
+    "prepare the fixture with OPENCLAW_BENCH_BASELINE_DIR before editing it for A/B runs",
+  );
   const rawManifest = await fs.readFile(path.join(scratch, "manifest.json"), "utf8");
   const actionFor = (name: ActionName): LocalWorkspaceManifestAction =>
     name === "replace"
@@ -350,7 +426,7 @@ if (mode === "prepare" || mode === "prepare-edited") {
       { env },
       {
         type: "localWorkspace.manifest",
-        input: { id, revision: fixture.revision, action: actionFor(name) },
+        input: { id, revision, action: actionFor(name) },
       },
       { current: true, live: true },
     );
