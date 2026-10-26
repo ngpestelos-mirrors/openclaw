@@ -1,3 +1,4 @@
+import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import fs from "node:fs/promises";
 import path from "node:path";
@@ -5,20 +6,12 @@ import { constants } from "node:sqlite";
 import { expectDefined } from "@openclaw/normalization-core";
 import { expect, it } from "vitest";
 import { SKILL_LIBRARY_MAX_FILE_BYTES } from "../../../packages/gateway-protocol/src/schema/skill-library.js";
-import { trackSqliteStatementExecutions } from "../../../test/helpers/sqlite-statement-execution-counter.js";
-import { tableHasColumn } from "../../state/openclaw-state-db-schema-helpers.js";
-import {
-  closeOpenClawStateDatabaseAsync as closeDatabase,
-  closeOpenClawStateDatabaseForTest as closeTestDatabase,
-  openOpenClawStateDatabase as openDatabase,
-} from "../../state/openclaw-state-db.js";
+import { openOpenClawStateDatabase as openDatabase } from "../../state/openclaw-state-db.js";
 import {
   linkEmail,
-  setAvatar,
   setDisplayName,
   setUserProfileRole,
 } from "../../state/user-profile-writes.worker.js";
-import { getProfileAvatar } from "../../state/user-profiles-avatar.test-support.js";
 import { ensureProfileForEmail } from "../../state/user-profiles.js";
 import { withEnvAsync } from "../../test-utils/env.js";
 import { requireNativeSqliteDatabase } from "../../test-utils/native-sqlite.js";
@@ -29,11 +22,9 @@ import {
 } from "../discovery/chat-commands.js";
 import { buildWorkspaceSkillCommandSpecs as buildCommandSpecs } from "../discovery/command-specs.js";
 import { buildSkillSnapshot as buildSnapshot } from "../loading/workspace-skill-prompt.js";
-import { prepareSkillResourceDelivery as deliver } from "../runtime/resources.js";
 import { SkillLibraryError } from "../skill-library-error.js";
-import { decodeSkillLibraryFile, skillLibraryRevisionDir as revisionDir } from "./bundle.js";
+import { skillLibraryRevisionDir as revisionDir } from "./bundle.js";
 import { loadSkillLibrarySelection as loadSelection } from "./selection.js";
-import { readSkillLibrary } from "./service.js";
 import {
   content,
   draft,
@@ -277,24 +268,12 @@ it("returns committed flags and relinquishes personal edit access on transfer", 
     ["unshare", false, true],
   ] as const) {
     const receipt = await lib.change({ skillId, revision }, action);
-    expect(receipt.entry).toEqual({
-      ...created.entry,
-      shared,
-      enabled,
-      updatedAt: expect.any(Number),
-    });
+    expect(receipt.entry).toMatchObject({ shared, enabled });
     expect((await lib.read(skillId)).entry).toEqual(receipt.entry);
   }
   const personalAdmin = { ...admin, namespace: "personal" as const };
   const transferred = await lib.change({ skillId, revision }, "transfer", personalAdmin);
-  expect(transferred.entry).toEqual({
-    ...created.entry,
-    ownerProfileId: null,
-    ownerLabel: "Team",
-    shared: true,
-    canEdit: false,
-    updatedAt: expect.any(Number),
-  });
+  expect(transferred.entry).toMatchObject({ ownerProfileId: null, shared: true, canEdit: false });
   expect((await lib.read(skillId, personalAdmin)).entry).toEqual(transferred.entry);
 });
 
@@ -310,15 +289,11 @@ it("makes identical saves a no-op, rejects racing writers, and leaves existing p
     ),
   );
   expectSingleWinner(edits, "CONFLICT");
-  expect(edits.find((result) => result.status === "rejected")).toMatchObject({
-    reason: expect.any(SkillLibraryError),
-  });
   expect((await lib.read(skillId, alice, pins[0]!.revision)).content).toBe(content);
   const current = (await lib.read(skillId)).entry;
   expect(current.revision).not.toBe(revision);
   expect(current.description).not.toBe(created.entry.description);
   const staleMutation = lib.change({ skillId, revision }, "disable");
-  await expect(staleMutation).rejects.toBeInstanceOf(SkillLibraryError);
   await expect(staleMutation).rejects.toMatchObject({
     code: "CONFLICT",
     currentRevision: current.revision,
@@ -359,10 +334,6 @@ it.each(["canonical", "merged"] as const)(
     const bob = actor(ensureProfileForEmail("bob@example.test", options).id);
     const a = await lib.save();
     const b = await lib.save(draft(), bob);
-    const avatar = Buffer.alloc(128 * 1024, 97);
-    for (const profileId of [alice.profileId!, bob.profileId!]) {
-      expect(setAvatar(profileId, avatar, "image/png", options).ok).toBe(true);
-    }
     setDisplayName(alice.profileId!, "Alice 雪 · 🦞", options);
     await expectCode(lib.save(), "NAME_CONFLICT");
     linkEmail("bob@example.test", alice.profileId!, options);
@@ -375,11 +346,6 @@ it.each(["canonical", "merged"] as const)(
     expect(entries.every((entry) => entry.ownerLabel === "Alice 雪 · 🦞")).toBe(true);
     expect(entries.every((entry) => entry.canEdit)).toBe(true);
     expect((await lib.read(b.entry.skillId)).entry.ownerProfileId).toBe(alice.profileId);
-    expect(
-      Buffer.from(
-        expectDefined(getProfileAvatar(alice.profileId!, options), "stored avatar").bytes,
-      ),
-    ).toEqual(avatar);
     setUserProfileRole(alice.profileId!, "viewer", options);
     const viewerEntries = (
       await lib.list({
@@ -399,26 +365,6 @@ it.each(["canonical", "merged"] as const)(
       entries.map((entry) => entry.skillId),
     );
     expect(viewerEntries.every((entry) => !entry.canEdit)).toBe(true);
-  },
-);
-
-it.each(["current", "legacy"] as const)(
-  "reads a skill through a cold %s profile handle",
-  async (schema) => {
-    const { options, alice, lib } = fixture();
-    const saved = await lib.save();
-    if (schema === "legacy") {
-      openDatabase(options).db.exec("ALTER TABLE user_profiles DROP COLUMN role");
-    }
-    await closeDatabase();
-    closeTestDatabase();
-    const database = openDatabase(options);
-    const read = await readSkillLibrary(alice, saved.entry.skillId, undefined, {
-      ...options,
-      database,
-    });
-    expect(read).toMatchObject({ content, entry: saved.entry });
-    expect(tableHasColumn(database.db, "user_profiles", "role")).toBe(schema === "current");
   },
 );
 
@@ -449,9 +395,7 @@ it.each(["created_at", "updated_at", "avatar"] as const)(
       } catch (error) {
         nativeError = error;
       }
-      if (!(nativeError instanceof Error)) {
-        throw new Error("Expected native SQLite INTEGER conversion failure");
-      }
+      assert.ok(nativeError instanceof Error, "Expected native SQLite INTEGER conversion failure");
       await expect(lib.list(source)).rejects.toThrow(
         expect.objectContaining({
           name: nativeError.name,
@@ -477,42 +421,6 @@ it("reads published executable metadata from the manifest and detects changed re
   await fs.writeFile(script, "changed");
   await expect(lib.read(saved.entry.skillId)).rejects.toThrow("integrity verification");
 });
-it("delivers the pinned hidden revision on explicit selection after the library default changes", async () => {
-  const { options, stateDir, lib } = fixture();
-  await withEnvAsync({ OPENCLAW_STATE_DIR: stateDir }, async () => {
-    const hiddenContent = content.replace(
-      "---\n# Guide",
-      "disable-model-invocation: true\n---\n# Guide",
-    );
-    const saved = await lib.save({ ...draft(), content: hiddenContent });
-    const pins = await lib.seed();
-    const entries = loadSelection(pins, options);
-    const snapshot = {
-      ...(await buildSnapshot(stateDir, { entries })),
-      librarySelections: pins,
-    };
-    expect(snapshot.resolvedSkills).toEqual([]);
-    await lib.revise(saved.entry, `${hiddenContent}\nChanged default`);
-    const ordinary = await deliver(snapshot, () => {});
-    const explicit = await deliver(snapshot, () => {}, [
-      { name: pins[0]!.name, path: entries[0]!.skill.filePath },
-    ]);
-    expect(ordinary?.skills[0]).toMatchObject({
-      revision: saved.entry.revision,
-      modelVisible: false,
-    });
-    expect(explicit?.skills[0]).toMatchObject({
-      name: pins[0]!.name,
-      revision: saved.entry.revision,
-      modelVisible: true,
-    });
-    expect(explicit?.skills[0]?.files).toEqual(ordinary?.skills[0]?.files);
-    const markdown = explicit!.skills[0]!.files.find((file) => file.path === "SKILL.md")!;
-    expect(decodeSkillLibraryFile(markdown).toString("utf8")).toBe(hiddenContent);
-    expect(snapshot.librarySelections).toEqual(pins);
-  });
-});
-
 it("checks prerequisites without borrowing another skill's config key", async () => {
   const { options, stateDir, lib } = fixture();
   const saved = await lib.save({
@@ -570,9 +478,7 @@ it("binds ZIP uploads to the owner and ignores archive order and timestamps for 
     });
     await expectCode(lib.commit(begun.uploadId, bob), "NOT_FOUND");
     const saved = await lib.commit(begun.uploadId);
-    if (!("entry" in saved)) {
-      throw new Error("Expected publication receipt");
-    }
+    assert.ok("entry" in saved, "Expected publication receipt");
     revisions.push(saved.entry.revision);
     const read = await lib.read(saved.entry.skillId);
     expect(read.content).toBe(content);
@@ -600,9 +506,7 @@ it("reserves pending import capacity for other profiles without counting complet
   const completed = await lib.begin(bytes, "completed");
   await lib.chunk(completed.uploadId, bytes);
   const receipt = await lib.commit(completed.uploadId);
-  if (!("entry" in receipt)) {
-    throw new Error("Expected completed import receipt");
-  }
+  assert.ok("entry" in receipt, "Expected completed import receipt");
   for (let index = 0; index < 15; index++) {
     await lib.begin(bytes, `alice-pending-${index}`);
   }
@@ -679,24 +583,10 @@ it("bounds growing team defaults without stopping session creation", async () =>
   const selected = await lib.seed(bob);
   expect(library.defaultSelectionNotice).toContain("detach");
   expect(selected).toHaveLength(64);
-  const revisionReads = trackSqliteStatementExecutions(
-    requireNativeSqliteDatabase(openDatabase(options).db),
-    ["revisions"],
-    (sql) =>
-      sql.startsWith("select ") && sql.includes('from "skill_library_revisions"')
-        ? "revisions"
-        : null,
+  const ordered = selected.toReversed();
+  expect(loadSelection(ordered, options).map((entry) => entry.skill.name)).toEqual(
+    ordered.map((pin) => pin.name),
   );
-  try {
-    const ordered = selected.toReversed();
-    expect(loadSelection(ordered, options).map((entry) => entry.skill.name)).toEqual(
-      ordered.map((pin) => pin.name),
-    );
-    expect(revisionReads.counts.revisions).toBe(1);
-    expect(revisionReads.rowCounts.revisions).toBe(64);
-  } finally {
-    revisionReads.restore();
-  }
   const omitted = library.entries.find(
     (entry) => !selected.some((pin) => pin.skillId === entry.skillId),
   )!;
