@@ -495,6 +495,8 @@ const repositoryScriptEntries = [
   "scripts/perf/sqlite-worker-reply-measure.ts!",
   "scripts/perf/startup-model-scope-measure.ts!",
   "scripts/perf/state-read-metadata-bench.ts!",
+  "scripts/perf/state-read-session-list-bench.ts!",
+  "scripts/perf/state-read-worker-bench.ts!",
   "scripts/perf/stream-idle-watchdog.ts!",
   "scripts/perf/tool-source-reply-completion-measure.mjs!",
   "scripts/perf/transcript-model-context-measure.ts!",
