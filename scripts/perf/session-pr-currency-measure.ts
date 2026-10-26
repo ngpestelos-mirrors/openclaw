@@ -4,6 +4,8 @@
 // --base-owner-suffix compares control-ui-session-pr-{read,source,subscriptions}.<suffix>.ts.
 // --base-projection-suffix compares session-row-projection.<suffix>.ts (redirect its
 // materialize import to the matching baseline snapshot). --captures isolates row capture.
+// --unrelated-churn updates an unrelated archived session between batches of 64 validations;
+// baseline read imports must point at control-ui-session-task-prs.<suffix>.ts as well.
 // --subscribe measures real subscribe handlers plus settled passive watcher work.
 // Its baseline also needs server-methods/control-ui.<suffix>.ts.
 // --subscriptions measures passive watcher polls with a runtime publication per poll;
@@ -41,6 +43,7 @@ const { values } = parseArgs({
     allocations: { type: "boolean", default: false },
     subscriptions: { type: "boolean", default: false },
     subscribe: { type: "boolean", default: false },
+    "unrelated-churn": { type: "boolean", default: false },
     "base-owner-suffix": { type: "string" },
     "base-projection-suffix": { type: "string" },
     captures: { type: "boolean", default: false },
@@ -56,6 +59,10 @@ const pairs = integer("pairs");
 const watchSubscriptions = values.subscriptions || values.subscribe;
 assert(!(values.subscriptions && values.subscribe), "Choose --subscribe or --subscriptions");
 assert(!(values.captures && watchSubscriptions), "Choose --captures or subscription work");
+assert(
+  !values["unrelated-churn"] || (!watchSubscriptions && !values.captures),
+  "--unrelated-churn uses reader mode",
+);
 assert(!(values["base-owner-suffix"] && values["base-projection-suffix"]));
 assert(global.gc, "Run Node with --expose-gc");
 assert(!values["base-owner-suffix"] || /^[a-z0-9-]+$/.test(values["base-owner-suffix"]));
@@ -90,8 +97,14 @@ const sources = [
     `../../src/gateway/server-methods/control-ui${ownerSuffix}.ts`,
     import.meta.url,
   );
+  const taskUrl = new URL(
+    `../../src/gateway/control-ui-session-task-prs${values["unrelated-churn"] ? ownerSuffix : ""}.ts`,
+    import.meta.url,
+  );
   return {
     name,
+    taskUrl,
+    taskSha256: createHash("sha256").update(readFileSync(taskUrl)).digest("hex"),
     projectionUrl,
     projectionSha256: createHash("sha256").update(readFileSync(projectionUrl)).digest("hex"),
     materializeUrl,
@@ -154,6 +167,7 @@ const [
   { prepareGatewayRecipientProfile },
   { GatewayScheduler },
   { sessionChanges },
+  { upsertSessionEntryCore },
 ] = await Promise.all([
   import("../../src/config/runtime-snapshot.js"),
   import("../../src/config/sessions/session-accessor.sqlite-entry-store.js"),
@@ -163,6 +177,7 @@ const [
   import("../../src/gateway/expected-profile.js"),
   import("../../src/infra/gateway-scheduler.js"),
   import("../../src/sessions/session-row-changes.js"),
+  import("../../src/config/sessions/session-accessor.js"),
 ]);
 const owners = await Promise.all(
   sources.map(async (source) => {
@@ -291,9 +306,20 @@ try {
     let run = (count: number) =>
       owner.withControlUiSessionPrSource(source, async (assertSourceCurrent) => {
         for (let index = 0; index < count; index++) {
+          if (values["unrelated-churn"] && index % readerCount === 0) {
+            await upsertSessionEntryCore(
+              { agentId: "main", sessionKey: keyFor(sessionCount - 1) },
+              { label: `Churn ${index}` },
+            );
+            await projection.ensureMaterialized();
+          }
           const slot = index % readerCount;
           const target = await reads[slot]!();
-          assert.equal(target, targets[slot]);
+          // Churn may reacquire a grant; its source and task audience must stay identical.
+          assert.equal(
+            values["unrelated-churn"] ? target?.identity : target,
+            values["unrelated-churn"] ? targets[slot]?.identity : targets[slot],
+          );
           assertSourceCurrent();
           target!.assertCurrent!();
         }
@@ -480,6 +506,11 @@ try {
   }
   for (const source of sources) {
     assert.equal(
+      createHash("sha256").update(readFileSync(source.taskUrl)).digest("hex"),
+      source.taskSha256,
+      "Task audience owner changed during measurement",
+    );
+    assert.equal(
       createHash("sha256").update(readFileSync(source.materializeUrl)).digest("hex"),
       source.materializeSha256,
     );
@@ -524,6 +555,7 @@ try {
         sha256,
         sourceUrl,
         sourceSha256,
+        taskSha256,
         subscriptionsSha256,
         handlerSha256,
         projectionUrl,
@@ -536,6 +568,7 @@ try {
         sha256,
         sourcePath: sourceUrl.pathname,
         sourceSha256,
+        taskSha256,
         subscriptionsSha256,
         handlerSha256,
         projectionPath: projectionUrl.pathname,
@@ -554,6 +587,7 @@ try {
       pairs,
       subscriptions: values.subscriptions,
       subscribe: values.subscribe,
+      unrelatedChurn: values["unrelated-churn"],
       captures: values.captures,
     },
     allocationMode: values.allocations,
