@@ -7,7 +7,7 @@ import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
-import type { CDPSession, ElementHandle } from "playwright";
+import type { BrowserContext, CDPSession, ElementHandle, Request } from "playwright";
 import {
   TALK_READY_HISTORY_MESSAGE,
   waitForTalkReady,
@@ -38,21 +38,24 @@ const { values } = parseArgs({
     url: { type: "string" },
     "compare-url": { type: "string" },
     "compare-css-file": { type: "string" },
+    "compare-script-file": { type: "string" },
     output: { type: "string", default: ".artifacts/control-ui-talk" },
     pairs: { type: "string", default: "10" },
     "duration-ms": { type: "string", default: "5000" },
     viewport: { type: "string", default: "both" },
     "cpu-throttle": { type: "string", default: "1,4" },
-    states: { type: "string", default: "listening,speaking,transcribing,idle,hidden" },
+    states: { type: "string", default: "listening,speaking,responding,transcribing,idle,hidden" },
     "external-transcripts": { type: "boolean", default: false },
     "expect-hidden-parked": { type: "boolean", default: false },
     "focused-stop": { type: "boolean", default: false },
+    "startup-latency": { type: "boolean", default: false },
     aa: { type: "boolean", default: false },
     sample: { type: "boolean", default: false },
     trace: { type: "boolean", default: false },
     counters: { type: "boolean", default: false },
     frames: { type: "boolean", default: false },
     "process-wakeups": { type: "boolean", default: false },
+    "compare-suspend-native-audio": { type: "boolean", default: false },
     "first-pair-screenshots": { type: "boolean", default: false },
     headed: { type: "boolean", default: false },
   },
@@ -65,6 +68,9 @@ const transcriptPeriodMs = 50;
 const compareCss = values["compare-css-file"]
   ? await readFile(values["compare-css-file"], "utf8")
   : undefined;
+const compareScript = values["compare-script-file"]
+  ? await readFile(values["compare-script-file"], "utf8")
+  : undefined;
 if (
   !Number.isInteger(pairs) ||
   pairs < 1 ||
@@ -73,9 +79,15 @@ if (
   cpuRates.some((rate) => !Number.isFinite(rate) || rate < 1) ||
   states.some(
     (state) =>
-      !["listening", "speaking", "transcribing", "idle", "hidden", "hidden-transcribing"].includes(
-        state,
-      ),
+      ![
+        "listening",
+        "speaking",
+        "responding",
+        "transcribing",
+        "idle",
+        "hidden",
+        "hidden-transcribing",
+      ].includes(state),
   ) ||
   !["desktop", "mobile", "both"].includes(values.viewport)
 ) {
@@ -91,6 +103,14 @@ if (
 }
 if (values["expect-hidden-parked"] && !states.includes("hidden-transcribing")) {
   throw new Error("--expect-hidden-parked requires hidden-transcribing");
+}
+if (
+  values["compare-suspend-native-audio"] &&
+  states.some((state) => !["listening", "idle", "hidden"].includes(state))
+) {
+  throw new Error(
+    "--compare-suspend-native-audio is a diagnostic limited to listening,idle,hidden",
+  );
 }
 if (
   values["focused-stop"] &&
@@ -121,6 +141,10 @@ type ProcessInfo = {
   type: string;
   cpuTime: number;
 };
+type TalkLayer = {
+  layerId: string;
+  backendNodeId?: number;
+};
 type WakeupRow = {
   pid: number;
   startAbstime?: string;
@@ -132,6 +156,70 @@ type WakeupRow = {
 type Wakeups = {
   processes: WakeupRow[];
 };
+function trackBrowserNetwork(context: BrowserContext, assetBase: string) {
+  const pending = new Set<Request>();
+  let assetGets = 0;
+  let serviceWorkerAssetGets = 0;
+  let lastActivity = performance.now();
+  let checkQuiet: (() => void) | undefined;
+  const isAssetGet = (request: Request) =>
+    request.method() === "GET" && request.url().startsWith(assetBase);
+  context.on("request", (request) => {
+    pending.add(request);
+    if (isAssetGet(request)) {
+      assetGets++;
+      if (request.serviceWorker()) {
+        serviceWorkerAssetGets++;
+      }
+    }
+    lastActivity = performance.now();
+    checkQuiet?.();
+  });
+  const finished = (request: Request) => {
+    pending.delete(request);
+    lastActivity = performance.now();
+    checkQuiet?.();
+  };
+  context.on("requestfinished", finished);
+  context.on("requestfailed", finished);
+  return {
+    snapshot: () => ({
+      assetGets,
+      serviceWorkerAssetGets,
+      pendingAssetGets: [...pending].filter(isAssetGet).length,
+    }),
+    waitForQuiet: () =>
+      new Promise<void>((resolve, reject) => {
+        let quietTimer: ReturnType<typeof setTimeout> | undefined;
+        const finish = (error?: Error) => {
+          clearTimeout(quietTimer);
+          clearTimeout(deadline);
+          checkQuiet = undefined;
+          if (error) {
+            reject(error);
+          } else {
+            resolve();
+          }
+        };
+        const deadline = setTimeout(
+          () => finish(new Error("Browser network did not become quiet within 70 seconds")),
+          70_000,
+        );
+        checkQuiet = () => {
+          clearTimeout(quietTimer);
+          if (!pending.size) {
+            const remaining = 1500 - (performance.now() - lastActivity);
+            if (remaining <= 0) {
+              finish();
+            } else {
+              quietTimer = setTimeout(() => checkQuiet?.(), remaining);
+            }
+          }
+        };
+        checkQuiet();
+      }),
+  };
+}
 async function metrics(cdp: CDPSession) {
   const {
     metrics: list,
@@ -158,6 +246,34 @@ async function metrics(cdp: CDPSession) {
 }
 async function processes(cdp: CDPSession): Promise<ProcessInfo[]> {
   return (await cdp.send("SystemInfo.getProcessInfo")).processInfo;
+}
+function processCpuDelta(before: ProcessInfo[], after: ProcessInfo[]) {
+  const byTypeMs: Record<string, number> = {};
+  const matched = [];
+  const unmatchedBefore = [];
+  for (const initial of before) {
+    const final = after.find(({ id, type }) => id === initial.id && type === initial.type);
+    if (!final) {
+      if (initial.type === "renderer") {
+        throw new Error("Renderer process disappeared during sample");
+      }
+      unmatchedBefore.push({ id: initial.id, type: initial.type });
+      continue;
+    }
+    const cpuMs = (final.cpuTime - initial.cpuTime) * 1000;
+    byTypeMs[initial.type] = (byTypeMs[initial.type] ?? 0) + cpuMs;
+    matched.push({ id: initial.id, type: initial.type, cpuMs });
+  }
+  const unmatchedAfter = after
+    .filter((final) => !before.some(({ id, type }) => id === final.id && type === final.type))
+    .map(({ id, type }) => ({ id, type }));
+  return {
+    byTypeMs,
+    matched,
+    unmatchedBefore,
+    unmatchedAfter,
+    complete: unmatchedBefore.length === 0 && unmatchedAfter.length === 0,
+  };
 }
 let wakeupReader: string | undefined;
 if (values["process-wakeups"]) {
@@ -250,6 +366,23 @@ type Sample = {
   prefix: string;
   [key: string]: unknown;
 };
+type StartupLatency = {
+  gestureToReadyMs: number;
+  gestureToPlayMs: number;
+  playToReadyMs: number;
+  taskMs: number;
+  scriptMs: number;
+  styleMs: number;
+};
+declare global {
+  interface Window {
+    talkStartupProbe: {
+      gestureAtMs: number | null;
+      firstPlayAtMs: number | null;
+      readyAtMs: number | null;
+    };
+  }
+}
 const results: Sample[] = [];
 const startupPlayback: Array<{
   comparison: string;
@@ -258,6 +391,7 @@ const startupPlayback: Array<{
   viewport: string;
   cpuRate: number;
   playLatenciesMs: number[];
+  startup?: StartupLatency;
 }> = [];
 try {
   const sources = values.url
@@ -302,6 +436,9 @@ try {
   if (!slots.length) {
     throw new Error("No bundle selected");
   }
+  if (values["compare-suspend-native-audio"] && slots.length !== 2) {
+    throw new Error("--compare-suspend-native-audio requires two bundle slots");
+  }
   const manifest = {
     revision: execFileSync("git", ["rev-parse", "HEAD"], { encoding: "utf8" }).trim(),
     sourceHashes: {
@@ -329,20 +466,48 @@ try {
     transcriptPeriodMs,
     expectHiddenParked: values["expect-hidden-parked"],
     focusedStop: values["focused-stop"],
+    startupLatency: values["startup-latency"],
+    startupProbeContract:
+      "Optional browser-local pointerdown to first native play readiness; existing play proxy retained separately. CPU spans Start click through readiness assertion. Synthetic transport and muted native audio; no acoustic, provider, or network latency claim.",
+    headless: !values.headed,
+    workloadVersion: "network-settled-v3",
+    networkContract:
+      "Production service workers remain enabled. Before measurement, wait for activation (10 seconds maximum) and 1.5 seconds of browser-context network quiet (70 seconds maximum), including service-worker requests and failed/aborted requests. Quiet-window timers end before measurement. Asset GET counters include frame and worker requests; their observation window conservatively brackets both Performance.getMetrics endpoint calls. Any in-flight asset GET at the start or new asset GET inside that window invalidates the sample and fails the run; failed samples remain in results and artifacts.",
     assetHashContract:
       "Hashes of server files (or Node-fetched assets) matched to observed browser resource URLs; not browser-response byte attestation.",
-    mode: values.trace || values.counters || values.frames ? "diagnostic" : "thread-cpu-comparison",
+    mode:
+      values["compare-suspend-native-audio"] || values.trace || values.counters || values.frames
+        ? "diagnostic"
+        : "thread-cpu-comparison",
+    diagnosticKind: values["compare-suspend-native-audio"]
+      ? "native-audio-counterfactual"
+      : undefined,
     instrumentation: {
       trace: values.trace,
       counters: values.counters,
       frameProbe: values.frames,
       processWakeups: values["process-wakeups"],
+      observerCallbacks: values.counters,
+      compareSuspendNativeAudio: values["compare-suspend-native-audio"],
+      compositorLayers: values.trace,
     },
+    compositorLayerContract:
+      "--trace retains the latest LayerTree.layerTreeDidChange event. Before fixture counters and the CPU window start, layers.json records each reported layer's compositing reasons and backend-node matches for all seven meter spans. Layers retired during metadata collection are marked stale. This is a pre-sample snapshot. LayerTree instrumentation is diagnostic overhead; DOM/reason queries and artifact writes run outside the measured interval.",
+    nativeAudioContract:
+      "--compare-suspend-native-audio is a counterfactual diagnostic, never a product win or audio/latency proof. Supply the same frozen bundle in both slots to isolate native audio cost: AB side 1 suspends audio; AB side 0 and both A/A sides retain normal audio. Alternating side order and --aa provide interleaved shared-host controls. Only the suspended side wraps the native AudioContext constructor; after state/visibility setup it awaits suspension of every tracked live context and pauses every native audio element, without disconnecting the media graph, stopping tracks, or changing the meter JS timer. Every row records whether suspension is enabled; suspended rows record context states/counts and paused playback before suspension and at both sample endpoints. Native Stop still owns cleanup; each next state suspends again after any visibility-driven resume.",
+    processCpuContract:
+      "processCpu.byTypeMs sums CPU deltas only for matching endpoint process IDs and types. matched retains per-process deltas; unmatchedBefore/unmatchedAfter identify transient processes, so incomplete samples cannot claim total browser CPU. rendererCpuMs includes all matched renderer threads, not just main-thread work; TaskDuration/ScriptDuration use the main-thread threadTicks domain.",
+    observationContract:
+      "Every non-focused sample verifies neutral tooltips. Ordinary CPU samples do not install the transcript observer; transcribing samples observe transcript DOM unless external delivery is selected without counters. Counters mode wraps native MutationObserver, ResizeObserver, and IntersectionObserver callbacks, including fixture-owned observers. Neutral ordinary samples differ from earlier runs that could retain Stop hover.",
+    revealClockContract:
+      "reveal.browser uses the page performance clock: visibilitychange event timestamp to complete transcript DOM and two native animation frames. Existing reveal wall times use the Node clock and include browser restoration, protocol, and polling delays. The reveal-only native MutationObserver disconnects after DOM catchup; frame readiness is an opportunity to render, not proof of physical display presentation.",
     compareCss,
+    compareScript,
     contract:
-      "Production renderer; native oscillator microphone and native audio-element playback; synthetic WebRTC/provider events. No real-provider, network, hardware microphone, end-to-end audio latency, or battery-life claim. Playback latency measures the local native play() promise, not network round-trip. Transcript latency is provider-event dispatch to DOM observation, not INP. Idle means a connected Talk session without audio/transcript work; hidden means a connected listening session in an actually hidden document. Hidden-transcribing delivers provider chunks from Node at 20Hz and verifies complete catchup and retained row identity after reveal. External transcript CPU windows omit per-chunk DOM observation unless --counters is enabled; endpoint scans run after metrics. Speaking means input/playback with 0.8Hz amplitude modulation, silenced at the audio element. Frame probe adds its own RAF loop, so run separately. Focused-stop uses native Tab traversal and requires the Stop trigger, its own tooltip, and document focus to remain active throughout the interval. All timers/animations retain native clocks.",
-    acceptance:
-      "At least 10 interleaved pairs; aim for 40% active CPU reduction and near-zero idle/hidden renderer work. A clean >=5% CPU win may land; per-cell timing median regression <=5% with no p95 increase (or 20-pair confirmation). A/A identifies shared-host wall-time noise; never claim network/provider latency from this fixture.",
+      "Production renderer; native oscillator microphone and native audio-element playback; synthetic WebRTC/provider events. No real-provider, network, hardware microphone, end-to-end audio latency, or battery-life claim. Playback latency measures the local native play() promise, not network round-trip. Transcript latency is provider-event dispatch to DOM observation, not INP. Idle means a connected Talk session without audio/transcript work; hidden means a connected listening session in an actually hidden document. Hidden-transcribing delivers provider chunks from Node at 20Hz and verifies complete catchup and retained row identity after reveal. External transcript CPU windows omit per-chunk DOM observation unless --counters is enabled; endpoint scans run after metrics. Speaking means user microphone input with 0.8Hz amplitude modulation, silenced at the audio element. Responding means silent microphone input with native playback still active and a synthetic response.created holding the TTS thinking animation; a matching completed response.done with empty output settles it after observation or before the next state. Frame probe adds its own RAF loop, so run separately. Focused-stop uses native Tab traversal and requires the Stop trigger, its own tooltip, and document focus to remain active throughout the interval. All timers/animations retain native clocks.",
+    acceptance: values["compare-suspend-native-audio"]
+      ? "Diagnostic attribution only: use interleaved same-bundle AB pairs and normal-audio A/A controls. Suspended audio invalidates product performance and latency acceptance, regardless of measured CPU reduction."
+      : "At least 10 interleaved pairs; aim for 40% active CPU reduction and near-zero idle/hidden renderer work. A clean >=5% CPU win may land; per-cell timing median regression <=5% with no p95 increase (or 20-pair confirmation). A/A identifies shared-host wall-time noise; never claim network/provider latency from this fixture.",
   };
   await writeFile(path.join(artifactDir, "manifest.json"), JSON.stringify(manifest, null, 2));
   const comparisons = [...(slots.length === 2 ? ["AB"] : ["A"]), ...(values.aa ? ["AA"] : [])];
@@ -354,16 +519,25 @@ try {
           const sides = comparison === "A" ? [0] : pair % 2 ? [1, 0] : [0, 1];
           for (const side of sides) {
             const slot = slots[comparison === "AA" ? 0 : side]!;
+            const suspendNativeAudio =
+              values["compare-suspend-native-audio"] && comparison === "AB" && side === 1;
             const browserPrefix = `${comparison}-${viewport.name}-${cpuRate}x-${pair}-${side}`;
             const observation = await launchTalkObservationBrowser(artifactDir, values.headed);
             let browserCdp: CDPSession | undefined;
             let cdp: CDPSession | undefined;
             let tracing = false;
+            let layerTreeEnabled = false;
+            let latestLayers: TalkLayer[] | undefined;
+            const collectLayers = ({ layers }: { layers?: TalkLayer[] }) => {
+              latestLayers = layers ?? [];
+            };
             const events: unknown[] = [];
             const collectTrace = ({ value }: { value: unknown[] }) => {
               events.push(...value);
             };
             try {
+              const assetBase = new URL("assets/", slot.url).href;
+              const network = trackBrowserNetwork(observation.context, assetBase);
               const page = await observation.context.newPage();
               page.setDefaultTimeout(20000 * cpuRate);
               await page.setViewportSize(viewport);
@@ -382,7 +556,7 @@ try {
                   gatewayUrl: controlUiBundledGatewayUrl(slot.url),
                 },
               );
-              await installTalkPerfFixture(page, values.counters);
+              await installTalkPerfFixture(page, values.counters, suspendNativeAudio);
               const gateway = await installMockGateway(page, {
                 serverBuildId: slot.buildId,
                 serverVersion: slot.version,
@@ -411,6 +585,39 @@ try {
               }
               await page.goto(new URL("/chat", slot.url).href);
               await waitForTalkReady(page);
+              let beforeStartup: Awaited<ReturnType<typeof metrics>> | undefined;
+              if (values["startup-latency"]) {
+                await page.evaluate(() => {
+                  const probe: Window["talkStartupProbe"] = (window.talkStartupProbe = {
+                    gestureAtMs: null,
+                    firstPlayAtMs: null,
+                    readyAtMs: null,
+                  });
+                  document.addEventListener(
+                    "pointerdown",
+                    () => {
+                      probe.gestureAtMs = performance.now();
+                    },
+                    { capture: true, once: true },
+                  );
+                  // Preserve the fixture's muted native play wrapper and its own timing.
+                  // oxlint-disable-next-line typescript/unbound-method
+                  const play = HTMLMediaElement.prototype.play;
+                  HTMLMediaElement.prototype.play = function () {
+                    const first = probe.firstPlayAtMs === null;
+                    if (first) {
+                      probe.firstPlayAtMs = performance.now();
+                    }
+                    return play.call(this).then(() => {
+                      if (first) {
+                        probe.readyAtMs = performance.now();
+                      }
+                    });
+                  };
+                });
+                await cdp.send("Performance.enable", { timeDomain: "threadTicks" });
+                beforeStartup = await metrics(cdp);
+              }
               await page
                 .getByRole("button", {
                   name: viewport.name === "mobile" ? "Tap to talk" : "Start voice input",
@@ -436,6 +643,35 @@ try {
                   : undefined;
               });
               const playLatenciesMs = await playback.jsonValue();
+              let startup: StartupLatency | undefined;
+              if (beforeStartup) {
+                const afterStartup = await metrics(cdp);
+                const gesture = await page.evaluate(() => window.talkStartupProbe);
+                if (
+                  gesture.gestureAtMs === null ||
+                  gesture.readyAtMs === null ||
+                  gesture.firstPlayAtMs === null
+                ) {
+                  throw new Error("Incomplete startup gesture probe");
+                }
+                startup = {
+                  gestureToReadyMs: gesture.readyAtMs - gesture.gestureAtMs,
+                  gestureToPlayMs: gesture.firstPlayAtMs - gesture.gestureAtMs,
+                  playToReadyMs: gesture.readyAtMs - gesture.firstPlayAtMs,
+                  taskMs: (afterStartup.TaskDuration! - beforeStartup.TaskDuration!) * 1000,
+                  scriptMs: (afterStartup.ScriptDuration! - beforeStartup.ScriptDuration!) * 1000,
+                  styleMs:
+                    (afterStartup.RecalcStyleDuration! - beforeStartup.RecalcStyleDuration!) * 1000,
+                };
+                await writeFile(
+                  path.join(artifactDir, `${browserPrefix}.startup.json`),
+                  JSON.stringify(
+                    { comparison, side, pair, viewport: viewport.name, cpuRate, ...startup },
+                    null,
+                    2,
+                  ),
+                );
+              }
               if (!playLatenciesMs) {
                 throw new Error("Native playback did not start");
               }
@@ -446,13 +682,35 @@ try {
                 viewport: viewport.name,
                 cpuRate,
                 playLatenciesMs,
+                startup,
               });
               await playback.dispose();
               if (compareCss && comparison === "AB" && side === 1) {
                 await page.addStyleTag({ content: compareCss });
               }
-              await page.waitForLoadState("networkidle");
-              const assetBase = new URL("assets/", slot.url).href;
+              if (compareScript && comparison === "AB" && side === 1) {
+                await page.evaluate(compareScript);
+              }
+              await page.evaluate(async () => {
+                let timer: ReturnType<typeof setTimeout> | undefined;
+                try {
+                  await Promise.race([
+                    navigator.serviceWorker.ready,
+                    new Promise<never>((_resolve, reject) => {
+                      timer = setTimeout(
+                        () =>
+                          reject(
+                            new Error("Service worker did not become ready within 10 seconds"),
+                          ),
+                        10_000,
+                      );
+                    }),
+                  ]);
+                } finally {
+                  clearTimeout(timer);
+                }
+              });
+              await network.waitForQuiet();
               const loadedAssets = await page.evaluate(() =>
                 performance.getEntriesByType("resource").map((entry) => entry.name),
               );
@@ -477,6 +735,11 @@ try {
                 setTimeout(resolve, 1000);
               });
               await cdp.send("Performance.enable", { timeDomain: "threadTicks" });
+              if (values.trace) {
+                cdp.on("LayerTree.layerTreeDidChange", collectLayers);
+                await cdp.send("LayerTree.enable");
+                layerTreeEnabled = true;
+              }
               for (const state of states) {
                 const hidden = state === "hidden" || state === "hidden-transcribing";
                 const externalTranscripts =
@@ -493,6 +756,7 @@ try {
                   status: "failed",
                   prefix,
                   hostLoadAverage: os.loadavg(),
+                  nativeAudio: { enabled: suspendNativeAudio },
                 };
                 results.push(row);
                 let windowId: number | undefined;
@@ -520,6 +784,8 @@ try {
                       .locator(".agent-chat__voice-turn")
                       .last()
                       .elementHandle();
+                  }
+                  if (!values["focused-stop"]) {
                     await page.mouse.move(1, 1);
                     await page
                       .getByRole("button", { name: "Stop voice input", exact: true })
@@ -544,6 +810,14 @@ try {
                         document
                           .querySelector(".agent-chat__voice-activity")
                           ?.getAttribute("data-level") === "0",
+                    );
+                  }
+                  if (state === "responding") {
+                    await page
+                      .locator('.agent-chat__voice-activity[data-status="thinking"]')
+                      .waitFor({ state: "visible" });
+                    await page.waitForFunction(
+                      () => document.querySelector("audio")?.paused === false,
                     );
                   }
                   if (hidden) {
@@ -585,21 +859,92 @@ try {
                       .locator('.tooltip-surface[data-phase="open"]')
                       .waitFor({ state: "visible" });
                   }
+                  const nativeAudio = suspendNativeAudio
+                    ? await page.evaluate(async () => ({
+                        beforeSuspension: window.openclawTalkBench.readNativeAudioState(),
+                        atStart: await window.openclawTalkBench.suspendNativeAudio(),
+                      }))
+                    : undefined;
+                  row.nativeAudio = { enabled: suspendNativeAudio, ...nativeAudio };
                   if (values["first-pair-screenshots"] && pair === 0 && !hidden) {
                     await page.screenshot({ path: `${prefix}.png` });
                   }
+                  await network.waitForQuiet();
                   events.length = 0;
                   if (values.trace) {
                     cdp.on("Tracing.dataCollected", collectTrace);
                     await cdp.send("Tracing.start", {
                       categories:
-                        "toplevel,devtools.timeline,blink.user_timing,v8,disabled-by-default-v8.gc",
+                        "toplevel,devtools.timeline,blink,blink.animations,blink.user_timing,cc,v8,audio,webaudio,webrtc,disabled-by-default-devtools.timeline.invalidationTracking,disabled-by-default-v8.gc",
                       transferMode: "ReportEvents",
                     });
                     tracing = true;
                     await cdp.send("Profiler.enable");
                     await cdp.send("Profiler.start");
                     await page.evaluate(() => performance.mark("openclaw-talk-sample"));
+                    const reportedLayers = latestLayers;
+                    if (!reportedLayers) {
+                      throw new Error("LayerTree did not report layers for the Talk sample");
+                    }
+                    // Collect metadata before fixture.start() opens the counter window.
+                    const { root } = await cdp.send("DOM.getDocument");
+                    const selector = ".agent-chat__voice-activity-bar";
+                    const { nodeIds } = await cdp.send("DOM.querySelectorAll", {
+                      nodeId: root.nodeId,
+                      selector,
+                    });
+                    if (nodeIds.length !== 7) {
+                      throw new Error(`Expected seven Talk meter spans, found ${nodeIds.length}`);
+                    }
+                    const meterNodes = await Promise.all(
+                      nodeIds.map(async (nodeId: number, index: number) => {
+                        const { node } = await cdp!.send("DOM.describeNode", { nodeId });
+                        return {
+                          index,
+                          nodeId,
+                          backendNodeId: node.backendNodeId,
+                          layerIds: reportedLayers
+                            .filter((layer) => layer.backendNodeId === node.backendNodeId)
+                            .map((layer) => layer.layerId),
+                        };
+                      }),
+                    );
+                    const layers = await Promise.all(
+                      reportedLayers.map(async (layer) => {
+                        let reasons;
+                        try {
+                          reasons = await cdp!.send("LayerTree.compositingReasons", {
+                            layerId: layer.layerId,
+                          });
+                        } catch (error) {
+                          if (
+                            !(error instanceof Error) ||
+                            !error.message.includes("No layer matching given id found")
+                          ) {
+                            throw error;
+                          }
+                          return {
+                            layerId: layer.layerId,
+                            backendNodeId: layer.backendNodeId,
+                            stale: true,
+                          };
+                        }
+                        return {
+                          layerId: layer.layerId,
+                          backendNodeId: layer.backendNodeId,
+                          compositingReasons: reasons.compositingReasons,
+                          compositingReasonIds: reasons.compositingReasonIds,
+                        };
+                      }),
+                    );
+                    await writeFile(
+                      `${prefix}.layers.json`,
+                      JSON.stringify(
+                        { phase: "pre-sample", selector, meterNodes, layers },
+                        null,
+                        2,
+                      ),
+                    );
                   }
                   await page.evaluate(
                     ({ frames, observeTranscripts, observeTooltips, focusedStop }) =>
@@ -611,13 +956,16 @@ try {
                       ),
                     {
                       frames: values.frames,
-                      observeTranscripts: !externalTranscripts || values.counters,
-                      observeTooltips: externalTranscripts || values["focused-stop"],
+                      observeTranscripts:
+                        (state === "transcribing" || state === "hidden-transcribing") &&
+                        (!externalTranscripts || values.counters),
+                      observeTooltips: true,
                       focusedStop: values["focused-stop"],
                     },
                   );
                   const beforeProcesses = await processes(browserCdp);
                   const beforeWakeups = wakeups(beforeProcesses);
+                  const beforeNetwork = network.snapshot();
                   const before = await metrics(cdp);
                   const start = performance.now();
                   let offeredChunks = 0;
@@ -645,56 +993,81 @@ try {
                   });
                   const after = await metrics(cdp);
                   const wallMs = performance.now() - start;
+                  const afterNetwork = network.snapshot();
+                  const assetGetCount = afterNetwork.assetGets - beforeNetwork.assetGets;
+                  const networkValidity = {
+                    valid: beforeNetwork.pendingAssetGets === 0 && assetGetCount === 0,
+                    assetGetCount,
+                    serviceWorkerAssetGetCount:
+                      afterNetwork.serviceWorkerAssetGets - beforeNetwork.serviceWorkerAssetGets,
+                    pendingAssetGetCountAtStart: beforeNetwork.pendingAssetGets,
+                  };
                   const afterProcesses = await processes(browserCdp);
                   const afterWakeups = wakeups(afterProcesses);
                   const interval = {
                     startUs: before.Timestamp! * 1000000,
                     endUs: after.Timestamp! * 1000000,
                   };
-                  const proof = await page.evaluate((readExternalTranscript) => {
-                    const snapshot = window.openclawTalkBench;
-                    if (readExternalTranscript) {
-                      // CPU timing ended above; this observation must not tax each hidden chunk.
-                      snapshot.readTranscriptDom();
-                    }
-                    snapshot.stop();
-                    const {
-                      analyserReads,
-                      meterStyleMutations,
-                      meterDataMutations,
-                      intervalCallbacks,
-                      timeoutCallbacks,
-                      animationCallbacks,
-                      transcriptChunks,
-                      transcriptDomMutations,
-                      transcriptPendingChunks,
-                      tooltipOpenAtStart,
-                      tooltipOpenAtEnd,
-                      tooltipChanges,
-                      focusedStop,
-                      transcriptLatenciesMs,
-                      frameTimes,
-                    } = snapshot;
-                    const counts = {
-                      analyserReads,
-                      meterStyleMutations,
-                      meterDataMutations,
-                      intervalCallbacks,
-                      timeoutCallbacks,
-                      animationCallbacks,
-                      transcriptChunks,
-                      transcriptDomMutations,
-                      transcriptPendingChunks,
-                      tooltipOpenAtStart,
-                      tooltipOpenAtEnd,
-                      tooltipChanges,
-                      focusedStop,
-                      transcriptObservedChunks: transcriptChunks - transcriptPendingChunks,
-                      transcriptLatenciesMs,
-                      frameTimes,
-                    };
-                    return { ...counts, visibility: document.visibilityState };
-                  }, externalTranscripts);
+                  const proof = await page.evaluate(
+                    ({ readExternalTranscript, checkNativeAudio }) => {
+                      const snapshot = window.openclawTalkBench;
+                      if (readExternalTranscript) {
+                        // CPU timing ended above; this observation must not tax each hidden chunk.
+                        snapshot.readTranscriptDom();
+                      }
+                      snapshot.stop();
+                      const {
+                        analyserReads,
+                        meterStyleMutations,
+                        meterDataMutations,
+                        intervalCallbacks,
+                        timeoutCallbacks,
+                        animationCallbacks,
+                        mutationObserverCallbacks,
+                        resizeObserverCallbacks,
+                        intersectionObserverCallbacks,
+                        transcriptChunks,
+                        transcriptDomMutations,
+                        transcriptPendingChunks,
+                        tooltipOpenAtStart,
+                        tooltipOpenAtEnd,
+                        tooltipChanges,
+                        focusedStop,
+                        transcriptLatenciesMs,
+                        frameTimes,
+                      } = snapshot;
+                      const counts = {
+                        analyserReads,
+                        meterStyleMutations,
+                        meterDataMutations,
+                        intervalCallbacks,
+                        timeoutCallbacks,
+                        animationCallbacks,
+                        mutationObserverCallbacks,
+                        resizeObserverCallbacks,
+                        intersectionObserverCallbacks,
+                        transcriptChunks,
+                        transcriptDomMutations,
+                        transcriptPendingChunks,
+                        tooltipOpenAtStart,
+                        tooltipOpenAtEnd,
+                        tooltipChanges,
+                        focusedStop,
+                        transcriptObservedChunks: transcriptChunks - transcriptPendingChunks,
+                        transcriptLatenciesMs,
+                        frameTimes,
+                      };
+                      return {
+                        ...counts,
+                        nativeAudio: checkNativeAudio ? snapshot.readNativeAudioState() : undefined,
+                        visibility: document.visibilityState,
+                      };
+                    },
+                    {
+                      readExternalTranscript: externalTranscripts,
+                      checkNativeAudio: suspendNativeAudio,
+                    },
+                  );
                   if (tracing) {
                     const { profile } = await cdp.send("Profiler.stop");
                     await writeFile(`${prefix}.cpu-profile.json`, JSON.stringify(profile));
@@ -734,16 +1107,9 @@ try {
                     cdp.removeListener("Tracing.dataCollected", collectTrace);
                   }
                   const delta = (name: string) => (after[name]! - before[name]!) * 1000;
-                  const initialRenderers = beforeProcesses.filter(
-                    ({ type }) => type === "renderer",
-                  );
-                  const rendererCpuMs = initialRenderers.reduce((sum, initial) => {
-                    const final = afterProcesses.find(({ id }) => id === initial.id);
-                    if (!final) {
-                      throw new Error("Renderer process disappeared during sample");
-                    }
-                    return sum + (final.cpuTime - initial.cpuTime) * 1000;
-                  }, 0);
+                  const intervalSeconds = (interval.endUs - interval.startUs) / 1_000_000;
+                  const processCpu = processCpuDelta(beforeProcesses, afterProcesses);
+                  const rendererCpuMs = processCpu.byTypeMs.renderer ?? 0;
                   const frameGaps = proof.frameTimes
                     .slice(1)
                     .map((time, index) => time - proof.frameTimes[index]!);
@@ -766,13 +1132,21 @@ try {
                   );
                   Object.assign(row, {
                     status: "passed",
+                    network: networkValidity,
                     interval,
                     wallMs,
                     taskMs: delta("TaskDuration"),
                     scriptMs: delta("ScriptDuration"),
                     layoutMs: delta("LayoutDuration"),
                     styleMs: delta("RecalcStyleDuration"),
+                    taskMsPerSecond: delta("TaskDuration") / intervalSeconds,
+                    scriptMsPerSecond: delta("ScriptDuration") / intervalSeconds,
+                    styleMsPerSecond: delta("RecalcStyleDuration") / intervalSeconds,
                     rendererCpuMs,
+                    processCpu,
+                    nativeAudio: nativeAudio
+                      ? { enabled: true, ...nativeAudio, atEnd: proof.nativeAudio }
+                      : { enabled: false },
                     heapDeltaBytes: after.JSHeapUsedSize! - before.JSHeapUsedSize!,
                     proof,
                     transcriptDelivery: externalTranscripts
@@ -807,8 +1181,23 @@ try {
                     wakeups: wakeupDelta(beforeWakeups, afterWakeups),
                     errors,
                   });
+                  if (!networkValidity.valid) {
+                    throw new Error(
+                      `Talk sample contains background asset traffic: ${JSON.stringify(networkValidity)}`,
+                    );
+                  }
                   if (errors.length) {
                     throw new Error(`Page errors: ${errors.join("; ")}`);
+                  }
+                  if (proof.visibility !== (hidden ? "hidden" : "visible")) {
+                    throw new Error("Observation did not retain the intended document visibility");
+                  }
+                  if (
+                    suspendNativeAudio &&
+                    (!proof.nativeAudio?.allLiveContextsSuspended ||
+                      !proof.nativeAudio.allAudioPaused)
+                  ) {
+                    throw new Error("Native audio resumed during counterfactual observation");
                   }
                   if (
                     values["focused-stop"] &&
@@ -825,23 +1214,15 @@ try {
                       "Focused Stop observation lost document, trigger, or tooltip focus",
                     );
                   }
+                  if (
+                    !values["focused-stop"] &&
+                    (proof.tooltipOpenAtStart || proof.tooltipOpenAtEnd || proof.tooltipChanges)
+                  ) {
+                    throw new Error("Ordinary observation did not retain neutral tooltips");
+                  }
                   if (externalTranscripts) {
-                    if (
-                      proof.tooltipOpenAtStart ||
-                      proof.tooltipOpenAtEnd ||
-                      proof.tooltipChanges
-                    ) {
-                      throw new Error(
-                        "External transcript observation did not retain neutral tooltips",
-                      );
-                    }
-                    if (
-                      proof.transcriptChunks !== offeredChunks ||
-                      proof.visibility !== (hidden ? "hidden" : "visible")
-                    ) {
-                      throw new Error(
-                        "External transcript delivery or visibility invariant failed",
-                      );
+                    if (proof.transcriptChunks !== offeredChunks) {
+                      throw new Error("External transcript delivery invariant failed");
                     }
                     if (
                       hidden &&
@@ -852,31 +1233,42 @@ try {
                       throw new Error("Candidate rendered transcript chunks while hidden");
                     }
                     if (windowId !== undefined) {
+                      await page.evaluate(() => window.openclawTalkBench.armReveal());
                       const beforeReveal = await metrics(cdp);
                       const revealStartedAt = performance.now();
                       await cdp.send("Browser.setWindowBounds", {
                         windowId,
                         bounds: { windowState: "normal" },
                       });
+                      const restoreCommandAfterMs = performance.now() - revealStartedAt;
                       windowId = undefined;
                       await page.waitForFunction(() => !document.hidden, undefined, {
                         polling: 50,
                       });
+                      const visibleObservedAfterMs = performance.now() - revealStartedAt;
                       await page.waitForFunction(
-                        () => {
-                          window.openclawTalkBench.readTranscriptDom();
-                          return window.openclawTalkBench.transcriptPendingChunks === 0;
-                        },
+                        () => window.openclawTalkBench.reveal?.transcriptDomAtMs !== undefined,
                         undefined,
                         { polling: 50 },
                       );
                       const observedAfterMs = performance.now() - revealStartedAt;
-                      await page.evaluate(
-                        () =>
-                          new Promise<void>((resolve) => {
-                            requestAnimationFrame(() => requestAnimationFrame(() => resolve()));
-                          }),
+                      await page.waitForFunction(
+                        () => window.openclawTalkBench.reveal?.secondFrameAtMs !== undefined,
+                        undefined,
+                        { polling: 50 },
                       );
+                      const browserReveal = await page.evaluate(() => {
+                        const reveal = window.openclawTalkBench.reveal;
+                        if (
+                          !reveal ||
+                          reveal.transcriptDomAtMs === undefined ||
+                          reveal.secondFrameAtMs === undefined ||
+                          window.openclawTalkBench.transcriptPendingChunks !== 0
+                        ) {
+                          throw new Error("Browser reveal did not complete transcript catchup");
+                        }
+                        return reveal;
+                      });
                       const afterReveal = await metrics(cdp);
                       const revealDelta = (name: string) =>
                         (afterReveal[name]! - beforeReveal[name]!) * 1000;
@@ -887,8 +1279,11 @@ try {
                         styleMs: revealDelta("RecalcStyleDuration"),
                       };
                       row.reveal = {
+                        restoreCommandAfterMs,
+                        visibleObservedAfterMs,
                         observedAfterMs,
                         frameAfterMs: performance.now() - revealStartedAt,
+                        browser: browserReveal,
                         ...revealCpu,
                         observedChunks: await page.evaluate(
                           () =>
@@ -953,9 +1348,16 @@ try {
               if (tracing) {
                 await cdp?.send("Tracing.end").catch(() => undefined);
               }
-              await cdp?.detach();
-              await browserCdp?.detach();
-              await observation.close();
+              try {
+                if (layerTreeEnabled) {
+                  await cdp?.send("LayerTree.disable");
+                }
+              } finally {
+                cdp?.removeListener("LayerTree.layerTreeDidChange", collectLayers);
+                await cdp?.detach();
+                await browserCdp?.detach();
+                await observation.close();
+              }
             }
           }
         }
@@ -984,11 +1386,17 @@ try {
             "scriptMs",
             "layoutMs",
             "styleMs",
+            "taskMsPerSecond",
+            "scriptMsPerSecond",
+            "styleMsPerSecond",
             "rendererCpuMs",
             "wallMs",
           ];
           summary.push({
             comparison,
+            interpretation: values["compare-suspend-native-audio"]
+              ? "Native-audio counterfactual diagnostic; not product performance or latency evidence."
+              : undefined,
             viewport: viewport.name,
             cpuRate,
             state,
