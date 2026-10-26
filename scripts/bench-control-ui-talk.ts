@@ -470,9 +470,9 @@ try {
     startupProbeContract:
       "Optional browser-local pointerdown to first native play readiness; existing play proxy retained separately. CPU spans Start click through readiness assertion. Synthetic transport and muted native audio; no acoustic, provider, or network latency claim.",
     headless: !values.headed,
-    workloadVersion: "network-settled-v3",
+    workloadVersion: "precache-settled-v4",
     networkContract:
-      "Production service workers remain enabled. Before measurement, wait for activation (10 seconds maximum) and 1.5 seconds of browser-context network quiet (70 seconds maximum), including service-worker requests and failed/aborted requests. Quiet-window timers end before measurement. Asset GET counters include frame and worker requests; their observation window conservatively brackets both Performance.getMetrics endpoint calls. Any in-flight asset GET at the start or new asset GET inside that window invalidates the sample and fails the run; failed samples remain in results and artifacts.",
+      "Production service workers remain enabled. Before measurement, wait for activation, issue the existing version/precache probe, await the worker's existing preparation promises through its inspector, and verify every boot/deferred inventory URL in its current cache. No worker code or production API is changed. Then wait for 1.5 seconds of browser-context network quiet (70 seconds maximum), including worker and failed/aborted requests. Quiet-window timers end before measurement. Asset GET counters conservatively bracket both Performance.getMetrics endpoint calls. In-flight or new asset GETs invalidate the sample and fail the run; failed samples remain in artifacts.",
     assetHashContract:
       "Hashes of server files (or Node-fetched assets) matched to observed browser resource URLs; not browser-response byte attestation.",
     mode:
@@ -710,6 +710,87 @@ try {
                   clearTimeout(timer);
                 }
               });
+              await page.waitForFunction(
+                () => navigator.serviceWorker.controller?.state === "activated",
+              );
+              const workerUrl = await page.evaluate(async (expectedBuild) => {
+                const worker = navigator.serviceWorker.controller!;
+                const channel = new MessageChannel();
+                try {
+                  await new Promise<void>((resolve, reject) => {
+                    const timer = setTimeout(
+                      () => reject(new Error("Service worker precache probe did not reply")),
+                      10_000,
+                    );
+                    channel.port1.addEventListener(
+                      "message",
+                      (event) => {
+                        clearTimeout(timer);
+                        if (
+                          event.data?.type === "sw-updated" &&
+                          event.data.version === expectedBuild
+                        ) {
+                          resolve();
+                        } else {
+                          reject(new Error("Service worker precache probe has a different build"));
+                        }
+                      },
+                      { once: true },
+                    );
+                    channel.port1.start();
+                    worker.postMessage(
+                      {
+                        type: "sw-version-probe",
+                        offlinePrecache: {
+                          saveData: navigator.connection?.saveData === true,
+                          effectiveType: navigator.connection?.effectiveType,
+                        },
+                      },
+                      [channel.port2],
+                    );
+                  });
+                  return worker.scriptURL;
+                } finally {
+                  channel.port1.close();
+                  channel.port2.close();
+                }
+              }, slot.buildId);
+              const worker = observation.context
+                .serviceWorkers()
+                .find((candidate) => candidate.url() === workerUrl);
+              if (!worker) {
+                throw new Error("Active service worker inspector is unavailable");
+              }
+              // Network quiet can fall between cache hashing/writes. Observe the
+              // existing work to completion without adding a production test API.
+              const precache = await worker.evaluate<{
+                cacheName: string;
+                expectedAssets: number;
+                cachedAssets: number;
+                offlineShell: boolean;
+              }>(`(async () => {
+                await Promise.all([offlinePreparation, deferredPreparation]);
+                const inventory = [...OFFLINE_BOOT.assets, ...OFFLINE_BOOT.deferredAssets];
+                const cached = await Promise.all(inventory.map(asset => caches.match(
+                  new URL(asset.path, new URL(SCOPE_PATH, SCOPE_URL)).href,
+                  { cacheName: CACHE_NAME },
+                )));
+                return {
+                  cacheName: CACHE_NAME,
+                  expectedAssets: inventory.length,
+                  cachedAssets: cached.filter(Boolean).length,
+                  offlineShell: Boolean(await caches.match(OFFLINE_SHELL_URL, { cacheName: CACHE_NAME })),
+                };
+              })()`);
+              await writeFile(
+                path.join(artifactDir, `${browserPrefix}.precache.json`),
+                JSON.stringify(precache, null, 2),
+              );
+              if (!precache.offlineShell || precache.cachedAssets !== precache.expectedAssets) {
+                throw new Error(
+                  `Service worker precache is incomplete: ${JSON.stringify(precache)}`,
+                );
+              }
               await network.waitForQuiet();
               const loadedAssets = await page.evaluate(() =>
                 performance.getEntriesByType("resource").map((entry) => entry.name),

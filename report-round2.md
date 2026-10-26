@@ -15,7 +15,8 @@ focus on Stop and its tooltip continuously open. Diagnostic traces, callback
 counters, frame samples, and screenshots are separate from paired CPU windows.
 
 Compare task/script/layout/style CPU per second using Chromium's timestamp
-interval, with renderer-process CPU using its own sampling interval. Rank
+interval. Keep renderer-process CPU as raw deltas from its wider endpoint calls;
+those calls do not record a separate duration for a precise per-second rate. Rank
 source-mapped samples and inspect native tasks as well as JavaScript. Count
 analyser reads, timer/rAF/observer callbacks, and visible meter writes. Record host
 load and use a base/base A/A control because this is a shared Mac.
@@ -347,7 +348,7 @@ Hidden-caption calibration uses `--states hidden-transcribing --external-transcr
 The original measurements above used the `neutral-tooltips-v2` workload. Later
 trace inspection found deferred service-worker asset downloads inside some
 ordinary quiet-state windows: page `networkidle` does not observe worker
-requests. The current `network-settled-v3` workload keeps the service worker
+requests. The intermediate `network-settled-v3` workload keeps the service worker
 enabled, waits for native worker readiness and 1.5 seconds of context-wide
 network quiet, and rejects a measured window with an in-flight or newly started
 asset GET. Its waiting timers end before CPU sampling. This corrects the
@@ -365,9 +366,55 @@ a fresh isolated review on the same route completed with no actionable P0–P2
 findings; final source verification passed. The reviewer did not execute the code
 or independently validate the performance measurements.
 
-Before landing, repeat only the focused-tooltip cells with v3: ten serial
-interleaved A/B and A/A pairs per desktop/mobile viewport at 4×, three-second
+Before landing, repeat only the focused-tooltip cells with
+`precache-settled-v4`: ten serial interleaved A/B and A/A pairs per desktop/mobile
+viewport at 4×, three-second
 listening/idle windows, with the Stop tooltip focused. Report that confirmation
 separately from v2, and extend to twenty pairs if a cell remains borderline.
 This resolves the discovered network-attribution gap without repeating unrelated
 behavior tests or changing the earlier raw observations.
+
+### Explicit precache completion (v4)
+
+The first v3 canvas campaign stopped at its first contaminated window: 411
+service-worker asset GETs began during desktop A/A pair 2's listening sample.
+The failed run and all preceding rows remain retained; they are not the final
+acceptance campaign. Network quiet can occur while the worker hashes and writes
+cached assets, before the next deferred batch starts.
+
+The v4 benchmark sends the existing version/precache probe with the browser's
+real connection flags, waits for the worker's existing preparation promises via
+its inspector, and verifies the offline shell and every boot/deferred inventory
+URL in its current cache. This changes no production code or worker behavior.
+It then waits for network quiet and retains the strict per-window GET rejection.
+The canvas campaign restarts with the same predeclared sample counts and states;
+the targeted tooltip confirmation also uses v4. No earlier timing table is
+relabeled as v4 evidence.
+
+### Hidden CPU attribution
+
+All eight retained canvas diagnostic hidden traces contain no `MinorGC` or
+`MajorGC` event, and no GC-related phase overlaps their measurement intervals.
+Their sampled JavaScript profiles are over 99.7% idle. At 4×, about 2.3 seconds
+of renderer-main thread CPU accrues between ordinary task slices in each
+three-second window; audio-thread CPU remains about 40 ms. At 1×, renderer-main
+CPU is about 37–50 ms. This is strong evidence consistent with CPU-emulation
+overhead, although no named trace event identifies its exact mechanism. It is
+not evidence of continuous Talk audio or JavaScript work. Later untraced windows
+with heap drops are retained as unexplained spikes, not confirmed GC.
+
+The first readiness-only review hit its 30-minute engine limit without an
+assessment. A longer review on the same route completed with no actionable
+P0–P2 findings and passed final source verification. The separate canvas source
+review also completed cleanly. Neither review independently establishes
+performance acceptance.
+
+### Startup boundary correction
+
+Source inspection identified the first native `play()` call as the short
+gesture-unlock WAV in `GatewaySpeechPlayback.prepare()`. The preceding first-play
+and whole-gesture tables measure that unlock promise, not remote Talk audio
+readiness. The WebRTC stream starts through a later `srcObject` play call. These
+old timings remain recorded, including their adverse tails, but cannot establish
+unchanged remote-stream latency. A source-classified probe will retain both
+boundaries separately before the canvas change is accepted.
