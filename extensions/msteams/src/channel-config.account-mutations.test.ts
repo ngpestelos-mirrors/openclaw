@@ -74,10 +74,8 @@ describe("msteams account config mutations", () => {
         cfg: storage === "environment-only" ? {} : cfg,
         accountId: "default",
       });
-      expect(next.channels?.msteams).toMatchObject({
-        appId: undefined,
-        appPassword: undefined,
-      });
+      expect(next.channels?.msteams?.appId).toBeUndefined();
+      expect(next.channels?.msteams?.appPassword).toBeUndefined();
       expect(next.channels?.msteams?.accounts?.default).toEqual({ enabled: false });
       expect(account(next).enabled).toBe(false);
       if (storage !== "environment-only") {
