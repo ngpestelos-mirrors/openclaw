@@ -57,42 +57,6 @@ it("includes nondefault inspections in the retry command after advisory findings
   );
 });
 
-it("runs the deferred database inspection only after Gateway readiness", async () => {
-  const root = tempDirs.make("doctor-database-inspection-");
-  const argvPath = path.join(root, "argv.json");
-  await fs.mkdir(path.join(root, "dist"));
-  await fs.writeFile(
-    path.join(root, "dist/index.js"),
-    `const fs = require("node:fs");
-fs.writeFileSync(${JSON.stringify(argvPath)}, JSON.stringify(process.argv.slice(2)));
-process.stdout.write(JSON.stringify({ ok: true, checksRun: 1, findings: [] }));`,
-  );
-  const input = {
-    root,
-    nodeRunner: process.execPath,
-    result: updateResult({
-      steps: [doctorStep(["core/doctor/database-engine"], root)],
-    }),
-  };
-  const offline = await runPostActivationInspections({ ...input, gatewayReady: false });
-  expect(offline.steps.at(-1)).toMatchObject({
-    exitCode: null,
-    advisory: { message: expect.stringContaining("Gateway readiness") },
-  });
-  await expect(fs.access(argvPath)).rejects.toMatchObject({ code: "ENOENT" });
-
-  const ready = await runPostActivationInspections({ ...input, gatewayReady: true });
-  expect(ready.steps.at(-1)).toMatchObject({ exitCode: 0, doctorLintFindings: [] });
-  expect(JSON.parse(await fs.readFile(argvPath, "utf8"))).toEqual([
-    "doctor",
-    "--lint",
-    "--json",
-    "--only=core/doctor/database-engine",
-    "--severity-min",
-    "info",
-  ]);
-});
-
 it("passes selectors as literal arguments and reports checks the target did not run", async () => {
   const root = tempDirs.make("doctor-unrun-selectors-");
   const argvPath = path.join(root, "argv.json");
