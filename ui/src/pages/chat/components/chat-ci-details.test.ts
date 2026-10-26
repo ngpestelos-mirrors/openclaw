@@ -101,7 +101,13 @@ it("moves mounted CI controls to the current menu owner and releases them on rem
   const second = createMenuControls();
   const result = details("Failed check");
   result.checks[0]!.detailsUrl = "https://github.com/example/project/actions/runs/1";
-  result.checks.push({ id: 2, name: "Skipped check", source: "actions", state: "skipped" });
+  result.checks.push({
+    id: 2,
+    name: "Skipped check",
+    source: "actions",
+    state: "skipped",
+    status: "completed",
+  });
   const { element } = mount(Promise.resolve(result));
   element.controls = first;
   element.menuControls = true;
