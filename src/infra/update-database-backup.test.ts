@@ -358,7 +358,7 @@ it.each(["original-custody", "rollback", "ordinary", "maintenance"] as const)(
       expect(parentImages.mock.calls.map(([file]) => file)).toEqual(
         mode === "original-custody" ? [f.shared] : [],
       );
-      expect(generations.mock.calls.flatMap(([files]) => files)).toEqual(
+      expect(generations.mock.calls.flatMap(([paths]) => paths)).toEqual(
         mode === "original-custody" ? [] : [f.shared, f.shared],
       );
     }
