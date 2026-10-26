@@ -10,10 +10,12 @@ import {
 import { createMemo, createSignal, For, onSettled, type Accessor } from "solid-js";
 import type { PluginDiscoveryEntry } from "../../lib/plugins/index.ts";
 import { createLayoutMeasurement } from "../../lib/reactive/layout-measurement.ts";
+import { observeResize } from "../../lib/reactive/observers.ts";
 
 /** Keep one keyed card list while row tracks limit layout to the visible catalog. */
 export function PluginCatalogGrid(props: {
   items: readonly PluginDiscoveryEntry[];
+  results?: boolean;
   children: (
     plugin: Accessor<PluginDiscoveryEntry>,
     contentRef: (element: HTMLDivElement) => void,
@@ -23,7 +25,11 @@ export function PluginCatalogGrid(props: {
   let scroller: HTMLElement | null = null;
   let columns = 4;
   let gap = 12;
-  const mounted = new Map<string, HTMLDivElement>();
+  let keyInput: { items: readonly PluginDiscoveryEntry[]; columns: number } | undefined;
+  let pinnedRows: number[] = [];
+  let syncScrollOffset: (() => void) | undefined;
+  let measuredFocus: Element | null | undefined;
+  const mounted = new Map<string, { element: HTMLDivElement; height: number }>();
   const [focused, setFocused] = createSignal<string>();
   const [view, setView] = createSignal<{
     rows: VirtualItem[];
@@ -57,9 +63,23 @@ export function PluginCatalogGrid(props: {
     count: 0,
     enabled: false,
     getScrollElement: () => scroller,
+    initialOffset: () => scroller?.scrollTop ?? 0,
     estimateSize: () => 124,
     observeElementRect,
-    observeElementOffset,
+    observeElementOffset: (instance, publishOffset) => {
+      const element = instance.scrollElement!;
+      const release = observeElementOffset(instance, publishOffset);
+      syncScrollOffset = () => {
+        const offset = element.scrollTop;
+        if (offset !== instance.scrollOffset) {
+          publishOffset(offset, true);
+        }
+      };
+      return () => {
+        syncScrollOffset = undefined;
+        release?.();
+      };
+    },
     scrollToFn: elementScroll,
     overscan: 2,
     onChange: publish,
@@ -75,6 +95,7 @@ export function PluginCatalogGrid(props: {
         return undefined;
       }
       const viewport = grid.closest<HTMLElement>(".content");
+      const activeElement = grid.ownerDocument.activeElement;
       const style = getComputedStyle(grid);
       const nextColumns = style.gridTemplateColumns.split(" ").length;
       const nextGap = Number.parseFloat(style.rowGap) || 0;
@@ -85,7 +106,7 @@ export function PluginCatalogGrid(props: {
         : 0;
       const heights = new Map<number, number>();
       // Intrinsic content can shrink even while its card stretches to the row height.
-      const firstContent = mounted.values().next().value;
+      const firstContent = mounted.values().next().value?.element;
       const cardStyle = firstContent ? getComputedStyle(firstContent.parentElement!) : null;
       const inset = cardStyle
         ? [
@@ -95,14 +116,11 @@ export function PluginCatalogGrid(props: {
             cardStyle.borderBottomWidth,
           ].reduce((sum, value) => sum + Number.parseFloat(value), 0)
         : 0;
-      for (const [id, element] of mounted) {
+      for (const [id, content] of mounted) {
         const index = next.indexes.get(id);
-        if (index !== undefined) {
+        if (index !== undefined && content.height > 0) {
           const row = Math.floor(index / nextColumns);
-          heights.set(
-            row,
-            Math.max(heights.get(row) ?? 0, element.getBoundingClientRect().height + inset),
-          );
+          heights.set(row, Math.max(heights.get(row) ?? 0, content.height + inset));
         }
       }
       const count = Math.ceil(next.items.length / nextColumns);
@@ -120,6 +138,22 @@ export function PluginCatalogGrid(props: {
       }
       return () => {
         scroller = viewport;
+        // Callback identity invalidates the virtualizer's measurement/range memos.
+        const getItemKey =
+          keyInput?.items === next.items && keyInput.columns === nextColumns
+            ? virtualizer.options.getItemKey
+            : (index: number) => next.items[index * nextColumns]!.id;
+        const nextPinnedRows = [...pinned];
+        const rangeExtractor =
+          pinnedRows.length === nextPinnedRows.length &&
+          pinnedRows.every((row, index) => row === nextPinnedRows[index])
+            ? virtualizer.options.rangeExtractor
+            : (range: Parameters<typeof defaultRangeExtractor>[0]) =>
+                [...new Set([...defaultRangeExtractor(range), ...nextPinnedRows])].toSorted(
+                  (a, b) => a - b,
+                );
+        keyInput = { items: next.items, columns: nextColumns };
+        pinnedRows = nextPinnedRows;
         for (const key of virtualizer.itemSizeCache.keys()) {
           if (!next.indexes.has(key)) {
             virtualizer.itemSizeCache.delete(key);
@@ -133,15 +167,19 @@ export function PluginCatalogGrid(props: {
         virtualizer.setOptions({
           ...virtualizer.options,
           count,
-          getItemKey: (index) => next.items[index * nextColumns]!.id,
+          getItemKey,
           enabled: next.windowed && Boolean(viewport),
           gap,
           scrollMargin: margin,
-          rangeExtractor: (range) =>
-            [...new Set([...defaultRangeExtractor(range), ...pinned])].toSorted((a, b) => a - b),
+          rangeExtractor,
         });
         const { _willUpdate: updateVirtualizer } = virtualizer;
         updateVirtualizer();
+        // Native focus scrolls before its event. Later resizes retain any pending compensation.
+        if (activeElement !== measuredFocus) {
+          measuredFocus = activeElement;
+          syncScrollOffset?.();
+        }
         for (const [index, height] of heights) {
           if (height > 0) {
             virtualizer.resizeItem(index, height);
@@ -151,7 +189,12 @@ export function PluginCatalogGrid(props: {
       };
     },
     {
-      targets: () => [grid, ...(scroller ? [scroller] : []), ...mounted.values()],
+      // A preceding publisher group can move this grid without resizing it.
+      targets: () => [
+        grid,
+        grid.closest(".plugin-catalog-results__body") ?? grid,
+        ...(scroller ? [scroller] : []),
+      ],
       fonts: true,
       changeTiming: "sync",
     },
@@ -174,9 +217,20 @@ export function PluginCatalogGrid(props: {
     let content!: HTMLDivElement;
     onSettled(() => {
       const id = card.plugin().id;
-      mounted.set(id, content);
+      const geometry = { element: content, height: 0 };
+      mounted.set(id, geometry);
+      // Resize delivery already measured the natural content. Re-reading every
+      // mounted card during scroll forces redundant geometry work.
+      const release = observeResize([content], ([entry]) => {
+        const height = entry!.borderBoxSize[0]?.blockSize ?? entry!.contentRect.height;
+        if (height !== geometry.height) {
+          geometry.height = height;
+          measure();
+        }
+      });
       measure();
       return () => {
+        release();
         mounted.delete(id);
         measure();
       };
@@ -213,7 +267,7 @@ export function PluginCatalogGrid(props: {
   return (
     <div
       ref={(element) => (grid = element)}
-      class="plugin-catalog-grid plugin-catalog-grid--results"
+      class={["plugin-catalog-grid", { "plugin-catalog-grid--results": props.results }]}
       role="list"
       style={
         windowed()

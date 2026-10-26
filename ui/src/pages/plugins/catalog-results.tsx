@@ -176,11 +176,8 @@ const CATEGORY_ICONS: Readonly<Record<string, () => JSX.Element>> = {
 };
 
 function categoryIcon(icon: string | undefined): JSX.Element {
-  return icon && Object.hasOwn(CATEGORY_ICONS, icon) ? (
-    CATEGORY_ICONS[icon]!()
-  ) : (
-    <Icon name="box" />
-  );
+  const render = icon && Object.hasOwn(CATEGORY_ICONS, icon) && CATEGORY_ICONS[icon];
+  return render ? render() : <Icon name="box" />;
 }
 
 function CatalogIcon(props: {
@@ -375,15 +372,18 @@ function CatalogSection(params: {
         >
           {params.loading ? (
             renderCatalogGridSkeleton({ cards: SECTION_SIZE })
-          ) : (
+          ) : params.onViewAll ? (
             <div class="plugin-catalog-grid">
-              <For
-                each={params.onViewAll ? params.items.slice(0, SECTION_SIZE) : params.items}
-                keyed={(plugin) => plugin.id}
-              >
+              <For each={params.items.slice(0, SECTION_SIZE)} keyed={(plugin) => plugin.id}>
                 {(plugin) => <CatalogCard plugin={plugin()} state={params.state} />}
               </For>
             </div>
+          ) : (
+            <PluginCatalogGrid items={params.items}>
+              {(plugin, contentRef) => (
+                <CatalogCard plugin={plugin()} state={params.state} contentRef={contentRef} />
+              )}
+            </PluginCatalogGrid>
           )}
         </CatalogDiscoverySection>
       ) : undefined}
@@ -548,7 +548,7 @@ function RawResults(props: CatalogResultsState): JSX.Element {
               />
             </>
           ) : (
-            <PluginCatalogGrid items={items()}>
+            <PluginCatalogGrid items={items()} results>
               {(plugin, contentRef) => (
                 <CatalogCard plugin={plugin()} state={props} contentRef={contentRef} />
               )}
@@ -636,6 +636,8 @@ export function renderPluginCatalogResults(props: PluginCatalogResultsProps): JS
   const category = createMemo(() => props.category);
   const connected = createMemo(() => props.connected);
   const grouped = () => !query() && intent() === "all" && category() === null;
+  // Publisher headers must not repeat the virtualizer's scroll compensation.
+  const windowed = () => !grouped() && (props.result?.items.length ?? 0) > 60;
   const readCatalog = () => {
     // Same-selection refreshes must not hold live installation state or card controls.
     if (props.hasCurrentResult) {
@@ -672,15 +674,16 @@ export function renderPluginCatalogResults(props: PluginCatalogResultsProps): JS
           aria-label={t("pluginsPage.searchPlugins")}
           placeholder={t("pluginsPage.searchPlugins")}
           value={props.query}
-          ref={(element) => {
-            input = element;
-          }}
+          ref={(element) => (input = element)}
           onInput={(event) => props.onQueryChange(event.currentTarget.value)}
         />
       </CatalogDiscoverySearch>
       <CategoryChips {...props} />
       {props.remoteError ? renderError(props.remoteError, props.onRetry, true) : undefined}
-      <div class="plugin-catalog-results__body">
+      <div
+        class="plugin-catalog-results__body"
+        style={{ "overflow-anchor": windowed() ? "none" : undefined }}
+      >
         <Loading
           on={[
             query(),
@@ -703,14 +706,12 @@ export function renderPluginCatalogResults(props: PluginCatalogResultsProps): JS
           }
         >
           <Errored
-            fallback={(error, reset) => (
-              <>
-                {renderError(formatUiError(error()), () => {
-                  props.onRetry();
-                  reset();
-                })}
-              </>
-            )}
+            fallback={(error, reset) =>
+              renderError(formatUiError(error()), () => {
+                props.onRetry();
+                reset();
+              })
+            }
           >
             {readCatalog()}
           </Errored>

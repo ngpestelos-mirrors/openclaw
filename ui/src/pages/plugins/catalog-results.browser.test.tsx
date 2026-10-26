@@ -133,6 +133,12 @@ it("windows large catalogs without losing keyboard traversal, reordered cards, o
     expect(retainedCard.parentElement!.getAttribute("aria-posinset")).toBe(String(boundary + 2));
     expect(retainedCard.parentElement!.getAttribute("aria-setsize")).toBe("1001");
   });
+  setItems([entries[0]!, plugin("ranked-first"), ...entries.slice(1)]);
+  await waitForSolid(() => {
+    expect(card(0).parentElement!.getAttribute("aria-posinset")).toBe("1");
+    expect(card(boundary)).toBe(retainedCard);
+    expect(document.activeElement).toBe(focused);
+  });
 
   container.scrollTop = 0;
   await nextFrame();
@@ -168,6 +174,54 @@ it("windows large catalogs without losing keyboard traversal, reordered cards, o
   const viewport = container.getBoundingClientRect();
   expect(bounds.top).toBeLessThan(viewport.bottom);
   expect(bounds.bottom).toBeGreaterThan(viewport.top);
+});
+
+it("windows both publisher groups while keeping their search endpoints reachable", async () => {
+  container.className = "content";
+  Object.assign(container.style, { height: "500px", width: "1100px", overflow: "auto" });
+  const items = Array.from({ length: 1_000 }, (_, index) =>
+    plugin(`search-${String(index).padStart(4, "0")}`, {
+      catalog: { official: index % 2 === 0 },
+    }),
+  );
+  const [messages, setMessages] = createSignal<PluginCatalogResultsProps["messages"]>({});
+  render(() => (
+    <PluginCatalogResults
+      {...catalogProps()}
+      result={{ items }}
+      query="search"
+      messages={messages()}
+    />
+  ));
+  await nextFrame();
+  const groups = [...container.querySelectorAll<HTMLElement>("[data-catalog-section]")];
+  expect(groups.map((group) => group.dataset.catalogSection)).toEqual(["official", "community"]);
+  await waitForSolid(() => {
+    expect(container.querySelectorAll(".plugin-catalog-card").length).toBeLessThan(100);
+    for (const group of groups) {
+      expect(group.querySelector("[aria-setsize]")?.getAttribute("aria-setsize")).toBe("500");
+    }
+  });
+  expect(container.querySelector(".plugin-catalog-grid--results")).toBeNull();
+  const firstOfficial = find('[data-plugin-id="search-0000"]');
+  const height = firstOfficial.getBoundingClientRect().height;
+  setMessages({
+    "install:search-0000": { kind: "error", text: "Visible error details. ".repeat(100) },
+  });
+  await waitForSolid(() =>
+    expect(firstOfficial.getBoundingClientRect().height).toBeGreaterThan(height),
+  );
+  for (const id of ["search-0998", "search-0999", "search-0000"]) {
+    const card = find(`[data-plugin-id="${id}"]`);
+    const link = card.querySelector<HTMLAnchorElement>(".plugin-catalog-card__primary-link")!;
+    link.focus();
+    await nextFrame();
+    const bounds = card.getBoundingClientRect();
+    const viewport = container.getBoundingClientRect();
+    expect(document.activeElement).toBe(link);
+    expect(bounds.top).toBeLessThan(viewport.bottom);
+    expect(bounds.bottom).toBeGreaterThan(viewport.top);
+  }
 });
 
 it.each([263, 362])(

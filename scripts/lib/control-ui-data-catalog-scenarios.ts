@@ -236,10 +236,18 @@ async function countRows(page: Page, selector: string, expected: number) {
 
 async function catalogCount(page: Page, expected: number) {
   await page.waitForFunction((count) => {
-    const listItem = document.querySelector(".plugin-catalog-window-item[aria-setsize]");
-    return listItem
-      ? Number(listItem.getAttribute("aria-setsize")) === count
-      : document.querySelectorAll(".plugin-catalog-card").length === count;
+    const grids = Array.from(document.querySelectorAll(".plugin-catalog-grid"));
+    return (
+      grids.reduce((total, grid) => {
+        const listItem = grid.querySelector(".plugin-catalog-window-item[aria-setsize]");
+        return (
+          total +
+          (listItem
+            ? Number(listItem.getAttribute("aria-setsize"))
+            : grid.querySelectorAll(".plugin-catalog-card").length)
+        );
+      }, 0) === count
+    );
   }, expected);
 }
 
@@ -603,10 +611,11 @@ function catalogScenario(
                 card.getAttribute("data-plugin-id"),
               ),
             );
-            return Array.from(
-              { length: 100 },
-              (_, index) => `data-catalog-${String(900 + index).padStart(4, "0")}`,
-            ).every((id) => ids.has(id));
+            return (
+              ids.has("data-catalog-0900") &&
+              ids.has("data-catalog-0999") &&
+              [...ids].every((id) => /^data-catalog-09\d{2}$/u.test(id ?? ""))
+            );
           });
         }
         if (!(await retained.evaluate((nodes) => nodes.every((node) => node?.isConnected)))) {
@@ -628,7 +637,11 @@ function catalogScenario(
                 mountedPlugins: await page.locator(".plugin-catalog-card").count(),
                 retainedVisibleCards: await retained.evaluate((nodes) => nodes.length),
               }
-            : { matchingPlugins: expectedCount, retainedSearchInput: true }),
+            : {
+                matchingPlugins: expectedCount,
+                mountedPlugins: await page.locator(".plugin-catalog-card").count(),
+                retainedSearchInput: true,
+              }),
           catalogBrowseRequests: requests,
           catalogBrowseRoundTripMs: roundTripMs,
         };
