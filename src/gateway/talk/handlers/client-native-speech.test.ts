@@ -11,7 +11,10 @@ import {
 describe("client speech through the public native Talk transport", () => {
   installNativePluginTestHooks();
 
-  it("submits exact speech with operator.talk and rejects invalid UTF-8 byte lengths", async () => {
+  it.each([
+    { caller: "Talk operator", scopes: ["operator.read", "operator.talk"] },
+    { caller: "administrator", scopes: ["operator.admin"] },
+  ])("submits exact speech for $caller and rejects invalid UTF-8 byte lengths", async ({ scopes }) => {
     await withNativePlugin(async (fixture) => {
       const { socket } = await connectNativeSession(fixture);
       const text = "The dial is ready.";
@@ -38,7 +41,7 @@ describe("client speech through the public native Talk transport", () => {
           { code: "INVALID_REQUEST" },
         ]);
       }
-    });
+    }, { operatorScopes: scopes });
   });
 
   it("keeps an active native task's final response after a playback echo", async () => {
