@@ -79,6 +79,8 @@ await import("./worker-retained-heap-preload.js");
 const { buildAcpDatabaseSessionKey } = await import("../../src/acp/runtime/session-meta-keys.js");
 const { openNodeSqliteDatabase } = await import("../../src/infra/node-sqlite.js");
 const { disposeSqliteStatement } = await import("../../src/infra/kysely-sync-cache-state.js");
+const { updateConfigMachineStateInDatabase } =
+  await import("../../src/state/config-machine-state-write.js");
 const { extractSqliteTableSchema } = await import("../../src/infra/sqlite-schema-sql.js");
 const { captureOpenClawStateReadSource } =
   await import("../../src/state/openclaw-state-read-worker.js");
@@ -158,7 +160,6 @@ const filename = path.join(environment.OPENCLAW_STATE_DIR, "state.sqlite");
   const insertRun = db.prepare(`INSERT INTO subagent_runs
     (run_id, child_session_key, requester_session_key, created_at, payload_json)
     VALUES (?, ?, 'agent:main:parent', ?, ?)`);
-  const insertState = db.prepare(`INSERT INTO config_machine_state VALUES (?, ?, 100)`);
   try {
     for (const [index, key] of keys.entries()) {
       insert.run(key, `synthetic-runtime-${index}`, '{"model":"fixture-model"}');
@@ -181,13 +182,22 @@ const filename = path.join(environment.OPENCLAW_STATE_DIR, "state.sqlite");
         );
       }
     }
-    insertState.run("plugins.installedIndex", pluginPayload);
-    insertState.run("synthetic.config", pluginPayload);
+    updateConfigMachineStateInDatabase(
+      db,
+      "plugins.installedIndex",
+      () => JSON.parse(pluginPayload),
+      100,
+    );
+    updateConfigMachineStateInDatabase(
+      db,
+      "synthetic.config",
+      () => JSON.parse(pluginPayload),
+      100,
+    );
     db.exec(`INSERT INTO agent_provenance VALUES ('main', 'operator', NULL, 100); COMMIT`);
   } finally {
     disposeSqliteStatement(insert);
     disposeSqliteStatement(insertRun);
-    disposeSqliteStatement(insertState);
   }
 }
 
