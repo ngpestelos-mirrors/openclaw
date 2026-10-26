@@ -70,41 +70,27 @@ function reflect(conversationType = "personal") {
 }
 
 describe("MSTeams reflection completion", () => {
+  const complete = { status: "complete", followUp: true, userMessage: "Synthetic follow-up" };
   it.each([
-    ["personal", true],
-    ["channel", false],
-  ] as const)(
-    "sends the completed reflection follow-up only in a direct message: %s",
-    async (kind, sent) => {
-      mocks.reflect.mockResolvedValue({
-        status: "complete",
-        storePath: "/synthetic/sessions",
-        learning: "Synthetic learning",
-        responseLength: 6,
-        followUp: true,
-        userMessage: "Synthetic follow-up",
-      });
+    ["personal", complete, true],
+    ["channel", complete, false],
+    ["personal", { status: "cooldown" }, false],
+    ["personal", { status: "empty" }, false],
+  ] as const)("handles %s reflection %j (send=%s)", async (kind, result, sent) => {
+    mocks.reflect.mockResolvedValue(result);
+    await reflect(kind).operation;
 
-      await reflect(kind).operation;
-
-      expect(mocks.reflect).toHaveBeenCalledOnce();
-      if (sent) {
-        expect(mocks.send).toHaveBeenCalledWith(
-          expect.any(Object),
-          expect.any(Object),
-          { type: "message", text: "Synthetic follow-up" },
-          expect.objectContaining({ accountId: "default" }),
-        );
-      } else {
-        expect(mocks.send).not.toHaveBeenCalled();
-      }
-    },
-  );
-
-  it.each(["cooldown", "empty"])("does not send after a %s reflection", async (status) => {
-    mocks.reflect.mockResolvedValue({ status });
-    await reflect().operation;
-    expect(mocks.send).not.toHaveBeenCalled();
+    expect(mocks.reflect).toHaveBeenCalledOnce();
+    if (sent) {
+      expect(mocks.send).toHaveBeenCalledWith(
+        expect.any(Object),
+        expect.any(Object),
+        { type: "message", text: "Synthetic follow-up" },
+        expect.objectContaining({ accountId: "default" }),
+      );
+    } else {
+      expect(mocks.send).not.toHaveBeenCalled();
+    }
   });
 
   it("records a dispatch failure without sending a follow-up", async () => {

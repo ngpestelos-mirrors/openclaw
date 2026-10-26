@@ -21,6 +21,7 @@ const makeToken = (connectionName: string, userId: string, token: string) => ({
   updatedAt: "2026-04-10T00:00:00.000Z",
 });
 let stateDir: string;
+const legacyPath = () => path.join(stateDir, "msteams-sso-tokens.json");
 
 afterEach(() => vi.unstubAllEnvs());
 beforeEach(() => {
@@ -31,13 +32,9 @@ beforeEach(() => {
 });
 
 it("keeps distinct tokens when connectionName and userId contain the legacy delimiter", async () => {
-  const storePath = path.join(stateDir, "msteams-sso-tokens.json");
   const store = createMSTeamsSsoTokenStoreFs();
   const first = makeToken("conn::alpha", "user", "token-a");
-  const second = {
-    ...makeToken("conn", "alpha::user", "token-b"),
-    updatedAt: "2026-04-10T00:00:01.000Z",
-  };
+  const second = makeToken("conn", "alpha::user", "token-b");
 
   await store.save(first);
   await store.save(second);
@@ -45,7 +42,7 @@ it("keeps distinct tokens when connectionName and userId contain the legacy deli
   expect(await store.get(first)).toEqual(first);
   expect(await store.get(second)).toEqual(second);
 
-  await expect(fs.access(storePath)).rejects.toThrow();
+  await expect(fs.access(legacyPath())).rejects.toThrow();
   await fs.access(path.join(stateDir, "state", "openclaw.sqlite"));
 });
 
@@ -68,9 +65,8 @@ it("orders concurrent token changes while isolating account namespaces", async (
 });
 
 it("ignores legacy flat-key token files at runtime", async () => {
-  const storePath = path.join(stateDir, "msteams-sso-tokens.json");
   await fs.writeFile(
-    storePath,
+    legacyPath(),
     JSON.stringify({
       version: 1,
       tokens: { "legacy::wrong-key": makeToken("conn", "user-1", "token-1") },
@@ -80,7 +76,7 @@ it("ignores legacy flat-key token files at runtime", async () => {
 
   const store = createMSTeamsSsoTokenStoreFs();
   expect(await store.get({ connectionName: "conn", userId: "user-1" })).toBeNull();
-  await fs.access(storePath);
+  await fs.access(legacyPath());
 });
 
 it("preserves migrated default tokens and isolates named-account updates and removal", async () => {

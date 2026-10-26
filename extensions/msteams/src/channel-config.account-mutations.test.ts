@@ -9,25 +9,33 @@ function config(
 ): OpenClawConfig {
   return { channels: { msteams: { tenantId: "tenant-id", ...overrides } } };
 }
+const account = (cfg: OpenClawConfig, accountId = "default") =>
+  resolveMSTeamsAccount({ cfg, accountId });
+const expectAccount = (cfg: OpenClawConfig, accountId: string, enabled: boolean) =>
+  expect(account(cfg, accountId)).toMatchObject({ enabled, configured: true });
 
 describe("msteams account config mutations", () => {
   afterEach(() => vi.unstubAllEnvs());
-  it("disables the root default without disabling siblings", () => {
-    const cfg = config({ ...identity("default"), accounts: { support: identity("support") } });
+  it.each([false, true])("sets legacy default enabled=%s without affecting siblings", (enabled) => {
+    const cfg = config(
+      enabled
+        ? { enabled: false, ...identity("legacy") }
+        : { ...identity("legacy"), accounts: { support: identity("support") } },
+    );
     const updated = msteamsConfigAdapter.setAccountEnabled({
       cfg,
       accountId: "default",
-      enabled: false,
+      enabled,
     });
-    expect(updated.channels?.msteams?.enabled).toBeUndefined();
-    expect(resolveMSTeamsAccount({ cfg: updated, accountId: "default" })).toMatchObject({
-      enabled: false,
+    expect(updated.channels?.msteams?.enabled).toBe(enabled || undefined);
+    expect(account(updated)).toMatchObject({
+      enabled,
       configured: true,
+      config: { appId: "legacy-app" },
     });
-    expect(resolveMSTeamsAccount({ cfg: updated, accountId: "support" })).toMatchObject({
-      enabled: true,
-      configured: true,
-    });
+    if (!enabled) {
+      expectAccount(updated, "support", true);
+    }
   });
 
   it("selects the sorted eligible account after deleting the configured default", () => {
@@ -51,25 +59,13 @@ describe("msteams account config mutations", () => {
 
     const updated = msteamsConfigAdapter.deleteAccount({ cfg, accountId: "support" });
 
-    expect(updated.channels?.msteams?.accounts).toBeUndefined();
-    expect(updated.channels?.msteams?.defaultAccount).toBeUndefined();
+    expect(updated.channels?.msteams).toMatchObject({
+      accounts: undefined,
+      defaultAccount: undefined,
+    });
     expect(resolveMSTeamsAccount({ cfg: updated })).toMatchObject({
       accountId: "default",
       configured: true,
-    });
-  });
-  it("re-enables a sole legacy default through the channel gate", () => {
-    const cfg = config({ enabled: false, ...identity("legacy") });
-    const next = msteamsConfigAdapter.setAccountEnabled({
-      cfg,
-      accountId: "default",
-      enabled: true,
-    });
-    expect(next.channels?.msteams?.enabled).toBe(true);
-    expect(resolveMSTeamsAccount({ cfg: next, accountId: "default" })).toMatchObject({
-      enabled: true,
-      configured: true,
-      config: { appId: "legacy-app" },
     });
   });
 
@@ -89,17 +85,14 @@ describe("msteams account config mutations", () => {
         cfg: storage === "environment-only" ? {} : cfg,
         accountId: "default",
       });
-      expect(next.channels?.msteams?.accounts?.default).toEqual({ enabled: false });
-      expect(next.channels?.msteams?.appId).toBeUndefined();
-      expect(next.channels?.msteams?.appPassword).toBeUndefined();
-      expect(resolveMSTeamsAccount({ cfg: next, accountId: "default" })).toMatchObject({
-        enabled: false,
+      expect(next.channels?.msteams).toMatchObject({
+        appId: undefined,
+        appPassword: undefined,
       });
+      expect(next.channels?.msteams?.accounts?.default).toEqual({ enabled: false });
+      expect(account(next).enabled).toBe(false);
       if (storage !== "environment-only") {
-        expect(resolveMSTeamsAccount({ cfg: next, accountId: "support" })).toMatchObject({
-          enabled: true,
-          configured: true,
-        });
+        expectAccount(next, "support", true);
       }
     },
   );
