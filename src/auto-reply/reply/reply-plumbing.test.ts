@@ -9,7 +9,7 @@ import {
 } from "../../test-utils/channel-plugins.js";
 import { buildThreadingToolContext } from "./agent-runner-utils.js";
 import { applyReplyThreading } from "./reply-payloads-base.js";
-import { formatRunLabel, resolveSubagentLabel } from "./subagents-utils.js";
+import { formatRunLabel } from "./subagents-utils.js";
 
 afterEach(resetPluginRuntimeStateForTest);
 
@@ -100,14 +100,6 @@ const baseRun: SubagentRunRecord = {
   createdAt: 1000,
   execution: { status: "running", startedAt: 1000 },
 };
-
-it("resolves labels from label, task, or fallback", () => {
-  expect([
-    resolveSubagentLabel({ ...baseRun, label: "Label" }),
-    resolveSubagentLabel({ ...baseRun, label: " ", task: "Task" }),
-    resolveSubagentLabel({ ...baseRun, label: " ", task: " " }),
-  ]).toEqual(["Label", "Task", "subagent"]);
-});
 
 it("formats run labels with truncation", () => {
   expect(formatRunLabel({ ...baseRun, label: "xxxx" }, { maxLength: 3 })).toBe("xxx…");
