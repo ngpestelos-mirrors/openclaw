@@ -135,7 +135,9 @@ function progressResponse(
 describe("plugin board widget cells", () => {
   it("refreshes a ticket added to a native widget in place on a board revision", async () => {
     vi.useFakeTimers();
-    onTestFinished(() => vi.useRealTimers());
+    onTestFinished(() => {
+      vi.useRealTimers();
+    });
     resourceAcquisitions.frame.mockClear();
     resourceAcquisitions.mcp.mockClear();
     const native = createBoardWidget({
