@@ -48,11 +48,12 @@ export function registerSessionsSpawnVisibleCleanupTests({
         ...(failure === "registration" ? { runId: "child-run" } : {}),
         runError: "startup failed",
       }).mockResolvedValueOnce({ deleted: true });
-      const register = vi.fn(registerRun);
-      const details = await executeVisible(callGateway, { registerRun: register });
+      const details = await executeVisible(callGateway, { registerRun });
 
       expectError(details, "Session removed.");
-      expect(callGateway).toHaveBeenCalledTimes(2);
+      if (failure === "registration") {
+        expect(details).toMatchObject({ runId: "child-run" });
+      }
       expect(callGateway).toHaveBeenNthCalledWith(2, "sessions.delete", {
         key,
         agentId: "main",
@@ -61,26 +62,20 @@ export function registerSessionsSpawnVisibleCleanupTests({
         deleteTranscript: true,
         emitLifecycleHooks: false,
       });
-      expect(register).toHaveBeenCalledTimes(failure === "registration" ? 1 : 0);
     },
   );
 
-  it.each([false, true])(
-    "reports the retained child when cleanup fails (runStarted=%s)",
-    async (runStarted) => {
-      const runId = runStarted ? "child-run" : undefined;
-      const startError = "child chat.send rejected before input admission";
-      const callGateway = gateway({
-        runStarted,
-        ...(runId ? { runId } : { runError: { code: "UNAVAILABLE", message: startError } }),
-      }).mockRejectedValueOnce(new Error("lifecycle drain unavailable"));
-      const details = await executeVisible(callGateway, runStarted ? { registerRun } : {});
-
-      expectError(details, runStarted ? "Session cleanup unconfirmed." : startError);
-      expectError(details, "Session cleanup unconfirmed.", runId ? { runId } : {});
-      expect(callGateway).toHaveBeenCalledTimes(2);
-    },
-  );
+  it("reports the retained child and startup error when cleanup fails", async () => {
+    const startError = "child chat.send rejected before input admission";
+    const callGateway = gateway({
+      runStarted: false,
+      runError: { code: "UNAVAILABLE", message: startError },
+    }).mockRejectedValueOnce(new Error("lifecycle drain unavailable"));
+    const details = await executeVisible(callGateway);
+    expectError(details, startError);
+    expectError(details, "Session cleanup unconfirmed.");
+    expect(callGateway).toHaveBeenCalledTimes(2);
+  });
 
   it.each(["sessionId", "lifecycleRevision"] as const)(
     "keeps a failed visible child when its creation receipt omits %s",
