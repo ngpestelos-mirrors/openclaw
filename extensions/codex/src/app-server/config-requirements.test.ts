@@ -68,6 +68,13 @@ allowed_sandbox_modes = ["read-only", "danger-full-access"]`,
     ['allowed_sandbox_modes = ["ReadOnly", "WorkspaceWrite", "DangerFullAccess"]', unrestricted],
     ["allowed_sandbox_modes = [read-only]", unrestricted],
     [
+      'allowed_approval_policies = ["untrusted", "never"]',
+      { ...guardian, approvalPolicy: "untrusted" },
+      openai,
+    ],
+    [restrictedSandbox, unrestricted, { pluginConfig: { appServer: { mode: "yolo" } } }],
+    [restrictedSandbox, unrestricted, { env: { OPENCLAW_CODEX_APP_SERVER_MODE: "yolo" } }],
+    [
       restrictedSandbox,
       unrestricted,
       {
@@ -75,17 +82,11 @@ allowed_sandbox_modes = ["read-only", "danger-full-access"]`,
       },
     ],
   ])("applies requirements %s as %j with %j", (requirementsToml, policy, options) => {
-    expectRuntimePolicy(resolveRuntimeForTest({ requirementsToml, ...options }), policy);
-  });
-
-  it("preserves managed approval over an allowed unrestricted policy", () => {
-    const runtime = resolveRuntimeForTest({
-      pluginConfig: {},
-      modelProvider: "openai",
-      requirementsToml: 'allowed_approval_policies = ["untrusted", "never"]',
-    });
-    expectRuntimePolicy(runtime, { ...guardian, approvalPolicy: "untrusted" });
-    expect(withMcpElicitationsApprovalPolicy(runtime.approvalPolicy)).toBe("untrusted");
+    const runtime = resolveRuntimeForTest({ requirementsToml, ...options });
+    expectRuntimePolicy(runtime, policy);
+    if (policy.approvalPolicy === "untrusted") {
+      expect(withMcpElicitationsApprovalPolicy(runtime.approvalPolicy)).toBe("untrusted");
+    }
   });
 
   it.each<[Omit<NonNullable<RuntimeParams>, "pluginConfig">, string]>([
@@ -104,17 +105,5 @@ allowed_sandbox_modes = ["read-only", "danger-full-access"]`,
     });
     expect(readFile).toHaveBeenCalledExactlyOnceWith(expected, "utf8");
     expectRuntimePolicy(runtime, guardian);
-  });
-
-  it("keeps explicit yolo mode when requirements disallow full access", () => {
-    for (const params of [
-      { pluginConfig: { appServer: { mode: "yolo" } } },
-      { pluginConfig: {}, env: { OPENCLAW_CODEX_APP_SERVER_MODE: "yolo" } },
-    ]) {
-      expectRuntimePolicy(
-        resolveRuntimeForTest({ ...params, requirementsToml: restrictedSandbox }),
-        unrestricted,
-      );
-    }
   });
 });

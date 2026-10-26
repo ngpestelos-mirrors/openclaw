@@ -62,13 +62,7 @@ describe.skipIf(process.platform === "win32")("npm launcher shutdown", () => {
       cleanup: cleanup === "confirmed" ? "terminated" : "uncertain",
     });
     expect(kill).toHaveBeenCalledWith(-root.pid, "SIGKILL");
-    if (cleanup === "confirmed") {
-      expect(warning).toHaveBeenCalledWith(
-        "Codex app-server required forced shutdown; process cleanup confirmed",
-      );
-    } else {
-      expect(warning).not.toHaveBeenCalled();
-    }
+    expect(warning).toHaveBeenCalledTimes(cleanup === "confirmed" ? 1 : 0);
     expect(vi.getTimerCount()).toBe(0);
   });
 

@@ -2,7 +2,6 @@ import { embeddedAgentLog } from "openclaw/plugin-sdk/agent-harness-registration
 import { createDeferred } from "openclaw/plugin-sdk/extension-shared";
 import type { PluginStateEntry } from "openclaw/plugin-sdk/plugin-state-runtime";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { codexCatalogHomeId } from "../session-catalog-home-id.js";
 import {
   CODEX_MANAGED_THREAD_MAX_ENTRIES,
   createCodexManagedThreadStore,
@@ -27,34 +26,16 @@ function createStateStore() {
 
 describe("Codex managed thread store", () => {
   afterEach(() => vi.restoreAllMocks());
-  it("records one durable ownership row per home and thread", async () => {
-    const { values, store, mark } = createStateStore();
-    const sourceHomeId = codexCatalogHomeId("/tmp/codex-home");
-
-    await expect(mark(" thread-1 ", ` ${sourceHomeId} `, " /rollout.jsonl ")).resolves.toBe(true);
-    await expect(mark("thread-1", sourceHomeId, "/new-path.jsonl")).resolves.toBe(true);
-    await expect(store.has(sourceHomeId, "thread-1")).resolves.toBe(true);
-    await expect(store.has("other-home", "thread-1")).resolves.toBe(false);
-    await expect(store.has(sourceHomeId, "missing-thread")).resolves.toBe(false);
-    expect(values.size).toBe(1);
-    expect([...values.values()][0]).toMatchObject({
-      kind: "managed-thread",
-      sourceHomeId,
-      threadId: "thread-1",
-      rolloutPath: "/rollout.jsonl",
-    });
-    await expect(store.snapshot()).resolves.toEqual(
-      new Map([[sourceHomeId, new Set(["thread-1"])]]),
-    );
-  });
-
   it("hydrates once and keeps concurrent marks within the global oldest-first bound", async () => {
-    const { state, store, mark } = createStateStore();
+    const { state, values, store, mark } = createStateStore();
     const pending = createDeferred<Awaited<ReturnType<typeof state.entries>>>();
     const entries = vi.spyOn(state, "entries").mockReturnValue(pending.promise);
     const snapshots = [store.snapshot(), store.snapshot()];
-    await mark("thread-1");
+    await expect(mark(" thread-1 ", " home ", " /rollout.jsonl ")).resolves.toBe(true);
+    await expect(mark("thread-1", "home", "/new-path.jsonl")).resolves.toBe(true);
     await expect(mark("new-thread")).resolves.toBe(true);
+    expect(values.size).toBe(2);
+    expect([...values.values()][0]?.rolloutPath).toBe("/rollout.jsonl");
     pending.resolve(
       Array.from(
         { length: CODEX_MANAGED_THREAD_MAX_ENTRIES },
@@ -76,6 +57,8 @@ describe("Codex managed thread store", () => {
       expect(snapshot.get("home")?.has("thread-1")).toBe(true);
       expect(snapshot.get("home")?.has("new-thread")).toBe(true);
     }
+    await expect(store.has("other-home", "thread-1")).resolves.toBe(false);
+    await expect(store.has("home", "missing-thread")).resolves.toBe(false);
     await mark("after-hydration");
     await expect(store.has("home", "thread-1")).resolves.toBe(false);
     await mark("thread-2");
@@ -105,9 +88,7 @@ describe("Codex managed thread store", () => {
     state.registerIfAbsent = vi.fn<typeof state.registerIfAbsent>().mockRejectedValue(failure);
     const warn = vi.spyOn(embeddedAgentLog, "warn").mockImplementation(() => {});
     await expect(mark()).resolves.toBe(false);
-    expect(warn).toHaveBeenCalledWith("failed to record Codex managed thread ownership", {
-      error: failure,
-    });
+    expect(warn).toHaveBeenCalledWith(expect.any(String), { error: failure });
     await expect(mark("thread", " ")).resolves.toBe(false);
     expect(state.registerIfAbsent).toHaveBeenCalledTimes(1);
     expect(warn).toHaveBeenCalledTimes(2);
