@@ -6,7 +6,6 @@ import { waitForSolid } from "../../../test-helpers/solid-settle.ts";
 import { projectChatSystemNotice } from "../chat-system-notice.ts";
 import { renderChatComposerNotices } from "../chat-view-notices.tsx";
 import { ChatNotice } from "./chat-notice-view.tsx";
-import { ChatNotice as LazyChatNotice } from "./chat-row-facts-lazy.ts";
 import { nativeRows } from "./chat-transcript-rows.ts";
 
 let container: HTMLDivElement;
@@ -56,8 +55,7 @@ afterEach(async () => {
   vi.unstubAllGlobals();
 });
 
-it("commits a preloaded cached failure summary with its transcript row", async () => {
-  await LazyChatNotice.preload();
+it("commits a cached failure summary with its transcript row", () => {
   mountStatefulSolid(nativeRows.notice, { item: failure("Cached failure details") }, container);
   expect(container.querySelector('[data-chat-row-key="failure"]')).not.toBeNull();
   expect(container.querySelector(".chat-run-failure__summary")?.textContent).toBe(
