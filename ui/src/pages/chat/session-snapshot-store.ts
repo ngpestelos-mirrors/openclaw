@@ -46,7 +46,7 @@ import {
   discardPrewarmedChatSnapshot,
   peekPrewarmedChatSnapshot,
 } from "./session-snapshot-prewarm.ts";
-const CHAT_SNAPSHOT_PROJECTION_VERSION = 3;
+const CHAT_SNAPSHOT_PROJECTION_VERSION = 4;
 const CHAT_SNAPSHOT_MESSAGE_LIMIT = 80;
 const CHAT_SNAPSHOT_WRITE_DELAY_MS = 500;
 const CHAT_SNAPSHOT_IDLE_TIMEOUT_MS = 1000;
@@ -77,10 +77,32 @@ const paginationSchema = {
       : completePaginationSchema.parse(value);
   },
 };
+const fastModeSchema = json.checked(
+  (value): value is boolean | "auto" | "ultrafast" =>
+    typeof value === "boolean" || value === "auto" || value === "ultrafast",
+);
+const permissionModeSchema = json.enumeration(["read-only", "guarded", "workspace", "full"]);
 const snapshotSchema = json.object(
   {
     composer: json.optional(
-      json.nullable(json.object({ id: json.text, provider: json.text, name: json.text })),
+      json.nullable(
+        json.object({
+          id: json.text,
+          provider: json.text,
+          name: json.text,
+          reasoning: json.optional(json.boolean),
+          supportsFastMode: json.optional(json.boolean),
+          effectiveFastMode: json.optional(fastModeSchema),
+          fastMode: json.optional(fastModeSchema),
+          thinkingLevel: json.optional(json.text),
+          thinkingDefault: json.optional(json.text),
+          thinkingLevels: json.optional(
+            json.array(json.object({ id: json.text, label: json.text }), 30),
+          ),
+          permissionMode: json.optional(permissionModeSchema),
+          defaultPermissionMode: json.optional(permissionModeSchema),
+        }),
+      ),
     ),
     board: json.optional(
       json.nullable(json.object({ snapshot: json.unknown, receivedAtMs: nonnegative }, true)),

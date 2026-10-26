@@ -27,6 +27,13 @@ function expectAbsent(value: unknown, fields: string) {
 }
 
 describe("Team-scale Gateway fixture", () => {
+  it("offers the configured session model in its catalog", () => {
+    const { scenario } = createControlUiTeamScaleFixture({ now });
+    expect(scenario.models).toContainEqual(
+      expect.objectContaining({ id: scenario.agentModel, provider: "openai" }),
+    );
+  });
+
   it("seeds scoped display preferences independently of the full editable config", () => {
     const { scenario } = createControlUiTeamScaleFixture({ now });
     expect(scenario.bootstrapPreferences).toMatchObject({

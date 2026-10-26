@@ -48,6 +48,20 @@ const widgetSnapshot = (
 ): ChatSessionSnapshot => ({ messages, pagination: { hasMore: false }, sessionId, ...extras });
 
 describe("session message cache", () => {
+  it("retains composer display facts only for the same session incarnation", () => {
+    const { read, write } = createCacheContext();
+    const composer = {
+      id: "saved",
+      provider: "example",
+      name: "Saved",
+      permissionMode: "full" as const,
+    };
+    write(widgetSnapshot(["cached"], "session-1", { composer }));
+    write(widgetSnapshot(["live"], "session-1"));
+    expect(read()?.composer).toEqual(composer);
+    write(widgetSnapshot(["reset"], "session-2"));
+    expect(read()?.composer).toBeUndefined();
+  });
   it("retains a scoped board through transcript replacement and clears it authoritatively", () => {
     const cache: ChatMessageCache = new Map();
     const host = {

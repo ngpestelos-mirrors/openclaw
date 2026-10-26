@@ -97,7 +97,15 @@ it.each([true, false])(
 );
 
 it("presents the saved selection before admission and replaces it with the live catalog", async () => {
-  const saved = { id: "saved", provider: "openai", name: "Saved model" };
+  const saved = {
+    id: "saved",
+    provider: "openai",
+    name: "Saved model",
+    reasoning: true,
+    thinkingLevel: "high",
+    thinkingDefault: "medium",
+    thinkingLevels: [{ id: "high", label: "High" }],
+  };
   const [model, setModel] = createSignal<Parameters<typeof ChatPaneModelControl>[0]["model"]>({
     ...createComposerControlsFixture().model,
     snapshot: saved,
@@ -106,6 +114,9 @@ it("presents the saved selection before admission and replaces it with the live 
   const trigger = () => view.container.querySelector<HTMLElement>("[data-chat-model-select]");
   await waitForSolid(() => expect(trigger()?.textContent).toContain("Saved model"));
   expect(trigger()?.getAttribute("aria-disabled")).toBe("true");
+  const effort = () => view.container.querySelector<HTMLElement>("[data-chat-thinking-select]");
+  expect(effort()?.textContent).toContain("High");
+  expect(effort()?.getAttribute("aria-disabled")).toBe("true");
   expect(view.container.querySelector("[data-composer-catalog-state=stale]")).not.toBeNull();
   setModel({
     ...createComposerControlsFixture().model,

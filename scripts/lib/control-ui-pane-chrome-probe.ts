@@ -59,6 +59,12 @@ export function installPaneChromeProbe() {
       }
       for (const node of element.childNodes) {
         if (node instanceof Element) {
+          if (
+            element instanceof HTMLDetailsElement &&
+            !element.open &&
+            node.localName !== "summary"
+          )
+            continue;
           visit(node);
         } else if (node.nodeType === Node.TEXT_NODE) {
           add(node.textContent?.trim() ?? "");

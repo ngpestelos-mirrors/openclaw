@@ -1,13 +1,25 @@
 import type { AgentsListResult, ModelCatalogResult } from "../../api/types.ts";
 import { resolveChatModelSelectState } from "../../lib/chat/model-select-state.ts";
-import { chatHistoryRequests } from "./chat-history-state.ts";
+import { resolveThinkingProfileForSession } from "../../lib/chat/thinking.ts";
+import { chatHistoryRequests, getAcceptedChatHistorySession } from "./chat-history-state.ts";
 import type { ChatPageHost } from "./chat-state-host.ts";
 import { resolveChatAgentId, selectedChatSessionRow } from "./chat-state-route.ts";
 import { cacheChatSessionSnapshot, readChatSessionSnapshot } from "./session-message-cache.ts";
 import { resolveChatSnapshotKey } from "./session-snapshot-key.ts";
 
-export function cacheChatComposerSnapshot(host: ChatPageHost, result: ModelCatalogResult): void {
-  if (!host.connected || !host.client?.recoveryScopeReady || result.refreshFailed) {
+const capturedInputs = new WeakMap<ChatPageHost, readonly unknown[]>();
+
+export function cacheChatComposerSnapshot(host: ChatPageHost, supplied?: ModelCatalogResult): void {
+  const result =
+    supplied ??
+    (host.chatModelCatalogInitialized && !host.chatModelCatalogRetired
+      ? {
+          models: host.chatModelCatalog,
+          modelSelectionPolicy: host.chatModelSelectionPolicy,
+          refreshFailed: host.chatModelCatalogRefreshFailed,
+        }
+      : undefined);
+  if (!host.connected || !host.client?.recoveryScopeReady || !result || result.refreshFailed) {
     return;
   }
   const target = { sessionKey: host.sessionKey };
@@ -29,14 +41,33 @@ export function cacheChatComposerSnapshot(host: ChatPageHost, result: ModelCatal
     }
     const session = selectedChatSessionRow(host);
     // A catalog default cannot replace the selected session's unresolved model.
-    if (!session) {
+    if (
+      !session?.sessionId ||
+      session.sessionId !== host.currentSessionId ||
+      (host.sessions.state.resultCached && !getAcceptedChatHistorySession(host))
+    ) {
       return;
     }
     const agents: AgentsListResult | null = host.agentsList;
+    const agent = agents?.agents.find((row) => row.id === resolveChatAgentId(host));
+    const inputs = [
+      snapshotKey,
+      client,
+      epoch,
+      session,
+      result.models,
+      result.modelSelectionPolicy,
+      host.sessionsResult?.defaults,
+      agent,
+      host.sessions.state.modelOverrides[host.sessionKey],
+    ];
+    const previous = readChatSessionSnapshot(host.chatMessagesBySession, host, target);
+    if (previous && capturedInputs.get(host)?.every((value, index) => value === inputs[index]))
+      return;
+    capturedInputs.set(host, inputs);
     const selection = resolveChatModelSelectState({
       activeSession: session,
-      agentDefaultModel: agents?.agents.find((agent) => agent.id === resolveChatAgentId(host))
-        ?.model?.primary,
+      agentDefaultModel: agent?.model?.primary,
       modelOverrides: host.sessions.state.modelOverrides,
       sessionKey: host.sessionKey,
       sessionsResult: host.sessionsResult,
@@ -50,8 +81,27 @@ export function cacheChatComposerSnapshot(host: ChatPageHost, result: ModelCatal
         (candidate.id === model &&
           (!session?.modelProvider || session.modelProvider === candidate.provider)),
     );
-    const previous = readChatSessionSnapshot(host.chatMessagesBySession, host, target);
-    const composer = entry ? { id: entry.id, provider: entry.provider, name: entry.name } : null;
+    const profile = resolveThinkingProfileForSession(
+      session,
+      host.sessionsResult?.defaults,
+      result.models,
+    );
+    const composer = entry
+      ? {
+          id: entry.id,
+          provider: entry.provider,
+          name: entry.name,
+          reasoning: entry.reasoning,
+          supportsFastMode: entry.supportsFastMode,
+          effectiveFastMode: session.effectiveFastMode ?? entry.effectiveFastMode,
+          fastMode: session.fastMode,
+          thinkingLevel: session.thinkingLevel,
+          thinkingLevels: profile?.thinkingLevels?.slice(0, 30),
+          thinkingDefault: profile?.thinkingDefault,
+          permissionMode: session.permissionMode,
+          defaultPermissionMode: agent?.defaultPermissionMode,
+        }
+      : null;
     if (JSON.stringify(previous?.composer) === JSON.stringify(composer)) {
       return;
     }
