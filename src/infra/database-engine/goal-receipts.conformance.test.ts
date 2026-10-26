@@ -1,7 +1,10 @@
 import assert from "node:assert/strict";
 import { beforeEach, describe, expect, it } from "vitest";
 import { lookupSessionGoalOperation } from "../../config/sessions/goals-operations-read.js";
-import { mutateSessionGoal } from "../../config/sessions/goals-operations.js";
+import {
+  mutateSessionGoal,
+  type SessionGoalOperation,
+} from "../../config/sessions/goals-operations.js";
 import type { SessionAccessScope } from "../../config/sessions/session-accessor.sqlite-contract.js";
 import { upsertSessionEntryCore } from "../../config/sessions/session-accessor.sqlite-entry.js";
 import { persistSessionTranscriptTurn } from "../../config/sessions/session-accessor.transcript-turn.js";
@@ -15,6 +18,11 @@ describe.skipIf(!mixedAgentConnection).each(["sqlite", "postgres"] as const)(
     useMixedAgentPair(engine, engine);
     let sequence = 0;
     let scope: SessionAccessScope & { sessionId: string };
+    const request = (operation: SessionGoalOperation) => ({
+      ...scope,
+      expectedSessionId: scope.sessionId,
+      operation,
+    });
     beforeEach(async () => {
       const sessionId = `goal-receipt-${++sequence}`;
       const { path: storePath } = withEngineStoreAdmission(() =>
@@ -26,17 +34,15 @@ describe.skipIf(!mixedAgentConnection).each(["sqlite", "postgres"] as const)(
 
     it("reads an absent Goal receipt through the history worker", async () => {
       await expect(
-        lookupSessionGoalOperation({
-          ...scope,
-          expectedSessionId: scope.sessionId,
-          operation: {
+        lookupSessionGoalOperation(
+          request({
             operationId: "absent",
             requestFingerprint: "absent",
             issuedAtMs: Date.now(),
             action: "clear",
             goalId: "absent-goal",
-          },
-        }),
+          }),
+        ),
       ).resolves.toBeUndefined();
     });
 
@@ -54,11 +60,7 @@ describe.skipIf(!mixedAgentConnection).each(["sqlite", "postgres"] as const)(
         runId: "goal-run",
         messages: [
           {
-            message: {
-              role: "user",
-              content: start.objective,
-              idempotencyKey: start.operationId,
-            },
+            message: { role: "user", content: start.objective, idempotencyKey: start.operationId },
           },
         ],
         sessionTurnMutation: { kind: "goal", operation: start, runId: "goal-run" },
@@ -76,13 +78,7 @@ describe.skipIf(!mixedAgentConnection).each(["sqlite", "postgres"] as const)(
           goal: { objective: start.objective, status: "active" },
         },
       });
-      await expect(
-        lookupSessionGoalOperation({
-          ...scope,
-          expectedSessionId: scope.sessionId,
-          operation: start,
-        }),
-      ).resolves.toEqual(started.result);
+      await expect(lookupSessionGoalOperation(request(start))).resolves.toEqual(started.result);
 
       const pause = {
         operationId: "pause",
@@ -91,11 +87,7 @@ describe.skipIf(!mixedAgentConnection).each(["sqlite", "postgres"] as const)(
         action: "pause",
         goalId: started.result.goalId,
       } as const;
-      const paused = await mutateSessionGoal({
-        ...scope,
-        expectedSessionId: scope.sessionId,
-        operation: pause,
-      });
+      const paused = await mutateSessionGoal(request(pause));
       expect(paused).toMatchObject({
         replayed: false,
         result: {
@@ -105,13 +97,7 @@ describe.skipIf(!mixedAgentConnection).each(["sqlite", "postgres"] as const)(
           goal: { id: started.result.goalId, status: "paused" },
         },
       });
-      await expect(
-        lookupSessionGoalOperation({
-          ...scope,
-          expectedSessionId: scope.sessionId,
-          operation: pause,
-        }),
-      ).resolves.toEqual(paused.result);
+      await expect(lookupSessionGoalOperation(request(pause))).resolves.toEqual(paused.result);
     });
   },
 );

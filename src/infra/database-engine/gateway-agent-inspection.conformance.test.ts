@@ -35,8 +35,9 @@ describe.skipIf(!mixedAgentConnection).each(["sqlite", "postgres"] as const)(
       await closeOpenClawAgentDatabaseByPathAsync(pathname);
       const loads = path.join(fixture.root, "inspection-loads.log");
       const preload = path.join(fixture.root, "inspection-loads.cjs");
+      const traceLoads = engine === "postgres" && !process.versions.bun;
       // Node's production child loader must not pull SQLite-only inspection owners into PG boot.
-      if (engine === "postgres" && !process.versions.bun) {
+      if (traceLoads) {
         fs.writeFileSync(
           preload,
           `if (process.argv[1]?.includes('/openclaw-agent-schema-inspection.worker.')) {
@@ -61,10 +62,9 @@ describe.skipIf(!mixedAgentConnection).each(["sqlite", "postgres"] as const)(
             inspectOwnership: true,
             requireStartupMigrationReadiness: true,
           });
-        const inspection =
-          engine === "postgres" && !process.versions.bun
-            ? withEnvAsync(sqliteWorkerPreloadEnv(preload), inspect)
-            : inspect();
+        const inspection = traceLoads
+          ? withEnvAsync(sqliteWorkerPreloadEnv(preload), inspect)
+          : inspect();
         const refusals = admission.defer({
           env,
           inspections: [
@@ -81,18 +81,16 @@ describe.skipIf(!mixedAgentConnection).each(["sqlite", "postgres"] as const)(
             version,
             agentSchemaMeta: { agentId: "qa", role: "agent" },
           });
-          if (engine === "postgres" && !process.versions.bun) {
+          if (traceLoads) {
             const loaded = fs.readFileSync(loads, "utf8").trim().split("\n");
             expect(loaded).toContain("openclaw-agent-schema-inspection.worker");
-            expect(
-              loaded.filter((name) =>
-                [
-                  "openclaw-agent-schema-inspection",
-                  "openclaw-state-schema-preflight",
-                  "sqlite-maintenance-cache",
-                ].includes(name),
-              ),
-            ).toEqual([]);
+            for (const name of [
+              "openclaw-agent-schema-inspection",
+              "openclaw-state-schema-preflight",
+              "sqlite-maintenance-cache",
+            ]) {
+              expect(loaded).not.toContain(name);
+            }
           }
           expect(readAgentDatabaseAdmissionRefusal("qa", { env })).toBe(refusals[0]);
           expect(open).toThrow(AgentDatabaseAdmissionError);

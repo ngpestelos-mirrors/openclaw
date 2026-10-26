@@ -56,19 +56,14 @@ function withoutProbes<T>(operation: () => T): T {
   const rejectProbe = () => {
     throw new Error("Bridge preparation must use delivered facts without probing");
   };
-  const open = vi.spyOn(fs, "openSync").mockImplementation(rejectProbe);
-  const stat = vi.spyOn(fs, "statSync").mockImplementation(rejectProbe);
+  using open = vi.spyOn(fs, "openSync").mockImplementation(rejectProbe);
+  using stat = vi.spyOn(fs, "statSync").mockImplementation(rejectProbe);
   const exchange = vi.fn(rejectProbe);
-  try {
-    const result = withSqliteDatabaseAdmissionExchange(exchange, operation);
-    expect(open).not.toHaveBeenCalled();
-    expect(stat).not.toHaveBeenCalled();
-    expect(exchange).not.toHaveBeenCalled();
-    return result;
-  } finally {
-    open.mockRestore();
-    stat.mockRestore();
-  }
+  const result = withSqliteDatabaseAdmissionExchange(exchange, operation);
+  expect(open).not.toHaveBeenCalled();
+  expect(stat).not.toHaveBeenCalled();
+  expect(exchange).not.toHaveBeenCalled();
+  return result;
 }
 
 it("prepares the exact admitted identity for a selected store family without probing", () => {

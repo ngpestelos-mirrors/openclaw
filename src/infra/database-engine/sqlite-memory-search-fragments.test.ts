@@ -25,25 +25,22 @@ function expectShadowDrift(db: DatabaseSync, fragment: Fragment, shadow: string)
   expect(matches(db, fragment)).toBe(false);
 }
 
-async function loadVectorDb(db: DatabaseSync) {
-  const loaded = await loadSqliteVecExtension({ db });
-  expect(loaded.ok, loaded.error).toBe(true);
-}
-
 describe("generated memory search fragments", () => {
-  it.each([1, 3, 1536])(
-    "computes vec0 facts for %i dimensions from one native template",
-    async (dimensions) => {
+  it.each([
+    ["memory_index_chunks_vec", 1],
+    ["memory_index_chunks_vec", 3],
+    ["memory_index_chunks_vec", 1536],
+    ["custom_memory_vec", 3],
+  ] as const)(
+    "matches %s with %i dimensions and rejects dimension and shadow drift",
+    async (tableName, dimensions) => {
       using db = new DatabaseSync(":memory:", { allowExtension: true });
-      await loadVectorDb(db);
-      const fragment: Fragment = {
-        kind: "vector",
-        tableName: "memory_index_chunks_vec",
-        dimensions,
-      };
+      const loaded = await loadSqliteVecExtension({ db });
+      expect(loaded.ok, loaded.error).toBe(true);
+      const fragment: Fragment = { kind: "vector", tableName, dimensions };
       // This is the persisted native declaration; the generator uses the engine's builder.
       db.exec(
-        `CREATE VIRTUAL TABLE memory_index_chunks_vec USING vec0(\n  id TEXT PRIMARY KEY,\n  embedding FLOAT[${dimensions}]\n)`,
+        `CREATE VIRTUAL TABLE ${tableName} USING vec0(\n  id TEXT PRIMARY KEY,\n  embedding FLOAT[${dimensions}]\n)`,
       );
       const actual = readCatalog(db, fragment.tableName);
       const template = readGeneratedSqliteCatalog(
@@ -67,16 +64,6 @@ describe("generated memory search fragments", () => {
       expectShadowDrift(db, fragment, "info");
     },
   );
-
-  it("matches a custom vec0 table name without materializing expected facts", async () => {
-    using db = new DatabaseSync(":memory:", { allowExtension: true });
-    await loadVectorDb(db);
-    db.exec(
-      "CREATE VIRTUAL TABLE custom_memory_vec USING vec0(\n  id TEXT PRIMARY KEY,\n  embedding FLOAT[3]\n)",
-    );
-    const fragment = { kind: "vector", tableName: "custom_memory_vec", dimensions: 3 } as const;
-    expectShadowDrift(db, fragment, "info");
-  });
 
   const textFragments = [
     { kind: "body-fts", tableName: "memory_index_chunks_fts", tokenizer: "unicode61" },
