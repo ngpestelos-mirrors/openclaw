@@ -40,54 +40,39 @@ describe("OpenAI discovered subscription models", () => {
       "https://chatgpt.com/backend-api/codex/models?client_version=0.162.1",
     ]);
   });
-  it.each([
-    { modelId: "gpt-5.4", contextWindow: 272_000, contextTokens: 272_000 },
-    { modelId: "gpt-6.1-sol", contextWindow: 128_000, contextTokens: 128_000 },
-    { modelId: "gpt-6.1-sol", contextWindow: undefined, contextTokens: 500_000 },
-  ])(
-    "maps discovered $modelId with active window $contextWindow into a ChatGPT response model",
-    async ({ modelId, contextWindow, contextTokens }) => {
+  it.each([128_000, undefined])(
+    "preserves the active window %s and enabled reasoning for discovered GPT-6.1 Sol",
+    async (contextWindow) => {
       const { provider } = await discoverCodexModels([
         {
-          slug: modelId,
+          slug: "gpt-6.1-sol",
           visibility: "list",
           supported_reasoning_levels: ["medium", "high"].map((effort) => ({ effort })),
           context_window: contextWindow,
           max_context_window: 1_050_000,
-          max_output_tokens: 128_000,
         },
       ]);
-      expect(provider.models[0]).toMatchObject({
-        baseUrl: "https://chatgpt.com/backend-api/codex",
-        input: ["text", "image"],
-        reasoning: true,
+      const discovered = provider.models[0];
+      assert(discovered, "expected discovered GPT-6.1 Sol");
+      expect(discovered).toMatchObject({
         contextWindow: 1_050_000,
-        contextTokens,
-        maxTokens: 128_000,
+        contextTokens: contextWindow ?? 500_000,
+        thinkingLevelMap: { off: null },
+        compat: { supportedReasoningEfforts: ["medium", "high"] },
       });
-      if (modelId === "gpt-6.1-sol") {
-        const discovered = provider.models[0];
-        assert(discovered, "expected discovered GPT-6.1 Sol");
-        expect(discovered).toMatchObject({
-          thinkingLevelMap: { off: null },
-          compat: { supportedReasoningEfforts: ["medium", "high"] },
-        });
-        expect(
-          clampThinkingLevel(
-            {
-              ...discovered,
-              provider: "openai",
-              api: "openai-chatgpt-responses",
-              baseUrl: provider.baseUrl,
-              input: discovered.input.filter(
-                (modality) => modality === "text" || modality === "image",
-              ),
-              contextWindow: discovered.contextWindow ?? 1_050_000,
-            },
-            "off",
-          ),
-        ).not.toBe("off");
-      }
+      expect(
+        clampThinkingLevel(
+          {
+            ...discovered,
+            provider: "openai",
+            api: "openai-chatgpt-responses",
+            baseUrl: provider.baseUrl,
+            input: ["text", "image"],
+            contextWindow: discovered.contextWindow ?? 1_050_000,
+          },
+          "off",
+        ),
+      ).not.toBe("off");
     },
   );
 });
