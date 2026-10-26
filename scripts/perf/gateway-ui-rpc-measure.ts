@@ -1187,6 +1187,7 @@ try {
         OPENCLAW_STATE_DIR: root,
         TMPDIR: path.join(root, "tmp"),
         OPENCLAW_SKIP_CHANNELS: "1",
+        OPENCLAW_HANDSHAKE_TIMEOUT_MS: String(timeoutMs),
         NODE_DISABLE_COMPILE_CACHE: "1",
         TSX_TSCONFIG_PATH: path.join(checkout, "tsconfig.json"),
         OPENCLAW_PROFILE: `rpc-bench-${port}`,
