@@ -7,7 +7,7 @@ import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
-import type { BrowserContext, CDPSession, ElementHandle, Request } from "playwright";
+import type { BrowserContext, CDPSession, ElementHandle, Page, Request } from "playwright";
 import {
   TALK_READY_HISTORY_MESSAGE,
   waitForTalkReady,
@@ -49,6 +49,7 @@ const { values } = parseArgs({
     "expect-hidden-parked": { type: "boolean", default: false },
     "focused-stop": { type: "boolean", default: false },
     "startup-latency": { type: "boolean", default: false },
+    "startup-warm-cache": { type: "boolean", default: false },
     aa: { type: "boolean", default: false },
     sample: { type: "boolean", default: false },
     trace: { type: "boolean", default: false },
@@ -122,6 +123,12 @@ if (
     "--focused-stop requires listening/idle states without --external-transcripts or --frames",
   );
 }
+if (values["startup-warm-cache"] && !values["startup-latency"]) {
+  throw new Error("--startup-warm-cache requires --startup-latency");
+}
+const startupMode = values["startup-warm-cache"]
+  ? "warm-cache-settled-start"
+  : "cold-precache-start";
 const artifactDir = createControlUiE2eArtifactDir("talk", values.output);
 const viewports = [
   { name: "desktop", width: 1440, height: 1000 },
@@ -366,6 +373,33 @@ type Sample = {
   prefix: string;
   [key: string]: unknown;
 };
+type NativePlayAttempt = {
+  callIndex: number;
+  sourceKind: "srcObject" | "src" | "empty";
+  srcKind: "data-audio-wav" | "data" | "blob" | "url" | "empty";
+  srcObjectKind: "MediaStream" | "other" | null;
+  connectedAtInvoke: boolean;
+  invokedAtMs: number;
+  resolvedAtMs: number | null;
+  rejectedAtMs: number | null;
+  rejectionName: string | null;
+};
+function summarizeNativePlays(probe: Window["talkStartupProbe"]) {
+  const origin = probe.gestureAtMs;
+  const relative = (at: number | null) => (at === null || origin === null ? null : at - origin);
+  return probe.playCalls.map((call) => ({
+    callIndex: call.callIndex,
+    sourceKind: call.sourceKind,
+    srcKind: call.srcKind,
+    srcObjectKind: call.srcObjectKind,
+    connectedAtInvoke: call.connectedAtInvoke,
+    invokedAfterGestureMs: relative(call.invokedAtMs),
+    resolvedAfterGestureMs: relative(call.resolvedAtMs),
+    rejectedAfterGestureMs: relative(call.rejectedAtMs),
+    playDurationMs: call.resolvedAtMs === null ? null : call.resolvedAtMs - call.invokedAtMs,
+    rejectionName: call.rejectionName,
+  }));
+}
 type StartupLatency = {
   gestureToReadyMs: number;
   gestureToPlayMs: number;
@@ -373,6 +407,33 @@ type StartupLatency = {
   taskMs: number;
   scriptMs: number;
   styleMs: number;
+  mode: typeof startupMode;
+  legacyFirstPlayUnlock: {
+    callIndex: number;
+    sourceKind: NativePlayAttempt["sourceKind"];
+    srcKind: NativePlayAttempt["srcKind"];
+    gestureToReadyMs: number;
+    gestureToPlayMs: number;
+    playToReadyMs: number;
+  };
+  remoteStream: {
+    callIndex: number;
+    gestureToPlayMs: number;
+    gestureToReadyMs: number;
+    playToReadyMs: number;
+  };
+  readinessWait: {
+    afterGestureMs: number;
+    afterRemotePlayResolutionMs: number;
+  };
+  nativePlayCalls: ReturnType<typeof summarizeNativePlays>;
+  hostLoadAverage: number[];
+  network: {
+    assetGets: number;
+    serviceWorkerAssetGets: number;
+    pendingAssetGetCountAtStart: number;
+    pendingAssetGetCountAtEnd: number;
+  };
 };
 declare global {
   interface Window {
@@ -380,6 +441,8 @@ declare global {
       gestureAtMs: number | null;
       firstPlayAtMs: number | null;
       readyAtMs: number | null;
+      readinessObservedAtMs: number | null;
+      playCalls: NativePlayAttempt[];
     };
   }
 }
@@ -467,10 +530,12 @@ try {
     expectHiddenParked: values["expect-hidden-parked"],
     focusedStop: values["focused-stop"],
     startupLatency: values["startup-latency"],
+    startupMode,
+    precachePhase: values["startup-warm-cache"] ? "before-start" : "after-start",
     startupProbeContract:
-      "Optional browser-local pointerdown to first native play readiness; existing play proxy retained separately. CPU spans Start click through readiness assertion. Synthetic transport and muted native audio; no acoustic, provider, or network latency claim.",
+      "Optional browser-local pointerdown records every native play invocation, resolution and rejection, source kind only (no URLs). Legacy top-level timings and legacyFirstPlayUnlock still identify first play, the production gesture-unlock WAV; remoteStream identifies the first MediaStream play separately. readinessWait ends when the existing Stop/audio/all-playback readiness polling succeeds. CPU spans Start click through readiness assertion and protocol work, not just native play. Wrapper returns the exact fixture play promise; no production hooks. Cold-precache-start preserves the old ordering. --startup-warm-cache instead verifies the same worker precache and network quiet before Start; it is a separate warm-cache-settled-start population, not a correction to cold results. Lazy-module requests can still occur at Start and are reported. Existing strict state-window traffic checks remain unchanged. Synthetic transport and muted native audio; no acoustic, provider, or network latency claim.",
     headless: !values.headed,
-    workloadVersion: "precache-settled-v4",
+    workloadVersion: "precache-settled-v4-native-play-attribution",
     networkContract:
       "Production service workers remain enabled. Before measurement, wait for activation, issue the existing version/precache probe, await the worker's existing preparation promises through its inspector, and verify every boot/deferred inventory URL in its current cache. No worker code or production API is changed. Then wait for 1.5 seconds of browser-context network quiet (70 seconds maximum), including worker and failed/aborted requests. Quiet-window timers end before measurement. Asset GET counters conservatively bracket both Performance.getMetrics endpoint calls. In-flight or new asset GETs invalidate the sample and fail the run; failed samples remain in artifacts.",
     assetHashContract:
@@ -527,6 +592,7 @@ try {
             let cdp: CDPSession | undefined;
             let tracing = false;
             let layerTreeEnabled = false;
+            let startupPage: Page | undefined;
             let latestLayers: TalkLayer[] | undefined;
             const collectLayers = ({ layers }: { layers?: TalkLayer[] }) => {
               latestLayers = layers ?? [];
@@ -539,6 +605,7 @@ try {
               const assetBase = new URL("assets/", slot.url).href;
               const network = trackBrowserNetwork(observation.context, assetBase);
               const page = await observation.context.newPage();
+              startupPage = page;
               page.setDefaultTimeout(20000 * cpuRate);
               await page.setViewportSize(viewport);
               await page.emulateMedia({ colorScheme: "light", reducedMotion: "no-preference" });
@@ -585,13 +652,125 @@ try {
               }
               await page.goto(new URL("/chat", slot.url).href);
               await waitForTalkReady(page);
+              const waitForPrecacheAndQuiet = async () => {
+                await page.evaluate(async () => {
+                  let timer: ReturnType<typeof setTimeout> | undefined;
+                  try {
+                    await Promise.race([
+                      navigator.serviceWorker.ready,
+                      new Promise<never>((_resolve, reject) => {
+                        timer = setTimeout(
+                          () =>
+                            reject(
+                              new Error("Service worker did not become ready within 10 seconds"),
+                            ),
+                          10_000,
+                        );
+                      }),
+                    ]);
+                  } finally {
+                    clearTimeout(timer);
+                  }
+                });
+                await page.waitForFunction(
+                  () => navigator.serviceWorker.controller?.state === "activated",
+                );
+                const workerUrl = await page.evaluate(async (expectedBuild) => {
+                  const worker = navigator.serviceWorker.controller!;
+                  const channel = new MessageChannel();
+                  try {
+                    await new Promise<void>((resolve, reject) => {
+                      const timer = setTimeout(
+                        () => reject(new Error("Service worker precache probe did not reply")),
+                        10_000,
+                      );
+                      channel.port1.addEventListener(
+                        "message",
+                        (event) => {
+                          clearTimeout(timer);
+                          if (
+                            event.data?.type === "sw-updated" &&
+                            event.data.version === expectedBuild
+                          ) {
+                            resolve();
+                          } else {
+                            reject(
+                              new Error("Service worker precache probe has a different build"),
+                            );
+                          }
+                        },
+                        { once: true },
+                      );
+                      channel.port1.start();
+                      worker.postMessage(
+                        {
+                          type: "sw-version-probe",
+                          offlinePrecache: {
+                            saveData: navigator.connection?.saveData === true,
+                            effectiveType: navigator.connection?.effectiveType,
+                          },
+                        },
+                        [channel.port2],
+                      );
+                    });
+                    return worker.scriptURL;
+                  } finally {
+                    channel.port1.close();
+                    channel.port2.close();
+                  }
+                }, slot.buildId);
+                const worker = observation.context
+                  .serviceWorkers()
+                  .find((candidate) => candidate.url() === workerUrl);
+                if (!worker) {
+                  throw new Error("Active service worker inspector is unavailable");
+                }
+                // Network quiet can fall between cache hashing/writes. Observe the
+                // existing work to completion without adding a production test API.
+                const precache = await worker.evaluate<{
+                  cacheName: string;
+                  expectedAssets: number;
+                  cachedAssets: number;
+                  offlineShell: boolean;
+                }>(`(async () => {
+                  await Promise.all([offlinePreparation, deferredPreparation]);
+                  const inventory = [...OFFLINE_BOOT.assets, ...OFFLINE_BOOT.deferredAssets];
+                  const cached = await Promise.all(inventory.map(asset => caches.match(
+                    new URL(asset.path, new URL(SCOPE_PATH, SCOPE_URL)).href,
+                    { cacheName: CACHE_NAME },
+                  )));
+                  return {
+                    cacheName: CACHE_NAME,
+                    expectedAssets: inventory.length,
+                    cachedAssets: cached.filter(Boolean).length,
+                    offlineShell: Boolean(await caches.match(OFFLINE_SHELL_URL, { cacheName: CACHE_NAME })),
+                  };
+                })()`);
+                await writeFile(
+                  path.join(artifactDir, `${browserPrefix}.precache.json`),
+                  JSON.stringify(precache, null, 2),
+                );
+                if (!precache.offlineShell || precache.cachedAssets !== precache.expectedAssets) {
+                  throw new Error(
+                    `Service worker precache is incomplete: ${JSON.stringify(precache)}`,
+                  );
+                }
+                await network.waitForQuiet();
+              };
+              if (values["startup-warm-cache"]) {
+                await waitForPrecacheAndQuiet();
+              }
               let beforeStartup: Awaited<ReturnType<typeof metrics>> | undefined;
+              let beforeStartupNetwork: ReturnType<typeof network.snapshot> | undefined;
+              let startupHostLoadAverage: number[] | undefined;
               if (values["startup-latency"]) {
                 await page.evaluate(() => {
                   const probe: Window["talkStartupProbe"] = (window.talkStartupProbe = {
                     gestureAtMs: null,
                     firstPlayAtMs: null,
                     readyAtMs: null,
+                    readinessObservedAtMs: null,
+                    playCalls: [],
                   });
                   document.addEventListener(
                     "pointerdown",
@@ -604,18 +783,59 @@ try {
                   // oxlint-disable-next-line typescript/unbound-method
                   const play = HTMLMediaElement.prototype.play;
                   HTMLMediaElement.prototype.play = function () {
+                    const invokedAtMs = performance.now();
+                    const src = this.getAttribute("src") ?? this.currentSrc;
+                    const call: NativePlayAttempt = {
+                      callIndex: probe.playCalls.length,
+                      sourceKind: this.srcObject ? "srcObject" : src ? "src" : "empty",
+                      srcKind: src.startsWith("data:audio/wav")
+                        ? "data-audio-wav"
+                        : src.startsWith("data:")
+                          ? "data"
+                          : src.startsWith("blob:")
+                            ? "blob"
+                            : src
+                              ? "url"
+                              : "empty",
+                      srcObjectKind: this.srcObject
+                        ? this.srcObject instanceof MediaStream
+                          ? "MediaStream"
+                          : "other"
+                        : null,
+                      connectedAtInvoke: this.isConnected,
+                      invokedAtMs,
+                      resolvedAtMs: null,
+                      rejectedAtMs: null,
+                      rejectionName: null,
+                    };
+                    probe.playCalls.push(call);
                     const first = probe.firstPlayAtMs === null;
                     if (first) {
-                      probe.firstPlayAtMs = performance.now();
+                      probe.firstPlayAtMs = invokedAtMs;
                     }
-                    return play.call(this).then(() => {
+                    const rejected = (error: unknown) => {
+                      call.rejectedAtMs = performance.now();
+                      call.rejectionName = error instanceof Error ? error.name : typeof error;
+                    };
+                    let promise: Promise<void>;
+                    try {
+                      promise = play.call(this);
+                    } catch (error) {
+                      rejected(error);
+                      throw error;
+                    }
+                    void promise.then(() => {
+                      call.resolvedAtMs = performance.now();
                       if (first) {
-                        probe.readyAtMs = performance.now();
+                        probe.readyAtMs = call.resolvedAtMs;
                       }
-                    });
+                    }, rejected);
+                    return promise;
                   };
                 });
                 await cdp.send("Performance.enable", { timeDomain: "threadTicks" });
+                startupHostLoadAverage = os.loadavg();
+                beforeStartupNetwork = network.snapshot();
                 beforeStartup = await metrics(cdp);
               }
               await page
@@ -638,23 +858,68 @@ try {
               await page.waitForFunction(() => document.querySelector("audio")?.paused === false);
               const playback = await page.waitForFunction(() => {
                 const attempts = window.openclawTalkBench.playbackStartLatenciesMs;
-                return attempts.length && attempts.every((value) => value >= 0)
-                  ? attempts
-                  : undefined;
+                if (!attempts.length || !attempts.every((value) => value >= 0)) {
+                  return undefined;
+                }
+                if (window.talkStartupProbe) {
+                  window.talkStartupProbe.readinessObservedAtMs ??= performance.now();
+                }
+                return attempts;
               });
               const playLatenciesMs = await playback.jsonValue();
               let startup: StartupLatency | undefined;
               if (beforeStartup) {
                 const afterStartup = await metrics(cdp);
+                const afterStartupNetwork = network.snapshot();
                 const gesture = await page.evaluate(() => window.talkStartupProbe);
+                const remote = gesture.playCalls.find(
+                  (call) => call.sourceKind === "srcObject" && call.srcObjectKind === "MediaStream",
+                );
+                const first = gesture.playCalls[0];
                 if (
                   gesture.gestureAtMs === null ||
                   gesture.readyAtMs === null ||
-                  gesture.firstPlayAtMs === null
+                  gesture.firstPlayAtMs === null ||
+                  gesture.readinessObservedAtMs === null ||
+                  !first ||
+                  !remote ||
+                  remote.resolvedAtMs === null ||
+                  !beforeStartupNetwork ||
+                  !startupHostLoadAverage
                 ) {
                   throw new Error("Incomplete startup gesture probe");
                 }
                 startup = {
+                  mode: startupMode,
+                  legacyFirstPlayUnlock: {
+                    callIndex: first.callIndex,
+                    sourceKind: first.sourceKind,
+                    srcKind: first.srcKind,
+                    gestureToReadyMs: gesture.readyAtMs - gesture.gestureAtMs,
+                    gestureToPlayMs: gesture.firstPlayAtMs - gesture.gestureAtMs,
+                    playToReadyMs: gesture.readyAtMs - gesture.firstPlayAtMs,
+                  },
+                  remoteStream: {
+                    callIndex: remote.callIndex,
+                    gestureToPlayMs: remote.invokedAtMs - gesture.gestureAtMs,
+                    gestureToReadyMs: remote.resolvedAtMs - gesture.gestureAtMs,
+                    playToReadyMs: remote.resolvedAtMs - remote.invokedAtMs,
+                  },
+                  readinessWait: {
+                    afterGestureMs: gesture.readinessObservedAtMs - gesture.gestureAtMs,
+                    afterRemotePlayResolutionMs:
+                      gesture.readinessObservedAtMs - remote.resolvedAtMs,
+                  },
+                  nativePlayCalls: summarizeNativePlays(gesture),
+                  hostLoadAverage: startupHostLoadAverage,
+                  network: {
+                    assetGets: afterStartupNetwork.assetGets - beforeStartupNetwork.assetGets,
+                    serviceWorkerAssetGets:
+                      afterStartupNetwork.serviceWorkerAssetGets -
+                      beforeStartupNetwork.serviceWorkerAssetGets,
+                    pendingAssetGetCountAtStart: beforeStartupNetwork.pendingAssetGets,
+                    pendingAssetGetCountAtEnd: afterStartupNetwork.pendingAssetGets,
+                  },
                   gestureToReadyMs: gesture.readyAtMs - gesture.gestureAtMs,
                   gestureToPlayMs: gesture.firstPlayAtMs - gesture.gestureAtMs,
                   playToReadyMs: gesture.readyAtMs - gesture.firstPlayAtMs,
@@ -691,107 +956,12 @@ try {
               if (compareScript && comparison === "AB" && side === 1) {
                 await page.evaluate(compareScript);
               }
-              await page.evaluate(async () => {
-                let timer: ReturnType<typeof setTimeout> | undefined;
-                try {
-                  await Promise.race([
-                    navigator.serviceWorker.ready,
-                    new Promise<never>((_resolve, reject) => {
-                      timer = setTimeout(
-                        () =>
-                          reject(
-                            new Error("Service worker did not become ready within 10 seconds"),
-                          ),
-                        10_000,
-                      );
-                    }),
-                  ]);
-                } finally {
-                  clearTimeout(timer);
-                }
-              });
-              await page.waitForFunction(
-                () => navigator.serviceWorker.controller?.state === "activated",
-              );
-              const workerUrl = await page.evaluate(async (expectedBuild) => {
-                const worker = navigator.serviceWorker.controller!;
-                const channel = new MessageChannel();
-                try {
-                  await new Promise<void>((resolve, reject) => {
-                    const timer = setTimeout(
-                      () => reject(new Error("Service worker precache probe did not reply")),
-                      10_000,
-                    );
-                    channel.port1.addEventListener(
-                      "message",
-                      (event) => {
-                        clearTimeout(timer);
-                        if (
-                          event.data?.type === "sw-updated" &&
-                          event.data.version === expectedBuild
-                        ) {
-                          resolve();
-                        } else {
-                          reject(new Error("Service worker precache probe has a different build"));
-                        }
-                      },
-                      { once: true },
-                    );
-                    channel.port1.start();
-                    worker.postMessage(
-                      {
-                        type: "sw-version-probe",
-                        offlinePrecache: {
-                          saveData: navigator.connection?.saveData === true,
-                          effectiveType: navigator.connection?.effectiveType,
-                        },
-                      },
-                      [channel.port2],
-                    );
-                  });
-                  return worker.scriptURL;
-                } finally {
-                  channel.port1.close();
-                  channel.port2.close();
-                }
-              }, slot.buildId);
-              const worker = observation.context
-                .serviceWorkers()
-                .find((candidate) => candidate.url() === workerUrl);
-              if (!worker) {
-                throw new Error("Active service worker inspector is unavailable");
+              if (!values["startup-warm-cache"]) {
+                await waitForPrecacheAndQuiet();
+              } else {
+                // Start may still issue lazy module GETs against the warmed cache.
+                await network.waitForQuiet();
               }
-              // Network quiet can fall between cache hashing/writes. Observe the
-              // existing work to completion without adding a production test API.
-              const precache = await worker.evaluate<{
-                cacheName: string;
-                expectedAssets: number;
-                cachedAssets: number;
-                offlineShell: boolean;
-              }>(`(async () => {
-                await Promise.all([offlinePreparation, deferredPreparation]);
-                const inventory = [...OFFLINE_BOOT.assets, ...OFFLINE_BOOT.deferredAssets];
-                const cached = await Promise.all(inventory.map(asset => caches.match(
-                  new URL(asset.path, new URL(SCOPE_PATH, SCOPE_URL)).href,
-                  { cacheName: CACHE_NAME },
-                )));
-                return {
-                  cacheName: CACHE_NAME,
-                  expectedAssets: inventory.length,
-                  cachedAssets: cached.filter(Boolean).length,
-                  offlineShell: Boolean(await caches.match(OFFLINE_SHELL_URL, { cacheName: CACHE_NAME })),
-                };
-              })()`);
-              await writeFile(
-                path.join(artifactDir, `${browserPrefix}.precache.json`),
-                JSON.stringify(precache, null, 2),
-              );
-              if (!precache.offlineShell || precache.cachedAssets !== precache.expectedAssets) {
-                throw new Error(
-                  `Service worker precache is incomplete: ${JSON.stringify(precache)}`,
-                );
-              }
-              await network.waitForQuiet();
               const loadedAssets = await page.evaluate(() =>
                 performance.getEntriesByType("resource").map((entry) => entry.name),
               );
@@ -1426,6 +1596,30 @@ try {
               );
               throw error;
             } finally {
+              if (values["startup-latency"]) {
+                const probe = await startupPage
+                  ?.evaluate(() => window.talkStartupProbe)
+                  .catch(() => undefined);
+                await writeFile(
+                  path.join(artifactDir, `${browserPrefix}.native-play.json`),
+                  JSON.stringify(
+                    {
+                      comparison,
+                      side,
+                      pair,
+                      viewport: viewport.name,
+                      cpuRate,
+                      mode: startupMode,
+                      scope: "Probe installation through Stop, or failure cleanup",
+                      gestureObserved:
+                        probe?.gestureAtMs !== null && probe?.gestureAtMs !== undefined,
+                      playCalls: probe ? summarizeNativePlays(probe) : [],
+                    },
+                    null,
+                    2,
+                  ),
+                );
+              }
               if (tracing) {
                 await cdp?.send("Tracing.end").catch(() => undefined);
               }

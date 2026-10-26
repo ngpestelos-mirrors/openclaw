@@ -418,3 +418,11 @@ readiness. The WebRTC stream starts through a later `srcObject` play call. These
 old timings remain recorded, including their adverse tails, but cannot establish
 unchanged remote-stream latency. A source-classified probe will retain both
 boundaries separately before the canvas change is accepted.
+
+The updated probe records every native play call's source kind and outcome,
+without source URLs, and separates the remote-stream promise from the existing
+all-playback readiness wait. It also records startup asset traffic and host load.
+Default startup remains cold and precedes precache completion. An explicit
+`--startup-warm-cache` mode measures a separate cache-settled population; it does
+not relabel or replace cold observations. Steady-state CPU and network windows
+retain the same v4 measurement boundaries.
