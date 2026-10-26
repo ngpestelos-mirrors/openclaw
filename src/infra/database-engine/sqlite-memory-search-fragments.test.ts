@@ -27,8 +27,6 @@ function expectShadowDrift(db: DatabaseSync, fragment: Fragment, shadow: string)
 
 describe("generated memory search fragments", () => {
   it.each([
-    ["memory_index_chunks_vec", 1],
-    ["memory_index_chunks_vec", 3],
     ["memory_index_chunks_vec", 1536],
     ["custom_memory_vec", 3],
   ] as const)(

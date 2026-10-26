@@ -97,7 +97,6 @@ export const databaseWorkerCoreTestFiles = [
   "src/infra/database-engine/nullable-ordering.conformance.test.ts",
   "src/infra/database-engine/string-set.conformance.test.ts",
   "src/infra/database-engine/physical-facts.test.ts",
-  "src/infra/database-engine/bridge-prestart.test.ts",
   "src/infra/postgres-sync/bridge-prestart.test.ts",
   "src/infra/postgres-sync/connection.test.ts",
   "src/infra/worker-cpu.postgres-bridge.test.ts",

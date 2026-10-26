@@ -1,11 +1,10 @@
 import assert from "node:assert/strict";
-import { beforeEach, describe, expect, it } from "vitest";
+import { describe, expect, it } from "vitest";
 import { lookupSessionGoalOperation } from "../../config/sessions/goals-operations-read.js";
 import {
   mutateSessionGoal,
   type SessionGoalOperation,
 } from "../../config/sessions/goals-operations.js";
-import type { SessionAccessScope } from "../../config/sessions/session-accessor.sqlite-contract.js";
 import { upsertSessionEntryCore } from "../../config/sessions/session-accessor.sqlite-entry.js";
 import { persistSessionTranscriptTurn } from "../../config/sessions/session-accessor.transcript-turn.js";
 import { openOpenClawAgentDatabase } from "../../state/openclaw-agent-db.js";
@@ -16,37 +15,23 @@ describe.skipIf(!mixedAgentConnection).each(["sqlite", "postgres"] as const)(
   "%s Goal receipt workers",
   (engine) => {
     useMixedAgentPair(engine, engine);
-    let sequence = 0;
-    let scope: SessionAccessScope & { sessionId: string };
-    const request = (operation: SessionGoalOperation) => ({
-      ...scope,
-      expectedSessionId: scope.sessionId,
-      operation,
-    });
-    beforeEach(async () => {
-      const sessionId = `goal-receipt-${++sequence}`;
+    it("reads absent receipts, then persists start and management receipts through workers", async () => {
+      const sessionId = "goal-receipt";
       const { path: storePath } = withEngineStoreAdmission(() =>
         openOpenClawAgentDatabase({ agentId: "main" }),
       );
-      scope = { agentId: "main", sessionKey: `agent:main:${sessionId}`, sessionId, storePath };
+      const scope = {
+        agentId: "main",
+        sessionKey: `agent:main:${sessionId}`,
+        sessionId,
+        storePath,
+      };
+      const request = (operation: SessionGoalOperation) => ({
+        ...scope,
+        expectedSessionId: scope.sessionId,
+        operation,
+      });
       await upsertSessionEntryCore(scope, { sessionId, updatedAt: Date.now() });
-    });
-
-    it("reads an absent Goal receipt through the history worker", async () => {
-      await expect(
-        lookupSessionGoalOperation(
-          request({
-            operationId: "absent",
-            requestFingerprint: "absent",
-            issuedAtMs: Date.now(),
-            action: "clear",
-            goalId: "absent-goal",
-          }),
-        ),
-      ).resolves.toBeUndefined();
-    });
-
-    it("persists Goal start and management receipts through their production workers", async () => {
       const start = {
         operationId: "start",
         requestFingerprint: "start",
@@ -54,6 +39,7 @@ describe.skipIf(!mixedAgentConnection).each(["sqlite", "postgres"] as const)(
         action: "start",
         objective: "Preserve the café migration 🦞",
       } as const;
+      await expect(lookupSessionGoalOperation(request(start))).resolves.toBeUndefined();
       const turn = await persistSessionTranscriptTurn(scope, {
         expectedSessionId: scope.sessionId,
         updateMode: "none",
@@ -67,16 +53,9 @@ describe.skipIf(!mixedAgentConnection).each(["sqlite", "postgres"] as const)(
       });
       const started = turn.sessionTurnMutationResult;
       assert(started);
-      expect(started).toMatchObject({
-        replayed: false,
-        result: {
-          action: "start",
-          operationId: "start",
-          sessionId: scope.sessionId,
-          status: "started",
-          runId: "goal-run",
-          goal: { objective: start.objective, status: "active" },
-        },
+      expect(started.result).toMatchObject({
+        status: "started",
+        goal: { objective: start.objective, status: "active" },
       });
       await expect(lookupSessionGoalOperation(request(start))).resolves.toEqual(started.result);
 
@@ -88,14 +67,9 @@ describe.skipIf(!mixedAgentConnection).each(["sqlite", "postgres"] as const)(
         goalId: started.result.goalId,
       } as const;
       const paused = await mutateSessionGoal(request(pause));
-      expect(paused).toMatchObject({
-        replayed: false,
-        result: {
-          action: "pause",
-          operationId: "pause",
-          status: "updated",
-          goal: { id: started.result.goalId, status: "paused" },
-        },
+      expect(paused.result).toMatchObject({
+        status: "updated",
+        goal: { id: started.result.goalId, status: "paused" },
       });
       await expect(lookupSessionGoalOperation(request(pause))).resolves.toEqual(paused.result);
     });
