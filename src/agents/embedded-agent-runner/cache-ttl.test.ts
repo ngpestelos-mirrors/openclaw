@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 
 const providerEligibility = vi.hoisted(() => vi.fn());
 
+// mock-isolation: Pin provider eligibility without loading plugin registries into this policy test.
 vi.mock("../../plugins/provider-runtime.js", () => ({
   resolveProviderCacheTtlEligibility: (params: { context: { provider: string } }) => {
     providerEligibility(params);
