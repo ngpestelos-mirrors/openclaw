@@ -272,6 +272,7 @@ export function PluginCatalogGrid(props: {
           ? {
               position: "relative",
               height: `${view().height || Math.ceil(props.items.length / 4) * 136}px`,
+              contain: "layout",
             }
           : undefined
       }

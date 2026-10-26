@@ -92,6 +92,7 @@ it("windows large catalogs without losing keyboard traversal, reordered cards, o
   );
   const [items, setItems] = createSignal(entries);
   const [messages, setMessages] = createSignal<PluginCatalogResultsProps["messages"]>({});
+  const [progress, setProgress] = createSignal<PluginCatalogResultsProps["installProgress"]>();
   render(() => (
     <PluginCatalogResults
       {...catalogProps()}
@@ -99,6 +100,7 @@ it("windows large catalogs without losing keyboard traversal, reordered cards, o
       category="tools"
       result={{ items: items() }}
       messages={messages()}
+      installProgress={progress()}
     />
   ));
   const card = (index: number) =>
@@ -141,6 +143,31 @@ it("windows large catalogs without losing keyboard traversal, reordered cards, o
   });
 
   container.scrollTop = 0;
+  await nextFrame();
+  setProgress(
+    new Map([
+      [
+        "install:window-0000",
+        {
+          startedAt: Date.now(),
+          activities: [{ activityId: "dependencies", stage: "dependencies", status: "started" }],
+        },
+      ],
+    ]),
+  );
+  await nextFrame();
+  const installAction = card(0).querySelector<HTMLButtonElement>("button")!;
+  installAction.click();
+  await waitForSolid(() => {
+    const popup = find(".plugin-install-action__popup", card(0));
+    expect(popup.matches(":popover-open")).toBe(true);
+    const bounds = popup.getBoundingClientRect();
+    const anchor = installAction.getBoundingClientRect();
+    expect(Math.abs(bounds.left - anchor.left)).toBeLessThan(2);
+    expect(bounds.top).toBeGreaterThanOrEqual(anchor.bottom);
+    expect(bounds.bottom).toBeLessThanOrEqual(window.innerHeight);
+  });
+  setProgress(undefined);
   await nextFrame();
   setMessages({
     "install:window-0000": { kind: "error", text: "Visible error details. ".repeat(30) },
