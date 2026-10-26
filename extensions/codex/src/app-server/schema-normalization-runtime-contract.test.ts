@@ -6,7 +6,7 @@ import {
 } from "openclaw/plugin-sdk/agent-runtime-test-contracts";
 import { afterEach, expect, it } from "vitest";
 import { threadStartResult } from "./codex-app-server.test-fixtures.js";
-import type { CodexThreadStartParams } from "./protocol.js";
+import type { CodexThreadStartParams as StartParams } from "./protocol.js";
 import { createCodexTestBindingStore } from "./session-binding.test-helpers.js";
 import { useAutoCleanupTempDirTracker } from "./test-support.js";
 import {
@@ -14,7 +14,7 @@ import {
   createLifecycleRequest,
   createParams,
   resetThreadLifecycleTestFixtures,
-  startOrResumeThreadWithEmptySkillCatalog,
+  startOrResumeThreadWithEmptySkillCatalog as startThread,
 } from "./thread-lifecycle.test-fixtures.js";
 
 const tempDirs = useAutoCleanupTempDirTracker(afterEach);
@@ -31,10 +31,8 @@ it("preserves canonical specs and replaces threads when the tool catalog or sche
     }
     return { ...threadStartResult(`thread-${nextThreadId++}`, cwd), serviceTier: "priority" };
   });
-  const start = (
-    dynamicTools: Parameters<typeof startOrResumeThreadWithEmptySkillCatalog>[0]["dynamicTools"],
-  ) =>
-    startOrResumeThreadWithEmptySkillCatalog({
+  const start = (dynamicTools: NonNullable<StartParams["dynamicTools"]>) =>
+    startThread({
       client: { request } as never,
       params: createParams(path.join(root, "session.jsonl"), cwd),
       cwd,
@@ -44,7 +42,7 @@ it("preserves canonical specs and replaces threads when the tool catalog or sche
     });
   const payload = () =>
     request.mock.calls.findLast(([method]) => method === "thread/start")?.[1] as
-      | CodexThreadStartParams
+      | StartParams
       | undefined;
   expect((await start([])).threadId).toBe("thread-1");
   expect(payload()?.dynamicTools).toStrictEqual([]);

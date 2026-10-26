@@ -1,8 +1,8 @@
 import { MAX_TIMER_TIMEOUT_MS } from "openclaw/plugin-sdk/number-runtime";
 import { afterEach, expect, it, vi } from "vitest";
 import {
-  isCodexAppServerStartupError,
-  resolveCodexStartupTimeoutMs,
+  isCodexAppServerStartupError as isStartupError,
+  resolveCodexStartupTimeoutMs as startupBudget,
   withCodexStartupTimeout,
 } from "./attempt-timeouts.js";
 import { withAbortableTimeout } from "./timeout.js";
@@ -21,9 +21,7 @@ it.each([
 ])(
   "resolves startup timeout=%s floor=%s request=%s",
   (timeoutMs, timeoutFloorMs, requestTimeoutMs, expected) => {
-    expect(resolveCodexStartupTimeoutMs({ timeoutMs, timeoutFloorMs, requestTimeoutMs })).toBe(
-      expected,
-    );
+    expect(startupBudget({ timeoutMs, timeoutFloorMs, requestTimeoutMs })).toBe(expected);
   },
 );
 
@@ -61,9 +59,7 @@ it.each(["operation", "cleanup", "never"])(
       await vi.advanceTimersByTimeAsync(5);
     }
     const aborted = abortDuring === "operation";
-    expect(isCodexAppServerStartupError(await errorResult, aborted ? "aborted" : "timed_out")).toBe(
-      true,
-    );
+    expect(isStartupError(await errorResult, aborted ? "aborted" : "timed_out")).toBe(true);
     expect(events).toEqual(aborted ? ["rejected"] : ["cleanup-start", "cleanup-done", "rejected"]);
   },
 );
