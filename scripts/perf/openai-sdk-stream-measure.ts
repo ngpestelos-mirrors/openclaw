@@ -214,8 +214,9 @@ if (replay) {
         new ReadableStream<Uint8Array>(
           {
             pull(controller) {
-              if (index < chunks.length) {
-                controller.enqueue(chunks[index++]);
+              const chunk = chunks[index++];
+              if (chunk !== undefined) {
+                controller.enqueue(chunk);
               } else {
                 controller.close();
               }
