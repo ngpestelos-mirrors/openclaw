@@ -1,6 +1,6 @@
 import { setImmediate as nextEventLoopTurn } from "node:timers/promises";
 import { createDeferred } from "openclaw/plugin-sdk/concurrency-runtime";
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it, onTestFinished, vi } from "vitest";
 import { delegation, turn } from "./realtime-quicksilver-events.test-support.js";
 import {
   createGatewayHarness,
@@ -8,12 +8,7 @@ import {
 } from "./realtime-quicksilver-gateway.test-support.js";
 import { emitSideband, parseSent } from "./realtime-quicksilver.test-helpers.js";
 
-function createBridge(
-  params: Pick<
-    GatewayConfig,
-    "runAgentConsult" | "onError" | "onTranscript" | "handleDelegationInput"
-  >,
-) {
+function createBridge(params: Partial<GatewayConfig>) {
   const fetchImpl = vi.fn<NonNullable<GatewayConfig["fetchImpl"]>>();
   const createPeer = vi.fn<NonNullable<GatewayConfig["createPeer"]>>();
   const harness = createGatewayHarness({
@@ -23,61 +18,38 @@ function createBridge(
     fetchImpl,
     startSession: { expires_at: Math.floor(Date.now() / 1000) + 60 },
   });
+  onTestFinished(() => harness.bridge.close());
   return { ...harness, createPeer, fetchImpl };
 }
+const eventsOf = (socket: Parameters<typeof parseSent>[0], type: string) =>
+  parseSent(socket).filter((event) => event.type === type);
 
 describe("OpenAI Quicksilver gateway bridge lifecycle", () => {
   it("reports recoverable provider errors to the relay while preserving its connection", async () => {
     const onError = vi.fn();
     const onTranscript = vi.fn();
     const harness = createBridge({
-      runAgentConsult: vi.fn(async () => ({ text: "Done" })),
       onError,
       onTranscript,
     });
-    try {
-      await harness.bridge.connect();
-      const socket = harness.getSocket();
-      emitSideband(socket, { type: "error", error: { message: "temporary voice failure" } });
-      emitSideband(socket, turn("assistant", "Recovered"));
-
-      expect(onError).toHaveBeenCalledExactlyOnceWith(
-        expect.objectContaining({ message: "OpenAI GPT-Live provider error" }),
-      );
-      expect(onTranscript).toHaveBeenCalledWith("assistant", "Recovered", true);
-      expect(harness.bridge.isConnected()).toBe(true);
-    } finally {
-      await harness.bridge.close();
-    }
-  });
-
-  it("aborts an accepted delegation when the bridge closes normally", async () => {
-    let consultSignal: AbortSignal | undefined;
-    const runAgentConsult = vi.fn(async ({ signal }: { prompt: string; signal?: AbortSignal }) => {
-      consultSignal = signal;
-      await new Promise<void>((resolve) => {
-        signal?.addEventListener("abort", () => resolve(), { once: true });
-      });
-      return { text: "must not be delivered" };
-    });
-    const harness = createBridge({ runAgentConsult });
-
     await harness.bridge.connect();
     const socket = harness.getSocket();
-    emitSideband(socket, delegation("delegation-abort", "Cancel this on close"));
-    await vi.waitFor(() => expect(runAgentConsult).toHaveBeenCalledOnce());
-
-    await harness.bridge.close();
-    expect(consultSignal?.aborted).toBe(true);
-    await Promise.resolve();
-    expect(parseSent(socket).filter((event) => event.type === "delegation.context.append")).toEqual(
-      [],
+    emitSideband(socket, { type: "error", error: { message: "temporary voice failure" } });
+    emitSideband(socket, turn("assistant", "Recovered"));
+    expect(onError).toHaveBeenCalledExactlyOnceWith(
+      expect.objectContaining({ message: "OpenAI GPT-Live provider error" }),
     );
+    expect(onTranscript).toHaveBeenCalledWith("assistant", "Recovered", true);
+    expect(harness.bridge.isConnected()).toBe(true);
   });
 
-  it.each([false, true])(
-    "detaches transport without aborting an accepted delegation (classified=%s)",
-    async (classified) => {
+  it.each([
+    { disposition: undefined, classified: false },
+    { disposition: "detach", classified: false },
+    { disposition: "detach", classified: true },
+  ] as const)(
+    "settles accepted delegation on close ($disposition, classified=$classified)",
+    async ({ disposition, classified }) => {
       let consultSignal: AbortSignal | undefined;
       const { promise: consultResult, resolve: resolveConsult } = createDeferred<{
         text: string;
@@ -85,6 +57,11 @@ describe("OpenAI Quicksilver gateway bridge lifecycle", () => {
       const runAgentConsult = vi.fn(
         async ({ signal }: { prompt: string; signal?: AbortSignal }) => {
           consultSignal = signal;
+          signal?.addEventListener(
+            "abort",
+            () => resolveConsult({ text: "must not be delivered" }),
+            { once: true },
+          );
           return await consultResult;
         },
       );
@@ -104,24 +81,19 @@ describe("OpenAI Quicksilver gateway bridge lifecycle", () => {
         expect(harness.createPeer).not.toHaveBeenCalled();
         emitSideband(socket, delegation("delegation-detach", "Finish after disconnect"));
         await vi.waitFor(() => expect(runAgentConsult).toHaveBeenCalledOnce());
-        expect(
-          parseSent(socket).filter((event) => event.type === "session.context.append"),
-        ).toHaveLength(classified ? 1 : 0);
+        expect(eventsOf(socket, "session.context.append")).toHaveLength(classified ? 1 : 0);
 
-        await harness.bridge.close({ disposition: "detach" });
+        await harness.bridge.close(disposition ? { disposition } : undefined);
         const sentAtClose = socket.sent.length;
         emitSideband(socket, delegation("late", "Do not acknowledge after detach"));
-        expect(consultSignal?.aborted).toBe(false);
+        expect(consultSignal?.aborted).toBe(disposition !== "detach");
         resolveConsult({ text: "finished after detach" });
         await nextEventLoopTurn();
-        expect(
-          parseSent(socket).filter((event) => event.type === "delegation.context.append"),
-        ).toEqual([]);
+        expect(eventsOf(socket, "delegation.context.append")).toEqual([]);
         expect(socket.sent).toHaveLength(sentAtClose);
         expect(runAgentConsult).toHaveBeenCalledOnce();
       } finally {
         resolveConsult({ text: "Finished" });
-        await harness.bridge.close();
       }
     },
   );
