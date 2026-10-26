@@ -10,6 +10,7 @@ import {
   resolveUiConfiguredMainKey,
 } from "../../lib/sessions/session-key.ts";
 import { preloadSessionMessageSubscriptions } from "../../lib/sessions/session-scoped-operations.ts";
+import { ActivityGroupContent, ChatNotice } from "./components/chat-row-facts-lazy.ts";
 import { PendingSessionCreate } from "./pending-session-create-lazy.ts";
 import { sessionRouteHints } from "./route-draft.ts";
 
@@ -33,6 +34,9 @@ function sessionPage(face: BoardFace) {
       }`;
     },
     loader: (context: ApplicationContext, options) => {
+      // Ready lazy modules render with the row; speculative code never holds navigation.
+      void ChatNotice.preload().catch(() => undefined);
+      void ActivityGroupContent.preload().catch(() => undefined);
       // Subscription acquisition owns errors and retries after this speculative load.
       void preloadSessionMessageSubscriptions().catch(() => undefined);
       const creation = context.chatSubmissions.creation;

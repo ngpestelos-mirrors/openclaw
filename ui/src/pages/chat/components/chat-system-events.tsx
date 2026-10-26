@@ -4,7 +4,7 @@ import { registerChatMessageMetadataEnglish } from "../../../i18n/locales/en-cha
 import type { SystemEventGroup, SystemEventItem } from "../../../lib/chat/chat-types.ts";
 import { t, registerEnglishCatalog } from "../../../lib/reactive/i18n.ts";
 import { ChatDivider } from "./chat-divider.tsx";
-import { ChatNotice } from "./chat-notice-view.tsx";
+import { ChatNotice } from "./chat-row-facts-lazy.ts";
 
 registerEnglishCatalog(registerChatMessageMetadataEnglish);
 

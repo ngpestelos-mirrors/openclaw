@@ -22,6 +22,7 @@ import {
   createToolResultMessage,
   prepareHistoryGroups,
 } from "./chat-message.test-support.ts";
+import { ActivityGroupContent } from "./chat-row-facts-lazy.ts";
 import { settleToolBridges } from "./chat-tool-render.test-support.ts";
 import { WorkGroupSummary } from "./chat-work-group-summary.tsx";
 
@@ -39,7 +40,8 @@ beforeEach(() => {
 });
 const visibleTools = { showToolCalls: true, showReasoning: true };
 
-it("commits a cached activity summary with its transcript row", () => {
+it("commits a preloaded cached activity summary with its transcript row", async () => {
+  await ActivityGroupContent.preload();
   const group = createToolGroup("cached", [
     createMessageEntry(
       "cached-tool",
