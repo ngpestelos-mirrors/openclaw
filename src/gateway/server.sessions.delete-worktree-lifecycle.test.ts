@@ -402,11 +402,11 @@ test("archived deletion replies before snapshotting while fencing same-key succe
 test.each([
   ["sessions.delete", "snapshot-failed", false],
   ["sessions.delete", "snapshot-failed", true],
-  ["sessions.delete", "finalized"],
-  ["sessions.delete", "busy"],
-  ["sessions.delete", "owner-mismatch"],
-  ["sessions.reset", "removed"],
-  ["sessions.reset", "busy"],
+  ["sessions.delete", "finalized", false],
+  ["sessions.delete", "busy", false],
+  ["sessions.delete", "owner-mismatch", false],
+  ["sessions.reset", "removed", false],
+  ["sessions.reset", "busy", false],
 ] as const)("%s cleanup outcome=%s archived=%s", async (method, outcome, archivedOnly) => {
   await using fixture = await createDeletionFixture();
   const { workspace, storePath } = fixture;
