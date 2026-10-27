@@ -8,7 +8,9 @@ import {
   type VirtualItem,
 } from "@tanstack/virtual-core";
 import { createMemo, createSignal, For, onSettled, type Accessor } from "solid-js";
+import { cancelLayout, scheduleLayout } from "../../lib/layout-frame.ts";
 import type { PluginDiscoveryEntry } from "../../lib/plugins/index.ts";
+import { observeDocumentRootAttributes } from "../../lib/reactive/document-root-attributes.ts";
 import { createLayoutMeasurement } from "../../lib/reactive/layout-measurement.ts";
 import { observeResize } from "../../lib/reactive/observers.ts";
 
@@ -25,6 +27,9 @@ export function PluginCatalogGrid(props: {
   let scroller: HTMLElement | null = null;
   let columns = 4;
   let gap = 12;
+  let blockInset = 0;
+  let sizingRows = false;
+  const rowSizeKey = {};
   let keyInput: { items: readonly PluginDiscoveryEntry[]; columns: number } | undefined;
   let pinnedRows: number[] = [];
   let syncScrollOffset: (() => void) | undefined;
@@ -43,6 +48,9 @@ export function PluginCatalogGrid(props: {
     () => new Map<VirtualItem["key"], number>(props.items.map((item, index) => [item.id, index])),
   );
   const publish = () => {
+    if (sizingRows) {
+      return;
+    }
     const rows = virtualizer.getVirtualItems();
     const height = virtualizer.getTotalSize();
     setView((previous) =>
@@ -84,9 +92,58 @@ export function PluginCatalogGrid(props: {
     overscan: 1,
     onChange: publish,
   });
+  const syncFocusedOffset = () => {
+    const activeElement = grid.ownerDocument.activeElement;
+    // Native focus supersedes a pending clamped correction before _willUpdate can replay it.
+    if (activeElement !== measuredFocus) {
+      measuredFocus = activeElement;
+      syncScrollOffset?.();
+    }
+  };
+  const rowHeights = (
+    itemIndexes: Map<VirtualItem["key"], number>,
+    columnCount: number,
+    inset: number,
+  ) => {
+    const heights = new Map<number, number>();
+    for (const [id, content] of mounted) {
+      const index = itemIndexes.get(id);
+      if (index !== undefined && content.height > 0) {
+        const row = Math.floor(index / columnCount);
+        heights.set(row, Math.max(heights.get(row) ?? 0, content.height + inset));
+      }
+    }
+    return heights;
+  };
+  const resizeRows = (heights: Map<number, number>) => {
+    sizingRows = true;
+    try {
+      for (const [index, height] of heights) {
+        const offset = virtualizer.scrollOffset;
+        virtualizer.resizeItem(index, height);
+        // A compensated scroll changes where the next row sits relative to the fold.
+        if (virtualizer.scrollOffset !== offset) {
+          virtualizer.getTotalSize();
+        }
+      }
+    } finally {
+      sizingRows = false;
+    }
+    publish();
+  };
   onSettled(() => {
     const { _didMount: mountVirtualizer } = virtualizer;
-    return mountVirtualizer();
+    const release = mountVirtualizer();
+    const stopStyles = observeDocumentRootAttributes(
+      grid.ownerDocument,
+      ["class", "style", "data-theme", "data-theme-id", "data-theme-mode"],
+      measure,
+    );
+    return () => {
+      cancelLayout(rowSizeKey);
+      stopStyles();
+      release();
+    };
   });
   const measure = createLayoutMeasurement(
     () => ({ items: props.items, indexes: indexes(), focused: focused(), windowed: windowed() }),
@@ -95,7 +152,6 @@ export function PluginCatalogGrid(props: {
         return undefined;
       }
       const viewport = grid.closest<HTMLElement>(".content");
-      const activeElement = grid.ownerDocument.activeElement;
       const style = getComputedStyle(grid);
       const nextColumns = style.gridTemplateColumns.split(" ").length;
       const nextGap = Number.parseFloat(style.rowGap) || 0;
@@ -104,7 +160,6 @@ export function PluginCatalogGrid(props: {
           viewport.getBoundingClientRect().top +
           viewport.scrollTop
         : 0;
-      const heights = new Map<number, number>();
       // Intrinsic content can shrink even while its card stretches to the row height.
       const firstContent = mounted.values().next().value?.element;
       const cardStyle = firstContent ? getComputedStyle(firstContent.parentElement!) : null;
@@ -116,13 +171,7 @@ export function PluginCatalogGrid(props: {
             cardStyle.borderBottomWidth,
           ].reduce((sum, value) => sum + Number.parseFloat(value), 0)
         : 0;
-      for (const [id, content] of mounted) {
-        const index = next.indexes.get(id);
-        if (index !== undefined && content.height > 0) {
-          const row = Math.floor(index / nextColumns);
-          heights.set(row, Math.max(heights.get(row) ?? 0, content.height + inset));
-        }
-      }
+      const heights = rowHeights(next.indexes, nextColumns, inset);
       const count = Math.ceil(next.items.length / nextColumns);
       const focusedIndex = next.indexes.get(next.focused ?? "");
       // Endpoints admit native Tab from either direction; neighboring tracks
@@ -164,6 +213,7 @@ export function PluginCatalogGrid(props: {
         }
         columns = nextColumns;
         gap = nextGap;
+        blockInset = inset;
         virtualizer.setOptions({
           ...virtualizer.options,
           count,
@@ -173,19 +223,10 @@ export function PluginCatalogGrid(props: {
           scrollMargin: margin,
           rangeExtractor,
         });
-        // Native focus supersedes a pending clamped correction before _willUpdate can replay it.
-        if (activeElement !== measuredFocus) {
-          measuredFocus = activeElement;
-          syncScrollOffset?.();
-        }
+        syncFocusedOffset();
         const { _willUpdate: updateVirtualizer } = virtualizer;
         updateVirtualizer();
-        for (const [index, height] of heights) {
-          if (height > 0) {
-            virtualizer.resizeItem(index, height);
-          }
-        }
-        publish();
+        resizeRows(heights);
       };
     },
     {
@@ -225,7 +266,12 @@ export function PluginCatalogGrid(props: {
         const height = entry!.borderBoxSize[0]?.blockSize ?? entry!.contentRect.height;
         if (height !== geometry.height) {
           geometry.height = height;
-          measure();
+          // Consume delivered sizes once per frame, using the latest full-layout
+          // columns and inset without measuring the grid again.
+          scheduleLayout(rowSizeKey, () => () => {
+            syncFocusedOffset();
+            resizeRows(rowHeights(indexes(), columns, blockInset));
+          });
         }
       });
       return () => {

@@ -187,6 +187,24 @@ it("windows large catalogs without losing keyboard traversal, reordered cards, o
       card(0).getBoundingClientRect().bottom,
     );
   });
+  const rootStyle = document.documentElement.style;
+  const previousSpacing = rootStyle.getPropertyValue("--space-3");
+  const compactHeight = card(0).getBoundingClientRect().height;
+  try {
+    rootStyle.setProperty("--space-3", "32px");
+    await waitForSolid(() => {
+      const first = card(0).getBoundingClientRect();
+      const next = card(3).getBoundingClientRect();
+      expect(first.height).toBeGreaterThan(compactHeight + 30);
+      expect(Math.abs(next.top - first.bottom - 32)).toBeLessThan(1);
+    });
+  } finally {
+    if (previousSpacing) {
+      rootStyle.setProperty("--space-3", previousSpacing);
+    } else {
+      rootStyle.removeProperty("--space-3");
+    }
+  }
   container.style.width = "360px";
   await page.viewport(390, 844);
   await waitForSolid(() => {
