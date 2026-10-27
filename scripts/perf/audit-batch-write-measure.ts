@@ -197,7 +197,7 @@ database.db.exec = (sql) => {
 };
 // This mix's tool/run autocommits are counted separately from explicit COMMITs.
 const prepare = database.db.prepare.bind(database.db);
-database.db.prepare = (sql) => {
+database.db.prepare = (sql: string) => {
   const statement = prepare(sql);
   if (/^insert\s/i.test(sql.trimStart())) {
     for (const key of ["get", "all", "run", "iterate"] as const) {

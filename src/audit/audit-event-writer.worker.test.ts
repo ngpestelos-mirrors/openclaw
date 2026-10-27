@@ -225,6 +225,7 @@ describe("audit writer shared worker", () => {
         eventId: "rollback-terminal",
         input: {
           ...messageEvent("message.outbound.finished"),
+          sourceId: "rollback-terminal-source",
           sourceSequence: 1,
           runId: receipt.runId,
           executionIdentityToken: token,
