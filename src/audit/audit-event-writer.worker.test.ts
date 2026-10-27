@@ -1,8 +1,16 @@
+import { deserialize } from "node:v8";
+import { Worker } from "node:worker_threads";
+import { isRecord } from "@openclaw/normalization-core/record-coerce";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createDeferred } from "../../test/helpers/promise.js";
 import { useSqliteWorkerFault } from "../../test/helpers/sqlite-worker-fault.js";
 import { useAutoCleanupTempDirTracker } from "../../test/helpers/temp-dir.js";
 import { requireNodeSqlite } from "../infra/node-sqlite.js";
+import type { SqliteWorkerRequest } from "../infra/sqlite-worker-contract.js";
+import {
+  withSqliteWorkerReservationObservation,
+  type SqliteWorkerReservationObservation,
+} from "../infra/worker-request-diagnostics.js";
 import {
   closeOpenClawStateDatabaseAsync,
   closeOpenClawStateDatabaseForTest,
@@ -17,6 +25,8 @@ import { progressInput } from "./audit-event-retention.test-support.js";
 import { listAuditEvents, recordAuditEventInDatabase } from "./audit-event-store.js";
 import { createAuditEventWriter, type AuditEventWriter } from "./audit-event-writer.js";
 import { input, messageEvent, decisionReceipt } from "./audit-event-writer.test-support.js";
+import type { AuditWriterRequest } from "./audit-event-writer.types.js";
+import { auditOperations } from "./audit-event-writer.worker.js";
 import { createAuditEventRecorder } from "./audit-recorder.js";
 import {
   pageExecutionDecisionFactsForContextInDatabase,
@@ -28,6 +38,7 @@ import {
   enqueueExecutionIdentityContextAtAdmission,
 } from "./execution-identity-admission.js";
 import {
+  captureExecutionIdentityAdmissionEnvelope,
   executionIdentityFacts as admissionFacts,
   prepareExecutionIdentityContextAtAdmission,
 } from "./execution-identity.test-support.js";
@@ -77,104 +88,300 @@ function rowCounts(db: OpenClawStateDatabase["db"], tables: string[]) {
   return tables.map((table) => db.prepare(`SELECT COUNT(*) AS count FROM ${table}`).get()?.count);
 }
 
-describe("audit writer shared worker", () => {
-  it.each(["cold", "existing shared actor", "worker death after committed prefix"] as const)(
-    "flushes the %s audit FIFO without host SQLite",
-    async (mode) => {
-      const stateDir = tempDirs.make("openclaw-audit-writer-");
-      const database = { env: { OPENCLAW_STATE_DIR: stateDir } };
-      if (mode === "existing shared actor") {
-        await listAuditEvents({ database, limit: 1 });
+function loseFirstAuditBatchReply() {
+  let target: { worker: Worker; requestId: number } | undefined;
+  let stopped: Promise<number> | undefined;
+  // oxlint-disable-next-line typescript/unbound-method -- The intercepted worker remains the receiver.
+  const originalPost = Worker.prototype.postMessage;
+  // oxlint-disable-next-line typescript/unbound-method -- The intercepted worker remains the receiver.
+  const originalEmit = Worker.prototype.emit;
+  const post = vi.spyOn(Worker.prototype, "postMessage").mockImplementation(function (
+    this: Worker,
+    request: SqliteWorkerRequest,
+    transferList,
+  ) {
+    if (request.type === "execute") {
+      const command: unknown = deserialize(request.input);
+      if (isRecord(command) && command.type === "audit.writer.process") {
+        target ??= { worker: this, requestId: request.id };
       }
-      const { contextId, executionId, runId, ...receipt } = decisionReceipt();
-      const token = createExecutionIdentityAdmissionToken(runId, {
-        contextId,
-        executionId,
-        now: receipt.occurredAt,
-      });
-      const nativeOpens = vi.spyOn(requireNodeSqlite(), "DatabaseSync");
-      const counters = observeMainThreadSql({ includeClose: true });
-      const { writer, errors } = writerFixture(stateDir);
-      const recorder = messageRecorder(writer);
-      const clearSink = configureExecutionIdentityAdmissionSink(writer.recordExecutionIdentity);
-      try {
-        await writer.ready;
-        if (mode === "worker death after committed prefix") {
-          pruneFault.enable(1);
-        }
-        enqueueExecutionIdentityContextAtAdmission(admissionFacts(runId), {
-          enabled: true,
-          token,
-          runtimeInstanceId: "worker-runtime",
-        });
-        writer.recordExecutionDecision({ ...receipt, contextId, executionId, runId });
-        writer.recordExecutionDecisionWork({
-          workVersion: 1,
-          token,
-          receipt: {
-            ...receipt,
-            receiptId: "worker-private-decision",
-            occurredAt: receipt.occurredAt + 1,
-          },
-          refs: { target: { namespace: "session", value: "private-session-target" } },
-        });
-        recorder.recordMessage({
-          ...messageEvent("message.outbound.queued"),
-          accountId: "raw-account",
-          conversationId: "raw-conversation",
-        });
-        const start = input();
-        writer.recordRun(start, {
-          ...start,
-          sourceId: "paired-finish",
-          sourceSequence: 2,
-          action: "agent.run.finished",
-          status: "succeeded",
-        });
-        recorder.recordMessage({
-          ...messageEvent("message.outbound.finished"),
-          runId,
-          executionIdentityToken: token,
-        });
-      } finally {
-        clearSink();
-        await recorder.stop();
-        expect(nativeOpens).not.toHaveBeenCalled();
-        counters.expectIdle();
-      }
+    }
+    return originalPost.call(this, request, transferList);
+  });
+  const emit = vi.spyOn(Worker.prototype, "emit").mockImplementation(function (
+    this: Worker,
+    event,
+    ...args: unknown[]
+  ) {
+    const reply = args[0];
+    if (
+      event === "message" &&
+      !stopped &&
+      target?.worker === this &&
+      isRecord(reply) &&
+      reply.id === target.requestId &&
+      reply.ok === true
+    ) {
+      // The real worker committed; discard only its acknowledgement and force replay.
+      stopped = this.terminate();
+      return true;
+    }
+    return originalEmit.call(this, event, ...args);
+  });
+  return async () => {
+    await stopped;
+    post.mockRestore();
+    emit.mockRestore();
+    expect(stopped).toBeDefined();
+  };
+}
 
-      const replayed = mode === "worker death after committed prefix";
-      const owner = openOpenClawStateDatabase(database).db;
-      expect(
-        rowCounts(owner, [
-          "audit_events",
-          "outbound_message_execution_bindings",
-          "outbound_message_progress",
-          "audit_events WHERE kind = 'message'",
-        ]),
-      ).toEqual([3, 1, 1, 1]);
-      expect(
-        JSON.stringify(owner.prepare("SELECT * FROM outbound_message_progress").all()),
-      ).not.toMatch(/raw-account|raw-conversation|raw-target/);
-      expect(errors).toHaveBeenCalledTimes(replayed ? 1 : 0);
-      expect(
-        owner
-          .prepare("SELECT action FROM audit_events WHERE kind = 'agent_run' ORDER BY sequence")
-          .all()
-          .map(({ action }) => action),
-      ).toEqual(["agent.run.started", "agent.run.finished"]);
-      const decisions = pageExecutionDecisionFactsForContextInDatabase(owner, {
-        context: token,
-        limit: 10,
-        now: receipt.occurredAt + 1,
-      }).receipts;
-      expect(decisions).toHaveLength(2);
-      expect(decisions).toContainEqual({ ...receipt, contextId, executionId, runId });
-      expect(
-        decisions.find((item) => item.receiptId === "worker-private-decision")?.action.targetRef,
-      ).toMatch(/^hmac-sha256:v1:/u);
-    },
-  );
+describe("audit writer shared worker", () => {
+  it("commits 32 queued items once, isolates a rejected item, and replays without duplicate rows", async () => {
+    const database = {
+      env: { OPENCLAW_STATE_DIR: tempDirs.make("openclaw-audit-batch-") },
+    };
+    // Admit the shared database before counting only the audit command's transactions.
+    await listAuditEvents({ database, limit: 1 });
+    const requests: AuditWriterRequest[] = Array.from({ length: 32 }, (_, index) => ({
+      type: "record-event",
+      eventId: `batch-event-${index}`,
+      input: {
+        ...messageEvent("message.outbound.finished"),
+        sourceId: `batch-source-${index}`,
+        sourceSequence: index === 15 ? 0 : index + 1,
+      },
+    }));
+    const observation: SqliteWorkerReservationObservation = { operations: new Set() };
+    const results = await withSqliteWorkerReservationObservation(observation, () =>
+      executeOpenClawStateWorker(captureOpenClawStateWorkerContext(database), {
+        type: "audit.writer.process",
+        input: requests,
+      }),
+    );
+    expect(observation.transactionCount).toBe(1);
+    const expectedResults = requests.map((_, index) =>
+      index === 15 ? { status: "settled", error: expect.any(String) } : { status: "settled" },
+    );
+    expect(results).toEqual(expectedResults);
+    expect(
+      await executeOpenClawStateWorker(captureOpenClawStateWorkerContext(database), {
+        type: "audit.writer.process",
+        input: requests,
+      }),
+    ).toEqual(expectedResults);
+    await closeOpenClawStateDatabaseAsync();
+    const owner = openOpenClawStateDatabase(database).db;
+    expect(
+      owner
+        .prepare("SELECT event_id, source_id, source_sequence FROM audit_events ORDER BY sequence")
+        .all(),
+    ).toEqual(
+      Array.from({ length: 32 }, (_, index) => index)
+        .filter((index) => index !== 15)
+        .map((index) => ({
+          event_id: `batch-event-${index}`,
+          source_id: `batch-source-${index}`,
+          source_sequence: index + 1,
+        })),
+    );
+  });
+
+  it("retries a failed batch commit on the same handle without retaining rolled-back facts", () => {
+    const database = {
+      env: { OPENCLAW_STATE_DIR: tempDirs.make("openclaw-audit-commit-failure-") },
+    };
+    const opened = openOpenClawStateDatabase(database);
+    const receipt = decisionReceipt();
+    const token = createExecutionIdentityAdmissionToken(receipt.runId, {
+      contextId: receipt.contextId,
+      executionId: receipt.executionId,
+      now: receipt.occurredAt,
+    });
+    const requests: AuditWriterRequest[] = [
+      {
+        type: "record-execution-identity",
+        work: {
+          kind: "capture",
+          envelope: captureExecutionIdentityAdmissionEnvelope(admissionFacts(receipt.runId), {
+            contextId: receipt.contextId,
+            executionId: receipt.executionId,
+            now: receipt.occurredAt,
+            runtimeInstanceId: "rollback-runtime",
+          }),
+        },
+      },
+      { type: "record-execution-decision", receipt },
+      {
+        type: "record-event",
+        eventId: "rollback-progress",
+        input: progressInput("message.outbound.queued", {
+          runId: receipt.runId,
+          executionIdentityToken: token,
+        }),
+      },
+      {
+        type: "record-event",
+        eventId: "rollback-terminal",
+        input: {
+          ...messageEvent("message.outbound.finished"),
+          sourceSequence: 1,
+          runId: receipt.runId,
+          executionIdentityToken: token,
+        },
+      },
+    ];
+    const context = {
+      open: () => opened,
+      stateOptions: () => ({ path: opened.path, env: database.env }),
+    };
+    const nativeExec = opened.db.exec.bind(opened.db);
+    let failCommit = true;
+    vi.spyOn(opened.db, "exec").mockImplementation((sql) => {
+      if (sql === "COMMIT" && failCommit) {
+        failCommit = false;
+        throw new Error("synthetic batch commit failure");
+      }
+      return nativeExec(sql);
+    });
+    expect(auditOperations["audit.writer.process"](requests, context)).toEqual(
+      requests.map(() => ({ status: "settled", error: expect.any(String) })),
+    );
+    expect(failCommit).toBe(false);
+    expect(opened.db.isTransaction).toBe(false);
+    expect(rowCounts(opened.db, ["audit_events", "audit_identity_keys"])).toEqual([0, 0]);
+    expect(
+      opened.db
+        .prepare(
+          `SELECT name FROM sqlite_schema WHERE name IN (
+            'execution_identity_contexts', 'execution_decision_facts',
+            'outbound_message_progress', 'outbound_message_execution_bindings'
+          )`,
+        )
+        .all(),
+    ).toEqual([]);
+
+    expect(auditOperations["audit.writer.process"](requests, context)).toEqual(
+      requests.map(() => ({ status: "settled" })),
+    );
+    expect(
+      rowCounts(opened.db, [
+        "audit_events",
+        "audit_identity_keys",
+        "execution_identity_contexts",
+        "execution_decision_facts",
+        "outbound_message_progress",
+        "outbound_message_execution_bindings",
+      ]),
+    ).toEqual([1, 1, 1, 1, 1, 1]);
+    expect(opened.db.prepare("SELECT event_id FROM audit_events").all()).toEqual([
+      { event_id: "rollback-terminal" },
+    ]);
+  });
+
+  it.each([
+    "cold",
+    "existing shared actor",
+    "worker death before batch commit",
+    "worker death after batch commit",
+  ] as const)("flushes the %s audit FIFO without host SQLite", async (mode) => {
+    const stateDir = tempDirs.make("openclaw-audit-writer-");
+    const database = { env: { OPENCLAW_STATE_DIR: stateDir } };
+    if (mode === "existing shared actor") {
+      await listAuditEvents({ database, limit: 1 });
+    }
+    const { contextId, executionId, runId, ...receipt } = decisionReceipt();
+    const token = createExecutionIdentityAdmissionToken(runId, {
+      contextId,
+      executionId,
+      now: receipt.occurredAt,
+    });
+    const nativeOpens = vi.spyOn(requireNodeSqlite(), "DatabaseSync");
+    const counters = observeMainThreadSql({ includeClose: true });
+    const { writer, errors } = writerFixture(stateDir);
+    const recorder = messageRecorder(writer);
+    const clearSink = configureExecutionIdentityAdmissionSink(writer.recordExecutionIdentity);
+    let restoreLostReply: (() => Promise<void>) | undefined;
+    try {
+      await writer.ready;
+      if (mode === "worker death before batch commit") {
+        pruneFault.enable(1);
+      } else if (mode === "worker death after batch commit") {
+        restoreLostReply = loseFirstAuditBatchReply();
+      }
+      enqueueExecutionIdentityContextAtAdmission(admissionFacts(runId), {
+        enabled: true,
+        token,
+        runtimeInstanceId: "worker-runtime",
+      });
+      writer.recordExecutionDecision({ ...receipt, contextId, executionId, runId });
+      writer.recordExecutionDecisionWork({
+        workVersion: 1,
+        token,
+        receipt: {
+          ...receipt,
+          receiptId: "worker-private-decision",
+          occurredAt: receipt.occurredAt + 1,
+        },
+        refs: { target: { namespace: "session", value: "private-session-target" } },
+      });
+      recorder.recordMessage({
+        ...messageEvent("message.outbound.queued"),
+        accountId: "raw-account",
+        conversationId: "raw-conversation",
+      });
+      const start = input();
+      writer.recordRun(start, {
+        ...start,
+        sourceId: "paired-finish",
+        sourceSequence: 2,
+        action: "agent.run.finished",
+        status: "succeeded",
+      });
+      recorder.recordMessage({
+        ...messageEvent("message.outbound.finished"),
+        runId,
+        executionIdentityToken: token,
+      });
+    } finally {
+      clearSink();
+      await recorder.stop();
+      await restoreLostReply?.();
+      expect(nativeOpens).not.toHaveBeenCalled();
+      counters.expectIdle();
+    }
+
+    const replayed = mode.startsWith("worker death");
+    const owner = openOpenClawStateDatabase(database).db;
+    expect(
+      rowCounts(owner, [
+        "audit_events",
+        "outbound_message_execution_bindings",
+        "outbound_message_progress",
+        "audit_events WHERE kind = 'message'",
+      ]),
+    ).toEqual([3, 1, 1, 1]);
+    expect(
+      JSON.stringify(owner.prepare("SELECT * FROM outbound_message_progress").all()),
+    ).not.toMatch(/raw-account|raw-conversation|raw-target/);
+    expect(errors).toHaveBeenCalledTimes(replayed ? 1 : 0);
+    expect(
+      owner
+        .prepare("SELECT action FROM audit_events WHERE kind = 'agent_run' ORDER BY sequence")
+        .all()
+        .map(({ action }) => action),
+    ).toEqual(["agent.run.started", "agent.run.finished"]);
+    const decisions = pageExecutionDecisionFactsForContextInDatabase(owner, {
+      context: token,
+      limit: 10,
+      now: receipt.occurredAt + 1,
+    }).receipts;
+    expect(decisions).toHaveLength(2);
+    expect(decisions).toContainEqual({ ...receipt, contextId, executionId, runId });
+    expect(
+      decisions.find((item) => item.receiptId === "worker-private-decision")?.action.targetRef,
+    ).toMatch(/^hmac-sha256:v1:/u);
+  });
 
   it("drops a repeatedly crashing batch and persists work queued after its first failure", async () => {
     const newerQueued = createDeferred();
