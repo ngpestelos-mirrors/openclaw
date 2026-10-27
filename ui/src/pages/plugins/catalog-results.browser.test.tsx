@@ -221,6 +221,50 @@ it("windows large catalogs without losing keyboard traversal, reordered cards, o
   expect(bounds.bottom).toBeGreaterThan(viewport.top);
 });
 
+it("retains focused cards when crossing the catalog windowing threshold in both directions", async () => {
+  container.className = "content";
+  Object.assign(container.style, { height: "500px", width: "1100px", overflow: "auto" });
+  const entries = Array.from({ length: 61 }, (_, index) => plugin(`threshold-${index}`));
+  const [items, setItems] = createSignal(entries.slice(0, 60));
+  render(() => (
+    <PluginCatalogResults
+      {...catalogProps()}
+      query=""
+      category="tools"
+      result={{ items: items() }}
+    />
+  ));
+  const cards = () => container.querySelectorAll(".plugin-catalog-card");
+  const first = find('[data-plugin-id="threshold-0"]');
+  const focused = first.querySelector<HTMLAnchorElement>(".plugin-card-author")!;
+  expect(cards()).toHaveLength(60);
+  focused.focus();
+
+  for (const count of [61, 60, 61]) {
+    setItems(entries.slice(0, count));
+    await nextFrame();
+    await waitForSolid(() => {
+      expect(find('[data-plugin-id="threshold-0"]')).toBe(first);
+      expect(document.activeElement).toBe(focused);
+      if (count === 60) {
+        expect(cards()).toHaveLength(60);
+        expect(first.parentElement!.style.position).toBe("");
+      } else {
+        expect(cards().length).toBeLessThan(61);
+        expect(first.parentElement!.style.position).toBe("absolute");
+      }
+    });
+  }
+  find('[data-plugin-id="threshold-60"]')
+    .querySelector<HTMLAnchorElement>(".plugin-catalog-card__primary-link")!
+    .focus();
+  await nextFrame();
+  const last = find('[data-plugin-id="threshold-60"]').getBoundingClientRect();
+  const viewport = container.getBoundingClientRect();
+  expect(last.top).toBeLessThan(viewport.bottom);
+  expect(last.bottom).toBeGreaterThan(viewport.top);
+});
+
 it("windows both publisher groups while keeping their search endpoints reachable", async () => {
   container.className = "content";
   Object.assign(container.style, { height: "500px", width: "1100px", overflow: "auto" });

@@ -151,6 +151,14 @@ export function PluginCatalogGrid(props: {
       if (!next) {
         return undefined;
       }
+      if (!next.windowed) {
+        return () => {
+          cancelLayout(rowSizeKey);
+          virtualizer.setOptions({ ...virtualizer.options, enabled: false });
+          const { _willUpdate: updateVirtualizer } = virtualizer;
+          updateVirtualizer();
+        };
+      }
       const viewport = grid.closest<HTMLElement>(".content");
       const style = getComputedStyle(grid);
       const nextColumns = style.gridTemplateColumns.split(" ").length;
@@ -231,11 +239,16 @@ export function PluginCatalogGrid(props: {
     },
     {
       // A preceding publisher group can move this grid without resizing it.
-      targets: () => [
-        grid,
-        grid.closest(".plugin-catalog-results__body") ?? grid,
-        ...(scroller ? [scroller] : []),
-      ],
+      targets: () =>
+        windowed()
+          ? [
+              grid,
+              grid.closest(".plugin-catalog-results__body") ?? grid,
+              ...(scroller ? [scroller] : []),
+            ]
+          : [],
+      // An empty target list releases measurements when the catalog shrinks.
+      measureWithoutTarget: true,
       fonts: true,
       changeTiming: "sync",
     },
@@ -266,6 +279,9 @@ export function PluginCatalogGrid(props: {
         const height = entry!.borderBoxSize[0]?.blockSize ?? entry!.contentRect.height;
         if (height !== geometry.height) {
           geometry.height = height;
+          if (!windowed()) {
+            return;
+          }
           // Consume delivered sizes once per frame, using the latest full-layout
           // columns and inset without measuring the grid again.
           scheduleLayout(rowSizeKey, () => () => {
