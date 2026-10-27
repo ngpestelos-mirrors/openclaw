@@ -1,5 +1,5 @@
 {
-  "startupJsGzipBytes": 90138,
-  "reason": "Early transport overlaps chat startup with module evaluation; measured 6–17% readiness gains, with document assets and error handoff included.",
+  "startupJsGzipBytes": 90178,
+  "reason": "Early Gateway overlap improves measured boot readiness; final retry-preserving handoff measures 90,178 B gzip in 3 startup requests.",
   "updatedAt": "2026-10-27"
 }

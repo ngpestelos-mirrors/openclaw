@@ -238,6 +238,55 @@ it("hands rejected authentication to the login owner without repeating connect",
   expect(socket.readyState).toBe(3);
 });
 
+it.each([false, true])(
+  "preserves retryable admission before attachment (retry first: %s)",
+  async (retryFirst) => {
+    const { socket, connect } = await handshake();
+    socket.emitMessage({
+      type: "res",
+      id: connect.id,
+      ok: false,
+      error: { code: "UNAVAILABLE", message: "temporarily unavailable", retryable: true },
+    });
+    await vi.advanceTimersByTimeAsync(0);
+    const onHello = vi.fn();
+    const onClose = vi.fn();
+    const onEvent = vi.fn();
+    const attach = async () => {
+      expect(boot.adopt({ ...options, onHello, onClose, onEvent })).toBe(boot.client);
+      await vi.advanceTimersByTimeAsync(0);
+    };
+    if (!retryFirst) {
+      await attach();
+      expect(onClose).toHaveBeenCalledWith(
+        expect.objectContaining({
+          willRetry: true,
+          error: expect.objectContaining({ code: "UNAVAILABLE" }),
+        }),
+      );
+    }
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(wsInstances).toHaveLength(2);
+    const retry = await handshake();
+    retry.socket.emitMessage({
+      type: "res",
+      id: retry.connect.id,
+      ok: true,
+      payload: { type: "hello-ok", protocol: PROTOCOL_VERSION },
+    });
+    retry.socket.emitMessage({ type: "event", event: "boot-proof", payload: "retry", seq: 1 });
+    await vi.advanceTimersByTimeAsync(0);
+    if (retryFirst) {
+      await attach();
+      expect(onClose).not.toHaveBeenCalled();
+    }
+    expect(onHello).toHaveBeenCalledOnce();
+    expect(await takeEarlyGatewaySubscription(boot.client, key, { initialHistory })).toBeNull();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(onEvent).toHaveBeenCalledWith(expect.objectContaining({ payload: "retry" }));
+  },
+);
+
 it("drops buffered events on reconnect and leaves recovery with the protocol owner", async () => {
   const { socket, connect } = await handshake();
   socket.emitMessage({

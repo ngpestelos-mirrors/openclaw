@@ -48,6 +48,7 @@ export class EarlyGateway {
         return currentOptions().includeSessionMessageBodies;
       },
       onHello: (hello) => {
+        this.closed = undefined;
         if (this.active && !this.retain(hello)) {
           return;
         }
@@ -79,6 +80,19 @@ export class EarlyGateway {
         this.events.push(event);
       },
       onClose: (info) => {
+        if (this.active && !this.owner && info.error && info.willRetry) {
+          // Keep the protocol's retry and its error receipt. Replacing this
+          // client would hide admission errors and restart its retry budget.
+          this.hello = undefined;
+          this.events = [];
+          this.bytes = 0;
+          this.subscription = undefined;
+          resetGatewaySessionMessageSubscriptionCoordinator(this.client);
+          if (this.retain(info)) {
+            this.closed = info;
+          }
+          return;
+        }
         if (this.active) {
           this.retire();
           if (!this.owner) {
@@ -265,6 +279,7 @@ export class EarlyGateway {
   private retire() {
     this.active = false;
     this.hello = undefined;
+    this.closed = undefined;
     this.events = [];
     this.bytes = 0;
     this.subscription = undefined;
