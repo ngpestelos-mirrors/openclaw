@@ -84,9 +84,20 @@ it("delivers ordered passive images at the requested viewport width", async () =
   expect(frame.contentDocument).toBeNull();
 });
 
+it("keeps a small diagram at layout scale within the iPad physical bitmap cap", async () => {
+  await render("ipad", "flowchart TD\nDraft --> Review\nReview --> Ship", 694);
+  const reply = replies[0];
+  expect(reply.success, reply.error).toBe(true);
+  const root = new DOMParser().parseFromString(reply.svg!, "image/svg+xml").querySelector("svg")!;
+  const image = diagram.querySelector("img")!;
+  expect(image.height).toBe(Math.ceil(root.viewBox.baseVal.height));
+  expect(image.width * image.height * 2 ** 2).toBeLessThanOrEqual(4_194_304);
+  expect(image.style.objectFit).toBe("contain");
+});
+
 it("keeps syntax and raster-limit failures permanent and renders the next request", async () => {
-  const source = "flowchart TB\nA[One] --> B[Two] --> C[Three]";
-  await render("oversized", source, 4_096);
+  const source = "flowchart TB\nA[One] --> B[Two] --> C[Three] --> D[Four] --> E[Five] --> F[Six]";
+  await render("oversized", source, 8_192);
   expect(replies).toEqual([
     { id: "oversized", success: false, error: "Diagram image is too large.", retryable: false },
   ]);

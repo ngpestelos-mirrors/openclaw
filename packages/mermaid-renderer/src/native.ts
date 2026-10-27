@@ -34,7 +34,9 @@ async function renderNativeMermaid(job: NativeMermaidJob) {
     const root = new DOMParser().parseFromString(svg, "image/svg+xml").querySelector("svg")!;
     const bounds = root.viewBox.baseVal;
     const width = Math.ceil(job.widthCssPx);
-    const height = Math.ceil((bounds.height * width) / bounds.width);
+    // The viewport is an upper bound, not a request to magnify a small layout.
+    // Upscaling tall diagrams inflates labels and can exceed native physical bitmap caps.
+    const height = Math.ceil(bounds.height * Math.min(1, width / bounds.width));
     if (
       !Number.isFinite(width) ||
       !Number.isFinite(height) ||
@@ -67,6 +69,7 @@ async function renderNativeMermaid(job: NativeMermaidJob) {
     ]);
     image.width = width;
     image.height = height;
+    image.style.objectFit = "contain";
     document.getElementById("diagram")!.replaceChildren(image);
     postResult({ id: job.id, success: true, svg, widthCssPx: image.width, heightCssPx: height });
   } catch (error) {
