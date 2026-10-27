@@ -16,8 +16,9 @@ export function startEarlyApplicationGateway(
 ): EarlyApplicationGateway | undefined {
   const { settings, startup, applicationLocation, basePath } = initial;
   const route = sessionRefFromPath(applicationLocation.pathname, basePath);
-  // Ambiguous aliases, native handoffs, and confirmation-required endpoints keep
-  // their existing startup owner. Only an exact browser chat target can prefetch.
+  // Short references, native handoffs, and confirmation-required endpoints keep
+  // their startup owner. A name-shaped literal is a guess: if route resolution
+  // changes the target, the bounded handoff falls back to ordinary startup.
   if (
     !initial.ownsWarmBoot ||
     initial.hasPendingGateway ||
