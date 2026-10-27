@@ -24,6 +24,7 @@ export class EarlyGateway {
   readonly client: GatewayBrowserClient;
   private owner: GatewayBrowserClientOptions | undefined;
   private hello: GatewayHelloOk | undefined;
+  private closed: Parameters<NonNullable<GatewayBrowserClientOptions["onClose"]>>[0] | undefined;
   private events: GatewayEventFrame[] = [];
   private bytes = 0;
   private active = true;
@@ -54,7 +55,7 @@ export class EarlyGateway {
           this.subscription = this.subscription.then((subscription) =>
             this.withApprovals(subscription),
           );
-          void this.subscription.catch(() => this.fallback());
+          void this.subscription.catch(() => undefined);
         }
         if (this.owner) {
           void this.owner.modelCatalog;
@@ -78,9 +79,16 @@ export class EarlyGateway {
         this.events.push(event);
       },
       onClose: (info) => {
-        // Rejected auth and interrupted handshakes are retried by ordinary startup.
         if (this.active) {
-          this.fallback();
+          this.retire();
+          if (!this.owner) {
+            // Terminal admission failures belong to the login UI; transient
+            // failures leave startup free to establish its normal connection.
+            if (!info.willRetry) {
+              this.closed = info;
+            }
+            this.client.stop();
+          }
         }
         this.owner?.onClose?.(info);
       },
@@ -106,7 +114,8 @@ export class EarlyGateway {
         }
         return subscription;
       });
-      void this.subscription.catch(() => this.fallback());
+      // The foreground owner applies its existing read-retry policy on attach.
+      void this.subscription.catch(() => undefined);
     }
   }
 
@@ -121,7 +130,7 @@ export class EarlyGateway {
 
   adopt(options: GatewayBrowserClientOptions): GatewayBrowserClient | null {
     if (
-      !this.active ||
+      (!this.active && !this.closed) ||
       this.owner ||
       globalThis.location?.href !== this.location ||
       (
@@ -135,13 +144,18 @@ export class EarlyGateway {
         ] as const
       ).some((key) => options[key] !== this.options[key])
     ) {
+      this.closed = undefined;
       this.fallback();
       return null;
     }
     this.owner = options;
     // The store must install the returned client before any hello callback runs.
     queueMicrotask(() => {
-      if (this.active && this.hello) {
+      if (this.closed) {
+        const closed = this.closed;
+        this.closed = undefined;
+        this.owner?.onClose?.(closed);
+      } else if (this.active && this.hello) {
         const hello = this.hello;
         this.hello = undefined;
         try {
@@ -178,15 +192,18 @@ export class EarlyGateway {
       this.fallback();
       throw new Error("Early Gateway history request changed");
     }
-    let subscription = await pending;
-    if (!this.active) {
-      throw new Error("Early Gateway connection retired");
+    try {
+      let subscription = await pending;
+      if (!this.active) {
+        throw new Error("Early Gateway connection retired");
+      }
+      if (options.includeApprovals && !subscription.includeApprovals) {
+        subscription = await this.withApprovals(subscription);
+      }
+      return subscription;
+    } finally {
+      this.drain();
     }
-    if (options.includeApprovals && !subscription.includeApprovals) {
-      subscription = await this.withApprovals(subscription);
-    }
-    this.drain();
-    return subscription;
   }
 
   private async withApprovals(subscription: GatewaySessionMessageSubscription) {
@@ -237,6 +254,15 @@ export class EarlyGateway {
     if (!this.active) {
       return;
     }
+    this.retire();
+    if (this.owner) {
+      this.client.forceReconnect("early Gateway handoff retired");
+    } else {
+      this.client.stop();
+    }
+  }
+
+  private retire() {
     this.active = false;
     this.hello = undefined;
     this.events = [];
@@ -245,11 +271,6 @@ export class EarlyGateway {
     clearTimeout(this.timeout);
     boots.delete(this.client);
     resetGatewaySessionMessageSubscriptionCoordinator(this.client);
-    if (this.owner) {
-      this.client.forceReconnect("early Gateway handoff retired");
-    } else {
-      this.client.stop();
-    }
   }
 }
 

@@ -217,7 +217,7 @@ it.each(["route", "timeout", "overflow"])(
   },
 );
 
-it("discards rejected authentication without publishing a stale hello", async () => {
+it("hands rejected authentication to the login owner without repeating connect", async () => {
   const { socket, connect } = await handshake();
   socket.emitMessage({
     type: "res",
@@ -227,8 +227,14 @@ it("discards rejected authentication without publishing a stale hello", async ()
   });
   await vi.advanceTimersByTimeAsync(0);
   const onHello = vi.fn();
-  expect(boot.adopt({ ...options, onHello })).toBeNull();
+  const onClose = vi.fn();
+  expect(boot.adopt({ ...options, onHello, onClose })).toBe(boot.client);
+  await vi.advanceTimersByTimeAsync(0);
   expect(onHello).not.toHaveBeenCalled();
+  expect(onClose).toHaveBeenCalledWith(
+    expect.objectContaining({ error: expect.objectContaining({ code: "UNAUTHORIZED" }) }),
+  );
+  expect(wsInstances).toHaveLength(1);
   expect(socket.readyState).toBe(3);
 });
 
@@ -249,5 +255,43 @@ it("drops buffered events on reconnect and leaves recovery with the protocol own
   expect(onEvent).not.toHaveBeenCalled();
   expect(onClose).toHaveBeenCalledOnce();
   expect(wsInstances).toHaveLength(2);
+  expect(takeEarlyGatewaySubscription(boot.client, key, { initialHistory })).toBeUndefined();
+});
+
+it("abandons a transient pre-attach disconnect for normal startup", async () => {
+  const { socket } = await handshake();
+  socket.emitClose(1006, "restart");
+  await vi.advanceTimersByTimeAsync(1_000);
+  expect(boot.adopt(options)).toBeNull();
+  expect(wsInstances).toHaveLength(1);
+});
+
+it("delivers a rejected early subscription to the existing read-retry owner", async () => {
+  const { socket, connect } = await handshake();
+  const subscribe = socket.sent
+    .map((value) => JSON.parse(value))
+    .find((frame) => frame.method === "sessions.messages.subscribe");
+  socket.emitMessage({
+    type: "res",
+    id: connect.id,
+    ok: true,
+    payload: { type: "hello-ok", protocol: PROTOCOL_VERSION },
+  });
+  const error = {
+    code: "INVALID_REQUEST",
+    message: "session changed",
+    details: { code: "SESSION_MUTATION_AUTHORIZATION_CHANGED" },
+  };
+  socket.emitMessage({ type: "res", id: subscribe.id, ok: false, error });
+  socket.emitMessage({ type: "event", event: "boot-proof", payload: 1, seq: 1 });
+  await vi.advanceTimersByTimeAsync(0);
+  const onEvent = vi.fn();
+  expect(boot.adopt({ ...options, onEvent })).toBe(boot.client);
+  await expect(
+    takeEarlyGatewaySubscription(boot.client, key, { initialHistory }),
+  ).rejects.toMatchObject({ gatewayCode: error.code, details: error.details });
+  await vi.advanceTimersByTimeAsync(0);
+  expect(onEvent).toHaveBeenCalledWith(expect.objectContaining({ payload: 1 }));
+  expect(wsInstances).toHaveLength(1);
   expect(takeEarlyGatewaySubscription(boot.client, key, { initialHistory })).toBeUndefined();
 });

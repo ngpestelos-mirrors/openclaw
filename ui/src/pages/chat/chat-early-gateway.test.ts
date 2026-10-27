@@ -90,17 +90,6 @@ it("keeps the initial transcript and buffered streaming final exactly once in th
     "session.suggestions.list": { suggestions: [] },
     "sessions.companion.state": { exchanges: [] },
   });
-  const send = MockWebSocket.prototype.send;
-  vi.spyOn(MockWebSocket.prototype, "send").mockImplementation(function (
-    this: MockWebSocket,
-    data: string,
-  ) {
-    send.call(this, data);
-    const frame = JSON.parse(data) as { id: string; method: string; params?: unknown };
-    void Promise.resolve(request(frame.method, frame.params)).then((payload) => {
-      this.emitMessage({ type: "res", id: frame.id, ok: true, payload });
-    });
-  });
   const {
     sessionKey: _key,
     agentId: _agent,
@@ -109,6 +98,14 @@ it("keeps the initial transcript and buffered streaming final exactly once in th
   const options = { url: "ws://127.0.0.1:18789", token: "synthetic-token" };
   const early = new EarlyGateway(options, key, initialHistory, window.location.href);
   const socket = getLatestWebSocket();
+  const send = socket.send.bind(socket);
+  vi.spyOn(socket, "send").mockImplementation((data: string) => {
+    send(data);
+    const frame = JSON.parse(data) as { id: string; method: string; params?: unknown };
+    void Promise.resolve(request(frame.method, frame.params)).then((payload) => {
+      socket.emitMessage({ type: "res", id: frame.id, ok: true, payload });
+    });
+  });
   socket.emitOpen();
   socket.emitConnectChallenge({ nonce: "boot-pane", ts: 1_800_000_000_000 });
   await vi.advanceTimersByTimeAsync(0);

@@ -1,7 +1,6 @@
 import { mountOpenClawApp } from "./app/app-root.tsx";
 import type { prepareApplicationStartup } from "./app/bootstrap-connection.ts";
 import { bootstrapApplication } from "./app/bootstrap.ts";
-import { bindControlUiDocumentHead } from "./app/control-ui-document-head.ts";
 import type { EarlyApplicationGateway } from "./app/early-gateway.ts";
 import { inferControlUiPublicAssetPath } from "./app/public-assets.ts";
 import { isRemoteControlUiIngress } from "./app/remote-ingress.ts";
@@ -36,30 +35,6 @@ export async function startControlUi(
     }
     bootStyles.media = "all";
   }
-  const themeColors: HTMLMetaElement[] = [];
-  for (const id of ["openclaw-theme-color-light", "openclaw-theme-color-dark"]) {
-    const meta = document.getElementById(id);
-    if (meta instanceof HTMLMetaElement) {
-      themeColors.push(meta);
-    }
-  }
-  const favicons: HTMLLinkElement[] = [];
-  for (const [id, asset] of [
-    ["openclaw-favicon-svg", "favicon.svg"],
-    ["openclaw-favicon-png", "favicon-32.png"],
-    ["openclaw-apple-touch-icon", "apple-touch-icon.png"],
-    ["openclaw-manifest", "manifest.webmanifest"],
-  ] as const) {
-    const link = document.getElementById(id);
-    if (link instanceof HTMLLinkElement) {
-      link.href = inferControlUiPublicAssetPath(asset);
-      if (link.rel === "icon") {
-        favicons.push(link);
-      }
-    }
-  }
-  bindControlUiDocumentHead({ themeColors, favicons });
-
   const root = document.getElementsByTagName("openclaw-app").item(0);
   if (root instanceof HTMLElement) {
     mountOpenClawApp(root, bootstrapApplication(initial, earlyGateway));

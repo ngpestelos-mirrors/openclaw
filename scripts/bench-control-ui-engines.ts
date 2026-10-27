@@ -70,7 +70,7 @@ const { values } = parseArgs({
   },
 });
 const pairs = Number(values.pairs);
-const engines = values.engines.split(",").map((name) => {
+const engines: ControlUiEngine[] = values.engines.split(",").map((name) => {
   if (name !== "chromium" && name !== "webkit") {
     throw new Error(`Unsupported engine: ${name}`);
   }

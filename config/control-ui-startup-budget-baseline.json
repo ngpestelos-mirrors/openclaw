@@ -1,5 +1,5 @@
 {
-  "startupJsGzipBytes": 89844,
-  "reason": "Early Gateway handoff final build: startup 270921 to 89844 B gzip and 5 to 3 requests; 840 interleaved observations passed across original and refreshed bases",
+  "startupJsGzipBytes": 90138,
+  "reason": "Early transport overlaps chat startup with module evaluation; measured 6–17% readiness gains, with document assets and error handoff included.",
   "updatedAt": "2026-10-27"
 }

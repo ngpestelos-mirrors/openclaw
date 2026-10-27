@@ -24,6 +24,7 @@ import { formatUiError, formatUiExternalText } from "../lib/format-error.ts";
 import { resolveSessionKey } from "../lib/sessions/navigation.ts";
 import { readSessionDefaults } from "../lib/sessions/session-key.ts";
 import { generateUUID } from "../lib/uuid.ts";
+import type { EarlyApplicationGateway } from "./early-gateway.ts";
 import { createGatewayCanvasSurfaceLease } from "./gateway-canvas-surface.ts";
 import {
   createGatewayControlUiReloadOptions,
@@ -66,7 +67,7 @@ export function createApplicationGateway(
   initialSettings: ReturnType<typeof loadSettings>,
   initialPassword = "",
   initialBootstrapToken = "",
-  options: ApplicationGatewayOptions = {},
+  options: ApplicationGatewayOptions & { earlyGateway?: EarlyApplicationGateway } = {},
 ): ApplicationGateway {
   let settings = initialSettings;
   let persistConnectionSettings = options.persistDefaultConnectionSettings !== false;
@@ -513,11 +514,8 @@ export function createApplicationGateway(
         setSnapshot({});
       },
       onConnecting: () => client === nextClient && setSnapshot({ reconnectAt: undefined }),
-      onReconnectScheduled: (delayMs) => {
-        if (client === nextClient) {
-          setSnapshot({ reconnectAt: Date.now() + delayMs });
-        }
-      },
+      onReconnectScheduled: (delayMs) =>
+        client === nextClient && setSnapshot({ reconnectAt: Date.now() + delayMs }),
       onClose: ({ code, reason, error, willRetry, busy }) => {
         if (client !== nextClient) {
           return;
@@ -619,8 +617,8 @@ export function createApplicationGateway(
         listeners: eventListeners,
       }),
     };
-    const nextClient =
-      early?.transport.adopt(clientOptions) ?? new GatewayBrowserClient(clientOptions);
+    const adopted = early?.transport.adopt(clientOptions);
+    const nextClient = adopted ?? new GatewayBrowserClient(clientOptions);
     client = nextClient;
     updateAvatarContext();
     setConnectionSnapshot({
@@ -642,7 +640,7 @@ export function createApplicationGateway(
     if (retiredEventLog) {
       publishEventLogRetirement(retiredEventLog);
     }
-    if (isCurrentClient(nextClient)) {
+    if (isCurrentClient(nextClient) && !adopted) {
       nextClient.start();
     }
   };

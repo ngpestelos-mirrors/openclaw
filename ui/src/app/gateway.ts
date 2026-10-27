@@ -13,7 +13,6 @@ import type {
   GatewayEventListener,
   GatewayHelloOk,
 } from "../api/gateway.ts";
-import type { EarlyApplicationGateway } from "./early-gateway.ts";
 import type { AuthenticatedUser } from "./user-profile.ts";
 
 export type ApplicationGatewayPhase =
@@ -69,7 +68,6 @@ export type ApplicationGatewayConnectOptions = Partial<ApplicationGatewayConnect
 };
 
 export type ApplicationGatewayOptions = {
-  earlyGateway?: EarlyApplicationGateway;
   persistDefaultConnectionSettings?: boolean;
   /** Shellless documents do not own the application’s shared warm admission. */
   ownsWarmBoot?: boolean;
