@@ -331,12 +331,23 @@ export function summarizeRestartStress(params: {
     .filter((request) => request.id === newcomer?.id && request.streaming === true)
     .toSorted((a, b) => Number(a.at) - Number(b.at));
   const firstNewcomerRequest = newcomerRequests[0];
+  const newcomerWaits = events.filter(
+    (event) =>
+      event.event === "agent" &&
+      event.payload.runId === newcomer?.runId &&
+      event.payload.stream === "run_status" &&
+      record(event.payload.data).reason === "rate_limit" &&
+      event.at < (params.sharedRateLimit?.resetAt ?? -Infinity) &&
+      Number(record(event.payload.data).retryAt) >= (params.sharedRateLimit?.resetAt ?? Infinity) &&
+      event.at < Number(firstNewcomerRequest?.at),
+  );
   const probe = params.sharedRateLimit;
   const sharedKnowledge = {
     ...probe,
     input: newcomer,
     firstRequest: firstNewcomerRequest,
     requests: newcomerRequests,
+    waits: newcomerWaits,
   };
   const observedRequests =
     typeof providerRequests === "number" ? providerRequests : array(providerRequests).length;
@@ -453,11 +464,14 @@ export function summarizeRestartStress(params: {
           ? "unknown"
           : firstNewcomerRequest.primary === false ||
               (firstNewcomerRequest.primary === true &&
-                Number(firstNewcomerRequest.at) >= probe.resetAt)
+                Number(firstNewcomerRequest.at) >= probe.resetAt &&
+                newcomerWaits.length > 0)
             ? "pass"
-            : "fail",
+            : Number(firstNewcomerRequest.at) < probe.resetAt
+              ? "fail"
+              : "unknown",
       details:
-        "A fresh session is created after the first injected primary 429. Its first streamed request must use fallback or wait until the injected reset; title/utility requests are excluded.",
+        "A fresh session is created after the first injected primary 429. Its first streamed request must use fallback or have a recorded shared rate-limit wait until reset; preparation delays alone prove nothing. Title/utility requests are excluded.",
       evidence: [sharedKnowledge],
     },
   ];

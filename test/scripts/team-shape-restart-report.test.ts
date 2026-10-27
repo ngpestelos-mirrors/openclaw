@@ -77,10 +77,39 @@ it("reports newcomer routing separately and makes unsettled inputs explicit at t
   ]) {
     const result = summarizeRestartStress({
       ...snapshot,
+      events: [
+        {
+          at: 52,
+          event: "agent",
+          payload: {
+            runId: newcomer.id,
+            stream: "run_status",
+            data: { reason: "rate_limit", retryAt: 90 },
+          },
+        },
+      ],
       provider: { requests: [{ ...request, id: newcomer.id, streaming: true, status: 200 }] },
     }).report;
     expect(result.invariants.find((item) => item.id === 9)?.status).toBe("pass");
   }
+  const delayed = summarizeRestartStress({
+    ...snapshot,
+    events: [
+      {
+        at: 92,
+        event: "agent",
+        payload: {
+          runId: newcomer.id,
+          stream: "run_status",
+          data: { reason: "rate_limit", retryAt: 93 },
+        },
+      },
+    ],
+    provider: {
+      requests: [{ at: 95, id: newcomer.id, primary: true, streaming: true, status: 200 }],
+    },
+  }).report;
+  expect(delayed.invariants.find((item) => item.id === 9)?.status).toBe("unknown");
 });
 
 it("reports consumed input without an answer as unresolved, retaining actual request latency", () => {

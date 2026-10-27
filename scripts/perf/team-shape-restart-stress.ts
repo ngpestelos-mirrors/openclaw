@@ -545,7 +545,7 @@ export async function runRestartStress(argv: string[]) {
       Array.from({ length: concurrency }, (_, i) => createSession(`stress${i}`, `rate-${i}`)),
     );
     const rateStartedAt = Date.now();
-    const resetAt = provider.rejectFor(values.dry ? 5000 : 30_000);
+    const resetAt = provider.rejectFor(30_000);
     const rateSends = Promise.all(
       Array.from({ length: concurrency }, (_, i) =>
         send(rateKeys[i]!, `rate-${i}`, "rate-limit", `Reply exactly DONE_rate-${i}. No tools.`),

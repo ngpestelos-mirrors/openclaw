@@ -257,9 +257,11 @@ The proxy does not persist headers or request/response bodies.
 The injected response advertises the remaining window in both `Retry-After` and
 its error text. After observing the first injected 429, the controller creates a
 fresh newcomer session through `sessions.create`. Invariant 9 records its first
-streamed request: it must use fallback or wait for the reset before using primary.
+streamed request: it must use fallback or have a recorded rate-limit wait before
+using primary after reset. Preparation or queueing delays alone prove nothing.
 Title/utility calls are excluded. A newcomer created after reset, or one with no
-observed request, leaves shared knowledge unknown.
+observed request or wait evidence, leaves shared knowledge unknown. Both mock and
+live modes use a 30-second window so preparation can finish before reset.
 
 Concurrency is bounded to 8–24 sessions and the campaign deadline to 1–18 minutes.
 Each wave asks for coding tools, subagents, a background process, steering, and
