@@ -15,6 +15,7 @@ import {
   MAX_CACHED_CHAT_SESSIONS,
   setSessionCacheValue,
 } from "./session-cache.ts";
+import { detailsSnapshotSchema } from "./session-details-snapshot-schema.ts";
 import {
   MAX_CACHED_CHAT_WEIGHT,
   type ChatCacheObserver,
@@ -51,7 +52,7 @@ import {
   prewarmedHistoryStateValidator,
   readSharedPrewarm,
 } from "./session-snapshot-prewarm.ts";
-const CHAT_SNAPSHOT_PROJECTION_VERSION = 5;
+const CHAT_SNAPSHOT_PROJECTION_VERSION = 6;
 const CHAT_SNAPSHOT_MESSAGE_LIMIT = 80;
 const CHAT_SNAPSHOT_WRITE_DELAY_MS = 500;
 const CHAT_SNAPSHOT_IDLE_TIMEOUT_MS = 1000;
@@ -84,6 +85,7 @@ const paginationSchema = {
 const permissionModeSchema = json.enumeration(["read-only", "guarded", "workspace", "full"]);
 const snapshotSchema = json.object(
   {
+    details: detailsSnapshotSchema,
     composer: json.optional(
       json.nullable(
         json.object({
