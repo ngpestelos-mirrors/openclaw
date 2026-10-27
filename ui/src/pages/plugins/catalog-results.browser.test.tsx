@@ -161,7 +161,7 @@ it("windows large catalogs without losing keyboard traversal, reordered cards, o
   container.scrollTop = 0;
   await nextFrame();
   setProgress(
-    new Map([
+    new Map<string, PluginInstallProgress>([
       [
         "install:window-0000",
         {

@@ -93,7 +93,7 @@ export function PluginCatalogGrid(props: {
     onChange: publish,
   });
   const syncFocusedOffset = () => {
-    const activeElement = grid.ownerDocument.activeElement;
+    const activeElement = document.activeElement;
     // Native focus supersedes a pending clamped correction before _willUpdate can replay it.
     if (activeElement !== measuredFocus) {
       measuredFocus = activeElement;
@@ -166,8 +166,9 @@ export function PluginCatalogGrid(props: {
   onSettled(() => {
     const { _didMount: mountVirtualizer } = virtualizer;
     const release = mountVirtualizer();
+    // A settling template can still belong to an inert document before adoption.
     const stopStyles = observeDocumentRootAttributes(
-      grid.ownerDocument,
+      document,
       ["class", "style", "data-theme", "data-theme-id", "data-theme-mode"],
       measure,
     );
