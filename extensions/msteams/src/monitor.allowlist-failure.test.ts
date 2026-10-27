@@ -12,7 +12,6 @@ import {
   resetMSTeamsMonitorMocks,
 } from "./monitor-lifecycle.test-support.js";
 import { monitorMSTeamsProvider } from "./monitor.js";
-import { MSTEAMS_UNMATCHABLE_ALLOW_ENTRY } from "./resolve-allowlist.js";
 afterEach(resetMSTeamsMonitorMocks);
 
 it("keeps unresolved name-only allowlists configured so they do not fall back or widen", async () => {
@@ -44,7 +43,9 @@ it("keeps unresolved name-only allowlists configured so they do not fall back or
   expect(cfg.channels?.msteams?.teams).toEqual({ Engineering: {} });
 
   const registered = createMSTeamsActivityHandler.mock.calls[0]?.[0].cfg.channels?.msteams;
-  expect(registered?.groupAllowFrom).toEqual([MSTEAMS_UNMATCHABLE_ALLOW_ENTRY]);
+  expect(registered?.groupAllowFrom).toEqual([
+    "19:openclaw-unresolved-allowlist@thread.unresolved",
+  ]);
   expect(Object.keys(registered?.teams ?? {})).toHaveLength(1);
   expect(Object.keys(registered?.teams ?? {})).not.toContain("*");
   abort.abort();
