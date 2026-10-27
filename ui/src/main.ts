@@ -9,8 +9,13 @@ if (!unsupportedControlUiBrowser) {
   initializeControlUiDocumentHead();
   const early = startEarlyApplicationGateway(initial);
   // Route hints fetch the renderer while the challenge/signature is pending.
-  // Start evaluation only after connect is on the wire, so it overlaps the reply.
-  void (early ? early.transport.client.initialConnectSent : Promise.resolve())
+  // Cold evaluation overlaps the reply; admitted cached views must not wait
+  // for a challenge that might never arrive while the Gateway is unreachable.
+  void (
+    early && !early.credentials.hasWarmBoot
+      ? early.transport.client.initialConnectSent
+      : Promise.resolve()
+  )
     .then(() => import("./main.runtime.ts"))
     .then(({ startControlUi }) => startControlUi(initial, early));
 }

@@ -29,6 +29,9 @@ export function createGatewayCredentials(ownsWarmBoot: boolean) {
   let capturedOwner: BootRecordOwner | undefined;
   let liveOwner: BootRecordOwner | undefined;
   return {
+    get hasWarmBoot() {
+      return capturedOwner !== undefined;
+    },
     prepare(
       connection: ApplicationGatewayConnection,
       credentialsChanged: boolean,
