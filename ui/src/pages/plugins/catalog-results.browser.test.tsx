@@ -142,6 +142,19 @@ it("windows large catalogs without losing keyboard traversal, reordered cards, o
     expect(document.activeElement).toBe(focused);
   });
 
+  const moved = entries.toSpliced(boundary, 1);
+  moved.splice(500, 0, entries[boundary]!);
+  setItems(moved);
+  flush();
+  expect(card(boundary)).toBe(retainedCard);
+  expect(document.activeElement).toBe(focused);
+  await nextFrame();
+  expect(retainedCard.parentElement!.getAttribute("aria-posinset")).toBe("501");
+  setItems(entries);
+  await nextFrame();
+  expect(card(boundary)).toBe(retainedCard);
+  expect(document.activeElement).toBe(focused);
+
   container.scrollTop = 0;
   await nextFrame();
   setProgress(
@@ -237,22 +250,25 @@ it("retains focused cards when crossing the catalog windowing threshold in both 
   const cards = () => container.querySelectorAll(".plugin-catalog-card");
   await waitForSolid(() => expect(cards()).toHaveLength(60));
   await nextFrame();
-  const first = find('[data-plugin-id="threshold-0"]');
-  const focused = first.querySelector<HTMLAnchorElement>(".plugin-card-author")!;
+  const middle = find('[data-plugin-id="threshold-30"]');
+  const focused = middle.querySelector<HTMLAnchorElement>(".plugin-card-author")!;
   focused.focus();
 
   for (const count of [61, 60, 61]) {
     setItems(entries.slice(0, count));
+    flush();
+    expect(find('[data-plugin-id="threshold-30"]')).toBe(middle);
+    expect(document.activeElement).toBe(focused);
     await nextFrame();
     await waitForSolid(() => {
-      expect(find('[data-plugin-id="threshold-0"]')).toBe(first);
+      expect(find('[data-plugin-id="threshold-30"]')).toBe(middle);
       expect(document.activeElement).toBe(focused);
       if (count === 60) {
         expect(cards()).toHaveLength(60);
-        expect(first.parentElement!.style.position).toBe("");
+        expect(middle.parentElement!.style.position).toBe("");
       } else {
         expect(cards().length).toBeLessThan(61);
-        expect(first.parentElement!.style.position).toBe("absolute");
+        expect(middle.parentElement!.style.position).toBe("absolute");
       }
     });
   }

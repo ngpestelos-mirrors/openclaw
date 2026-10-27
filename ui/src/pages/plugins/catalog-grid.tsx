@@ -100,6 +100,38 @@ export function PluginCatalogGrid(props: {
       syncScrollOffset?.();
     }
   };
+  const pinFocusedRows = (
+    itemIndexes: Map<VirtualItem["key"], number>,
+    columnCount: number,
+    count: number,
+    focusedId: string | undefined,
+  ) => {
+    // Endpoints admit native Tab from either direction; neighboring tracks
+    // let focus keep advancing without measuring the grid again.
+    const pinned = new Set([0, count - 1]);
+    const focusedIndex = itemIndexes.get(focusedId ?? "");
+    if (focusedIndex !== undefined) {
+      const row = Math.floor(focusedIndex / columnCount);
+      for (const index of [row - 1, row, row + 1]) {
+        if (index >= 0 && index < count) {
+          pinned.add(index);
+        }
+      }
+    }
+    const next = [...pinned];
+    if (
+      pinnedRows.length === next.length &&
+      pinnedRows.every((row, index) => row === next[index])
+    ) {
+      return;
+    }
+    pinnedRows = next;
+    virtualizer.setOptions({
+      ...virtualizer.options,
+      rangeExtractor: (range) =>
+        [...new Set([...defaultRangeExtractor(range), ...next])].toSorted((a, b) => a - b),
+    });
+  };
   const rowHeights = (
     itemIndexes: Map<VirtualItem["key"], number>,
     columnCount: number,
@@ -146,7 +178,7 @@ export function PluginCatalogGrid(props: {
     };
   });
   const measure = createLayoutMeasurement(
-    () => ({ items: props.items, indexes: indexes(), focused: focused(), windowed: windowed() }),
+    () => ({ items: props.items, indexes: indexes(), windowed: windowed() }),
     (next) => {
       if (!next) {
         return undefined;
@@ -181,18 +213,6 @@ export function PluginCatalogGrid(props: {
         : 0;
       const heights = rowHeights(next.indexes, nextColumns, inset);
       const count = Math.ceil(next.items.length / nextColumns);
-      const focusedIndex = next.indexes.get(next.focused ?? "");
-      // Endpoints admit native Tab from either direction; neighboring tracks
-      // let focus keep advancing without taking keyboard ownership.
-      const pinned = new Set([0, count - 1]);
-      if (focusedIndex !== undefined) {
-        const row = Math.floor(focusedIndex / nextColumns);
-        for (const index of [row - 1, row, row + 1]) {
-          if (index >= 0 && index < count) {
-            pinned.add(index);
-          }
-        }
-      }
       return () => {
         scroller = viewport;
         // Callback identity invalidates the virtualizer's measurement/range memos.
@@ -200,17 +220,7 @@ export function PluginCatalogGrid(props: {
           keyInput?.items === next.items && keyInput.columns === nextColumns
             ? virtualizer.options.getItemKey
             : (index: number) => next.items[index * nextColumns]!.id;
-        const nextPinnedRows = [...pinned];
-        const rangeExtractor =
-          pinnedRows.length === nextPinnedRows.length &&
-          pinnedRows.every((row, index) => row === nextPinnedRows[index])
-            ? virtualizer.options.rangeExtractor
-            : (range: Parameters<typeof defaultRangeExtractor>[0]) =>
-                [...new Set([...defaultRangeExtractor(range), ...nextPinnedRows])].toSorted(
-                  (a, b) => a - b,
-                );
         keyInput = { items: next.items, columns: nextColumns };
-        pinnedRows = nextPinnedRows;
         for (const key of virtualizer.itemSizeCache.keys()) {
           if (!next.indexes.has(key)) {
             virtualizer.itemSizeCache.delete(key);
@@ -229,8 +239,8 @@ export function PluginCatalogGrid(props: {
           enabled: next.windowed && Boolean(viewport),
           gap,
           scrollMargin: margin,
-          rangeExtractor,
         });
+        pinFocusedRows(next.indexes, nextColumns, count, focused());
         syncFocusedOffset();
         const { _willUpdate: updateVirtualizer } = virtualizer;
         updateVirtualizer();
@@ -250,7 +260,6 @@ export function PluginCatalogGrid(props: {
       // An empty target list releases measurements when the catalog shrinks.
       measureWithoutTarget: true,
       fonts: true,
-      changeTiming: "sync",
     },
   );
   const rows = createMemo(() => new Map(view().rows.map((row) => [row.index, row])));
@@ -258,14 +267,30 @@ export function PluginCatalogGrid(props: {
     if (!windowed()) {
       return props.items;
     }
-    // The first layout has not run yet. Do not mount the entire catalog just
-    // to discover the viewport; normal grids settle to their measured tracks.
-    if (view().rows.length === 0) {
-      return [...props.items.slice(0, 16), ...props.items.slice(-4)];
+    const columnCount = view().columns;
+    const rowCount = Math.ceil(props.items.length / columnCount);
+    const visibleRows = new Set(view().rows.map((row) => row.index));
+    // Bootstrap a bounded window before the first layout measurement.
+    if (visibleRows.size === 0) {
+      for (let row = 0; row < Math.min(4, rowCount); row++) {
+        visibleRows.add(row);
+      }
+      visibleRows.add(rowCount - 1);
     }
-    return view().rows.flatMap((row) =>
-      props.items.slice(row.index * view().columns, (row.index + 1) * view().columns),
-    );
+    // Data can move a focused card before the next measured frame. Keep its
+    // native focus and adjacent Tab destinations alive at their new positions.
+    const focusedIndex = indexes().get(focused() ?? "");
+    if (focusedIndex !== undefined) {
+      const focusedRow = Math.floor(focusedIndex / columnCount);
+      for (const row of [focusedRow - 1, focusedRow, focusedRow + 1]) {
+        if (row >= 0 && row < rowCount) {
+          visibleRows.add(row);
+        }
+      }
+    }
+    return [...visibleRows]
+      .toSorted((a, b) => a - b)
+      .flatMap((row) => props.items.slice(row * columnCount, (row + 1) * columnCount));
   });
   function Card(card: { plugin: Accessor<PluginDiscoveryEntry> }) {
     let content!: HTMLDivElement;
@@ -318,7 +343,15 @@ export function PluginCatalogGrid(props: {
         aria-posinset={index() + 1}
         aria-setsize={props.items.length}
         style={position()}
-        onFocusIn={() => setFocused(card.plugin().id)}
+        onFocusIn={() => {
+          const id = card.plugin().id;
+          setFocused(id);
+          if (windowed()) {
+            pinFocusedRows(indexes(), columns, virtualizer.options.count, id);
+            syncFocusedOffset();
+            publish();
+          }
+        }}
       >
         {props.children(card.plugin, (node) => (content = node))}
       </div>
