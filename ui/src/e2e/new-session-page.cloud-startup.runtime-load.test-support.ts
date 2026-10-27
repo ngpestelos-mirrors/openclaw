@@ -310,6 +310,7 @@ async function recoverStartup(
   });
   expect(await gateway.getRequests("sessions.dispatch")).toHaveLength(0);
   expect(await gateway.getRequests("chat.send")).toHaveLength(2);
+  expect(await gateway.getSocketCount()).toBe(1);
   expect(failure.documentCount()).toBe(2);
   if (incognito) {
     expect(

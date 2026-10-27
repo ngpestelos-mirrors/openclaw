@@ -201,15 +201,16 @@ export class EarlyGateway {
       this.drain();
       return null;
     }
-    // Warm snapshots have their own cursor; never answer that request with a cold snapshot.
-    if (JSON.stringify(options.initialHistory) !== JSON.stringify(this.history)) {
-      this.fallback();
-      throw new Error("Early Gateway history request changed");
-    }
+    const historyMatches = JSON.stringify(options.initialHistory) === JSON.stringify(this.history);
     try {
       let subscription = await pending;
       if (!this.active) {
         throw new Error("Early Gateway connection retired");
+      }
+      if (!historyMatches) {
+        // The pane may learn a recovery cursor or pending input during boot.
+        // Keep live delivery; its history owner will request the correct snapshot.
+        delete subscription.initialHistory;
       }
       if (options.includeApprovals && !subscription.includeApprovals) {
         subscription = await this.withApprovals(subscription);

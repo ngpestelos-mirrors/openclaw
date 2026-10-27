@@ -78,6 +78,38 @@ it("hands off one connection, initial history, and ordered events without loss o
   expect(takeEarlyGatewaySubscription(boot.client, key, { initialHistory })).toBeUndefined();
 });
 
+it("keeps live delivery when the pane needs a different initial history request", async () => {
+  const { socket, connect } = await handshake();
+  const subscribe = socket.sent
+    .map((value) => JSON.parse(value))
+    .find((frame) => frame.method === "sessions.messages.subscribe");
+  socket.emitMessage({
+    type: "res",
+    id: connect.id,
+    ok: true,
+    payload: { type: "hello-ok", protocol: PROTOCOL_VERSION },
+  });
+  socket.emitMessage({
+    type: "res",
+    id: subscribe.id,
+    ok: true,
+    payload: { key, initialHistory: { ok: true, payload: { messages: ["old snapshot"] } } },
+  });
+  socket.emitMessage({ type: "event", event: "boot-proof", payload: 1, seq: 1 });
+  await vi.advanceTimersByTimeAsync(0);
+  const onEvent = vi.fn();
+  expect(boot.adopt({ ...options, onEvent })).toBe(boot.client);
+  const subscription = await takeEarlyGatewaySubscription(boot.client, key, {
+    initialHistory: { ...initialHistory, inputRunIds: ["pending-input"] },
+  });
+  expect(subscription).not.toHaveProperty("initialHistory");
+  await vi.advanceTimersByTimeAsync(0);
+  socket.emitMessage({ type: "event", event: "boot-proof", payload: 2, seq: 2 });
+  expect(onEvent.mock.calls.map(([event]) => event.payload)).toEqual([1, 2]);
+  expect(socket.readyState).toBe(1);
+  expect(wsInstances).toHaveLength(1);
+});
+
 it("prepares authorized approval replay on the same observer before the pane attaches", async () => {
   const { socket, connect } = await handshake();
   const request = (method: string) =>
