@@ -298,7 +298,8 @@ it.each([
         foreign?.close();
         await Promise.allSettled([operation, ...(mutation ? [mutation] : [])]);
         guard.release();
-        resetPluginStateStoreForTests();
+        // The fixture drains native borrowers before closing its shared database.
+        resetPluginStateStoreForTests({ closeDatabase: false });
       }
     });
   },
