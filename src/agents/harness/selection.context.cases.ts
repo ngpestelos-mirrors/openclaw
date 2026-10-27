@@ -1,6 +1,6 @@
 import { expect, it, vi, type Mock } from "vitest";
 import { setActiveNodeContexts } from "../../infra/active-node-context.js";
-import { createOpenClawCodingTools } from "../../plugin-sdk/agent-harness.js";
+import { createOpenClawCodingToolsAsync } from "../../plugin-sdk/agent-harness.js";
 import { isHostScopedAgentToolActive } from "../agent-tools.ring-zero-context.js";
 import type { EmbeddedRunAttemptParams } from "../embedded-agent-runner/run/types.js";
 import { AGENT_INTERNAL_EVENT_TYPE_TASK_COMPLETION } from "../internal-event-contract.js";
@@ -99,11 +99,13 @@ export function registerSelectionContextCases({
     let toolNames: string[] = [];
     agentRunAttempt.mockImplementationOnce(async () => {
       await Promise.resolve();
-      toolNames = createOpenClawCodingTools({
-        config: { tools: { allow: ["read"], deny: ["openclaw"], toolSearch: true } },
-        runtimeToolAllowlist: ["openclaw"],
-        toolConstructionPlan: createOpenClawOnlyToolConstructionPlan(),
-      }).map((tool) => tool.name);
+      toolNames = (
+        await createOpenClawCodingToolsAsync({
+          config: { tools: { allow: ["read"], deny: ["openclaw"], toolSearch: true } },
+          runtimeToolAllowlist: ["openclaw"],
+          toolConstructionPlan: createOpenClawOnlyToolConstructionPlan(),
+        })
+      ).map((tool) => tool.name);
       return createAttemptResult("openclaw");
     });
     const onContextAccountingEvent = vi.fn();
