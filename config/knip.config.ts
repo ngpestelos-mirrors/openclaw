@@ -645,6 +645,7 @@ const repositoryScriptEntries = [
   "scripts/perf/plugin-object-copy-measure.ts!",
   "scripts/perf/plugin-recovery-transport-measure.ts!",
   "scripts/perf/plugin-startup-install-records.ts!",
+  "scripts/perf/plugin-metadata-read-measure.ts!",
   "scripts/perf/plugins-list-measure.ts!",
   "scripts/perf/plugins-list-owner-measure.ts!",
   "scripts/perf/provider-prompt-worker-bytes-measure.mjs!",
