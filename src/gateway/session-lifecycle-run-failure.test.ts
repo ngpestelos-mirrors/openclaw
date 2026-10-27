@@ -219,6 +219,7 @@ describe("durable pre-reply run failure", () => {
               ...target,
               runId: attemptRunId,
               messageChannel: "internal",
+              terminalReplyExpectation: "result-required",
               inputProvenance: {
                 kind: "inter_session",
                 sourceTool: "subagent_settle",
