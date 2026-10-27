@@ -19,7 +19,6 @@ import type {
   CliBackendUserInputResult,
 } from "../../plugins/cli-backend.types.js";
 import type { RunExit, TerminationReason } from "../../process/supervisor/types.js";
-import { isExecCompletionInputProvenance } from "../../sessions/input-provenance.js";
 import { assertionSucceeds } from "../../shared/assertion.js";
 import { runWithAgentToolSourceExecutionScope } from "../agent-tool-source-execution-guard.js";
 import {
@@ -557,7 +556,9 @@ export async function executePluginOwnedProcess(params: {
         env: params.env,
         prompt: params.prompt,
         ...(params.promptContext ? { promptContext: params.promptContext } : {}),
-        ...(isExecCompletionInputProvenance(params.context.params.inputProvenance)
+        // Cron records its provenance on the transcript row only; its run carries the trigger.
+        ...(params.context.params.inputProvenance?.kind === "internal_system" ||
+        params.context.params.trigger === "cron"
           ? { promptOrigin: "host" as const }
           : {}),
         modelId: params.context.normalizedModel,
