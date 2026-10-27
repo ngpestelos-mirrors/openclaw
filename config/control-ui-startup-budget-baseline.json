@@ -1,5 +1,5 @@
 {
-  "startupJsGzipBytes": 90178,
-  "reason": "Early Gateway overlap improves measured boot readiness; final retry-preserving handoff measures 90,178 B gzip in 3 startup requests.",
+  "startupJsGzipBytes": 90181,
+  "reason": "Early Gateway overlap improves measured boot readiness; integrated head measures 90,181 B gzip in 3 startup requests.",
   "updatedAt": "2026-10-27"
 }
