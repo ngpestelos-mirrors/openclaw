@@ -190,7 +190,7 @@ it("windows large catalogs without losing keyboard traversal, reordered cards, o
   });
   await waitForSolid(() => {
     const tall = card(0).getBoundingClientRect();
-    const nextRow = card(3).getBoundingClientRect();
+    const nextRow = card(4).getBoundingClientRect();
     expect(tall.height).toBeGreaterThan(150);
     expect(Math.abs(tall.height - card(1).getBoundingClientRect().height)).toBeLessThan(1);
     expect(nextRow.top).toBeGreaterThanOrEqual(tall.bottom);
@@ -199,7 +199,7 @@ it("windows large catalogs without losing keyboard traversal, reordered cards, o
   setMessages({});
   await waitForSolid(() => {
     expect(card(0).getBoundingClientRect().height).toBeLessThan(expandedHeight);
-    expect(card(3).getBoundingClientRect().top).toBeGreaterThanOrEqual(
+    expect(card(4).getBoundingClientRect().top).toBeGreaterThanOrEqual(
       card(0).getBoundingClientRect().bottom,
     );
   });
@@ -210,7 +210,7 @@ it("windows large catalogs without losing keyboard traversal, reordered cards, o
     rootStyle.setProperty("--space-3", "32px");
     await waitForSolid(() => {
       const first = card(0).getBoundingClientRect();
-      const next = card(3).getBoundingClientRect();
+      const next = card(4).getBoundingClientRect();
       expect(first.height).toBeGreaterThan(compactHeight + 30);
       expect(Math.abs(next.top - first.bottom - 32)).toBeLessThan(1);
     });
