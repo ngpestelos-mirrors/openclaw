@@ -1,6 +1,6 @@
 import { asRecord } from "@openclaw/normalization-core/record-coerce";
 import { afterEach, beforeAll, beforeEach, expect, it, vi } from "vitest";
-import mermaidScriptUrl from "../../../packages/mermaid-renderer/src/mermaid-script-url.ts";
+import peleScriptUrl from "../../../packages/mermaid-renderer/src/pele-script-url.ts";
 import "../../../packages/mermaid-renderer/src/native.ts";
 import { createDeferred } from "../../../test/helpers/promise.ts";
 import { parsePassiveSvg, theme } from "./markdown-mermaid.test-support.ts";
@@ -38,7 +38,7 @@ async function expectRecovery(source: string, index: number) {
 beforeAll(async () => {
   // Vite builds the classic bundle on its first request. Prepare that fixture
   // before the native renderer's load watchdog, which still covers the iframe.
-  const response = await fetch(mermaidScriptUrl);
+  const response = await fetch(peleScriptUrl);
   expect(response.ok).toBe(true);
   await response.arrayBuffer();
 });
