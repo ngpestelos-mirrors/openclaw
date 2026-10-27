@@ -243,6 +243,7 @@ export function PluginCatalogGrid(props: {
       const track = rows().get(row);
       return {
         position: "absolute",
+        contain: "size layout style",
         top: `${(track?.start ?? row * (124 + view().gap)) - virtualizer.options.scrollMargin}px`,
         "inset-inline-start": `calc(${column} * (100% + ${view().gap}px) / ${view().columns})`,
         width: `calc((100% - ${(view().columns - 1) * view().gap}px) / ${view().columns})`,
