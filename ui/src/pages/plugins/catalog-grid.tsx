@@ -173,13 +173,13 @@ export function PluginCatalogGrid(props: {
           scrollMargin: margin,
           rangeExtractor,
         });
-        const { _willUpdate: updateVirtualizer } = virtualizer;
-        updateVirtualizer();
-        // Native focus scrolls before its event. Later resizes retain any pending compensation.
+        // Native focus supersedes a pending clamped correction before _willUpdate can replay it.
         if (activeElement !== measuredFocus) {
           measuredFocus = activeElement;
           syncScrollOffset?.();
         }
+        const { _willUpdate: updateVirtualizer } = virtualizer;
+        updateVirtualizer();
         for (const [index, height] of heights) {
           if (height > 0) {
             virtualizer.resizeItem(index, height);

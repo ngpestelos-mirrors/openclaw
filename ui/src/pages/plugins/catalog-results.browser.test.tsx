@@ -247,7 +247,7 @@ it("windows both publisher groups while keeping their search endpoints reachable
     const viewport = container.getBoundingClientRect();
     expect(document.activeElement).toBe(link);
     expect(bounds.top).toBeLessThan(viewport.bottom);
-    expect(bounds.bottom).toBeGreaterThan(viewport.top);
+    expect(bounds.bottom, id).toBeGreaterThan(viewport.top);
   }
 });
 
