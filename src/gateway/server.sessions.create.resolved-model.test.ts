@@ -15,19 +15,20 @@ import { createSessionMutationTestClient } from "./server-methods/sessions-mutat
 import type { GatewayClient } from "./server-methods/types.js";
 import { createSyntheticPluginRuntimeClient } from "./server-plugin-runtime-client.js";
 import { gatewayProfile } from "./server/client-fixtures.test-support.js";
-import { writeSessionStore } from "./test-helpers.js";
+import { prepareGatewayReplyRuntimeForTest, writeSessionStore } from "./test-helpers.js";
 import * as sessions from "./test/server-sessions.test-helpers.js";
 
 const { createSessionStoreDir } = sessions.setupGatewaySessionsHandlerTestHarness();
-const metadataSnapshot = createPluginMetadataSnapshotFixture({
-  plugins: [
-    {
-      id: "model-identity-fixture",
-      providers: ["custom"],
-      modelIdNormalization: { providers: { custom: { aliases: { middle: "final" } } } },
-    },
-  ],
-});
+const createModelMetadata = () =>
+  createPluginMetadataSnapshotFixture({
+    plugins: [
+      {
+        id: "model-identity-fixture",
+        providers: ["custom"],
+        modelIdNormalization: { providers: { custom: { aliases: { middle: "final" } } } },
+      },
+    ],
+  });
 
 const makeModel = (id: string) => modelDefinition(id, { reasoning: false, maxTokens: 1024 });
 async function modelConfig(
@@ -131,7 +132,14 @@ test.each([
       model: "custom/default",
       ...(mode === "disallowed" ? { modelPolicy: { allow: ["custom/final"] } } : {}),
     },
-    { custom: { api: "openai-responses", baseUrl: "https://custom.example/v1", models } },
+    {
+      custom: {
+        api: "openai-responses",
+        apiKey: "synthetic-custom-key",
+        baseUrl: "https://custom.example/v1",
+        models,
+      },
+    },
   );
   const parentSessionKey = "agent:main:main";
   const childSessionKey = `agent:main:dashboard:resolved-${mode}-${model.replaceAll("/", "-")}`;
@@ -201,6 +209,10 @@ test.each([
       );
       client.internal = { ...client.internal, agentRuntimeIdentity: identity };
     }
+    if (mode === "public" && model === "default") {
+      await prepareGatewayReplyRuntimeForTest({ force: true, config: cfg });
+    }
+    const metadataSnapshot = createModelMetadata();
     const request = withPluginRuntimeGenerationScope({ metadataSnapshot }, () =>
       sessions.directSessionReq(
         "sessions.create",
@@ -210,6 +222,7 @@ test.each([
           parentSessionKey,
           spawnDepth: 1,
           model: mode === "mismatched" ? "custom/final" : `custom/${model}`,
+          ...(mode === "public" && model === "default" ? { agentRuntime: "openclaw" } : {}),
           ...(mode === "public-spoof" ? { resolvedModel } : {}),
         },
         {
@@ -251,6 +264,13 @@ test.each([
       expect(entry).toBeUndefined();
     } else {
       expect(result.ok, JSON.stringify(result.error)).toBe(true);
+      if (mode === "public" && model === "default") {
+        expect(entry?.providerOverride).toBeUndefined();
+        expect(entry?.modelOverride).toBeUndefined();
+        expect(entry?.modelOverrideSource).toBe("default");
+        expect(entry?.agentRuntimeOverride).toBe("openclaw");
+        return;
+      }
       expect(entry).toMatchObject({
         providerOverride: "custom",
         modelOverride: expected,

@@ -4,10 +4,8 @@ import { normalizeOptionalString } from "@openclaw/normalization-core/string-coe
 import type { ErrorShape } from "../../packages/gateway-protocol/src/index.js";
 import { resolveSessionStorePathCore } from "../config/sessions/paths.js";
 import { patchSessionEntryCore } from "../config/sessions/session-accessor.sqlite-entry.js";
-import {
-  captureSessionActorStorageOwner,
-  withSessionActorStorage,
-} from "../config/sessions/session-actor-storage-binding.js";
+import { withSessionActorStorage } from "../config/sessions/session-actor-storage-acquisition.js";
+import { captureSessionActorStorageOwner } from "../config/sessions/session-actor-storage-binding.js";
 import {
   readSessionEntriesFromStoreInWorker,
   withSessionEntriesFromStoresInWorker,

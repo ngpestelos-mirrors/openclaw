@@ -106,7 +106,6 @@ const PLACEMENT_CREATE_FIELDS = new Set<string>([
   "fastMode",
   "cyberAccessProgram",
   "toolOverrides",
-  "displayNameGenerated",
   ...PLACEMENT_CREATE_STRING_FIELDS,
 ]);
 
@@ -159,8 +158,6 @@ export function parseSessionPlacementCreateParams(
     (record.permissionMode !== undefined && !isSessionPermissionMode(record.permissionMode)) ||
     (record.toolOverrides !== undefined && !isSessionToolOverrides(record.toolOverrides)) ||
     (record.titleSource !== undefined && !isSessionTitleSource(record.titleSource)) ||
-    (record.displayNameGenerated !== undefined &&
-      typeof record.displayNameGenerated !== "boolean") ||
     (record.projectId !== undefined && record.cwd !== undefined) ||
     PLACEMENT_CREATE_STRING_FIELDS.some(
       (key) => record[key] !== undefined && !isNonEmptyString(record[key]),

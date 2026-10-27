@@ -72,6 +72,7 @@ import {
 import { selectCompactionTimeoutSnapshot } from "./compaction-timeout.js";
 import { materializeProviderContext } from "./images.js";
 import { wrapStreamFnWithMessageTransform } from "./message-transform-stream-wrapper.js";
+import { promptImageSessionKey } from "./prompt-image-decisions.js";
 import { wrapStreamFnWithProviderReviewContinuation } from "./provider-review-continuation.js";
 import type { EmbeddedRunAttemptParams } from "./types.js";
 
@@ -536,6 +537,7 @@ export async function prepareEmbeddedAttemptTransport(input: {
       const prepared = await materializeProviderContext({
         ...provider,
         context,
+        imageSessionKey: promptImageSessionKey(attempt),
         workspaceDir: input.workspaceDir,
         agentWorkspaceDir: attempt.workspaceDir,
         workspaceOnly: input.workspaceOnly,

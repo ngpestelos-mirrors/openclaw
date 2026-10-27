@@ -13,6 +13,7 @@ import { renderPluginDetailShell } from "./detail-shell.tsx";
 import type { PluginInstallProgress } from "./install-progress.ts";
 import { renderPluginContentCapabilities } from "./overview.tsx";
 import baseStyles from "../../styles/base.css?inline";
+import carapaceStyles from "../../styles/carapace-control-ui.css?inline";
 import componentStyles from "../../styles/components.css?inline";
 import pluginStyles from "../../styles/plugins.css?inline";
 import settingsStyles from "../../styles/settings.css?inline";
@@ -56,7 +57,13 @@ let styles: HTMLStyleElement;
 beforeEach(async () => {
   await page.viewport(1440, 900);
   styles = document.createElement("style");
-  styles.textContent = [baseStyles, componentStyles, settingsStyles, pluginStyles].join("\n");
+  styles.textContent = [
+    baseStyles,
+    componentStyles,
+    settingsStyles,
+    carapaceStyles,
+    pluginStyles,
+  ].join("\n");
   document.head.append(styles);
   container = document.createElement("div");
   document.body.append(container);
@@ -84,7 +91,7 @@ async function renderCatalog(props: Partial<PluginCatalogResultsProps>) {
 }
 
 it.each([263, 362])(
-  "keeps long identity text clear of the action within a %ipx card",
+  "keeps long identity text compact and clear of the action within a %ipx card",
   async (width) => {
     const onInstall = vi.fn();
     const progress = {
@@ -106,6 +113,10 @@ it.each([263, 362])(
       const title = find("h3", card).getBoundingClientRect();
       const button = action.getBoundingClientRect();
       expect(Math.abs(button.y + button.height / 2 - (title.y + title.height / 2))).toBeLessThan(1);
+      const author = find(".plugin-card-author", card);
+      const authorText = document.createRange();
+      authorText.selectNodeContents(author);
+      expect(authorText.getBoundingClientRect().top - title.bottom).toBeLessThanOrEqual(6);
       const bounds = identity.getBoundingClientRect();
       for (const text of identity.querySelectorAll<HTMLElement>("h3,.plugin-card-author")) {
         const right = text.getBoundingClientRect().right;

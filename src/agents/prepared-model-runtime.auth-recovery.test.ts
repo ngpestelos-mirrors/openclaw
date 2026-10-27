@@ -41,9 +41,11 @@ import { createPluginRecord } from "../plugins/status.test-helpers.js";
 import { AsyncWorkScope, isAsyncWorkScopeActiveHere } from "../shared/async-work-scope.js";
 import { prepareSharedAuthStoreOwnershipForNative } from "./auth-profiles/path-resolve.native.js";
 import type { RuntimeAuthProfileStore } from "./auth-profiles/types.js";
+import { isProfileInCooldown } from "./auth-profiles/usage-state.js";
 import { createEnteredGate } from "./entered-gate.test-support.js";
 import { modelDefinition, providerConfig } from "./model-auth.fixtures.test-support.js";
 import { PreparedModelRuntimeAuthPublicationOwner } from "./prepared-model-runtime-auth-publication.js";
+import { getPreparedModelRuntimeAuthStore } from "./prepared-model-runtime-auth.js";
 import {
   getPreparedModelRuntimePluginGeneration,
   withPreparedModelRuntimePluginGenerationScope,
@@ -574,6 +576,55 @@ describe("auth publication generation recovery", () => {
   });
 
   it.for([false, true])(
+    "re-prepares superseded fresh auth generations with a bound (exhausted: %s)",
+    async (exhausted) => {
+      const { input, snapshot } = await publishOwner();
+      const owner = resolvePreparedModelRuntimeOwnerBySnapshot(snapshot)!;
+      mocks.loadAgentRuntimePluginRegistryHandle.mockImplementation(
+        (params) => params.reusableRegistry ?? createEmptyPluginRegistry(),
+      );
+      const superseded = new PreparedModelRuntimePublicationSupersededError(
+        "Accepted model catalog changed during runtime preparation",
+      );
+      mocks.resolveAmbientCredentials
+        .mockClear()
+        .mockImplementationOnce(() => {
+          throw superseded;
+        })
+        .mockImplementationOnce(() => {
+          throw superseded;
+        })
+        .mockImplementation(() => {
+          if (exhausted) {
+            throw superseded;
+          }
+          return {};
+        });
+      const mutate = () =>
+        mocks.mutationListener?.({ agentDir: input.agentDir, affectsInheritedStores: false });
+      mutate();
+      if (exhausted) {
+        const result = await loadDispatch().catch((error: unknown) => error);
+        expect(result).toBeInstanceOf(PreparedModelRuntimePublicationSupersededError);
+        expect(result).toMatchObject({
+          message: expect.stringContaining("after 2 fresh-generation retries"),
+        });
+        expect(owner.refreshError).toBeInstanceOf(PreparedModelRuntimePublicationSupersededError);
+        expect(owner.catalogRecovery?.error).toBe(owner.refreshError);
+        expect(mocks.warn).toHaveBeenCalledOnce();
+      } else {
+        await expect(loadDispatch()).resolves.toMatchObject({ agentId: "default" });
+        expect((await prepare(input)).isCurrent()).toBe(true);
+        expect(mocks.warn).not.toHaveBeenCalled();
+      }
+      expect(mocks.resolveAmbientCredentials).toHaveBeenCalledTimes(3);
+      mocks.resolveAmbientCredentials.mockImplementation(() => ({}));
+      await expect(loadDispatch()).resolves.toMatchObject({ agentId: "default" });
+      expect((await prepare(input)).isCurrent()).toBe(true);
+    },
+  );
+
+  it.for([false, true])(
     "joins a publication superseding the fresh auth retry (fails: %s)",
     async (fails, { signal }) => {
       const { snapshot, config } = await publishOwner();
@@ -636,7 +687,7 @@ describe("auth publication generation recovery", () => {
 });
 
 describe("prepared model auth publication", () => {
-  it("retains the prepared owner on bookkeeping and refreshes on auth availability changes", async () => {
+  it("retains the prepared generation through 100 concurrent availability publications", async () => {
     const snapshots = await vi.importActual<typeof import("./auth-profiles/runtime-snapshots.js")>(
       "./auth-profiles/runtime-snapshots.js",
     );
@@ -648,6 +699,7 @@ describe("prepared model auth publication", () => {
     };
     prepareSharedAuthStoreOwnershipForNative(fixture.state.env);
     snapshots.setRuntimeAuthProfileStoreSnapshot(store, agentDir);
+    mocks.preparedAuthStore = store;
     const initial = await publish(input);
     const events = vi.fn();
     const unregisterEvents = registerPreparedModelRuntimePublicationListener(events);
@@ -655,26 +707,62 @@ describe("prepared model auth publication", () => {
       mocks.mutationListener?.(event);
     });
     try {
-      for (const availabilityChanged of [false, true]) {
+      const owner = resolvePreparedModelRuntimeOwnerBySnapshot(initial)!;
+      const generation = owner.pluginGeneration;
+      const publications: Promise<PreparedModelRuntimeSnapshot>[] = [];
+      const preparations = mocks.loadAgentRuntimePluginRegistryHandle.mock.calls.length;
+      for (let index = 0; index < 100; index += 1) {
         snapshots.updateRuntimeAuthProfileStoreSnapshot(
           {
             ...store,
-            ...(!availabilityChanged ? { runtimeInheritsMainState: true } : {}),
             usageStats: {
-              "test:primary": availabilityChanged
-                ? { cooldownUntil: Date.now() + 60_000 }
-                : { lastUsed: 2, errorCount: 1, failureCounts: { timeout: 1 } },
+              "test:primary": index % 2 === 0 ? { cooldownUntil: Date.now() + 60_000 } : {},
             },
           },
           agentDir,
         );
-        expect((await prepare(input)) === initial).toBe(!availabilityChanged);
-        if (availabilityChanged) {
-          expect(events).toHaveBeenCalledWith({ phase: "invalidated" });
-        } else {
-          expect(events).not.toHaveBeenCalled();
-        }
-        expect(mocks.ensureOpenClawModelsJson).toHaveBeenCalledTimes(availabilityChanged ? 2 : 1);
+        expect(
+          isProfileInCooldown(getPreparedModelRuntimeAuthStore(initial)!, "test:primary"),
+        ).toBe(index % 2 === 0);
+        publications.push(publish(input));
+        await Promise.resolve();
+      }
+      expect((await Promise.all(publications)).every((snapshot) => snapshot === initial)).toBe(
+        true,
+      );
+      expect(owner.pluginGeneration).toBe(generation);
+      expect(initial.isCurrent()).toBe(true);
+      expect(mocks.loadAgentRuntimePluginRegistryHandle).toHaveBeenCalledTimes(preparations);
+      expect(events).not.toHaveBeenCalled();
+      expect(mocks.ensureOpenClawModelsJson).toHaveBeenCalledTimes(1);
+
+      const credentialChanges: RuntimeAuthProfileStore["profiles"][] = [
+        {
+          "test:primary": {
+            type: "token" as const,
+            provider: "test",
+            token: "changed-synthetic-token",
+          },
+        },
+        {
+          ...store.profiles,
+          "test:secondary": {
+            type: "token" as const,
+            provider: "test",
+            token: "second-synthetic-token",
+          },
+        },
+      ];
+      for (const profiles of credentialChanges) {
+        const previous = await prepare(input);
+        const changedStore = { ...store, profiles };
+        mocks.preparedAuthStore = changedStore;
+        snapshots.updateRuntimeAuthProfileStoreSnapshot(changedStore, agentDir);
+        expect(previous.isCurrent()).toBe(false);
+        const replacement = await prepare(input);
+        expect(replacement).not.toBe(previous);
+        expect(getPreparedModelRuntimeAuthStore(replacement)?.profiles).toEqual(profiles);
+        expect(events).toHaveBeenCalledWith({ phase: "invalidated" });
       }
     } finally {
       unregisterAuth();

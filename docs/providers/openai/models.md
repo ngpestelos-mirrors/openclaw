@@ -119,7 +119,10 @@ Standard rather than silently downgrading the request.
 
 The session choice survives `/new` and session reset, and is inherited by a fork
 unless replaced. Changes affect the next admitted turn, not an already-running
-model call.
+model call. A `sessions_spawn` child on the same agent and model keeps the
+requester's saved Access; pass
+[`cyberAccessProgram`](/tools/subagents/tool-reference#tool-parameters) to choose
+a program for the child explicitly.
 
 Named operator roles grant Blue and Red independently through
 `gateway.roles.definitions.<role>.accessPrograms.cyber`. An omitted or empty grant

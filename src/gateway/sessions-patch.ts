@@ -116,8 +116,6 @@ type SessionPatchProjectionParams = {
   operatorAuthority?: AdmittedRunOperatorAuthority;
   /** Resolved spawn identity supplied only by the trusted creation owner. */
   preparedModelSelection?: ModelRef;
-  /** Creation snapshots selected models, including the configured default. */
-  pinModelSelection?: boolean;
 };
 
 type SessionPatchProjectionResult =
@@ -556,7 +554,7 @@ function* projectSessionPatchSteps(
       if (!resolved.ok) {
         return invalid(resolved.error);
       }
-      selection = { ...resolved, isDefault: !params.pinModelSelection && resolved.isDefault };
+      selection = resolved;
     }
     if (selection) {
       const prepared = prepareSessionPatchModelSelection({

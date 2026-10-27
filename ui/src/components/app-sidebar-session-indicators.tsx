@@ -148,7 +148,12 @@ export function renderSidebarSessionIndicators(
     <span
       class={[
         "sidebar-session-indicator",
-        { "sidebar-session-indicator--state-only": !team() && !hasContent() },
+        {
+          "sidebar-session-indicator--state-only":
+            !team() &&
+            !hasContent() &&
+            (ownerRepeatedByFilter() || (!readSession().isChild && ownerRepeatedBySection())),
+        },
       ]}
     >
       {leadingIndicator}

@@ -715,7 +715,6 @@ async function createGatewaySessionInScope(
           personalModelSelection: params.personalModelSelection,
           operatorAuthority,
           preparedModelSelection: params.preparedModelSelection?.ref,
-          pinModelSelection: true,
         });
         if (!patched.ok) {
           return patched;
@@ -751,20 +750,7 @@ async function createGatewaySessionInScope(
         const initializedEntry: InternalSessionEntry = {
           ...patched.entry,
           ...inheritedWorkspace,
-          ...(createdNewEntry && displayName
-            ? {
-                displayName,
-                ...(params.displayNameGenerated
-                  ? {
-                      titleRefinement: {
-                        sessionId: patched.entry.sessionId,
-                        generatedName: displayName,
-                        remainingMessages: 7,
-                      },
-                    }
-                  : {}),
-              }
-            : {}),
+          ...(createdNewEntry && displayName ? { displayName } : {}),
           ...projectSessionCreateSpawnModelSelection({
             entry: patched.entry,
             creation: params.creation,
