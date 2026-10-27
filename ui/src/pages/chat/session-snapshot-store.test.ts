@@ -21,7 +21,6 @@ import {
   type ChatSessionSnapshot,
 } from "./session-message-cache.ts";
 import {
-  CHAT_SNAPSHOT_DB_NAME as DB,
   CHAT_SNAPSHOT_METADATA_STORE_NAME as METADATA,
   CHAT_SNAPSHOT_STORE_NAME as SNAPSHOTS,
   SIDEBAR_SNAPSHOT_STORE_NAME as SIDEBAR,
@@ -36,6 +35,7 @@ import { resolveChatSnapshotKey } from "./session-snapshot-key.ts";
 import { prewarmChatSnapshot } from "./session-snapshot-prewarm.ts";
 import { SessionSnapshotStore } from "./session-snapshot-store.ts";
 
+const DB = "openclaw-chat-snapshots";
 const snapshotHost = {
   settings: { gatewayUrl: "wss://cache.example" },
   client: { recoveryScope: "account-a", recoveryScopeReady: true },
@@ -315,17 +315,15 @@ describe("persistent chat session snapshots", () => {
     expect(await new SessionSnapshotStore().read(sessionKey)).toBeNull();
   });
 
-  it("does not present a cached board after its pending read is invalidated", async () => {
+  it("does not return a cached board after its pending read is invalidated", async () => {
     await seed({
       ...boardSnapshot(sessionKey, "retired conversation"),
       historyState: { stateRevision: {}, commands: [] },
     });
     const reader = new SessionSnapshotStore();
-    const presentBoard = vi.fn();
-    const reading = reader.read(sessionKey, presentBoard);
+    const reading = reader.read(sessionKey);
     reader.forget(sessionKey);
     expect(await reading).toBeNull();
-    expect(presentBoard).not.toHaveBeenCalled();
   });
 
   it("persists board removal before any transcript is in memory", async () => {
@@ -595,11 +593,7 @@ describe("persistent chat session snapshots", () => {
     if (corruption !== "metadata") {
       expect(reader.readSavedAt(valid)).not.toBeNull();
       expect(reader.readSavedAt(corrupt)).not.toBeNull();
-      const presentBoard = vi.fn();
-      expect(await reader.read(corrupt, presentBoard)).toBeNull();
-      if (corruption === "board") {
-        expect(presentBoard).not.toHaveBeenCalled();
-      }
+      expect(await reader.read(corrupt)).toBeNull();
     } else {
       expect(reader.readSavedAt(corrupt)).toBeNull();
     }
