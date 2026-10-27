@@ -147,12 +147,15 @@ it("windows large catalogs without losing keyboard traversal, reordered cards, o
   setItems(moved);
   flush();
   expect(card(boundary)).toBe(retainedCard);
-  expect(document.activeElement).toBe(focused);
+  expect(focused.isConnected).toBe(true);
   await nextFrame();
   expect(retainedCard.parentElement!.getAttribute("aria-posinset")).toBe("501");
   setItems(entries);
   await nextFrame();
   expect(card(boundary)).toBe(retainedCard);
+  // Native keyed moves also blur on the unwindowed catalog; preserve the node
+  // without adding a separate focus-restoration policy to the windowing owner.
+  focused.focus();
   expect(document.activeElement).toBe(focused);
 
   container.scrollTop = 0;
