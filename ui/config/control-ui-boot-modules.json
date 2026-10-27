@@ -131,6 +131,7 @@
   "packages/gateway-protocol/src/schema/tab-icon.ts",
   "packages/gateway-protocol/src/schema/ui-appearance-preferences.ts",
   "packages/gateway-protocol/src/schema/ui-appearance-typefaces.ts",
+  "packages/gateway-protocol/src/schema/ui-navigation-preferences.ts",
   "packages/gateway-protocol/src/schema/user-profile-constants.ts",
   "packages/gateway-protocol/src/session-agent-status.ts",
   "packages/gateway-protocol/src/session-limits.ts",
