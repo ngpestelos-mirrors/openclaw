@@ -193,17 +193,16 @@ describe("plugin-owned CLI execution host boundary", () => {
   });
 
   it.each([
-    [{ kind: "internal_system", sourceTool: "exec" }, undefined, "host"],
-    [undefined, "cron", "host"],
-    [{ kind: "inter_session" }, undefined, undefined],
-    [{ kind: "external_user" }, "user", undefined],
-    [undefined, undefined, undefined],
+    [{ kind: "internal_system", sourceTool: "exec" }, "host"],
+    [{ kind: "internal_system", sourceTool: "cron" }, "host"],
+    [{ kind: "inter_session" }, undefined],
+    [{ kind: "external_user" }, undefined],
+    [undefined, undefined],
   ] as const)(
-    "marks only host-generated turns as host prompts (%j, %s)",
-    async (provenance, trigger, origin) => {
+    "marks only internal system turns as host prompts (%j)",
+    async (provenance, origin) => {
       const { context } = await createExecution();
       context.params.inputProvenance = provenance;
-      context.params.trigger = trigger;
       let observedExecution: CliBackendExecuteContext | undefined;
       const execute: CliBackendExecute = async function* (execution) {
         observedExecution = execution;
