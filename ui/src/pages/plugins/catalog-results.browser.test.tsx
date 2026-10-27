@@ -235,9 +235,9 @@ it("retains focused cards when crossing the catalog windowing threshold in both 
     />
   ));
   const cards = () => container.querySelectorAll(".plugin-catalog-card");
+  await waitForSolid(() => expect(cards()).toHaveLength(60));
   const first = find('[data-plugin-id="threshold-0"]');
   const focused = first.querySelector<HTMLAnchorElement>(".plugin-card-author")!;
-  expect(cards()).toHaveLength(60);
   focused.focus();
 
   for (const count of [61, 60, 61]) {

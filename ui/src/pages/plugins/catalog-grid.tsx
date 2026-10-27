@@ -239,8 +239,8 @@ export function PluginCatalogGrid(props: {
     },
     {
       // A preceding publisher group can move this grid without resizing it.
-      targets: () =>
-        windowed()
+      targets: (next) =>
+        next?.windowed
           ? [
               grid,
               grid.closest(".plugin-catalog-results__body") ?? grid,
