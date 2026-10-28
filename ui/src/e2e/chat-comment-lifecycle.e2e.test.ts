@@ -45,9 +45,9 @@ async function sendWithoutComments(
   expect((request.params as { attachments?: unknown[] }).attachments ?? []).toHaveLength(0);
 }
 
-async function openChat(page: Page, content = passage) {
+async function openChat(page: Page, content = passage, historyMessages?: unknown[]) {
   const gateway = await installMockGateway(page, {
-    historyMessages: [{ role: "assistant", content }],
+    historyMessages: historyMessages ?? [{ role: "assistant", content }],
   });
   await page.goto(`${suite.server.baseUrl}chat`);
   const editor = page.getByRole("dialog", { name: "Comment", exact: true });
@@ -79,6 +79,30 @@ async function addComment(page: Page, source: Locator, comment: string) {
   const editor = page.getByRole("dialog", { name: "Comment", exact: true });
   await editor.getByRole("textbox").fill(comment);
   await editor.getByRole("textbox").press("Enter");
+}
+
+async function routeCommentMedia(
+  page: Page,
+  body: string,
+  beforeRead: (read: number) => Promise<void>,
+) {
+  let reads = 0;
+  let tickets = 0;
+  await page.route("**/__openclaw__/assistant-media?**", async (route) => {
+    if (new URL(route.request().url()).searchParams.has("meta")) {
+      const now = await page.evaluate(() => Date.now());
+      await route.fulfill({
+        json: {
+          ...mediaTicketPayload(`annotation-${++tickets}`, 60_000),
+          mediaTicketExpiresAt: new Date(now + 60_000).toISOString(),
+        },
+      });
+      return;
+    }
+    await beforeRead(++reads);
+    await route.fulfill({ contentType: "text/plain", body });
+  });
+  return () => reads;
 }
 
 suite.define(() => {
@@ -132,16 +156,7 @@ suite.define(() => {
       }
       await quote.waitFor();
       const canonicalBody = createDeferred();
-      await page.route("**/__openclaw__/assistant-media?**", async (route) => {
-        if (new URL(route.request().url()).searchParams.has("meta")) {
-          await route.fulfill({
-            json: mediaTicketPayload("annotation-fixture", 60_000),
-          });
-          return;
-        }
-        await canonicalBody.promise;
-        await route.fulfill({ contentType: "text/plain", body: sent.attachment });
-      });
+      await routeCommentMedia(page, sent.attachment, () => canonicalBody.promise);
       const canonicalId = `mock-user:${sent.idempotencyKey}`;
       const canonical = {
         role: "user",
@@ -183,6 +198,82 @@ suite.define(() => {
       }
       await quote.waitFor();
       expect(await inline.textContent()).toContain(comment);
+    });
+  });
+  it("retains an annotation across virtual-row remounts and renewed media tickets", async () => {
+    await suite.withPage(pageOptions, async ({ page }) => {
+      await page.clock.install({ time: new Date() });
+      const comment = "Explain the rollback steps.";
+      const body = `Selected text:\n${passage}\n\nUser comment:\n${comment}\n\nSource session: agent:main:fixture\nDOM text UTF-16 range: [0, ${passage.length})`;
+      const reread = createDeferred();
+      const reads = await routeCommentMedia(page, body, (read) =>
+        read === 1 ? Promise.resolve() : reread.promise,
+      );
+      await openChat(page, passage, [
+        ...Array.from({ length: 30 }, (_, index) => ({
+          role: index % 2 === 0 ? "user" : "assistant",
+          content: `Deployment checkpoint ${index + 1}. Review the service health before proceeding.`,
+        })),
+        {
+          role: "user",
+          content: "",
+          __openclaw: {
+            id: "annotation-scroll",
+            seq: 31,
+            media: [
+              {
+                kind: "file",
+                url: "media://inbound/selection-comment.txt",
+                fileName: "selection-comment.txt",
+                contentType: "text/plain",
+              },
+            ],
+          },
+        },
+      ]);
+      const inline = page.locator(".chat-sent-comments-inline");
+      const quote = inline.getByRole("button", { name: passage, exact: true });
+      await quote.waitFor();
+      const height = (await inline.boundingBox())!.height;
+      const thread = page.locator(".chat-thread");
+      const observation = await page.evaluateHandle(() => {
+        let loading = false;
+        const observer = new MutationObserver(() => {
+          loading ||= Boolean(
+            document.querySelector(".chat-sent-comments-inline")?.textContent?.includes("Loading"),
+          );
+        });
+        observer.observe(document.body, { subtree: true, childList: true, characterData: true });
+        return { sawLoading: () => loading, stop: () => observer.disconnect() };
+      });
+      try {
+        for (const renewed of [false, true]) {
+          if (renewed) {
+            await page.clock.fastForward(31_000);
+            await expect.poll(reads).toBeGreaterThan(1);
+          }
+          await thread.evaluate((element) => {
+            element.scrollTop = 0;
+          });
+          await inline.waitFor({ state: "detached" });
+          await thread.evaluate((element) => {
+            element.scrollTop = element.scrollHeight;
+          });
+          await quote.waitFor();
+          expect(await inline.textContent()).toContain(comment);
+          expect((await inline.boundingBox())?.height).toBe(height);
+          expect(await observation.evaluate((state) => state.sawLoading())).toBe(false);
+          if (!renewed) {
+            expect(reads()).toBe(1);
+          }
+        }
+        await quote.click();
+        await inline.getByRole("region", { name: "Highlighted passage:", exact: true }).waitFor();
+      } finally {
+        reread.resolve();
+        await observation.evaluate((state) => state.stop());
+        await observation.dispose();
+      }
     });
   });
   it.each([
