@@ -41,9 +41,9 @@ div.chat-thread:where(.chat-thread--comment-pins) {
   position: relative;
 }
 
-/* Reserve a narrow gutter for pins even when a selected line fills the viewport. */
-div.chat-thread:where(.chat-thread--comment-pins) .chat-thread-inner {
-  padding-inline-end: 28px;
+/* Keep room for a pin and its gaps before the first comment is added. */
+div.chat-thread:where(.chat-thread--annotations) {
+  --chat-thread-annotation-inset: 32px;
 }
 
 openclaw-chat-comment-pins {

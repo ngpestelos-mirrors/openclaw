@@ -82,6 +82,70 @@ async function addComment(page: Page, source: Locator, comment: string) {
 }
 
 suite.define(() => {
+  it.each([1600, 390])(
+    "keeps transcript geometry stable when comments change at %s px",
+    async (width) => {
+      await suite.withPage(
+        { ...pageOptions, viewport: { width, height: 900 } },
+        async ({ page }) => {
+          const content = `| Garden plan | Growing location | Sunlight exposure | Watering schedule | Best harvest time |
+| --- | --- | --- | --- | --- |
+| Kitchen herbs | Near the back door | Six sunny hours | Three mornings weekly | Early summer days |
+| Fresh vegetables | Beside the south wall | Full morning light | Check soil each day | Late summer weeks |
+
+**${passage}** Keep the garden plan simple and check the soil before watering. Leave enough room for each plant to grow and enjoy the harvest.`;
+          const { source, composer, chip } = await openChat(page, content);
+          await composer.fill("Preserve the draft.");
+          const table = page.locator(".chat-group.assistant .markdown-table");
+          const geometry = async () => {
+            const boxes = await Promise.all([table.boundingBox(), source.boundingBox()]);
+            return boxes.map((box) => ({ x: box!.x, width: box!.width }));
+          };
+          await table.waitFor({ state: "visible" });
+          await source.waitFor({ state: "visible" });
+          await waitForChatScrollIdle(page);
+          const before = await geometry();
+          await addComment(page, source.locator("strong"), "Check the watering plan.");
+          await chip.waitFor();
+          await expect.poll(geometry).toEqual(before);
+          const pin = page.locator(".chat-comment-pin");
+          await pin.waitFor({ state: "visible" });
+          const clearance = await pin.evaluate((element) => {
+            const bounds = element.getBoundingClientRect();
+            const thread = element.closest(".chat-thread")!;
+            const walker = document.createTreeWalker(
+              thread.querySelector(".chat-text")!,
+              NodeFilter.SHOW_TEXT,
+            );
+            const range = document.createRange();
+            let right = 0;
+            while (walker.nextNode()) {
+              range.selectNodeContents(walker.currentNode);
+              for (const rect of range.getClientRects()) {
+                if (
+                  rect.top < bounds.y + bounds.height / 2 &&
+                  rect.bottom > bounds.y + bounds.height / 2
+                ) {
+                  right = Math.max(right, rect.right);
+                }
+              }
+            }
+            return {
+              text: bounds.left - right,
+              edge: thread.getBoundingClientRect().right - bounds.right,
+            };
+          });
+          expect(clearance.text).toBeGreaterThanOrEqual(0);
+          expect(clearance.edge).toBeGreaterThanOrEqual(0);
+          await button(page, "Remove all comments").click();
+          await chip.waitFor({ state: "detached" });
+          await expect.poll(geometry).toEqual(before);
+          expect(await composer.inputValue()).toBe("Preserve the draft.");
+        },
+      );
+    },
+  );
+
   it("keeps the annotation-only bubble visible while its sent attachment is read", async () => {
     await suite.withPage(pageOptions, async ({ page }) => {
       const { source, gateway } = await openChat(page);
