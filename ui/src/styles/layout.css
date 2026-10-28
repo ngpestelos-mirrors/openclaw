@@ -2122,6 +2122,10 @@ html.openclaw-native-desktop .shell:not(.shell--mobile-nav) {
     width: 32px;
     height: 40px;
   }
+
+  .sidebar-online__menu-trigger svg {
+    display: block;
+  }
 }
 
 .sidebar-online__person {
@@ -2286,6 +2290,7 @@ html.openclaw-native-desktop .shell:not(.shell--mobile-nav) {
 
 @media (hover: none), (pointer: coarse) {
   .sidebar-online__person {
+    align-items: center;
     min-height: 44px;
   }
 }
