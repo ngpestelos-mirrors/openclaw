@@ -92,7 +92,10 @@ describe("runtime-guard", () => {
   });
 
   it.each([
+    ["24.16.0", true, true],
+    ["24.22.0", true, true],
     ["24.22.1", true, true],
+    ["26.1.0", true, true],
     ["24.22.1", false, false],
     ["24.15.0+vendor.1", true, false],
     ["24.15.0+vendor.1", false, false],
@@ -246,9 +249,13 @@ describe("runtime-guard", () => {
     ["22.23.2", false],
     ["23.11.0", false],
     ["24.15.0", false],
+    ["24.16.0", true],
+    ["24.22.0", true],
     ["24.22.1", true],
     ["25.9.0", false],
     ["26.0.0", false],
+    ["26.1.0", true],
+    ["26.12.0", true],
     ["26.12.1", true],
     ["24.22.1+local.1", true],
     ["24.15.0-rc.1", false],
@@ -288,7 +295,7 @@ describe("runtime-guard", () => {
     expect(runtime.error).toHaveBeenCalledOnce();
     expect(runtime.error).toHaveBeenCalledWith(
       [
-        "openclaw requires Node >=24.22.1 <25, or >=26.12.1.",
+        "openclaw requires Node >=24.16.0 <25, or >=26.1.0.",
         "Detected: node 20.0.0 (exec: /usr/bin/node).",
         "PATH searched: /usr/bin",
         "Install Node: https://nodejs.org/en/download",
@@ -298,24 +305,28 @@ describe("runtime-guard", () => {
     expect(runtime.exit).toHaveBeenCalledWith(1);
   });
 
-  it("returns silently when runtime meets requirements", async () => {
-    const runtime = {
-      log: vi.fn(),
-      error: vi.fn(),
-      exit: vi.fn(),
-    };
-    const details = {
-      kind: "node" as const,
-      version: "24.22.1",
-      execPath: "/usr/bin/node",
-      pathEnv: "/usr/bin",
-      hasNodeSqlite: true,
-      sqliteVersion: "3.53.3",
-      sqliteProbe: { available: true, version: "3.53.3", text: true, blob: true, json: true },
-    };
-    await expect(assertSupportedRuntime(runtime, details)).resolves.toBeUndefined();
-    expect(runtime.exit).not.toHaveBeenCalled();
-  });
+  it.each(["24.16.0", "24.22.0", "24.22.1", "26.1.0", "26.12.0"])(
+    "returns silently when Node %s meets requirements",
+    async (version) => {
+      const runtime = {
+        log: vi.fn(),
+        error: vi.fn(),
+        exit: vi.fn(),
+      };
+      const details = {
+        kind: "node" as const,
+        version,
+        execPath: "/usr/bin/node",
+        pathEnv: "/usr/bin",
+        hasNodeSqlite: true,
+        sqliteVersion: "3.53.3",
+        sqliteProbe: { available: true, version: "3.53.3", text: true, blob: true, json: true },
+      };
+      await expect(assertSupportedRuntime(runtime, details)).resolves.toBeUndefined();
+      expect(runtime.exit).not.toHaveBeenCalled();
+      expect(runtime.error).not.toHaveBeenCalled();
+    },
+  );
 
   it("accepts Bun when the runtime provides WAL-reset-safe node:sqlite", async () => {
     const runtime = {
@@ -430,7 +441,7 @@ describe("runtime-guard", () => {
     expect(runtime.error).toHaveBeenCalledOnce();
     expect(runtime.error).toHaveBeenCalledWith(
       [
-        "openclaw requires Node >=24.22.1 <25, or >=26.12.1.",
+        "openclaw requires Node >=24.16.0 <25, or >=26.1.0.",
         "Detected: unknown runtime (exec: unknown).",
         "PATH searched: (not set)",
         "Install Node: https://nodejs.org/en/download",
@@ -510,14 +521,17 @@ describe("sealed worker runtime", () => {
     },
   );
 
-  it.each(["24.22.1", "26.12.1"])("starts the worker on supported runtime %s", async (version) => {
-    state.version = version;
-    state.lossless = true;
-    await import("../worker/worker-deploy-entry.js");
-    expect(process.exitCode).toBeUndefined();
-    expect(state.releaseStdin).toHaveBeenCalledOnce();
-    expect(disconnect).toHaveBeenCalledOnce();
-    expect(state.run).toHaveBeenCalledOnce();
-    expect(state.error).not.toHaveBeenCalled();
-  });
+  it.each(["24.16.0", "24.22.1", "26.1.0", "26.12.1"])(
+    "starts the worker on supported runtime %s",
+    async (version) => {
+      state.version = version;
+      state.lossless = true;
+      await import("../worker/worker-deploy-entry.js");
+      expect(process.exitCode).toBeUndefined();
+      expect(state.releaseStdin).toHaveBeenCalledOnce();
+      expect(disconnect).toHaveBeenCalledOnce();
+      expect(state.run).toHaveBeenCalledOnce();
+      expect(state.error).not.toHaveBeenCalled();
+    },
+  );
 });

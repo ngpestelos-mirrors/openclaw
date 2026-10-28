@@ -683,14 +683,16 @@ describe("openclaw launcher", () => {
     expect(result.stdout).toMatch(/OpenClaw 2026\.9\.3|diagnostic-entry/);
   });
 
-  it("requires the TLS security release floor even when SQLite is lossless", async () => {
+  it("admits compatible Node below the recommended security patches with lossless SQLite", async () => {
     const fixtureRoot = await makeLauncherFixture(fixtures);
     await fs.writeFile(
       path.join(fixtureRoot, "dist", "entry.js"),
       'process.stdout.write("runtime-loaded\\n");\n',
       "utf8",
     );
+    const compatibleBelowSecurityPatch = ["24.16.0", "24.22.0", "26.1.0", "26.12.0"];
     const admitted = new Set([
+      ...compatibleBelowSecurityPatch,
       "24.22.1",
       "26.12.1",
       "v24.22.1+local.1",
@@ -701,7 +703,7 @@ describe("openclaw launcher", () => {
       "27.0.0-rc.1+vendor.1",
     ]);
 
-    for (const version of NODE_RELEASE_VERSION_CASES) {
+    for (const version of [...NODE_RELEASE_VERSION_CASES, ...compatibleBelowSecurityPatch]) {
       const mockNodeVersionPath = path.join(fixtureRoot, `mock-node-version-${version}.mjs`);
       await fs.writeFile(
         mockNodeVersionPath,
@@ -735,7 +737,7 @@ describe("openclaw launcher", () => {
       } else {
         expect(result.status, version).toBe(1);
         expect(result.stderr, version).toContain(
-          `openclaw: Node ${version}: openclaw requires Node >=24.22.1 <25, or >=26.12.1.`,
+          `openclaw: Node ${version}: openclaw requires Node >=24.16.0 <25, or >=26.1.0`,
         );
       }
     }

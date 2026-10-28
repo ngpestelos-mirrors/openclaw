@@ -58,6 +58,7 @@ export async function previewUpdateCommand(params: {
     | "requestedChannel"
     | "controlPlaneUpdateSentinelMeta"
     | "packageActivationNotes"
+    | "nodeSecurityWarning"
   >;
   opts: UpdateCommandOptions;
   runId: string;
@@ -80,6 +81,9 @@ export async function previewUpdateCommand(params: {
     }));
   if (preflight) {
     preflight.preflightNotes.push(...(prepared.packageActivationNotes ?? []));
+    if (prepared.nodeSecurityWarning) {
+      preflight.preflightNotes.push(`SECURITY WARNING: ${prepared.nodeSecurityWarning}`);
+    }
     if (target.inspectionWarning) {
       preflight.preflightNotes.push(target.inspectionWarning);
     }
@@ -268,6 +272,9 @@ export async function preflightUpdateCommandSchemas(params: {
           preflightNotes.push(
             `Would replace managed gateway service Node (${runtime.value.replacedNodeRunner}) with current Node (${runtime.value.nodeRunner}) for openclaw@${runtime.value.targetVersion}.`,
           );
+        }
+        if (runtime.ok && runtime.value.nodeSecurityWarning) {
+          preflightNotes.push(`SECURITY WARNING: ${runtime.value.nodeSecurityWarning}`);
         }
         if (
           params.packageInstallSpec &&

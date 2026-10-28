@@ -17,7 +17,7 @@ import { isSupportedNodeVersion } from "../../src/infra/runtime-guard.js";
 import { resolveTestNodeExecPath } from "../../src/test-utils/node-process.js";
 import { useAutoCleanupTempDirTracker } from "../helpers/temp-dir.js";
 
-const EXPECTED_NODE_ENGINE_RANGE = ">=24.22.1 <25 || >=26.12.1";
+const EXPECTED_NODE_ENGINE_RANGE = ">=24.16.0 <25 || >=26.1.0";
 const tempDirs = useAutoCleanupTempDirTracker(afterEach);
 const testNodeExecPath = resolveTestNodeExecPath();
 
@@ -26,18 +26,21 @@ describe("install runtime enforcement", () => {
     expect(readPackageNodeEngine()).toBe(EXPECTED_NODE_ENGINE_RANGE);
   });
 
-  it.each(["v24.22.1+local.1"])("matches the CLI runtime guard for Node %s", (version) => {
-    expect(nodeVersionSatisfiesPackageEngine(version, EXPECTED_NODE_ENGINE_RANGE)).toBe(
-      isSupportedNodeVersion(version),
-    );
-  });
+  it.each(["v24.22.1+local.1", "24.15.0", "24.16.0", "24.22.0", "26.0.0", "26.1.0"])(
+    "matches the CLI runtime guard for Node %s",
+    (version) => {
+      expect(nodeVersionSatisfiesPackageEngine(version, EXPECTED_NODE_ENGINE_RANGE)).toBe(
+        isSupportedNodeVersion(version),
+      );
+    },
+  );
 
-  it("allows supported Node without an error", () => {
+  it.each(["24.16.0", "24.22.0", "24.22.1", "26.1.0"])("allows compatible Node %s", (version) => {
     const reportError = vi.fn();
     expect(
       enforceSupportedNodeRuntime(
         {
-          version: "24.22.1",
+          version,
           bunVersion: null,
           engine: EXPECTED_NODE_ENGINE_RANGE,
           execPath: "/opt/node/bin/node",

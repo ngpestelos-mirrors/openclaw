@@ -429,7 +429,7 @@ describe("update-cli", () => {
     expect(listUpdateRuns({ limit: 1 })[0]?.reason).toBe("preflight-node-runtime-incompatible");
     expect(defaultRuntime.error).toHaveBeenCalledWith(
       expect.stringContaining(
-        `Node 22.18.0: node:sqlite truncates TEXT at embedded NUL (nodejs/node#61954)\n${runtimeRecovery.expectedPlainRecovery("2026.5.20", "24.22.1", "refresh", undefined, root).replace("3. Install and select Node 24.22.1 using your system package manager or https://nodejs.org/en/download.", `3. Run \`${runtimeRecovery.expectedRuntimeSelectionCommand("nvm", "24.22.1")}\`.`)}`,
+        `Node 22.18.0: node:sqlite truncates TEXT at embedded NUL (nodejs/node#61954)\n${runtimeRecovery.expectedPlainRecovery("2026.5.20", "24.16.0", "refresh", undefined, root).replace("3. Install and select Node 24.16.0 using your system package manager or https://nodejs.org/en/download.", `3. Run \`${runtimeRecovery.expectedRuntimeSelectionCommand("nvm", "24.16.0")}\`.`)}`,
       ),
     );
   });

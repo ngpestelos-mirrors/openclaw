@@ -1,6 +1,7 @@
 import path from "node:path";
 import { detectCurrentSqliteCapabilities, nodeRuntimeFailure } from "../../../node-sqlite.mjs";
 import {
+  formatNodeSecurityWarning,
   formatUnsupportedNodeVersionMessage,
   SUPPORTED_NODE_VERSION_RANGE,
 } from "../../../node-version.mjs";
@@ -496,6 +497,12 @@ export async function prepareUpdateCommand(opts: UpdateCommandOptions) {
     }
     exitCliAfterOutput(defaultRuntime, 1);
   }
+  const nodeSecurityWarning = process.versions.bun
+    ? null
+    : formatNodeSecurityWarning(process.versions.node);
+  if (nodeSecurityWarning) {
+    defaultRuntime.error(`SECURITY WARNING: ${nodeSecurityWarning}`);
+  }
   const startedAt = Date.now();
   suppressDeprecations();
   const postCoreUpdateResume = process.env[POST_CORE_UPDATE_ENV] === "1";
@@ -612,6 +619,7 @@ export async function prepareUpdateCommand(opts: UpdateCommandOptions) {
   return {
     startedAt,
     postCoreUpdateResume,
+    ...(nodeSecurityWarning ? { nodeSecurityWarning } : {}),
     postCoreUpdateChannel,
     timeoutMs,
     shouldRestart,

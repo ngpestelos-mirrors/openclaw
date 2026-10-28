@@ -107,6 +107,45 @@ beforeEach(() => {
 });
 
 describe("Doctor host-owned runtime diagnostics", () => {
+  it.each(["cli", "gateway-service"] as const)(
+    "reports a nonblocking security recommendation for compatible %s Node",
+    async (source) => {
+      const root = await hostRoot();
+      if (source === "cli") {
+        mocks.root.mockResolvedValue(root);
+        mocks.detectRuntime.mockResolvedValue({
+          kind: "node",
+          version: "24.21.0",
+          execPath: "/fixture/node",
+          sqliteProbe: { available: true, version: "3.53.4", text: true, blob: true, json: true },
+        });
+      } else {
+        const command = {
+          programArguments: ["/fixture/node", path.join(root, "openclaw.mjs"), "gateway"],
+        };
+        mocks.readCommand.mockResolvedValue(command);
+        mocks.readGatewayServiceState.mockResolvedValue({
+          installed: true,
+          loadState: { status: "loaded" },
+          running: true,
+          env: {},
+          command,
+        });
+        mocks.resolveNodeRuntimeInfo.mockResolvedValue({ status: "supported", version: "26.8.1" });
+      }
+      expect(await collectNodeRuntimeFindings({})).toEqual([
+        expect.objectContaining({
+          severity: "warning",
+          source,
+          message: expect.stringContaining("SECURITY WARNING"),
+          fixHint: ownerHint,
+        }),
+      ]);
+      expect(mocks.install).not.toHaveBeenCalled();
+      expect(mocks.restart).not.toHaveBeenCalled();
+    },
+  );
+
   it.each([
     { owner: "CLI", surface: "config" },
     { owner: "service", surface: "config" },

@@ -6,7 +6,7 @@ import { err as resultError, ok, type Result } from "@openclaw/normalization-cor
 import { normalizeOptionalString } from "@openclaw/normalization-core/string-coerce";
 import { validRange, valid } from "semver";
 import { detectCurrentSqliteCapabilities, nodeRuntimeFailure } from "../../../node-sqlite.mjs";
-import { SUPPORTED_NODE_VERSION_RANGE } from "../../../node-version.mjs";
+import { formatNodeSecurityWarning, SUPPORTED_NODE_VERSION_RANGE } from "../../../node-version.mjs";
 import { isBunRuntime } from "../../daemon/runtime-binary.js";
 import {
   buildRuntimeProbeEnv,
@@ -24,6 +24,7 @@ import {
   type UpdateFailureFact,
 } from "../../infra/update-failure-facts.js";
 import { UPDATE_RUNNER_TIMEOUT_MS } from "../../infra/update-run-timeouts.js";
+import type { UpdateStepResult } from "../../infra/update-step-result.js";
 import { withCommandProcessScope } from "../../process/exec-spawn.js";
 import {
   createRuntimeUpdateRecoverySteps,
@@ -44,7 +45,26 @@ import {
   tryRealpathOrResolve,
 } from "./update-command-service-plan.js";
 
+/** Records a nonblocking Node security recommendation as a passing preflight step. */
+export function recordNodeSecurityWarning(
+  record: (step: UpdateStepResult) => void,
+  cwd: string,
+  warning: string | undefined,
+): void {
+  if (warning) {
+    record({
+      name: "node-security-patch",
+      command: "inspect Node.js security patch level",
+      cwd,
+      durationMs: 0,
+      exitCode: 0,
+      warnings: [warning],
+    });
+  }
+}
+
 export type PackageRuntimePreflight = {
+  nodeSecurityWarning?: string;
   nodeRunner?: string;
   activationRuntime?: PackageActivationRuntime;
   replacedNodeRunner?: string;
@@ -82,7 +102,11 @@ export async function resolvePackageRuntimePreflight(params: {
         ? (params.service?.serviceNodeRunner ?? params.nodeRunner)
         : params.nodeRunner,
     );
-    const unchanged = (): PackageRuntimePreflight => (nodeRunner ? { nodeRunner } : {});
+    let nodeSecurityWarning: string | null = null;
+    const unchanged = (): PackageRuntimePreflight => ({
+      ...(nodeRunner ? { nodeRunner } : {}),
+      ...(nodeSecurityWarning ? { nodeSecurityWarning } : {}),
+    });
     let target = params.target;
     if (!target && params.installedRoot) {
       const manifest = asNullableRecord(
@@ -157,6 +181,7 @@ export async function resolvePackageRuntimePreflight(params: {
       nodeRunner: nodeRunner ? (activationRuntime?.path ?? nodeRunner) : undefined,
       timeoutMs: params.timeoutMs,
     });
+    nodeSecurityWarning = formatNodeSecurityWarning(runtime.version);
     const satisfies =
       runtime.failure && !params.engineOnly
         ? false
@@ -170,6 +195,7 @@ export async function resolvePackageRuntimePreflight(params: {
       capturedRuntime
         ? ok({
             ...(selectedRunner ? { nodeRunner: selectedRunner } : {}),
+            ...(nodeSecurityWarning ? { nodeSecurityWarning } : {}),
             activationRuntime: capturedRuntime,
             ...(replacedNodeRunner ? { replacedNodeRunner } : {}),
             targetVersion,
@@ -223,6 +249,7 @@ export async function resolvePackageRuntimePreflight(params: {
           current?.path === fallbackActivationRuntime.path &&
           current.identity === fallbackActivationRuntime.identity
         ) {
+          nodeSecurityWarning = formatNodeSecurityWarning(fallbackRuntime.version);
           return runtimeResult(fallbackActivationRuntime, fallbackNodeRunner, nodeRunner);
         }
         return resultError("Selected Node changed during target compatibility probing.");
@@ -261,6 +288,8 @@ export async function resolvePackageRuntimePreflight(params: {
           current?.path === recoveredRuntime.path &&
           current.identity === recoveredRuntime.identity
         ) {
+          // Reuse the admission probe; the security recommendation never blocks recovery.
+          nodeSecurityWarning = formatNodeSecurityWarning(probe.version);
           return runtimeResult(recoveredRuntime, recovered, nodeRunner ?? resolveNodeRunner());
         }
       }

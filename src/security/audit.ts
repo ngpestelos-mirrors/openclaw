@@ -47,6 +47,7 @@ import {
   type McporterRegistryReadOutcome,
   type McporterRegistryRejectReason,
 } from "./audit-mcporter-registry.js";
+import { collectElevatedFindings, collectNodeRuntimeSecurityFindings } from "./audit-runtime.js";
 import type {
   SecurityAuditFinding,
   SecurityAuditReport,
@@ -472,36 +473,6 @@ async function collectPluginSecurityAuditFindings(
     }),
   );
   return collectorResults.flat();
-}
-
-function collectElevatedFindings(cfg: OpenClawConfig): SecurityAuditFinding[] {
-  const findings: SecurityAuditFinding[] = [];
-  const enabled = cfg.tools?.elevated?.enabled;
-  const allowFrom = cfg.tools?.elevated?.allowFrom ?? {};
-
-  if (enabled === false) {
-    return findings;
-  }
-  for (const [provider, list] of Object.entries(allowFrom)) {
-    const normalized = normalizeStringEntries(Array.isArray(list) ? list : []);
-    if (normalized.includes("*")) {
-      findings.push({
-        checkId: `tools.elevated.allowFrom.${provider}.wildcard`,
-        severity: "critical",
-        title: "Elevated exec allowlist contains wildcard",
-        detail: `tools.elevated.allowFrom.${provider} includes "*" which effectively approves everyone on that channel for elevated mode.`,
-      });
-    } else if (normalized.length > 25) {
-      findings.push({
-        checkId: `tools.elevated.allowFrom.${provider}.large`,
-        severity: "warn",
-        title: "Elevated exec allowlist is large",
-        detail: `tools.elevated.allowFrom.${provider} has ${normalized.length} entries; consider tightening elevated access.`,
-      });
-    }
-  }
-
-  return findings;
 }
 
 function collectExecRuntimeFindings(cfg: OpenClawConfig): SecurityAuditFinding[] {
@@ -1082,6 +1053,8 @@ export async function runSecurityAuditCore(
   const { cfg, env, platform, stateDir, configPath } = context;
   copyConfigResolutionFacts(context.sourceConfig, cfg);
   const auditNonDeep = await import("./audit.nondeep.runtime.js");
+
+  findings.push(...collectNodeRuntimeSecurityFindings());
 
   findings.push(...(await auditNonDeep.collectAttackSurfaceSummaryFindings(cfg)));
   findings.push(...collectAgentRosterFindings(context.sourceConfig));

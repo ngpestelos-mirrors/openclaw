@@ -69,7 +69,10 @@ import { inspectNpmGlobalDestination } from "./update-command-package-destinatio
 import { UnreportedUpdateAdmissionOutcome, type RefuseUpdate } from "./update-command-result.js";
 import { recordUpdateCommandTarget, type prepareUpdateCommand } from "./update-command-run.js";
 import { inspectPackageEngineAdmission } from "./update-command-runtime-admission.js";
-import { resolvePackageRuntimePreflight } from "./update-command-runtime-preflight.js";
+import {
+  recordNodeSecurityWarning,
+  resolvePackageRuntimePreflight,
+} from "./update-command-runtime-preflight.js";
 import type { ManagedServiceRootRedirect } from "./update-command-service-context-types.js";
 import { resolveManagedServicePackageUpdatePlan } from "./update-command-service-plan.js";
 import type { UpdateCommandRecoveryState } from "./update-command-service.js";
@@ -175,6 +178,7 @@ export async function resolveUpdateCommandTarget(
           recordUpdateCommandTarget(opts.run, { step });
         }
       };
+      recordNodeSecurityWarning(recordPreflightStep, root, prepared.nodeSecurityWarning);
       const resolveMode = async (): Promise<UpdateRunResult["mode"]> => {
         // Policy/config refusals can precede target preparation. Inspect their owner too.
         return updateInstallKind === "git"
@@ -642,6 +646,11 @@ export async function resolveUpdateCommandTarget(
           packageUpdateNodeRunner = runtime.value.nodeRunner;
           admittedPackageRuntime = runtime.value.activationRuntime;
           assertPackageRuntimeCurrent = assertCurrent;
+        }
+        const runtimeWarning = runtime.value.nodeSecurityWarning;
+        if (runtimeWarning && runtimeWarning !== prepared.nodeSecurityWarning) {
+          warn(`SECURITY WARNING: ${runtimeWarning}`);
+          recordNodeSecurityWarning(recordPreflightStep, root, runtimeWarning);
         }
       }
 

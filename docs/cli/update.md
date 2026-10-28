@@ -96,6 +96,8 @@ profile emits the guidance to stderr and does not create a state database for a
 skipped update. These non-outcomes do not run rollback verification or offer an
 update failure report.
 
+Compatible Node 24.16.0+ on 24.x and 26.1.0+ remain accepted. If the updater or selected service Node is below the recommended security patches (24.22.1/26.12.1), update prints a prominent warning and continues; this recommendation alone does not reject the update. SQLite capability and target-package compatibility checks still apply. Run `openclaw security audit` to review the local Node security-patch warning.
+
 ## Usage
 
 ```bash

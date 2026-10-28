@@ -1,6 +1,7 @@
 // Target-aware runtime recovery; startup discovery retains its inherited-environment guards.
 import { randomUUID } from "node:crypto";
 import { withNodeRuntimePath } from "../../../node-runtime-env.mjs";
+import { formatNodeSecurityWarning } from "../../../node-version.mjs";
 import { theme } from "../../../packages/terminal-core/src/theme.js";
 import type { UpdateRecoveryFence } from "../../infra/update-run-recovery.js";
 import { CommandProcessCleanupError } from "../../process/exec-result.js";
@@ -166,6 +167,13 @@ export async function preparePackageUpdateRuntime(params: {
       if (managedServiceNodeRunner && managedServiceNodeRunner !== result.value.nodeRunner) {
         result.value.replacedNodeRunner = managedServiceNodeRunner;
       }
+    }
+    if (
+      result.value.nodeSecurityWarning &&
+      result.value.nodeSecurityWarning !==
+        (process.versions.bun ? null : formatNodeSecurityWarning(process.versions.node))
+    ) {
+      defaultRuntime.error(`SECURITY WARNING: ${result.value.nodeSecurityWarning}`);
     }
     if (params.packageInstallEnv && result.value.nodeRunner) {
       Object.assign(

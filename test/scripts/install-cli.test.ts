@@ -617,7 +617,7 @@ fi
 
     expect(result.status).toBe(1);
     expect(result.stdout).toContain(
-      "Node 24.14.1 is unsupported; use Node 24.22.1+ or Node 26.12.1+.",
+      "Node 24.14.1 is unsupported; use Node 24.16.0+ or Node 26.1.0+.",
     );
     expect(result.stdout).not.toContain("Installing Node 24.14.1");
   });
@@ -1447,7 +1447,7 @@ fi
     const failed = install();
     expect(failed.status).toBe(1);
     expect(failed.stdout).toContain(
-      "Installed Node 24.22.1 must provide Node >= 24.22.1 with WAL-reset-safe SQLite",
+      "Installed Node 24.22.1 must provide Node >= 24.16.0 with WAL-reset-safe SQLite",
     );
     expect(failed.stdout).toContain("found Node unknown, SQLite unavailable");
     expect(readlinkSync(active)).toBe(oldRuntime);
