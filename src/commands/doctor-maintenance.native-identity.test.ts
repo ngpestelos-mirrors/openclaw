@@ -138,13 +138,14 @@ async function repair(scenario: Scenario) {
       if (reads[method]) {
         return [reads[method]];
       }
-      if (["ResetFailedUnit", "StartUnit", "RestartUnit"].includes(method)) {
+      if (["ResetFailedUnit", "StartUnit", "RestartUnit", "StopUnit"].includes(method)) {
         expect(args[1]).toBe(":1.42");
-        effects.push(method);
+        effects.push(method === "StopUnit" ? "stop" : method);
         if (method === "ResetFailedUnit") {
           return [];
         }
-        running = true;
+        stopped ||= method === "StopUnit";
+        running = method !== "StopUnit";
         return [{ type: "o", data: ["/org/freedesktop/systemd1/job/7"] }];
       }
     }
@@ -213,7 +214,7 @@ async function repair(scenario: Scenario) {
     if (!action) {
       throw new Error("Missing systemctl action in fixture query");
     }
-    if (action !== "is-enabled") {
+    if (action !== "is-enabled" && action !== "show") {
       // A missing pinned identity must fail visibly if it reaches unbound activation.
       effects.push(action);
       stopped ||= action === "stop";

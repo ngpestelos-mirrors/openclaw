@@ -31,6 +31,18 @@ import {
 } from "./systemd-service-files.js";
 import { activateSystemdServiceIdentity } from "./systemd-service-identity.js";
 
+/** Check the native permission before maintenance drains work it cannot stop. */
+export function assertSystemdServiceActionAllowed(
+  target: SystemdServiceReadTarget | null | undefined,
+  action: "start" | "stop" | "restart",
+): void {
+  if (target?.scope === "system" && !isRunningAsRoot()) {
+    throw new Error(
+      `${target.unitName} is a system-scope unit; run \`sudo systemctl ${action} ${target.unitName}\` to ${action} it (${target.unitPath})`,
+    );
+  }
+}
+
 async function runSystemdServiceAction(
   params: GatewayServiceControlArgs,
   action: "start" | "stop" | "restart",
@@ -47,13 +59,8 @@ async function runSystemdServiceAction(
     ((message: string) => params.stdout.write(`${formatLine("Warning", message)}\n`));
   const installed = params.systemdIdentity ?? (await findInstalledSystemdGatewayScope(env));
   const unitName = installed?.unitName ?? `${resolveSystemdServiceName(env)}.service`;
-  if (installed?.scope === "system") {
-    if (!isRunningAsRoot()) {
-      throw new Error(
-        `${unitName} is a system-scope unit (${installed.unitPath}); run \`sudo systemctl ${action} ${unitName}\` to ${action} it`,
-      );
-    }
-  } else if (action !== "stop") {
+  assertSystemdServiceActionAllowed(installed, action);
+  if (installed?.scope !== "system" && action !== "stop") {
     if (!params.systemdIdentity) {
       await assertSystemdAvailable(env);
     }

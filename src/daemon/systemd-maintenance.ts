@@ -12,7 +12,7 @@ import {
   withGatewayServiceUpdateAuthority,
 } from "./service-update-authority.js";
 import { withSystemdDefinitionMutation } from "./systemd-definition-mutation.js";
-import { execSystemctlUser, reloadSystemdUserManager } from "./systemd-exec.js";
+import { execSystemctl, execSystemctlUser, reloadSystemdUserManager } from "./systemd-exec.js";
 import { assertNoSystemGatewayOwnership } from "./systemd-scope.js";
 import { resolveSystemdServiceName, resolveSystemdUnitPath } from "./systemd-service-files.js";
 import { parseSystemdTimeSpanMs } from "./systemd-time-span.js";
@@ -20,13 +20,24 @@ import { preserveSystemdUnitPolicy, refreshSystemdUnitPolicy } from "./systemd-u
 
 /** Read the effective native policy; absence is a diagnostic, not a stop refusal. */
 export async function readSystemdGatewayStopTimeout(state: GatewayServiceState) {
-  const unit = `${resolveSystemdServiceName(state.env)}.service`;
+  const installation = state.systemdInstallation;
+  const target =
+    installation?.kind === "system"
+      ? installation.system
+      : installation?.kind === "user" || installation?.kind === "dueling"
+        ? installation.user
+        : undefined;
+  const args = [
+    "show",
+    target?.unitName ?? `${resolveSystemdServiceName(state.env)}.service`,
+    "--no-page",
+    "--property",
+    "LoadState,TimeoutStopUSec",
+  ];
   const result = await withServiceInspectionBudget(() =>
-    execSystemctlUser(
-      state.env,
-      ["show", unit, "--no-page", "--property", "LoadState,TimeoutStopUSec"],
-      10_000,
-    ),
+    target?.scope === "system"
+      ? execSystemctl(args, state.env, 10_000)
+      : execSystemctlUser(state.env, args, 10_000),
   );
   const properties = parseKeyValueOutput(result.stdout, "=");
   const timeout = parseSystemdTimeSpanMs(properties.timeoutstopusec ?? "");
