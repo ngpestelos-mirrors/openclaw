@@ -1,3 +1,4 @@
+import syncFs from "node:fs";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { __setFsSafeTestHooksForTest } from "@openclaw/fs-safe/test-hooks";
@@ -102,11 +103,13 @@ describe("applyPatch", () => {
   it.each([true, false])("rejects invalid UTF-8 (workspaceOnly=%s)", async (workspaceOnly) => {
     const original = Buffer.concat([Buffer.from("heading\nprice: 5\n"), Buffer.from([0xff, 0xfe])]);
     const { dir, file: filePath } = await makeFile(original);
+    using read = vi.spyOn(syncFs, "readFileSync");
 
     await expect(applyPatch(priceUpdatePatch, { cwd: dir, workspaceOnly })).rejects.toThrow(
       /valid UTF-8/,
     );
     await expect(fs.readFile(filePath)).resolves.toEqual(original);
+    expect(read.mock.calls.filter(([file]) => typeof file === "number")).toHaveLength(0);
   });
 
   it("preserves a valid UTF-8 BOM in sandbox updates", async () => {
@@ -304,16 +307,22 @@ describe("applyPatch", () => {
     }
   });
 
-  it("rejects path traversal outside cwd with workspace containment", async () => {
-    const dir = makeDir();
-    const escapedPath = path.join(makeDir(), "escaped.txt");
-    const relativeEscape = path.relative(dir, escapedPath);
-
-    await expect(
-      applyPatch(buildAddFilePatch(relativeEscape), { cwd: dir, workspaceOnly: true }),
-    ).rejects.toThrow(/Path escapes sandbox root/);
-    await expectMissingPath(fs.readFile(escapedPath, "utf8"));
-  });
+  it.each([true, false])(
+    "contains traversal outside cwd (workspaceOnly=%s)",
+    async (workspaceOnly) => {
+      const dir = makeDir();
+      const escapedPath = path.join(makeDir(), "escaped.txt");
+      const relativeEscape = path.relative(dir, escapedPath);
+      const pending = applyPatch(buildAddFilePatch(relativeEscape), { cwd: dir, workspaceOnly });
+      if (workspaceOnly) {
+        await expect(pending).rejects.toThrow(/Path escapes sandbox root/);
+        await expectMissingPath(fs.readFile(escapedPath, "utf8"));
+      } else {
+        expect((await pending).details.summary.added.length).toBe(1);
+        await expect(fs.readFile(escapedPath, "utf8")).resolves.toBe("escaped\n");
+      }
+    },
+  );
 
   it("rejects broken final symlink targets outside cwd with workspace containment", async () => {
     if (process.platform === "win32") {
