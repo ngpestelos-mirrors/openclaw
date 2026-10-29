@@ -68,6 +68,12 @@ const repositoryScriptEntries = [
   "scripts/perf/team-shape-measure.ts",
   "scripts/perf/transcript-broadcast-measure.ts",
   "scripts/perf/post-restart-burst-measure.ts",
+  // Their source headers document standalone measurement commands invoked by path.
+  "scripts/perf/node-event-session-source-measure.mjs!",
+  "scripts/perf/stream-dispatch-scope-measure.ts!",
+  "scripts/perf/system-prompt-report-retention.ts!",
+  // #187301 runs this standalone inbound mail-parser security regression with Node by path.
+  "scripts/test-security-mail-parser.mjs!",
   "scripts/bundle-a2ui.mts!",
   // The standalone build guide invokes this builder by path.
   "scripts/build-bun-standalone.mjs!",
@@ -776,6 +782,8 @@ const config = {
     "src/infra/sqlite-source-fence-admission.ts",
     "src/shared/text/assistant-visible-text.ts",
     bundledPluginFile("telegram", "src/draft-chunking.ts"),
+    // The Telegram context test loads this Worker by URL; the full-tree test scan owns it.
+    bundledPluginFile("telegram", "src/telegram-ingress-worker.context.test-support.mjs"),
   ],
   // Knip's `ignoreFiles` only suppresses unused-file findings. Test helpers
   // belong in `ignore` so they do not inflate unused-export/type findings.
