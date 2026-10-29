@@ -17,7 +17,7 @@ export function needsRequesterSettleFindings(entry: SubagentRunRecord): boolean 
 
 export type RequesterSettleWakeBatchState = Omit<RequesterSettleWakeState, "retireAfterSettle">;
 
-export type RequesterSettleWakeBatchCallbacks = {
+type RequesterSettleWakeBatchCallbacks = {
   transitionBatch: (
     batch: readonly SubagentRunRecord[],
     state: RequesterSettleWakeBatchState,

@@ -16,7 +16,7 @@ import {
   readDescendantFacts,
   loadRequester,
 } from "./subagent-announce.requester-settle-dispatch-mocks.test-support.js";
-import type { RequesterSettleWakeBatchCallbacks } from "./subagent-announce.requester-settle-state.js";
+import type { RequesterSettleWakeParams } from "./subagent-announce.requester-settle-state.js";
 
 export { deliver, registryRead, startTurn, readDescendantFacts, loadRequester };
 
@@ -61,7 +61,7 @@ export function useRequesterSettleDispatchFixture() {
 
 export const REQUESTER_KEY = "agent:main:main";
 
-export const publishWakeTransition: RequesterSettleWakeBatchCallbacks["transitionBatch"] = (
+export const publishWakeTransition: RequesterSettleWakeParams["transitionBatch"] = (
   batch,
   state,
   onPublished,
