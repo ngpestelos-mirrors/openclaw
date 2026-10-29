@@ -11,9 +11,6 @@ export const gatewayPluginTestFiles = [
 
 // Native database consumers retain lifecycle cleanup within each forked process.
 export const gatewayDatabaseWorkerTestFiles = [
-  "src/gateway/server-plugin-reload.meeting-transcripts.test.ts",
-  "src/gateway/mcp-http.loopback-real-recovery.test.ts",
-  "src/gateway/server-methods/chat-send-detached-dispatch.test.ts",
   "src/gateway/agent-runtime-identity-token.test.ts",
   "src/gateway/agent-turn/agent-run-execution-phase.owner.test.ts",
   "src/gateway/agent-turn/agent-run-media.test.ts",
@@ -119,6 +116,7 @@ export const gatewayDatabaseWorkerTestFiles = [
   "src/gateway/mcp-http.completion-lineage.test.ts",
   "src/gateway/mcp-http.exec-completion.test.ts",
   "src/gateway/mcp-http.exec-egress.test.ts",
+  "src/gateway/mcp-http.loopback-real-recovery.test.ts",
   "src/gateway/mcp-http.plugin-reload.test.ts",
   "src/gateway/mcp-http.question-authority.test.ts",
   "src/gateway/mcp-http.session-controls.test.ts",
@@ -157,6 +155,7 @@ export const gatewayDatabaseWorkerTestFiles = [
   "src/gateway/server-methods/approval.legacy-authority.test.ts",
   "src/gateway/server-methods/approval.request-authority.test.ts",
   "src/gateway/server-methods/approval.settlement.test.ts",
+  "src/gateway/server-methods/chat-send-detached-dispatch.test.ts",
   "src/gateway/server-methods/chat-send-synthetic-repair.integration.test.ts",
   "src/gateway/server-methods/chat.abort-live-proof.test.ts",
   "src/gateway/server-methods/cron-creator-transports.integration.test.ts",
@@ -209,6 +208,7 @@ export const gatewayDatabaseWorkerTestFiles = [
   "src/gateway/server-methods/skills.remote.test.ts",
   "src/gateway/server-methods/worktrees.authorization.test.ts",
   "src/gateway/server-methods/worktrees.test.ts",
+  "src/gateway/server-plugin-reload.meeting-transcripts.test.ts",
   "src/gateway/server-startup-restart-sentinel.test.ts",
   "src/gateway/server-worker-environment-startup.test.ts",
   "src/gateway/server-worker-placement-session-evidence.test.ts",
