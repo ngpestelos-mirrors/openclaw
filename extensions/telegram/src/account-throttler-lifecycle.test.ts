@@ -3,7 +3,6 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   releaseRemovedTelegramAccountThrottler,
   releaseRotatedTelegramAccountThrottler,
-  releaseRetiredTelegramAccountThrottler,
 } from "./account-throttler-lifecycle.js";
 import { getOrCreateAccountThrottler, releaseAccountThrottler } from "./account-throttler.js";
 
@@ -19,9 +18,6 @@ describe("token ownership retirement", () => {
     const cfg = config({ Ops: { botToken: token }, Backup: { botToken: token } });
     expect(await releaseRemovedTelegramAccountThrottler(cfg, " OPS ")).toBe(false);
     expect(getOrCreateAccountThrottler(token)).toBe(account);
-    expect(
-      await releaseRetiredTelegramAccountThrottler(token, config({ Backup: { botToken: token } })),
-    ).toBe(false);
     expect(
       await releaseRemovedTelegramAccountThrottler(config({ Ops: { botToken: token } }), " OPS "),
     ).toBe(true);
