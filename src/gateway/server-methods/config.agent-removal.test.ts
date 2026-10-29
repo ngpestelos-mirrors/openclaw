@@ -1,27 +1,24 @@
 import { expectDefined } from "@openclaw/normalization-core";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import type * as ConfigIoModule from "../../config/io.js";
 import { resolvePersistCandidateForWrite } from "../../config/io.write-prepare.js";
-import type * as RuntimeSchemaModule from "../../config/runtime-schema.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
-import type * as SecretsRuntimeModule from "../../secrets/runtime.js";
 import type * as ConfigWriteFlowModule from "./config-write-flow.js";
 import { configHandlers } from "./config.js";
 import { createConfigHandlerHarness, createConfigWriteSnapshot } from "./config.test-helpers.js";
 
 const mocks = vi.hoisted(() => ({ read: vi.fn(), commit: vi.fn() }));
 vi.mock("../../config/io.js", async (importOriginal) => ({
-  ...(await importOriginal<typeof ConfigIoModule>()),
+  ...(await importOriginal<typeof import("../../config/io.js")>()),
   readConfigFileSnapshotForWrite: mocks.read,
 }));
 vi.mock("../../config/runtime-schema.js", async (importOriginal) => ({
-  ...(await importOriginal<typeof RuntimeSchemaModule>()),
+  ...(await importOriginal<typeof import("../../config/runtime-schema.js")>()),
   // This branch obtains redaction hints through the complete schema boundary.
   // Keep the real merge/persistence guard below; isolate only schema discovery.
   loadGatewayRuntimeConfigSchema: () => ({ schema: { type: "object" }, uiHints: undefined }),
 }));
 vi.mock("../../secrets/runtime.js", async (importOriginal) => ({
-  ...(await importOriginal<typeof SecretsRuntimeModule>()),
+  ...(await importOriginal<typeof import("../../secrets/runtime.js")>()),
   prepareSecretsRuntimeSnapshot: async ({ config }: { config: OpenClawConfig }) => ({ config }),
 }));
 vi.mock("./config-write-flow.js", async (importOriginal) => ({
