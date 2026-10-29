@@ -24,6 +24,7 @@ import {
   streamMocks,
 } from "../../agents/sessions/agent-session-loop-correctness.test-support.js";
 import { SessionManager } from "../../agents/sessions/session-manager.js";
+import { withGatewayToolCallerIdentity } from "../../agents/tools/gateway-caller-context.js";
 import { resolveCommandAuthorization } from "../../auto-reply/command-auth.js";
 import type { dispatchInboundMessage } from "../../auto-reply/dispatch.js";
 import { prepareReplyRunContext } from "../../auto-reply/reply/get-reply-run-context.js";
@@ -140,6 +141,7 @@ describe("steering input custody", () => {
     { scenario: "same requester protocol metadata drift", allowCollaborativeSteering: false },
     { scenario: "same requester protocol metadata drift", allowCollaborativeSteering: true },
     { scenario: "same requester binding drift", allowCollaborativeSteering: true },
+    { scenario: "same requester sandboxed session writer", allowCollaborativeSteering: false },
     { scenario: "different scopes across profiles", allowCollaborativeSteering: undefined },
     { scenario: "different role session caps across profiles", allowCollaborativeSteering: true },
   ])(
@@ -147,6 +149,7 @@ describe("steering input custody", () => {
     async ({ scenario, allowCollaborativeSteering }, { signal }) => {
       const startOwnerTurn = scenario === "same permissions across profiles";
       const continuation = scenario.startsWith("same requester ");
+      const sandboxedSessionWriter = scenario === "same requester sandboxed session writer";
       const sharedSecretOwner = scenario === "shared-secret owner";
       const profile = sharedSecretOwner
         ? ensureGatewayOwnerProfile("Gateway Owner")
@@ -209,6 +212,10 @@ describe("steering input custody", () => {
         fixture.client.connect.scopes = role.scopes;
         setUserProfileRole(profile.id, "writer");
         setUserProfileRole(incomingProfile.id, "participant");
+      }
+      if (sandboxedSessionWriter) {
+        steeringConfig.agents!.defaults!.sandbox = { mode: "all" };
+        fixture.client.connect.scopes = ["operator.read", "operator.write"];
       }
       const collaborative = allowCollaborativeSteering === true && acrossProfiles;
       const accepted =
@@ -367,9 +374,21 @@ describe("steering input custody", () => {
         const toolAuthority = continuation
           ? prepareReplyRunToolAuthority(run, loadSessionEntry(fixture.scope))
           : prepareReplyToolAuthority(run);
-        await toolAuthority.fingerprintAsync(run.run);
-        operation.bindToolAuthoritySnapshot(toolAuthority);
-        const fingerprint = operation.bindToolAuthorityRoute(run.run);
+        // The active run prepares its tools inside its admitted caller context.
+        // A later chat.send arrives outside that context, even for the same person.
+        const activeOperation = operation;
+        const fingerprint = await withGatewayToolCallerIdentity(
+          {
+            agentId: fixture.scope.agentId,
+            sessionKey: fixture.scope.sessionKey,
+            operatorAuthority: captured.authority,
+          },
+          async () => {
+            await toolAuthority.fingerprintAsync(run.run);
+            activeOperation.bindToolAuthoritySnapshot(toolAuthority);
+            return activeOperation.bindToolAuthorityRoute(run.run);
+          },
+        );
         const requesterPrincipalKey = operation.requesterPrincipalKey;
         if (sharedSecretOwner) {
           const incoming = await captureGatewayOperatorRunAuthority({
