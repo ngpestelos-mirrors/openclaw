@@ -37,7 +37,7 @@ const defaults: PinnedBunDeps = {
   },
 };
 
-export function isCiEnvironment(env: NodeJS.ProcessEnv): boolean {
+function isCiEnvironment(env: NodeJS.ProcessEnv): boolean {
   return Boolean(env.CI && env.CI !== "false");
 }
 
