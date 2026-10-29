@@ -6,6 +6,7 @@ import * as tar from "tar";
 import { afterEach, describe, expect, it } from "vitest";
 import { useAutoCleanupTempDirTracker } from "../../test/helpers/temp-dir.js";
 import { buildBackupArchivePath } from "../infra/backup-archive-path-policy.js";
+import { useIsolatedBackupTempRoot } from "../infra/backup-create.test-support.js";
 import type { PostgresExportEnvelope } from "../snapshot/export-envelope.js";
 import {
   registerOpenClawAgentDatabase,
@@ -19,6 +20,8 @@ import type { BackupManifest } from "./backup-verify-manifest.js";
 import { backupVerifyCommand, verifyBackupArchive } from "./backup-verify.js";
 import { backupCreateCommand } from "./backup.js";
 import { createTestRuntime } from "./test-runtime-config-helpers.js";
+
+useIsolatedBackupTempRoot();
 
 const tempDirs = useAutoCleanupTempDirTracker(afterEach);
 const readManifest = async (root: string, archiveRoot: string): Promise<BackupManifest> =>

@@ -2,9 +2,12 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
 import { createBackupArchive } from "../infra/backup-create.js";
+import { useIsolatedBackupTempRoot } from "../infra/backup-create.test-support.js";
 import { withOpenClawTestState } from "../test-utils/openclaw-test-state.js";
 import { backupRestoreCommand } from "./backup-restore.js";
 import { createTestRuntime } from "./test-runtime-config-helpers.js";
+
+useIsolatedBackupTempRoot();
 
 describe("mixed-engine archive backup", () => {
   it("retains authored family choices through archive capture and staging restore", async () => {

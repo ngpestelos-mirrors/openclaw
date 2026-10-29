@@ -11,6 +11,7 @@ import {
   waitForSignalExitBarriers,
 } from "../cli/signal-exit-barrier.js";
 import { buildBackupArchivePath } from "../infra/backup-archive-path-policy.js";
+import { useIsolatedBackupTempRoot } from "../infra/backup-create.test-support.js";
 import * as lifecycleWriteCustody from "../infra/lifecycle-write-custody.js";
 import { readLifecycleWriteCustody } from "../infra/lifecycle-write-custody.js";
 import {
@@ -32,6 +33,8 @@ import {
   backupWalkMock,
 } from "./backup.test-support.js";
 import { createTestRuntime } from "./test-runtime-config-helpers.js";
+
+useIsolatedBackupTempRoot();
 
 const { backupCreateCommand } = await import("./backup.js");
 const actualTar = await vi.importActual<typeof import("tar")>("tar");

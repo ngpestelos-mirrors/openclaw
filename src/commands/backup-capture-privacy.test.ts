@@ -5,6 +5,7 @@ import * as tar from "tar";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { resetConfigRuntimeState } from "../config/config.js";
 import { createBackupArchive } from "../infra/backup-create.js";
+import { useIsolatedBackupTempRoot } from "../infra/backup-create.test-support.js";
 import { createGitBackup } from "../snapshot/git-backup.js";
 import { createLocalSqliteSnapshotProvider } from "../snapshot/local-repository.js";
 import { OPENCLAW_AGENT_SCHEMA_VERSION } from "../state/openclaw-agent-db-contract.js";
@@ -18,6 +19,8 @@ import { backupSqliteCreateCommand } from "./backup-sqlite.js";
 import { verifyBackupArchive } from "./backup-verify.js";
 import { backupCreateCommand } from "./backup.js";
 import { createTestRuntime } from "./test-runtime-config-helpers.js";
+
+useIsolatedBackupTempRoot();
 
 const markerName = ".openclaw-private-update-capture";
 const validMarker = "openclaw-private-update-capture-v1\n";

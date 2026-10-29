@@ -3,6 +3,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { useAutoCleanupTempDirTracker } from "../../test/helpers/temp-dir.js";
+import { useIsolatedBackupTempRoot } from "../infra/backup-create.test-support.js";
 import * as directoryDurability from "../infra/directory-durability.js";
 import { createTempHomeEnv, type TempHomeEnv } from "../test-utils/temp-home.js";
 import {
@@ -12,6 +13,8 @@ import {
   backupWalkMock,
 } from "./backup.test-support.js";
 import { createTestRuntime } from "./test-runtime-config-helpers.js";
+
+useIsolatedBackupTempRoot();
 
 const sleepMock = vi.hoisted(() => vi.fn(async (_ms: number) => {}));
 

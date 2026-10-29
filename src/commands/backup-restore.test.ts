@@ -7,6 +7,7 @@ import * as tar from "tar";
 import { describe, expect, it, vi } from "vitest";
 import { buildBackupArchivePath } from "../infra/backup-archive-path-policy.js";
 import { createBackupArchive } from "../infra/backup-create.js";
+import { useIsolatedBackupTempRoot } from "../infra/backup-create.test-support.js";
 import { requireNodeSqlite } from "../infra/node-sqlite.js";
 import {
   closeOpenClawStateDatabase,
@@ -18,6 +19,8 @@ import { encodeTarEntry } from "./backup-tar.test-support.js";
 import type { BackupManifest } from "./backup-verify-manifest.js";
 import { prepareBackupArchive, verifyBackupArchive } from "./backup-verify.js";
 import { createTestRuntime } from "./test-runtime-config-helpers.js";
+
+useIsolatedBackupTempRoot();
 
 const withState = (run: Parameters<typeof withOpenClawTestState>[1]) =>
   withOpenClawTestState({ layout: "state-only", scenario: "minimal", prefix: "oc-link-" }, run);
