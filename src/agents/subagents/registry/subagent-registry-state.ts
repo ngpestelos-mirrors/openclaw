@@ -5,6 +5,7 @@ import {
 import { getActiveOpenClawStateDatabaseReadSnapshot } from "../../../state/openclaw-state-db-readonly.js";
 import { resolveOpenClawStateSqlitePath } from "../../../state/openclaw-state-db.paths.js";
 import {
+  captureOpenClawStateReadContext,
   captureOpenClawStateWorkerContext,
   prepareOpenClawStateReadSource,
 } from "../../../state/openclaw-state-worker-context.js";
@@ -211,6 +212,7 @@ export function prepareSubagentArchiveSessionListRead(scope: SubagentArchiveRead
   const context = shouldReadPersistedSubagentRuns()
     ? captureOpenClawStateWorkerContext()
     : undefined;
+  const readContext = context && captureOpenClawStateReadContext(context.admission.databasePath);
   const revision = getSubagentArchiveRevision();
   const isCurrent = () => revision === getSubagentArchiveRevision();
   const assertSourceCurrent = () => {
@@ -222,6 +224,22 @@ export function prepareSubagentArchiveSessionListRead(scope: SubagentArchiveRead
     runs,
     isCurrent,
     assertSourceCurrent,
+    readSessionRuns(sessionKeys: readonly string[]) {
+      assertSourceCurrent();
+      const cache = persistedSubagentSessionListRunsReadCache;
+      const compact = readContext
+        ? loadPersistedSubagentRunsForRead(cache, readContext)
+        : new Map<string, SubagentRunReadRecord>();
+      // Archived intermediaries connect the requested roots to current resident descendants.
+      const hot = mergeSubagentRunReadScope(subagentRuns, cache, compact, {
+        sessionKeys: [
+          ...sessionKeys,
+          ...Array.from(runs.values(), (entry) => entry.childSessionKey),
+        ],
+        descendants: true,
+      });
+      return new Map([...runs, ...hot]);
+    },
     assertCurrent() {
       assertSourceCurrent();
       if (!isCurrent()) {

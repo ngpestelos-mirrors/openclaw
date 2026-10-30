@@ -1,4 +1,5 @@
 import { buildSubagentRunReadIndexFromRuns } from "../agents/subagents/registry/subagent-registry-queries.js";
+import { buildSubagentSessionListReadIndex } from "../agents/subagents/registry/subagent-registry-read.js";
 import { prepareSubagentArchiveSessionListRead } from "../agents/subagents/registry/subagent-registry-state.js";
 import { createSessionRowChildActivity } from "./session-row-child-activity.js";
 import { createSessionRowChildVisibility } from "./session-row-child-visibility.js";
@@ -36,12 +37,13 @@ export function prepareSessionRowSubagentArchive(
     sessionKeys ? { kind: "sessions", sessionKeys, descendants: true } : { kind: "all" },
   );
   return archive instanceof Promise
-    ? archive.then(projectSessionRowSubagentArchive)
-    : projectSessionRowSubagentArchive(archive);
+    ? archive.then((read) => projectSessionRowSubagentArchive(read, sessionKeys))
+    : projectSessionRowSubagentArchive(archive, sessionKeys);
 }
 
 function projectSessionRowSubagentArchive(
   archive: Awaited<ReturnType<typeof prepareSubagentArchiveSessionListRead>>,
+  sessionKeys?: readonly string[],
 ): SessionRowSubagentArchiveRead {
   let source: SessionListRowContext | undefined;
   let prepared: SessionListRowContext | undefined;
@@ -54,11 +56,20 @@ function projectSessionRowSubagentArchive(
       return current;
     }
     if (source !== current) {
-      const subagentRuns = buildSubagentRunReadIndexFromRuns({
-        ...current.subagentRuns.inputs,
-        runs: new Map([...archive.runs, ...current.subagentRuns.inputs.runs]),
-        now: Date.now(),
-      });
+      const subagentRuns =
+        prepared && source?.subagentRuns.revision === current.subagentRuns.revision
+          ? prepared.subagentRuns.atTime(Date.now())
+          : sessionKeys
+            ? buildSubagentSessionListReadIndex(
+                Date.now(),
+                sessionKeys,
+                archive.readSessionRuns(sessionKeys),
+              )
+            : buildSubagentRunReadIndexFromRuns({
+                ...current.subagentRuns.inputs,
+                runs: new Map([...archive.runs, ...current.subagentRuns.inputs.runs]),
+                now: Date.now(),
+              });
       source = current;
       prepared = {
         ...current,

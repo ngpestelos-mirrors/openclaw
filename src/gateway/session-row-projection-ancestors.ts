@@ -303,14 +303,31 @@ export function createSessionRowAncestorReads(owner: {
                 if (options?.subagentArchive && !options.subagentArchive.isCurrent()) {
                   throw new SessionRowSubagentArchivePending();
                 }
-                const keyAt = (index: number) => selectedRows[index]?.key ?? targets[index]!.key;
+                const pending = owner.prepareExactRows(
+                  targets,
+                  Boolean(options?.selection),
+                  selectedRows,
+                );
+                if (pending) {
+                  return pending;
+                }
+                // Stored parent links need child activity even without a registry requester edge.
+                const keys = [
+                  ...new Set(
+                    targets.flatMap((target, index) => [
+                      selectedRows[index]?.key ?? target.key,
+                      ...(selectedRows[index]?.materialized?.source.childLinks ?? []).map(
+                        (child) => child.key,
+                      ),
+                    ]),
+                  ),
+                ];
                 if (
                   !subagentArchive?.isCurrent() ||
                   (!options?.subagentArchive &&
-                    (targets.length !== subagentArchiveKeys.length ||
-                      targets.some((_, index) => keyAt(index) !== subagentArchiveKeys[index])))
+                    (keys.length !== subagentArchiveKeys.length ||
+                      keys.some((key, index) => key !== subagentArchiveKeys[index])))
                 ) {
-                  const keys = targets.map((_, index) => keyAt(index));
                   const accept = (archive: SessionRowSubagentArchiveRead) => {
                     subagentArchive = archive;
                     subagentArchiveKeys = keys;
@@ -321,7 +338,7 @@ export function createSessionRowAncestorReads(owner: {
                   }
                   accept(archive);
                 }
-                return owner.prepareExactRows(targets, Boolean(options?.selection), selectedRows);
+                return undefined;
               },
               (read, targets) => {
                 if (

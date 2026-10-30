@@ -5,6 +5,7 @@ import { archiveCompletedSubagentRuns } from "../agents/subagents/registry/subag
 import { subagentRuns } from "../agents/subagents/registry/subagent-registry-memory.js";
 import { mutateSubagentRuns } from "../agents/subagents/registry/subagent-registry-persistence.js";
 import { publishSubagentRunChanges } from "../agents/subagents/registry/subagent-registry-publication.js";
+import * as registryQueries from "../agents/subagents/registry/subagent-registry-queries.js";
 import { persistRegistryFixture } from "../agents/subagents/registry/subagent-registry-state.fixture.test-support.js";
 import {
   clearSubagentRunsReadCacheForTest,
@@ -86,9 +87,18 @@ it("reads archived task status and lineage without repopulating resident project
       swarmRequesterSessionKey: parent,
       collectorCompletion: { status: "done" },
     });
-    await mutateSubagentRuns([run.runId], () => ({
+    const unrelated = Array.from({ length: 64 }, (_, index) =>
+      createSubagentRunRecord({
+        runId: `unrelated-hot-${index}`,
+        childSessionKey: `agent:main:subagent:unrelated-${index}`,
+        requesterSessionKey: "agent:main:unrelated-requester",
+        createdAt: now,
+      }),
+    );
+    const rows = new Map([run, ...unrelated].map((entry) => [entry.runId, entry]));
+    await mutateSubagentRuns([...rows.keys()], () => ({
       value: undefined,
-      postimages: new Map([[run.runId, run]]),
+      postimages: rows,
     }));
     using projection = await createTestProjection({ cfg, modelCatalog: [] });
     await projection.ensureMaterialized();
@@ -115,6 +125,7 @@ it("reads archived task status and lineage without repopulating resident project
       runtimeMs: 1_000,
     });
     const archiveReads = vi.spyOn(stateReads, "executeExistingOpenClawStateRead");
+    const indexBuilds = vi.spyOn(registryQueries, "buildSubagentRunReadIndexFromRuns");
     const listed = await listProjectedSessions({
       projection,
       opts: { limit: 10, ownerFirst: true },
@@ -122,6 +133,11 @@ it("reads archived task status and lineage without repopulating resident project
     expect(listed.sessions.map((row) => row.key)).toEqual(
       beforeArchive.sessions.map((row) => row.key),
     );
+    expect(indexBuilds).toHaveBeenCalled();
+    for (const [inputs] of indexBuilds.mock.calls) {
+      expect([...inputs.runs.keys()]).toEqual([run.runId]);
+      expect([...(inputs.inMemoryRuns ?? [])]).toEqual([]);
+    }
     expect(
       archiveReads.mock.calls.flatMap(([, command]) =>
         command.type === "subagents.runs" && command.scope.kind === "archive"
@@ -145,8 +161,86 @@ it("reads archived task status and lineage without repopulating resident project
       child,
       parent,
     ]);
-    expect(subagentRuns.size).toBe(0);
+    expect(subagentRuns.size).toBe(unrelated.length);
     expect(projection.state.rowContext.subagentRuns.getDisplaySubagentRun(child)).toBeNull();
+  });
+});
+
+it("keeps mixed descendant generations and physical child links in scoped historical reads", async () => {
+  await withRegistryState(async () => {
+    setRuntimeConfigSnapshot(cfg);
+    const key = (id: string) => `agent:main:subagent:${id}`;
+    const root = key("scope-root");
+    const now = Date.now();
+    const endedAt = now - 31 * 86_400_000;
+    const entries = [
+      ["scope-archived", "scope-root", true],
+      ["scope-bridge", "scope-archived", false],
+      ["scope-archived-leaf", "scope-bridge", true],
+      ["scope-live-leaf", "scope-archived-leaf", false],
+      ["scope-physical", "scope-foreign", false],
+    ] as const;
+    const runs = new Map(
+      entries.map(([id, requester, archived]) => [
+        id,
+        createSubagentRunRecord({
+          runId: id,
+          childSessionKey: key(id),
+          childAgentId: "main",
+          requesterSessionKey: key(requester),
+          requesterAgentId: "main",
+          createdAt: archived ? endedAt - 1_000 : now,
+          execution: archived
+            ? { status: "terminal", endedAt }
+            : { status: "running", startedAt: now },
+          cleanupCompletedAt: archived ? endedAt : undefined,
+          delivery: { status: "not_required" },
+          completion: { required: false },
+        }),
+      ]),
+    );
+    writeRow(root, { sessionId: "scope-root" });
+    writeRow(key("scope-physical"), { sessionId: "scope-physical", parentSessionKey: root });
+    await mutateSubagentRuns([...runs.keys()], () => ({ value: undefined, postimages: runs }));
+    using projection = await createTestProjection({ cfg, modelCatalog: [] });
+    await projection.ensureMaterialized();
+    expect(await archiveCompletedSubagentRuns(now)).toBe(2);
+    const readRoot = () =>
+      withReadySessionRows(
+        projection,
+        () => [{ agentId: "main", key: root }],
+        (read) => {
+          const record = read.describe({ agentId: "main", key: root });
+          expect(record).toBeDefined();
+          const index = read.state.rowContext.subagentRuns;
+          return {
+            row: read.present(record!),
+            active: index.countActiveDescendantRuns(root),
+            physical: index.getDisplaySubagentRun(key("scope-physical"))?.runId,
+          };
+        },
+      );
+    expect(await readRoot()).toMatchObject({
+      active: 2,
+      physical: "scope-physical",
+      row: { childSessions: [key("scope-physical")], hasActiveSubagentRun: true },
+    });
+    const moved = createSubagentRunRecord({
+      ...runs.get("scope-archived")!,
+      runId: "scope-moved-generation",
+      generation: 2,
+      requesterSessionKey: key("scope-foreign"),
+      createdAt: now,
+      execution: { status: "terminal", endedAt: now },
+      cleanupCompletedAt: now,
+    });
+    await mutateSubagentRuns([moved.runId], () => ({
+      value: undefined,
+      postimages: new Map([[moved.runId, moved]]),
+    }));
+    expect(await readRoot()).toMatchObject({ active: 0, physical: "scope-physical" });
+    expect(subagentRuns.has("scope-archived")).toBe(false);
+    expect(subagentRuns.has("scope-archived-leaf")).toBe(false);
   });
 });
 
