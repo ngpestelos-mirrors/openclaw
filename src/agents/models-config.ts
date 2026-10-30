@@ -7,14 +7,13 @@ import { createHash } from "node:crypto";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { stableStringify } from "@openclaw/normalization-core";
+import { createConfigRuntimeEnv } from "../config/env-vars.js";
 import {
   getRuntimeConfigSourceSnapshot,
-  projectConfigOntoRuntimeSourceSnapshot,
-  type OpenClawConfig,
-} from "../config/config.js";
-import { createConfigRuntimeEnv } from "../config/env-vars.js";
-import { captureRuntimeConfigAsyncReader } from "../config/io.runtime.js";
-import { hashRuntimeConfigValue } from "../config/runtime-snapshot.js";
+  hashRuntimeConfigValue,
+} from "../config/runtime-snapshot.js";
+import { projectConfigOntoRuntimeSourceSnapshot } from "../config/runtime-source-projection.js";
+import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { privateFileStore } from "../infra/private-file-store.js";
 import { resolveInstalledManifestRegistryIndexFingerprint } from "../plugins/manifest-registry-installed.js";
 import {
@@ -187,6 +186,8 @@ async function prepareModelsConfigContext(
   if (config) {
     resolved = resolveModelsConfigInput(config);
   } else {
+    // Only standalone callers need disk config; prepared catalogs already carry it.
+    const { captureRuntimeConfigAsyncReader } = await import("../config/io.runtime.js");
     const captured = await captureRuntimeConfigAsyncReader({ capture: true })();
     ambientEnv = captured.env;
     const source = projectConfigOntoRuntimeSourceSnapshot(captured.config);

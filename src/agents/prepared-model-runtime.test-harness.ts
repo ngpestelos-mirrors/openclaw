@@ -13,6 +13,9 @@ import {
   setPreparedModelFullCatalogAuth,
 } from "./prepared-model-runtime-auth.js";
 import type { AuthStorage, AuthStorageData } from "./sessions/auth-storage.js";
+import { ModelRegistry } from "./sessions/model-registry.js";
+
+let restoreRegistryFork = () => {};
 
 type LoadStaticCatalog =
   typeof import("./embedded-agent-runner/model.static-catalog.js").loadBundledProviderStaticCatalogContextModels;
@@ -487,6 +490,20 @@ export async function resetPreparedModelRuntimeHarness(state: OpenClawTestState)
   preparedModelRuntimeMocks.usePersistedAuthProfiles = false;
   preparedModelRuntimeMocks.preparedAuthMaterializations = [];
   preparedModelRuntimeMocks.modelRegistry.fork.mockReset();
+  restoreRegistryFork();
+  // oxlint-disable-next-line typescript/unbound-method -- The spy forwards the original receiver with call().
+  const fork = ModelRegistry.prototype.fork;
+  const registryFork = vi.spyOn(ModelRegistry.prototype, "fork").mockImplementation(function (
+    this: ModelRegistry,
+    authStorage,
+    publishedModels,
+  ) {
+    if ((this as unknown) === preparedModelRuntimeMocks.modelRegistry) {
+      return preparedModelRuntimeMocks.modelRegistry.fork(authStorage) as ModelRegistry;
+    }
+    return fork.call(this, authStorage, publishedModels);
+  });
+  restoreRegistryFork = () => registryFork.mockRestore();
   preparedModelRuntimeMocks.modelRegistry.getAll.mockReset().mockReturnValue([]);
   preparedModelRuntimeMocks.modelRegistry.find.mockReset();
   preparedModelRuntimeMocks.buildPreparedModelCatalogSnapshot
@@ -529,10 +546,15 @@ export async function cleanupPreparedModelRuntimeHarness(
   // A failed assertion may precede an async owner's terminal join. Reset is not a drain;
   // keep that namespace alive rather than deleting files a late build may still capture.
   if (failed) {
+    restoreRegistryFork();
     await state.restoreEnv();
     console.warn(`Retained prepared-model fixture after failed test: ${state.root}`);
     return;
   }
-  await getPreparedModelRuntimeTestApi().resetPreparedModelRuntimeSnapshotsForTest();
+  try {
+    await getPreparedModelRuntimeTestApi().resetPreparedModelRuntimeSnapshotsForTest();
+  } finally {
+    restoreRegistryFork();
+  }
   await state.cleanup();
 }

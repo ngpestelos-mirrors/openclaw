@@ -46,3 +46,43 @@ console.log("catalog-fingerprint-cold-import-ok");`,
     },
   );
 });
+
+it("loads prepared catalog construction without the standalone config reader", async () => {
+  await withOpenClawTestState(
+    { label: "catalog-prepared-import", applyEnv: false },
+    async (state) => {
+      const entries = [
+        "./prepared-model-catalog.worker.ts",
+        "./prepared-model-runtime.scoped-catalog.ts",
+        "./prepared-model-runtime.full-catalog.ts",
+      ].map((entry) => new URL(entry, import.meta.url).href);
+      const loader = fileURLToPath(new URL("../../scripts/tsx.mjs", import.meta.url));
+      const result = await runNodeScript(
+        [
+          "--import",
+          loader,
+          "--input-type=module",
+          "--eval",
+          `import { registerHooks } from "node:module";
+registerHooks({
+  resolve(specifier, context, nextResolve) {
+    const resolved = nextResolve(specifier, context);
+    if (["io.runtime", "io.factory", "validation", "zod-schema"].some(
+      (name) => [".ts", ".js"].some((extension) => resolved.url.endsWith("/config/" + name + extension)),
+    )) {
+      throw new Error("Prepared catalog loaded standalone config IO: " + resolved.url);
+    }
+    return resolved;
+  },
+});
+for (const entry of ${JSON.stringify(entries)}) await import(entry);
+console.log("prepared-catalog-cold-import-ok");`,
+        ],
+        { PATH: process.env.PATH, SystemRoot: process.env.SystemRoot, ...state.envVars },
+        30_000,
+      );
+      expect(result.status, result.stderr).toBe(0);
+      expect(result.stdout).toContain("prepared-catalog-cold-import-ok");
+    },
+  );
+});
