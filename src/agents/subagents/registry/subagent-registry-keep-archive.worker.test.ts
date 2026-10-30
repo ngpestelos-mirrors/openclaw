@@ -13,6 +13,7 @@ import {
   type OpenClawTestState,
 } from "../../../test-utils/openclaw-test-state.js";
 import { createSubagentRunRecord } from "../../subagent-test-fixtures.test-helpers.js";
+import { readChildCompletionFindings } from "../announce/subagent-announce-output.js";
 import { subagentRuns } from "./subagent-registry-memory.js";
 import * as persistence from "./subagent-registry-persistence.js";
 import { saveSubagentRegistryToSqlite } from "./subagent-registry-state.fixture.test-support.js";
@@ -250,4 +251,27 @@ it("restores only an exact follow-up generation and never resurrects explicitly 
   ).rejects.toThrow("Archived mutation source changed");
   expect(ids("subagent_runs")).toEqual([]);
   expect(ids("subagent_run_archives")).toEqual(["unrelated-history"]);
+});
+
+it("preserves prepared completion findings across unrelated archival but rejects replacement", async () => {
+  const fresh = completed("fresh-completion", {
+    createdAt: now - 1_000,
+    execution: { status: "terminal", endedAt: now - 500, outcome: { status: "ok" } },
+    cleanupCompletedAt: now - 400,
+  });
+  await seed([fresh, completed("unrelated-archive")]);
+  const owner = subagentRuns.get(fresh.runId)!;
+  const findings = await readChildCompletionFindings([owner]);
+  expect(findings.text).toContain("Preserved result fresh-completion");
+  expect(findings.isCurrent()).toBe(true);
+  expect(await archive()).toBe(1);
+  expect(ids("subagent_run_archives")).toEqual(["unrelated-archive"]);
+  expect(subagentRuns.get(fresh.runId)).toBe(owner);
+  expect(findings.isCurrent()).toBe(true);
+
+  await persistence.mutateSubagentRuns([fresh.runId], (rows) => ({
+    value: undefined,
+    postimages: new Map([[fresh.runId, { ...rows.get(fresh.runId)!, generation: 2 }]]),
+  }));
+  expect(findings.isCurrent()).toBe(false);
 });

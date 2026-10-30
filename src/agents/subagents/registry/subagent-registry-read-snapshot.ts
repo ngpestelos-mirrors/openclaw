@@ -305,7 +305,16 @@ export async function prepareSubagentRunReadSnapshot<S extends SubagentRunReadSe
     consume(consume) {
       assertCurrent();
       if (!privateSnapshot && archiveRevision !== getSubagentArchiveRevision()) {
-        return { ready: false };
+        // Unrelated archival does not retire findings owned by still-resident exact runs.
+        const residentExactScope =
+          readScope !== "all" &&
+          "runIds" in readScope &&
+          readScope.exact &&
+          !readScope.yieldedChildren &&
+          [...readScope.runIds].every((runId) => inMemoryRuns.has(runId));
+        if (!residentExactScope) {
+          return { ready: false };
+        }
       }
       const currentFull = context ? acceptedFullSnapshot(fullCache, context) : undefined;
       for (const [runId, entry] of residentPayloads) {
