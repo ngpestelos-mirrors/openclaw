@@ -55,6 +55,7 @@ import {
   bindSubagentRunRuntimeKey,
   compareSubagentRunGeneration,
   getSubagentRunRuntimeKey,
+  isSameSubagentRun,
   isSameSubagentRunOwner,
   isSubagentRunGenerationCandidate,
   nextSubagentRunGeneration,
@@ -97,6 +98,7 @@ export class SubagentLaunchManager extends SubagentRecoveryManager {
     const gatewayContextResolver = registerParams.gatewayContextResolver;
     const gatewayContext = gatewayContextResolver?.();
     let selected = this.options.runs.get(runId);
+    const selectedWasResident = selected !== undefined;
     const registrationOwnership = subagentRuns.captureRegistrationOwnership(
       childSessionKey,
       undefined,
@@ -140,6 +142,7 @@ export class SubagentLaunchManager extends SubagentRecoveryManager {
       );
     };
     const ownsCleanupSession = () =>
+      registryCurrent() &&
       preparedRows !== undefined &&
       ![
         ...preparedRows().values(),
@@ -153,8 +156,7 @@ export class SubagentLaunchManager extends SubagentRecoveryManager {
       initialOutcome === "refused" &&
       ownsCleanupSession() &&
       !selected &&
-      !this.options.runs.has(runId) &&
-      registryCurrent();
+      !this.options.runs.has(runId);
     const activate = () => {
       this.options.ensureListener();
       this.options.startSweeper();
@@ -203,7 +205,6 @@ export class SubagentLaunchManager extends SubagentRecoveryManager {
               canCleanupSession: () =>
                 registrationSettled &&
                 initialOutcome !== "uncertain" &&
-                registryCurrent() &&
                 ownsCleanupSession() &&
                 ownsSession() &&
                 !currentEntry(),
@@ -279,7 +280,9 @@ export class SubagentLaunchManager extends SubagentRecoveryManager {
             subagentRuns.runWithCompletionAuthority(previous, () => options.assertCurrent?.());
             return { value: undefined };
           }
-          if (selected ? !isSameSubagentRunOwner(previous, selected) : previous !== undefined) {
+          // Durable discovery has no host incarnation; resident selections retain their owner.
+          const matchesSelected = selectedWasResident ? isSameSubagentRunOwner : isSameSubagentRun;
+          if (selected ? !matchesSelected(previous, selected) : previous !== undefined) {
             throw new SubagentRegistryMutationRejectedError(
               "Subagent registration owner changed during preparation",
             );

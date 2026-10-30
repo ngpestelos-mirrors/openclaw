@@ -11,6 +11,7 @@ import {
   type SessionRowReadView,
   type SessionRowPreparationOptions,
   type SessionRowSelectionPreparationOptions,
+  type SessionRowSubagentArchiveRead,
 } from "./session-row-prepared-read.js";
 import * as records from "./session-row-projection-record.js";
 import {
@@ -310,10 +311,15 @@ export function createSessionRowAncestorReads(owner: {
                       targets.some((_, index) => keyAt(index) !== subagentArchiveKeys[index])))
                 ) {
                   const keys = targets.map((_, index) => keyAt(index));
-                  return prepareSessionRowSubagentArchive(keys).then((archive) => {
+                  const accept = (archive: SessionRowSubagentArchiveRead) => {
                     subagentArchive = archive;
                     subagentArchiveKeys = keys;
-                  });
+                  };
+                  const archive = prepareSessionRowSubagentArchive(keys);
+                  if (archive instanceof Promise) {
+                    return archive.then(accept);
+                  }
+                  accept(archive);
                 }
                 return owner.prepareExactRows(targets, Boolean(options?.selection), selectedRows);
               },

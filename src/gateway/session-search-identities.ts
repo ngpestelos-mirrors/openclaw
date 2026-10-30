@@ -1,11 +1,11 @@
 import pMap from "p-map";
 import { listAgentIds } from "../agents/agent-scope-config.js";
 import { resolveAssistantIdentityName } from "./assistant-identity.js";
-import type { prepareSessionRowSelection } from "./session-utils-list.js";
+import type { SessionListFilterParams } from "./session-list-filters.js";
 
 /** Acquire mutable workspace names before entering synchronous visibility and selection. */
 export async function prepareSessionSearchIdentityNames(
-  prepared: ReturnType<typeof prepareSessionRowSelection>,
+  prepared: Pick<SessionListFilterParams, "cfg" | "entries" | "getTarget">,
   scopeAgentId?: string,
 ) {
   const agentIds = new Set(scopeAgentId ? [scopeAgentId] : listAgentIds(prepared.cfg));

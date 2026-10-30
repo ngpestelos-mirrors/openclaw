@@ -207,21 +207,18 @@ export function publishSubagentArchiveChanges(
 }
 
 /** A caller owns and releases this historical projection; it never enters the hot registry. */
-export async function prepareSubagentArchiveSessionListRead(scope: SubagentArchiveReadScope) {
+export function prepareSubagentArchiveSessionListRead(scope: SubagentArchiveReadScope) {
   const context = shouldReadPersistedSubagentRuns()
     ? captureOpenClawStateWorkerContext()
     : undefined;
   const revision = getSubagentArchiveRevision();
-  const runs = context
-    ? await readArchivedSubagentRuns(context, scope, "sessionList")
-    : new Map<string, SubagentRunReadRecord>();
   const isCurrent = () => revision === getSubagentArchiveRevision();
   const assertSourceCurrent = () => {
     if (context) {
       assertSubagentReadContext(context);
     }
   };
-  return {
+  const prepare = (runs: Map<string, SubagentRunReadRecord>) => ({
     runs,
     isCurrent,
     assertSourceCurrent,
@@ -231,7 +228,10 @@ export async function prepareSubagentArchiveSessionListRead(scope: SubagentArchi
         throw new Error("Subagent archive changed while preparing its read");
       }
     },
-  };
+  });
+  return context
+    ? readArchivedSubagentRuns(context, scope, "sessionList").then(prepare)
+    : prepare(new Map());
 }
 
 /** Hydration establishes a notification baseline before synchronous ownership observers run. */

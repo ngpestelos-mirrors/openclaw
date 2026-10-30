@@ -9,7 +9,6 @@ import type { SessionRepositoryWorkspaceRecord } from "../state/session-reposito
 import type { createSessionRowChildActivity } from "./session-row-child-activity.js";
 import type { createSessionRowChildVisibility } from "./session-row-child-visibility.js";
 import * as records from "./session-row-projection-record.js";
-import type { prepareSessionRowSubagentArchive } from "./session-row-subagent-archive.js";
 import type { SessionSharingTarget } from "./session-sharing-policy.js";
 import { resolveStoredSessionKeyForAgentStore } from "./session-store-key.js";
 import type { SessionListRowContext } from "./session-utils-contracts.js";
@@ -85,12 +84,19 @@ export type SessionRowSelectionPreparationOptions = {
   catalogSignal?: AbortSignal;
 };
 
+export type SessionRowSubagentArchiveRead = {
+  isCurrent: () => boolean;
+  assertCurrent: () => void;
+  context: (current: SessionListRowContext) => SessionListRowContext;
+  read: (owner: SessionRowReadView) => SessionRowReadView;
+};
+
 export type SessionRowPreparationOptions = {
   includeAncestors?: boolean;
   /** Queries select canonical durable roster keys; private exact reads use the default path. */
   selection?: boolean | SessionRowSelectionPreparationOptions;
   /** A list's already-prepared full archive view also covers its exact page. */
-  subagentArchive?: Awaited<ReturnType<typeof prepareSessionRowSubagentArchive>>;
+  subagentArchive?: SessionRowSubagentArchiveRead;
 };
 
 /** Synchronous selection reenters through the existing exact worker preparation owner. */
@@ -153,6 +159,7 @@ export function readPreparedSessionRows<T>(
   consume: (read: SessionRowReadView) => T,
   privateRepositories?: ReadonlyMap<string, PreparedPrivateSessionRepository>,
   capturedPrivateRows?: ReadonlyMap<string, records.Row | undefined>,
+  fromSelection = false,
 ) {
   if (!isActive()) {
     throw new Error("Session row read view is no longer active");
@@ -161,7 +168,9 @@ export function readPreparedSessionRows<T>(
   let state = owner.state;
   const privateRows = new Map<string, records.MaterializedRow | undefined>();
   const childSelections = new Map<string, records.EntryRow[]>();
-  const privateKey = (query: records.Lookup) => privateSessionRowReadKey(state.cfg, query);
+  // Roster selection already resolved canonical durable keys.
+  const privateKey = (query: records.Lookup) =>
+    fromSelection ? undefined : privateSessionRowReadKey(state.cfg, query);
   for (const query of queries(state.cfg)) {
     const key = privateKey(query);
     if (key && !privateRows.has(key)) {

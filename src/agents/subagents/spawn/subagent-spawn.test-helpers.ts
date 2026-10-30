@@ -494,6 +494,7 @@ export async function loadSubagentSpawnModuleForTest(params: {
       params.getSubagentDepthFromSessionStore?.(key, opts) ?? 0,
   }));
 
+  // mock-isolation: Spawn fixtures own capacity, groups, and queued-registration custody.
   vi.doMock("../registry/subagent-registry.js", () => ({
     completeCollectorLaunchCleanup:
       params.completeCollectorLaunchCleanupMock ?? vi.fn(async () => {}),

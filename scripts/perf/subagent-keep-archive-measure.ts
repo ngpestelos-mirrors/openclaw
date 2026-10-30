@@ -150,7 +150,7 @@ try {
       return;
     }
     for (;;) {
-      const count = await archive.archiveCompletedSubagentRuns(now);
+      const count: number = await archive.archiveCompletedSubagentRuns(now);
       batchCounts.push(count);
       assert(count <= 128, "Archival exceeded its record budget");
       if (count === 0) {

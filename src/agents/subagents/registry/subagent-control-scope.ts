@@ -27,10 +27,7 @@ import {
   resolveSubagentChildAgentId,
   resolveSubagentChildAuthority,
 } from "./subagent-child-owner-match.js";
-import type {
-  ResolvedSubagentController,
-  SubagentAdminKillParams,
-} from "./subagent-control.types.js";
+import type { ResolvedSubagentController } from "./subagent-control.types.js";
 import {
   readSubagentExecRequestController,
   type SubagentRequestSessionOrigin,
@@ -49,11 +46,9 @@ import {
   buildSubagentRunReadIndexFromRuns,
   listRunsForControllerFromRuns,
 } from "./subagent-registry-queries.js";
-import { readFullSubagentRuns } from "./subagent-registry-read-cache.js";
 import { resolveControllerSessionKey } from "./subagent-registry-read-topology.js";
 import {
   getLatestLiveSubagentRunByChildSessionKey,
-  getLatestSubagentRunByChildSessionKey,
   listSubagentRunsForRequester,
 } from "./subagent-registry-read.js";
 import type { SubagentRunReadRecord } from "./subagent-registry-read.types.js";
@@ -91,10 +86,15 @@ export async function restoreSubagentKillBridges(params: {
     (_selection, runs) => {
       const needed = new Map<string, SubagentRunRecord>();
       const parents = new Map<string, SubagentRunRecord[]>();
+      let hasColdRows = false;
       for (const entry of runs.values()) {
         const entries = parents.get(entry.childSessionKey) ?? [];
         entries.push(entry);
         parents.set(entry.childSessionKey, entries);
+        hasColdRows ||= !subagentRuns.has(entry.runId);
+      }
+      if (!hasColdRows) {
+        return needed;
       }
       const hasRetainedWork = captureSubagentRetainedWork();
       for (const live of subagentRuns.values()) {
@@ -139,35 +139,6 @@ export async function restoreSubagentKillBridges(params: {
     await restoreSubagentRunForMutation(entry, context, params.assertCurrent);
   }
   await params.prepareRead?.();
-}
-
-export async function readSubagentKillRun(params: SubagentAdminKillParams) {
-  const context = captureOpenClawStateWorkerContext();
-  const id = params.expectedRunId;
-  const resident = id
-    ? subagentRuns.get(id)
-    : getLatestOwnedSubagentRun(params.sessionKey, params.agentId, params.cfg);
-  const entry = id
-    ? (resident ??
-      (await readFullSubagentRuns(context, { kind: "ids", runIds: [id] }, { current: true })).get(
-        id,
-      ))
-    : await getLatestSubagentRunByChildSessionKey(params.sessionKey, params.agentId);
-  const taskId = params.expectedTaskRunId?.trim();
-  const owner = params.expectedOwnerKey?.trim();
-  return {
-    context,
-    resident,
-    entry:
-      entry &&
-      entry.childSessionKey === params.sessionKey &&
-      (!id || entry.runId === id) &&
-      (!taskId || (entry.taskRunId ?? entry.runId) === taskId) &&
-      (params.expectedGeneration === undefined || entry.generation === params.expectedGeneration) &&
-      (!owner || entry.requesterSessionKey === owner)
-        ? entry
-        : undefined,
-  };
 }
 
 /** Restore selected archive generations before native cancellation captures runtime owners. */

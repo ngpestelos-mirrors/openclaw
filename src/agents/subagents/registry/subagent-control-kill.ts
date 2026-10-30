@@ -1,3 +1,4 @@
+import { isPromiseLike } from "@openclaw/normalization-core/promise-like";
 import { resolveSubagentLabel } from "../../../auto-reply/reply/subagents-utils.js";
 import { prepareSessionGenerationFacts } from "../../../config/sessions/session-delivery-generation.js";
 import type { OpenClawConfig } from "../../../config/types.openclaw.js";
@@ -19,12 +20,12 @@ import { settleSubagentKillSources } from "./subagent-control-kill-settlement.js
 import {
   getLatestOwnedSubagentRun,
   prepareSubagentKillRuns,
-  readSubagentKillRun,
   prepareSessionSubagentKillSelection,
   type captureExecRequestSubagentSelection,
 } from "./subagent-control-scope.js";
 import {
   persistSubagentAbortedLastRun,
+  readSubagentKillRun,
   type SubagentKillSession,
 } from "./subagent-control-session.js";
 import type {
@@ -121,7 +122,7 @@ async function killLatestSubagentRun(params: {
   session?: SubagentKillSession;
   result: Awaited<ReturnType<typeof killSubagentRun>>;
 }> {
-  const { tree, scope } = params;
+  const { tree, scope, commands } = params;
   const cancellationControl = {
     assertCurrent: scope.cancellationControl.assertCurrent,
     prepareRead: () => {
@@ -161,7 +162,6 @@ async function killLatestSubagentRun(params: {
   if (!matchesExpected(entry)) {
     return { entry, session, result: { killed: false, superseded: true } };
   }
-  const commands = params.commands;
   let result: Awaited<ReturnType<typeof killSubagentRun>> = tree.isCurrent(entry)
     ? await killSubagentRun({
         ...params,
@@ -469,10 +469,7 @@ export async function killAllControlledSubagentRuns(params: {
       labels: [],
     };
   }
-  const selectedRuns = params.requestSelection
-    ? params.runs
-    : await prepareSubagentKillRuns(params);
-  const selection = params.requestSelection
+  const selection: Parameters<typeof killSelectedSubagentRuns>[0] = params.requestSelection
     ? {
         ...params,
         runs: params.requestSelection.runs,
@@ -480,7 +477,10 @@ export async function killAllControlledSubagentRuns(params: {
         ownsRoot: params.requestSelection.ownsRoot,
         selectPublishedRoot: params.requestSelection.selectPublishedRoot,
       }
-    : { ...params, runs: selectedRuns };
+    : {
+        ...params,
+        prepareRuns: (runs, controller) => prepareSubagentKillRuns({ ...params, runs, controller }),
+      };
   if (!params.requestSelection?.sessionGeneration && !params.requestSelection?.prepare) {
     return killSelectedSubagentRuns(selection);
   }
@@ -605,13 +605,14 @@ export async function killSubagentRunAdmin(
   }
   const expectedRunId = params.expectedRunId?.trim();
   const exactRunSelection = Boolean(expectedRunId) && !control?.beforeSessionKill;
-  const selected = await readSubagentKillRun({
+  const selection = readSubagentKillRun({
     ...params,
     sessionKey: targetSessionKey,
     expectedRunId,
   });
+  const selected = isPromiseLike(selection) ? await selection : selection;
   control?.assertCurrent();
-  let entry = selected.entry;
+  const entry = selected.entry;
   if (!entry) {
     return publish({ found: false as const, killed: false as const });
   }
@@ -628,21 +629,20 @@ export async function killSubagentRunAdmin(
     });
   }
 
-  const [prepared] = await prepareSubagentKillRuns({
-    cfg: params.cfg,
-    runs: [entry],
-    context: selected.context,
-    coldRunIds: new Set(isSameSubagentRunOwner(selected.resident, entry) ? [] : [entry.runId]),
-    assertCurrent: control?.assertCurrent,
-    prepareRead: control?.prepareRead,
-  });
-  entry = prepared!;
-
   let rootStopSuperseded = false;
   return withSubagentKillScope<SubagentAdminKillResult>(
     {
       cfg: params.cfg,
       runs: [entry],
+      prepareRuns: (runs) =>
+        prepareSubagentKillRuns({
+          cfg: params.cfg,
+          runs,
+          context: selected.context,
+          coldRunIds: selected.coldRunIds,
+          assertCurrent: control?.assertCurrent,
+          prepareRead: control?.prepareRead,
+        }),
       exactRunSelection,
       assertCurrent: control?.assertCurrent,
       prepareRead: control?.prepareRead,

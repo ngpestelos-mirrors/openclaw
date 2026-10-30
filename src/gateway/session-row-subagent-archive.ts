@@ -2,7 +2,10 @@ import { buildSubagentRunReadIndexFromRuns } from "../agents/subagents/registry/
 import { prepareSubagentArchiveSessionListRead } from "../agents/subagents/registry/subagent-registry-state.js";
 import { createSessionRowChildActivity } from "./session-row-child-activity.js";
 import { createSessionRowChildVisibility } from "./session-row-child-visibility.js";
-import type { SessionRowReadView } from "./session-row-prepared-read.js";
+import type {
+  SessionRowReadView,
+  SessionRowSubagentArchiveRead,
+} from "./session-row-prepared-read.js";
 import * as records from "./session-row-projection-record.js";
 import { buildSessionSwarmSummary } from "./session-swarm-summary.js";
 import type { SessionListRowContext } from "./session-utils-contracts.js";
@@ -26,10 +29,20 @@ export async function withCurrentSessionRowSubagentArchive<T>(read: () => Promis
 }
 
 /** Historical facts belong to this read, never the projection's resident registry index. */
-export async function prepareSessionRowSubagentArchive(sessionKeys?: readonly string[]) {
-  const archive = await prepareSubagentArchiveSessionListRead(
+export function prepareSessionRowSubagentArchive(
+  sessionKeys?: readonly string[],
+): SessionRowSubagentArchiveRead | Promise<SessionRowSubagentArchiveRead> {
+  const archive = prepareSubagentArchiveSessionListRead(
     sessionKeys ? { kind: "sessions", sessionKeys, descendants: true } : { kind: "all" },
   );
+  return archive instanceof Promise
+    ? archive.then(projectSessionRowSubagentArchive)
+    : projectSessionRowSubagentArchive(archive);
+}
+
+function projectSessionRowSubagentArchive(
+  archive: Awaited<ReturnType<typeof prepareSubagentArchiveSessionListRead>>,
+): SessionRowSubagentArchiveRead {
   let source: SessionListRowContext | undefined;
   let prepared: SessionListRowContext | undefined;
   function context(current: SessionListRowContext): SessionListRowContext {
