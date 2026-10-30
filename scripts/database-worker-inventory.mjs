@@ -2438,11 +2438,11 @@ const reviewedOperations = new Map([
           "readSubagentRunRow",
           "readSubagentSessionListRows",
           "readSubagentRegistryRows",
-          "readSubagentRegistryTopology",
+          "selectSubagentArchiveSessionRunIds",
           "loadSubagentRunsForSessionsInDatabase",
         ],
         evidence:
-          "Exact rows serve completion admission workers. Session-list and child reads serve openclaw-state-read.worker.ts. Registry rows serve store.worker.ts maintenance/versioned/session reads or completion-mutation.kernel.ts through completion-admission.worker.ts. Descendant selection is called only by store.worker.ts; the native digest comparison has been removed. Private topology reads serve loadSubagentArchivedRunsInDatabase, called only by the store worker's subagents.runs archive read.",
+          "Exact rows serve completion admission workers. Session-list and child reads serve openclaw-state-read.worker.ts. Registry rows serve store.worker.ts maintenance/versioned/session reads or completion-mutation.kernel.ts through completion-admission.worker.ts. Descendant selection is called only by store.worker.ts; the native digest comparison has been removed. Indexed archive scope selection serves loadSubagentArchivedRunsInDatabase, called only by the store worker's subagents.runs archive read.",
       },
     ],
   ],

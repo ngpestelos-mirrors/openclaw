@@ -431,35 +431,86 @@ export function loadSubagentSessionListRunsFromSqlite(
   return runs;
 }
 
-/** Relationship columns select history before any retained payload is decoded. */
-function readSubagentRegistryTopology(
+/** Traverse indexed relationships before reading any historical payload or unrelated identity. */
+function selectSubagentArchiveSessionRunIds(
   database: Pick<OpenClawStateDatabase, "db">,
-  table: keyof SubagentRegistryDatabase,
-): Map<
-  string,
-  Pick<
-    SubagentRunReadRecord,
-    "runId" | "childSessionKey" | "requesterSessionKey" | "controllerSessionKey"
-  >
-> {
-  return new Map(
-    executeSqliteQuerySync(
+  scope: Extract<SubagentArchiveReadScope, { kind: "sessions" }>,
+): string[] {
+  const stateDb = getNodeSqliteKysely<SubagentRegistryDatabase>(database.db);
+  if (
+    !executeSqliteQuerySync(
       database.db,
-      getNodeSqliteKysely<SubagentRegistryDatabase>(database.db)
-        .selectFrom(table)
-        .select(["run_id", "child_session_key", "requester_session_key", "controller_session_key"])
-        .orderBy("created_at", "asc")
-        .orderBy("run_id", "asc"),
-    ).rows.map((row) => [
-      row.run_id,
-      {
-        runId: row.run_id,
-        childSessionKey: row.child_session_key,
-        requesterSessionKey: row.requester_session_key,
-        controllerSessionKey: row.controller_session_key ?? undefined,
-      },
-    ]),
-  );
+      stateDb
+        .selectFrom("subagent_run_archives")
+        .select((eb) => eb.val(1).as("present"))
+        .limit(1),
+    ).rows.length
+  ) {
+    return [];
+  }
+  const owners = new Set(scope.sessionKeys.map((key) => key.trim()).filter(Boolean));
+  const children = new Set(scope.descendants ? owners : []);
+  const selected = new Set<string>();
+  const liveChildren = new Map<string, Set<string>>();
+  for (const entry of scope.liveTopology ?? []) {
+    const owner = entry.requesterSessionKey.trim();
+    const owned = liveChildren.get(owner) ?? new Set<string>();
+    owned.add(entry.childSessionKey.trim());
+    liveChildren.set(owner, owned);
+  }
+  let frontier = [...owners];
+  while (frontier.length) {
+    const next: string[] = [];
+    const visitChild = (child: string) => {
+      if (!child) {
+        return;
+      }
+      children.add(child);
+      if (scope.descendants && !owners.has(child)) {
+        owners.add(child);
+        next.push(child);
+      }
+    };
+    for (const table of ["subagent_runs", "subagent_run_archives"] as const) {
+      const rows = executeSqliteQuerySync(
+        database.db,
+        stateDb
+          .selectFrom(table)
+          .select(["run_id", "child_session_key"])
+          .where((eb) =>
+            eb.or([
+              eb("requester_session_key", "in", sqliteStringSet(frontier)),
+              eb("controller_session_key", "in", sqliteStringSet(frontier)),
+            ]),
+          ),
+      ).rows;
+      for (const row of rows) {
+        if (table === "subagent_run_archives") {
+          selected.add(row.run_id);
+        }
+        visitChild(row.child_session_key);
+      }
+    }
+    for (const owner of frontier) {
+      for (const child of liveChildren.get(owner) ?? []) {
+        visitChild(child);
+      }
+    }
+    frontier = next;
+  }
+  if (children.size) {
+    // Include moved/newer generations; the reader's latest-child veto owns selection policy.
+    for (const row of executeSqliteQuerySync(
+      database.db,
+      stateDb
+        .selectFrom("subagent_run_archives")
+        .select("run_id")
+        .where("child_session_key", "in", sqliteStringSet([...children])),
+    ).rows) {
+      selected.add(row.run_id);
+    }
+  }
+  return [...selected];
 }
 
 /** Archive reads are request-owned; neither startup hydration nor resident caches call this. */
@@ -482,21 +533,7 @@ export function loadSubagentArchivedRunsInDatabase(
   return runSqliteReadSnapshotSync(db, () => {
     let selectedIds: readonly string[] | undefined;
     if (scope.kind === "sessions") {
-      const archived = readSubagentRegistryTopology(database, "subagent_run_archives");
-      if (!archived.size) {
-        return new Map();
-      }
-      const live = readSubagentRegistryTopology(database, "subagent_runs");
-      // Only topology crosses from the host; it cannot confer execution ownership.
-      for (const [index, entry] of (scope.liveTopology ?? []).entries()) {
-        const runId = `live:${index}`;
-        live.set(runId, { ...entry, runId });
-      }
-      selectedIds = new SubagentSessionReadLookup(archived).selectReadScope(
-        scope.sessionKeys,
-        new SubagentSessionReadLookup(live),
-        scope.descendants,
-      );
+      selectedIds = selectSubagentArchiveSessionRunIds(database, scope);
     } else if (scope.kind === "ids" && scope.exact) {
       selectedIds = scope.runIds;
     }
