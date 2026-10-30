@@ -331,7 +331,7 @@ export class SubagentLaunchManager extends SubagentRecoveryManager {
         },
         {
           runs: this.options.runs,
-          preparedRows,
+          loadMissingRows: true,
           context,
           assertCurrent,
           onPublished: (postimages, planned) => {

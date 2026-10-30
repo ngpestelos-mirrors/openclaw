@@ -14,6 +14,10 @@ import {
 } from "./session-row-prepared-read.js";
 import * as records from "./session-row-projection-record.js";
 import {
+  prepareSessionRowSubagentArchive,
+  SessionRowSubagentArchivePending,
+} from "./session-row-subagent-archive.js";
+import {
   resolveStoredSessionKeyForAgentStore,
   selectStoredSessionLineage,
 } from "./session-store-key.js";
@@ -212,6 +216,7 @@ export function createSessionRowAncestorReads(owner: {
     ancestorRows: (record: records.MaterializedRow, read?: SessionRowReadView) =>
       readSessionRowAncestors(record, {
         ...owner.state(),
+        ...(read ? { context: read.state.rowContext } : {}),
         referenced: owner.referenced,
         prepare: (row) =>
           records.hasEntry(row) &&
@@ -227,6 +232,7 @@ export function createSessionRowAncestorReads(owner: {
       consume: (read: SessionRowReadView) => T,
       options?: SessionRowPreparationOptions,
     ): Promise<T> {
+      let subagentArchive = options?.subagentArchive;
       const selected = options?.includeAncestors
         ? (config: records.Inputs["cfg"]) => {
             const targets = queries(config);
@@ -238,6 +244,9 @@ export function createSessionRowAncestorReads(owner: {
                   row &&
                   readSessionRowAncestors(row, {
                     ...owner.state(),
+                    ...(subagentArchive?.isCurrent()
+                      ? { context: subagentArchive.context(owner.state().context) }
+                      : {}),
                     referenced: owner.referenced,
                     // Resident identities must enter preparation even after a reset cleared metadata.
                     prepare: (parent) => parent,
@@ -257,6 +266,7 @@ export function createSessionRowAncestorReads(owner: {
       // Reserve priority before topology can release both this request and a bulk drain.
       const releaseExactPreparation = owner.retainExactPreparation();
       const membershipPending = Symbol("session-membership-pending");
+      let subagentArchiveKeys: readonly string[] = [];
       try {
         while (owner.isActive()) {
           try {
@@ -289,13 +299,32 @@ export function createSessionRowAncestorReads(owner: {
                 if (owner.membership.needsPreparation(() => targets)) {
                   return owner.membership.prepare();
                 }
+                if (options?.subagentArchive && !options.subagentArchive.isCurrent()) {
+                  throw new SessionRowSubagentArchivePending();
+                }
+                const keyAt = (index: number) => selectedRows[index]?.key ?? targets[index]!.key;
+                if (
+                  !subagentArchive?.isCurrent() ||
+                  (!options?.subagentArchive &&
+                    (targets.length !== subagentArchiveKeys.length ||
+                      targets.some((_, index) => keyAt(index) !== subagentArchiveKeys[index])))
+                ) {
+                  const keys = targets.map((_, index) => keyAt(index));
+                  return prepareSessionRowSubagentArchive(keys).then((archive) => {
+                    subagentArchive = archive;
+                    subagentArchiveKeys = keys;
+                  });
+                }
                 return owner.prepareExactRows(targets, Boolean(options?.selection), selectedRows);
               },
               (read, targets) => {
-                if (owner.membership.needsPreparation(() => targets)) {
+                if (
+                  owner.membership.needsPreparation(() => targets) ||
+                  !subagentArchive?.isCurrent()
+                ) {
                   return membershipPending;
                 }
-                return consume(read);
+                return consume(subagentArchive.read(read));
               },
               options?.selection
                 ? () =>

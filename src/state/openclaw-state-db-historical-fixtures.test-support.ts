@@ -30,6 +30,7 @@ export const V2026_7_1_2_STATE_MIGRATION_CHANGES = [
   "Removed redundant conversation binding target projections (v15)",
   "Replaced retained task indexes with ordered cron history indexes (v24)",
   "Removed redundant replay and skill indexes and narrowed the lease-owner index (v27)",
+  "Prepared bounded kept-subagent run archive storage (v37)",
   "Migrated shared state tables to SQLite STRICT typing (46)",
 ];
 
@@ -76,6 +77,9 @@ export function materializeV2026_7_1_2StateDatabase(stateDir: string) {
 
 // Synthetic pre-v8 databases must not retain the current placement-only index.
 export function markStateDatabaseVersion(database: DatabaseSync, version: number): void {
+  if (version < 37) {
+    database.exec("DROP TABLE IF EXISTS subagent_run_archives;");
+  }
   if (version < 36) {
     restorePreTemplateStateIdentifiersForTest(database);
   }

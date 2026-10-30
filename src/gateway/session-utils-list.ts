@@ -3,9 +3,8 @@ import {
   resolveNonNegativeIntegerOption,
   resolveOptionalIntegerOption,
 } from "@openclaw/normalization-core/number-coercion";
-import pMap from "p-map";
 import type { SessionsListParams } from "../../packages/gateway-protocol/src/index.js";
-import { listAgentIds, withAgentRosterFactsBatch } from "../agents/agent-scope-config.js";
+import { withAgentRosterFactsBatch } from "../agents/agent-scope-config.js";
 import { tryResolveLegacyCompatibilityAgentId } from "../config/legacy.default-agent-owner.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { recordSessionRowPartitionCache } from "../infra/gateway-work-metrics.js";
@@ -15,7 +14,6 @@ import {
   SESSIONS_LIST_OWNER_LIMIT,
   SESSIONS_LIST_TRANSCRIPT_LIMIT,
 } from "../shared/session-list-limits.js";
-import { resolveAssistantIdentityName } from "./assistant-identity.js";
 import { prepareOperatorModelPresentation } from "./operator-model-presentation.js";
 import { gatewayClientSessionCreator } from "./server-methods/gateway-client-identity.js";
 import { createVisibleActiveSessionRunProjector } from "./server-methods/session-active-runs.js";
@@ -55,6 +53,12 @@ import {
 } from "./session-row-projection-record.js";
 import type { SessionRowProjection } from "./session-row-projection.js";
 import { createSessionRowSelection } from "./session-row-selection.js";
+import {
+  prepareSessionRowSubagentArchive,
+  SessionRowSubagentArchivePending,
+  withCurrentSessionRowSubagentArchive,
+} from "./session-row-subagent-archive.js";
+import { prepareSessionSearchIdentityNames } from "./session-search-identities.js";
 import type { SessionListRowContext } from "./session-utils-contracts.js";
 import { matchesSessionArchiveFilter } from "./session-utils-core.js";
 import { getSessionDefaults } from "./session-utils-model.js";
@@ -389,35 +393,6 @@ export function filterAndSortSessionEntries(params: SessionListFilterParams): Se
   ).entries;
 }
 
-/** Acquire mutable workspace names before entering synchronous visibility and selection. */
-export async function prepareSessionSearchIdentityNames(
-  projection: SessionRowProjection,
-  opts: SessionsListParams,
-  metadataPrepared = false,
-) {
-  const prepared = prepareSessionRowSelection(projection, opts, {
-    metadataPrepared,
-    ordered: true,
-  });
-  const scope = projection.state.scope(opts);
-  const agentIds = new Set(scope.agentId ? [scope.agentId] : listAgentIds(prepared.cfg));
-  for (const [key] of prepared.entries("all")) {
-    const agentId = prepared.getTarget(key)?.agentId;
-    if (agentId) {
-      agentIds.add(agentId);
-    }
-  }
-  const identities = await pMap(
-    [...agentIds],
-    (agentId) => resolveAssistantIdentityName({ cfg: prepared.cfg, agentId }),
-    { concurrency: 4 },
-  );
-  return {
-    cfg: prepared.cfg,
-    names: new Map(identities.map(({ agentId, name }) => [agentId, name])),
-  };
-}
-
 /** Shared synchronous membership policy for list pages and full-roster transcript search. */
 export function prepareProjectedSessionList(params: {
   projection: SessionRowProjection;
@@ -430,6 +405,7 @@ export function prepareProjectedSessionList(params: {
   searchIdentities?: Awaited<ReturnType<typeof prepareSessionSearchIdentityNames>>;
   /** Reused only within one admitted caller/configuration/profile authority epoch. */
   visibility?: WeakMap<object, boolean>;
+  subagentArchive?: Awaited<ReturnType<typeof prepareSessionRowSubagentArchive>>;
 }) {
   const { projection, opts, key: exactKey, context, client, now } = params;
   if (params.searchIdentities && params.searchIdentities.cfg !== projection.state.cfg) {
@@ -443,10 +419,9 @@ export function prepareProjectedSessionList(params: {
         projection.physicalPaths,
       )
     : undefined;
-  const presentation = prepareSessionRowPublication(projection, now)(
-    client,
-    projectRun,
-  ).getPresentation();
+  const presentationForRead = (read = params.subagentArchive?.read(projection)) =>
+    prepareSessionRowPublication(projection, now, read)(client, projectRun).getPresentation();
+  const presentation = presentationForRead();
   const prepared = prepareSessionRowSelection(projection, opts, {
     key: exactKey,
     now,
@@ -515,11 +490,11 @@ export function prepareProjectedSessionList(params: {
         ...(presentation.rowContext.projectedSubagentActivity ?? []),
       ]),
     );
-  return { prepared, presentation, filters, ownerRunningCandidateKeys };
+  return { prepared, presentation, presentationForRead, filters, ownerRunningCandidateKeys };
 }
 
 /** Prepare selected rows, then authorize and present them in one synchronous boundary. */
-export async function listProjectedSessions(params: {
+async function readProjectedSessions(params: {
   projection: SessionRowProjection;
   opts: SessionsListParams;
   key?: string;
@@ -544,24 +519,40 @@ export async function listProjectedSessions(params: {
     const waitStarted = performance.now();
     let yieldCount = 0;
     let searchIdentities: Awaited<ReturnType<typeof prepareSessionSearchIdentityNames>> | undefined;
+    let subagentArchive: Awaited<ReturnType<typeof prepareSessionRowSubagentArchive>> | undefined;
     do {
       yieldCount++;
       await projection.prepareSelection({ ...selectionPreparation, yieldForCatalog: true });
       if (opts.search?.trim()) {
-        searchIdentities = await prepareSessionSearchIdentityNames(projection, opts, true);
+        searchIdentities = await prepareSessionSearchIdentityNames(
+          prepareSessionRowSelection(projection, opts, { metadataPrepared: true, ordered: true }),
+          projection.state.scope(opts).agentId,
+        );
+      }
+      // Ordinary paging selects metadata; only these filters inspect historical runs.
+      if (opts.search?.trim() || opts.spawnedBy || opts.includeOwnerSessionCounts) {
+        subagentArchive = await prepareSessionRowSubagentArchive(
+          exactKey
+            ? projection.selectEntries({ key: exactKey }, true).map((row) => row.key)
+            : undefined,
+        );
       }
     } while (
       projection.needsSelectionPreparation(selectionPreparation) ||
+      (subagentArchive && !subagentArchive.isCurrent()) ||
       (searchIdentities && searchIdentities.cfg !== projection.state.cfg)
     );
     let prepareSyncMs = 0;
     const selectPage = () => {
+      if (subagentArchive && !subagentArchive.isCurrent()) {
+        throw new SessionRowSubagentArchivePending();
+      }
       const started = performance.now();
       const syncCpu = diagnostics?.startSyncCpu();
       try {
         diagnostics?.mark("storeLoad");
         const now = Date.now();
-        const { presentation, prepared, filters, ownerRunningCandidateKeys } =
+        const { presentation, presentationForRead, prepared, filters, ownerRunningCandidateKeys } =
           prepareProjectedSessionList({
             projection,
             opts,
@@ -570,6 +561,7 @@ export async function listProjectedSessions(params: {
             client,
             now,
             searchIdentities,
+            subagentArchive,
             metadataPrepared: true,
           });
         diagnostics?.mark("filterSetup");
@@ -588,7 +580,7 @@ export async function listProjectedSessions(params: {
             : select();
         return {
           now,
-          presentation,
+          presentationForRead,
           prepared,
           selection: projectSessionOwnerRunningCounts(
             filters,
@@ -623,9 +615,10 @@ export async function listProjectedSessions(params: {
         }
         return queries;
       },
-      () => {
+      (read) => {
         const resumed = performance.now();
-        const { now, presentation, prepared, selection } = page;
+        const { now, presentationForRead, prepared, selection } = page;
+        const presentation = presentationForRead(read);
         const { cfg, getTarget } = prepared;
         diagnostics?.mark("sharing");
         diagnostics?.mark("rows");
@@ -713,7 +706,13 @@ export async function listProjectedSessions(params: {
           diagnostics?.finishSyncCpu("rowThreadCpuMs", syncCpu);
         }
       },
-      { selection: selectionPreparation },
+      { selection: selectionPreparation, subagentArchive },
     );
   });
+}
+
+export async function listProjectedSessions(
+  params: Parameters<typeof readProjectedSessions>[0],
+): Promise<SessionsListResult> {
+  return withCurrentSessionRowSubagentArchive(() => readProjectedSessions(params));
 }

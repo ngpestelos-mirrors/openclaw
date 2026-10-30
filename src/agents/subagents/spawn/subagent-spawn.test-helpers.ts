@@ -497,8 +497,11 @@ export async function loadSubagentSpawnModuleForTest(params: {
   vi.doMock("../registry/subagent-registry.js", () => ({
     completeCollectorLaunchCleanup:
       params.completeCollectorLaunchCleanupMock ?? vi.fn(async () => {}),
-    countActiveRunsForSession: params.countActiveRunsForSession ?? (() => 0),
+    prepareSubagentActiveRunCount: async (key: string) => () =>
+      params.countActiveRunsForSession?.(key) ?? 0,
     listSwarmRunsForGroup: params.listSwarmRunsForGroup ?? vi.fn(() => []),
+    prepareSwarmRunsForGroup: async (groupId: string) => () =>
+      params.listSwarmRunsForGroup?.(groupId) ?? [],
     registerSubagentRun: vi.fn(
       async (record: RegisterSubagentRunParams, options?: RegisterSubagentRunOptions) => {
         if (!record.queued || !options?.retainOwnership) {

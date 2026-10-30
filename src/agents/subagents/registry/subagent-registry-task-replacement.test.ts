@@ -35,6 +35,7 @@ import * as stateWorker from "../../../state/openclaw-state-worker-store.js";
 import { createEnteredGate } from "../../entered-gate.test-support.js";
 import type { AgentWaitResult } from "../../run-wait.js";
 import { prepareSubagentKillSession } from "./subagent-control-session.js";
+import { archiveCompletedSubagentRuns } from "./subagent-registry-archive.js";
 import { createSubagentRegistryContextCleanup } from "./subagent-registry-context-cleanup.js";
 import { subagentRegistryLog } from "./subagent-registry-lifecycle-log.js";
 import { subagentRuns } from "./subagent-registry-memory.js";
@@ -193,32 +194,48 @@ it("does not transfer completed child control to a different session at the same
   }
 });
 
-it("hydrates a cold durable source before advancing its replacement generation", async () => {
+it("restores an archived source before advancing its replacement generation", async () => {
   vi.stubEnv("OPENCLAW_TEST_READ_SUBAGENT_RUNS_FROM_SQLITE", "1");
   onTestFinished(() => {
     vi.unstubAllEnvs();
   });
   const childSessionKey = "agent:main:subagent:cold-replacement";
-  await register("cold-original", childSessionKey, "cold-replacement-session", {
+  const identity = { sessionId: "cold-replacement-session", lifecycleRevision: "cold-revision" };
+  await writeSession(childSessionKey, identity.sessionId, identity);
+  await register("cold-original", childSessionKey, identity.sessionId, {
     task: "restored replacement source",
     retainAttachmentsOnKeep: true,
+    sessionEntry: identity,
   });
   expect(await replaceRun("cold-original", "cold-predecessor")).toBe(true);
+  const archiveNow = Date.now();
+  const endedAt = archiveNow - 31 * 86_400_000;
   await updateRun("cold-predecessor", (draft) => {
     draft.execution = {
       ...draft.execution,
       status: "terminal",
-      endedAt: Date.now(),
+      endedAt,
       outcome: { status: "ok" },
     };
+    draft.cleanupCompletedAt = endedAt + 1;
+    draft.delivery = { status: "not_required" };
   });
-  // Evict only the resident value; its canonical row remains the replacement source.
-  subagentRuns.delete("cold-predecessor");
-  expect(loadSubagentRegistryFromSqlite().get("cold-predecessor")?.generation).toBe(2);
+  expect(await archiveCompletedSubagentRuns(archiveNow)).toBe(1);
+  expect(subagentRuns.has("cold-predecessor")).toBe(false);
+  expect(loadSubagentRegistryFromSqlite().has("cold-predecessor")).toBe(false);
+  const archived = openOpenClawStateDatabase()
+    .db.prepare("SELECT payload_json FROM subagent_run_archives WHERE run_id = ?")
+    .get("cold-predecessor");
+  expect(JSON.parse(String(archived?.payload_json))).toMatchObject({ generation: 2 });
   expect(
     await reactivateCompletedSubagentSession({
       sessionKey: childSessionKey,
       runId: "cold-successor",
+      session: {
+        cfg: getRuntimeConfig(),
+        activeSessionAgentId: "main",
+        sessionEntry: loadSessionEntry({ agentId: "main", sessionKey: childSessionKey })!,
+      },
     }),
   ).toBe(true);
   expect(subagentRuns.get("cold-successor")).toMatchObject({

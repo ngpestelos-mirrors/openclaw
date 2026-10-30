@@ -477,7 +477,7 @@ it("persists prepared-only registration without resurrecting it after a queued d
           ...(previous ? { postimages: new Map([[original.runId, previous]]) } : {}),
         };
       },
-      { preparedRows },
+      { preparedRows, loadMissingRows: true },
     );
     release.resolve();
     await deletion;

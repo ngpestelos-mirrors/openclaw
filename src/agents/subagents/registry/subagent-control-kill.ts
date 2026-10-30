@@ -18,6 +18,8 @@ import {
 import { settleSubagentKillSources } from "./subagent-control-kill-settlement.js";
 import {
   getLatestOwnedSubagentRun,
+  prepareSubagentKillRuns,
+  readSubagentKillRun,
   prepareSessionSubagentKillSelection,
   type captureExecRequestSubagentSelection,
 } from "./subagent-control-scope.js";
@@ -36,7 +38,6 @@ import {
   assertCapturedSubagentExecutionCurrent,
   captureSubagentExecution,
 } from "./subagent-registry-execution-cleanup.js";
-import { subagentRuns } from "./subagent-registry-memory.js";
 import { withSubagentKillOwner } from "./subagent-registry.js";
 import type { SubagentRunRecord } from "./subagent-registry.types.js";
 import { isSameSubagentRunOwner } from "./subagent-run-generation.js";
@@ -468,6 +469,9 @@ export async function killAllControlledSubagentRuns(params: {
       labels: [],
     };
   }
+  const selectedRuns = params.requestSelection
+    ? params.runs
+    : await prepareSubagentKillRuns(params);
   const selection = params.requestSelection
     ? {
         ...params,
@@ -476,7 +480,7 @@ export async function killAllControlledSubagentRuns(params: {
         ownsRoot: params.requestSelection.ownsRoot,
         selectPublishedRoot: params.requestSelection.selectPublishedRoot,
       }
-    : params;
+    : { ...params, runs: selectedRuns };
   if (!params.requestSelection?.sessionGeneration && !params.requestSelection?.prepare) {
     return killSelectedSubagentRuns(selection);
   }
@@ -601,23 +605,14 @@ export async function killSubagentRunAdmin(
   }
   const expectedRunId = params.expectedRunId?.trim();
   const exactRunSelection = Boolean(expectedRunId) && !control?.beforeSessionKill;
-  const selected = expectedRunId ? subagentRuns.get(expectedRunId) : undefined;
-  const entry = expectedRunId
-    ? selected?.childSessionKey === targetSessionKey
-      ? selected
-      : undefined
-    : getLatestOwnedSubagentRun(targetSessionKey, params.agentId, params.cfg);
+  const selected = await readSubagentKillRun({
+    ...params,
+    sessionKey: targetSessionKey,
+    expectedRunId,
+  });
+  control?.assertCurrent();
+  let entry = selected.entry;
   if (!entry) {
-    return publish({ found: false as const, killed: false as const });
-  }
-  const expectedTaskRunId = params.expectedTaskRunId?.trim();
-  if (
-    (expectedRunId && entry.runId !== expectedRunId) ||
-    (expectedTaskRunId && (entry.taskRunId ?? entry.runId) !== expectedTaskRunId) ||
-    (params.expectedGeneration !== undefined && entry.generation !== params.expectedGeneration) ||
-    (params.expectedOwnerKey?.trim() &&
-      entry.requesterSessionKey !== params.expectedOwnerKey.trim())
-  ) {
     return publish({ found: false as const, killed: false as const });
   }
 
@@ -632,6 +627,16 @@ export async function killSubagentRunAdmin(
       error: authority.error,
     });
   }
+
+  const [prepared] = await prepareSubagentKillRuns({
+    cfg: params.cfg,
+    runs: [entry],
+    context: selected.context,
+    coldRunIds: new Set(isSameSubagentRunOwner(selected.resident, entry) ? [] : [entry.runId]),
+    assertCurrent: control?.assertCurrent,
+    prepareRead: control?.prepareRead,
+  });
+  entry = prepared!;
 
   let rootStopSuperseded = false;
   return withSubagentKillScope<SubagentAdminKillResult>(

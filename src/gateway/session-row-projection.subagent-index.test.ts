@@ -1,7 +1,9 @@
 import { isMainThread } from "node:worker_threads";
 import { afterEach, expect, it, vi } from "vitest";
 import { createSubagentRunRecord } from "../agents/subagent-test-fixtures.test-helpers.js";
+import { archiveCompletedSubagentRuns } from "../agents/subagents/registry/subagent-registry-archive.js";
 import { subagentRuns } from "../agents/subagents/registry/subagent-registry-memory.js";
+import { mutateSubagentRuns } from "../agents/subagents/registry/subagent-registry-persistence.js";
 import { publishSubagentRunChanges } from "../agents/subagents/registry/subagent-registry-publication.js";
 import { persistRegistryFixture } from "../agents/subagents/registry/subagent-registry-state.fixture.test-support.js";
 import {
@@ -18,11 +20,13 @@ import { sessionChanges } from "../sessions/session-row-changes.js";
 import { createDeferredCore } from "../shared/deferred.js";
 import * as stateReads from "../state/openclaw-state-db-readonly.js";
 import { withOpenClawTestState } from "../test-utils/openclaw-test-state.js";
+import { resolveApprovalSessionAudienceWithFallback } from "./approval-session-audience.js";
 import { createDirectChatContext } from "./server-chat.agent-events.test-helpers.js";
 import { sessionMutationHandlers } from "./server-methods/sessions-mutations.js";
 import type { RespondFn } from "./server-methods/types.js";
 import { makeGatewayClient } from "./server-request-context.test-support.js";
 import * as projectionWork from "./session-projection-work.js";
+import { withReadySessionRows } from "./session-row-prepared-read.js";
 import { bindSessionRowProjection } from "./session-row-projection-access.js";
 import * as materialization from "./session-row-projection-materialize.js";
 import { writeRow } from "./session-row-projection-read-fixtures.test-support.js";
@@ -47,6 +51,104 @@ function withRegistryState(run: () => Promise<void>) {
     run,
   );
 }
+
+it("reads archived task status and lineage without repopulating resident projection facts", async () => {
+  await withRegistryState(async () => {
+    setRuntimeConfigSnapshot(cfg);
+    const child = "agent:main:subagent:kept-history";
+    const parent = "agent:main:actual-requester";
+    const now = Date.now();
+    const endedAt = now - 31 * 86_400_000;
+    writeRow(parent, { sessionId: "actual-requester" });
+    writeRow(child, {
+      sessionId: "kept-history",
+      spawnedBy: "agent:main:stale-requester",
+    });
+    const run = createSubagentRunRecord({
+      runId: "kept-history",
+      childSessionKey: child,
+      childAgentId: "main",
+      requesterSessionKey: parent,
+      requesterAgentId: "main",
+      cleanup: "keep",
+      createdAt: endedAt - 1_000,
+      execution: {
+        status: "terminal",
+        startedAt: endedAt - 1_000,
+        endedAt,
+        outcome: { status: "ok" },
+      },
+      cleanupCompletedAt: endedAt,
+      delivery: { status: "not_required" },
+      completion: { required: false },
+      collect: true,
+      groupId: "kept-history",
+      swarmRequesterSessionKey: parent,
+      collectorCompletion: { status: "done" },
+    });
+    await mutateSubagentRuns([run.runId], () => ({
+      value: undefined,
+      postimages: new Map([[run.runId, run]]),
+    }));
+    using projection = await createTestProjection({ cfg, modelCatalog: [] });
+    await projection.ensureMaterialized();
+    const beforeArchive = await listProjectedSessions({
+      projection,
+      opts: { limit: 10, ownerFirst: true },
+    });
+    expect(await archiveCompletedSubagentRuns(now)).toBe(1);
+    await projection.ensureMaterialized();
+    expect(subagentRuns.has(run.runId)).toBe(false);
+    const exact = await withReadySessionRows(
+      projection,
+      () => [{ agentId: "main", key: child }],
+      (read) => {
+        const record = read.describe({ agentId: "main", key: child });
+        expect(record).toBeDefined();
+        return read.present(record!);
+      },
+    );
+    expect(exact).toMatchObject({
+      status: "done",
+      subagentRunState: "historical",
+      endedAt,
+      runtimeMs: 1_000,
+    });
+    const archiveReads = vi.spyOn(stateReads, "executeExistingOpenClawStateRead");
+    const listed = await listProjectedSessions({
+      projection,
+      opts: { limit: 10, ownerFirst: true },
+    });
+    expect(listed.sessions.map((row) => row.key)).toEqual(
+      beforeArchive.sessions.map((row) => row.key),
+    );
+    expect(
+      archiveReads.mock.calls.flatMap(([, command]) =>
+        command.type === "subagents.runs" && command.scope.kind === "archive"
+          ? [command.scope.scope]
+          : [],
+      ),
+    ).toEqual([
+      { kind: "sessions", sessionKeys: expect.arrayContaining([parent, child]), descendants: true },
+    ]);
+    expect(listed.sessions.find((row) => row.key === child)).toMatchObject({
+      status: "done",
+      endedAt,
+      runtimeMs: 1_000,
+    });
+    expect(listed.sessions.find((row) => row.key === parent)?.swarm).toMatchObject({
+      groups: [
+        { groupId: "kept-history", done: 1, children: [{ sessionKey: child, status: "done" }] },
+      ],
+    });
+    expect(await resolveApprovalSessionAudienceWithFallback(child, "main")).toEqual([
+      child,
+      parent,
+    ]);
+    expect(subagentRuns.size).toBe(0);
+    expect(projection.state.rowContext.subagentRuns.getDisplaySubagentRun(child)).toBeNull();
+  });
+});
 
 it("settles a registry revision after persisting an already absent run", async () => {
   await withRegistryState(async () => {

@@ -9,6 +9,7 @@ import type { SessionRepositoryWorkspaceRecord } from "../state/session-reposito
 import type { createSessionRowChildActivity } from "./session-row-child-activity.js";
 import type { createSessionRowChildVisibility } from "./session-row-child-visibility.js";
 import * as records from "./session-row-projection-record.js";
+import type { prepareSessionRowSubagentArchive } from "./session-row-subagent-archive.js";
 import type { SessionSharingTarget } from "./session-sharing-policy.js";
 import { resolveStoredSessionKeyForAgentStore } from "./session-store-key.js";
 import type { SessionListRowContext } from "./session-utils-contracts.js";
@@ -28,6 +29,11 @@ const preparedRunStates = new WeakMap<
     cache: GatewaySessionRunStateCache;
   }
 >();
+
+/** Registry eviction must release old run facts even when the stored row source is unchanged. */
+export function forgetPreparedSessionRunState(source: SessionRunSource): void {
+  preparedRunStates.delete(source);
+}
 
 /** Each immutable materialized source belongs to one key; replacement retires its query. */
 export function projectPreparedSessionRunState(
@@ -83,6 +89,8 @@ export type SessionRowPreparationOptions = {
   includeAncestors?: boolean;
   /** Queries select canonical durable roster keys; private exact reads use the default path. */
   selection?: boolean | SessionRowSelectionPreparationOptions;
+  /** A list's already-prepared full archive view also covers its exact page. */
+  subagentArchive?: Awaited<ReturnType<typeof prepareSessionRowSubagentArchive>>;
 };
 
 /** Synchronous selection reenters through the existing exact worker preparation owner. */
