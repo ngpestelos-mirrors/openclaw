@@ -517,7 +517,9 @@ function runLockShell(
   commands: string[],
   parentEnv: NodeJS.ProcessEnv = process.env,
 ) {
-  return spawnSync("bash", ["-c", [...bashSource(repoDir), ...commands].join("\n")], {
+  // Standalone shells bypass scripts/pr's Darwin Bash 5.3 heredoc guard.
+  const bash = process.platform === "darwin" ? "/bin/bash" : "bash";
+  return spawnSync(bash, ["-c", [...bashSource(repoDir), ...commands].join("\n")], {
     cwd: repoDir,
     env: createIndependentPrFixtureEnv(parentEnv),
     detached: true,
