@@ -55,6 +55,7 @@ it("loads prepared catalog construction without the standalone config reader", a
         "./prepared-model-catalog.worker.ts",
         "./prepared-model-runtime.scoped-catalog.ts",
         "./prepared-model-runtime.full-catalog.ts",
+        "./models-config.providers.discovery-auth.runtime.ts",
       ].map((entry) => new URL(entry, import.meta.url).href);
       const loader = fileURLToPath(new URL("../../scripts/tsx.mjs", import.meta.url));
       const result = await runNodeScript(
@@ -76,6 +77,18 @@ registerHooks({
   },
 });
 for (const entry of ${JSON.stringify(entries)}) await import(entry);
+const { prepareProviderDiscoveryAuth } = await import(${JSON.stringify(entries[3])});
+const auth = { profileId: "fixture", apiKey: "synthetic-key" };
+const prepared = await prepareProviderDiscoveryAuth({
+  agentDir: process.env.OPENCLAW_STATE_DIR,
+  authStore: { version: 1, profiles: {} },
+  env: {},
+  resolveProviderApiKey: () => auth,
+  resolveProviderAuth: () => auth,
+});
+if (prepared.resolveProviderApiKey("fixture") !== auth || prepared.resolveProviderAuth("fixture") !== auth) {
+  throw new Error("Discovery auth changed prepared resolver facts");
+}
 console.log("prepared-catalog-cold-import-ok");`,
         ],
         { PATH: process.env.PATH, SystemRoot: process.env.SystemRoot, ...state.envVars },
