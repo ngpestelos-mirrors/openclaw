@@ -429,6 +429,10 @@ if (isMainThread) {
   const variants: Array<{ name: string; params: SessionsListParams }> = [
     { name: "sidebar", params: { rowMode: "sidebar", source: "sidebar" } },
     { name: "general", params: { source: "sessions-page" } },
+    {
+      name: "runtime-search",
+      params: { source: "sessions-page", search: "openclaw", archived: "all" },
+    },
     { name: "compact", params: { rowMode: "compact", source: "agent-roster" } },
     {
       name: "involving",
