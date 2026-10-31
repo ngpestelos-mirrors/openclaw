@@ -377,12 +377,12 @@ export function consumeFreshSubagentRegistryRows<T>(
   return consumeFreshSubagentRuns(persistedSubagentRunsReadCache, context, consume);
 }
 
-/** Registration shares the loaded registry; committed receipts keep retained generations current. */
+/** Discover registration candidates; mutation admission reloads their current rows in its FIFO. */
 export async function prepareSubagentRegistrationRows(
   childSessionKey: string,
   selectedRunIds: readonly string[],
   context: OpenClawStateWorkerContext,
-): Promise<() => ReadonlyMap<string, SubagentRunRecord>> {
+): Promise<(() => ReadonlyMap<string, SubagentRunRecord>) & { runIds: readonly string[] }> {
   const snapshot = await prepareSubagentRunsCache(
     persistedSubagentRunsReadCache,
     async (source) => {
@@ -403,14 +403,6 @@ export async function prepareSubagentRegistrationRows(
       prepared.set(entry.runId, entry);
     }
   }
-  // Discovery survives a concurrent move to archive; the mutation reads fresh rows in its FIFO.
-  const historical = mergeSelectedFullRuns(
-    persistedSubagentRunsReadCache,
-    subagentRuns,
-    prepared,
-    matches,
-    { context },
-  );
   const archived = await readArchivedSubagentRuns(
     context,
     { kind: "children", sessionKeys: [childSessionKey] },
@@ -426,16 +418,23 @@ export async function prepareSubagentRegistrationRows(
       archived.set(id, entry);
     }
   }
-  for (const [id, entry] of archived) {
-    historical.set(id, entry);
-  }
-  return () => {
-    assertSubagentReadContext(context);
-    return mergeSelectedFullRuns(persistedSubagentRunsReadCache, subagentRuns, prepared, matches, {
-      context,
-      archivedRuns: historical,
-    });
-  };
+  // Carry discovery IDs across hot-to-archive moves; the mutation reads fresh rows in its FIFO.
+  return Object.assign(
+    () => {
+      assertSubagentReadContext(context);
+      return mergeSelectedFullRuns(
+        persistedSubagentRunsReadCache,
+        subagentRuns,
+        prepared,
+        matches,
+        {
+          context,
+          archivedRuns: archived,
+        },
+      );
+    },
+    { runIds: [...new Set([...prepared.keys(), ...archived.keys()])] },
+  );
 }
 
 export function getSubagentRunsSnapshotForRead(

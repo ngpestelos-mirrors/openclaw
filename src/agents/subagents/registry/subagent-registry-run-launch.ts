@@ -105,7 +105,7 @@ export class SubagentLaunchManager extends SubagentRecoveryManager {
       childAgentId,
     );
     let authority: Awaited<ReturnType<typeof captureOperatorToolGatewayContinuationContext>>;
-    let preparedRows: (() => ReadonlyMap<string, SubagentRunRecord>) | undefined;
+    let preparedRows: Awaited<ReturnType<typeof prepareSubagentRegistrationRows>> | undefined;
     let plannedEntry: SubagentRunRecord | undefined;
     let registered: SubagentRunRecord | undefined;
     let custodyTransferred = false;
@@ -249,6 +249,7 @@ export class SubagentLaunchManager extends SubagentRecoveryManager {
         isSubagentRunGenerationCandidate(row, childSessionKey, childAgentId);
       const runIds = new Set([
         runId,
+        ...preparedRows.runIds,
         ...[...preparedRows().values(), ...this.options.getChildSessionCandidates(childSessionKey)]
           .filter(isGenerationCandidate)
           .map((row) => row.runId),

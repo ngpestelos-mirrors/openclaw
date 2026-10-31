@@ -30,10 +30,12 @@ import * as hookRunnerGlobal from "../../../plugins/hook-runner-global.js";
 import { createHookRunner } from "../../../plugins/hooks.js";
 import { createEmptyPluginRegistry } from "../../../plugins/registry-empty.js";
 import { onSessionLifecycleEvent } from "../../../sessions/session-lifecycle-events.js";
+import * as stateReads from "../../../state/openclaw-state-db-readonly.js";
 import { openOpenClawStateDatabase } from "../../../state/openclaw-state-db.js";
 import * as stateWorker from "../../../state/openclaw-state-worker-store.js";
 import { createEnteredGate } from "../../entered-gate.test-support.js";
 import type { AgentWaitResult } from "../../run-wait.js";
+import { createSubagentRunRecord } from "../../subagent-test-fixtures.test-helpers.js";
 import { prepareSubagentKillSession } from "./subagent-control-session.js";
 import { archiveCompletedSubagentRuns } from "./subagent-registry-archive.js";
 import { createSubagentRegistryContextCleanup } from "./subagent-registry-context-cleanup.js";
@@ -42,7 +44,10 @@ import { subagentRuns } from "./subagent-registry-memory.js";
 import * as persistence from "./subagent-registry-persistence.js";
 import { mutateSubagentRuns } from "./subagent-registry-persistence.js";
 import { subscribeSubagentRunChanges } from "./subagent-registry-publication.js";
-import { loadSubagentRegistryFromSqlite } from "./subagent-registry-state.fixture.test-support.js";
+import {
+  loadSubagentRegistryFromSqlite,
+  saveSubagentRegistryToSqlite,
+} from "./subagent-registry-state.fixture.test-support.js";
 import { registerSubagentRun, replaceSubagentRunAfterSteerCore } from "./subagent-registry.js";
 import { writeSubagentSessionEntry } from "./subagent-registry.persistence.test-support.js";
 import { releaseSubagentRun } from "./subagent-registry.test-helpers.js";
@@ -246,6 +251,61 @@ it("restores an archived source before advancing its replacement generation", as
   const stored = loadSubagentRegistryFromSqlite();
   expect(stored.get("cold-predecessor")?.execution.suppressSessionEffects).toBe(true);
   expect(stored.get("cold-successor")?.generation).toBe(3);
+});
+
+it("advances registration past a persisted-only predecessor archived during discovery", async () => {
+  vi.stubEnv("OPENCLAW_TEST_READ_SUBAGENT_RUNS_FROM_SQLITE", "1");
+  onTestFinished(() => {
+    vi.unstubAllEnvs();
+  });
+  const childSessionKey = "agent:main:subagent:archival-registration";
+  const now = Date.now();
+  const endedAt = now - 31 * 86_400_000;
+  const predecessor = createSubagentRunRecord({
+    runId: "archival-predecessor",
+    childSessionKey,
+    childAgentId: "main",
+    generation: 7,
+    createdAt: endedAt - 1,
+    execution: { status: "terminal", endedAt, outcome: { status: "ok" } },
+    cleanupCompletedAt: endedAt + 1,
+    expectsCompletionMessage: false,
+  });
+  saveSubagentRegistryToSqlite(new Map([[predecessor.runId, predecessor]]));
+  expect(subagentRuns.has(predecessor.runId)).toBe(false);
+  const execute = stateReads.executeExistingOpenClawStateRead;
+  let archived = false;
+  vi.spyOn(stateReads, "executeExistingOpenClawStateRead").mockImplementation(async (...args) => {
+    const reply = await execute(...args);
+    const command = args[1];
+    if (
+      !archived &&
+      command.type === "subagents.runs" &&
+      command.scope.kind === "archive" &&
+      command.scope.scope.kind === "children"
+    ) {
+      archived = true;
+      // The completed read cannot see the archival that commits before registration resumes.
+      expect(
+        await archiveCompletedSubagentRuns(now, new Map([[predecessor.runId, predecessor]])),
+      ).toBe(1);
+    }
+    return reply;
+  });
+  await register("archival-successor", childSessionKey, "archival-session", {
+    expectsCompletionMessage: false,
+  });
+  expect(archived).toBe(true);
+  expect(subagentRuns.get("archival-successor")).toMatchObject({ generation: 8, childSessionKey });
+  expect(subagentRuns.has(predecessor.runId)).toBe(false);
+  const stored = loadSubagentRegistryFromSqlite();
+  expect(stored.get("archival-successor")?.generation).toBe(8);
+  expect(stored.has(predecessor.runId)).toBe(false);
+  expect(
+    openOpenClawStateDatabase()
+      .db.prepare("SELECT run_id FROM subagent_run_archives WHERE run_id = ?")
+      .get(predecessor.runId),
+  ).toEqual({ run_id: predecessor.runId });
 });
 
 it.each(["transaction", "commit"] as const)(

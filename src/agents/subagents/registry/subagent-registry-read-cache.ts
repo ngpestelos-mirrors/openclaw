@@ -575,6 +575,12 @@ export function mergeSelectedFullRuns(
       merged.set(runId, withPayload(entry));
     }
   }
+  // Historical rows belong to this read; subsequent explicit receipts still win.
+  for (const [runId, entry] of archivedRuns ?? []) {
+    if (!merged.has(runId) && matches(entry) && (!runIds || runIds.has(runId))) {
+      merged.set(runId, entry);
+    }
+  }
   const state = selectSubagentCacheStateForRead(cache.state, context);
   if (
     context &&
@@ -586,12 +592,6 @@ export function mergeSelectedFullRuns(
   ) {
     for (const [runId, { entry }] of state.changes ? selectedEntries(state.changes, runIds) : []) {
       setOrDeleteRun(merged, runId, entry && matches(entry) ? withPayload(entry) : undefined);
-    }
-  }
-  // Historical rows are owned by this prepared read, never installed in a resident cache.
-  for (const [runId, entry] of archivedRuns ?? []) {
-    if (!merged.has(runId) && matches(entry) && (!runIds || runIds.has(runId))) {
-      merged.set(runId, entry);
     }
   }
   for (const [runId, entry] of selectedEntries(inMemoryRuns, runIds)) {

@@ -448,6 +448,14 @@ it("releases unrelated registration rows while following new owners and deletion
   await mutateSubagentRuns(["selected"], () => postimages([["selected", null]]));
   expect(preparedRows().has("selected")).toBe(false);
   expect(preparedRows().has("unrelated")).toBe(true);
+  const warmRows = await prepareSubagentRegistrationRows(
+    child,
+    ["unrelated"],
+    captureOpenClawStateWorkerContext(),
+  );
+  await mutateSubagentRuns(["unrelated"], () => postimages([["unrelated", null]]));
+  expect(preparedRows().size).toBe(0);
+  expect(warmRows().size).toBe(0);
 });
 
 it("persists prepared-only registration without resurrecting it after a queued deletion", async () => {
