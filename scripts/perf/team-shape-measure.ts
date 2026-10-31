@@ -565,8 +565,12 @@ if (isMainThread) {
               ) {
                 throw new Error("sessions.list returned no session counts");
               }
-              if (result.count === 0 || result.totalCount === 0) {
-                throw new Error(`${variant.name}: empty fixture result is not a valid measurement`);
+              if (
+                variant.name === "runtime-search"
+                  ? result.count !== 0 || result.totalCount !== 0
+                  : result.count === 0 || result.totalCount === 0
+              ) {
+                throw new Error(`${variant.name}: unexpected fixture result counts`);
               }
               if (
                 variant.name === "owner-counts" &&
