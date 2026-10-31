@@ -30,6 +30,7 @@ import {
   collectUnusedDependencyCaches,
   withDependencyCacheLock,
 } from "../../scripts/pr-lib/cache-lifetime.mjs";
+import { bindGitInvocation } from "../../scripts/pr-lib/git-invocation.mjs";
 import { resolveTestNodeExecPath } from "../../src/test-utils/node-process.js";
 import { createFixtureLifetime } from "../helpers/fixture-lifetime.js";
 import {
@@ -342,14 +343,24 @@ function writeEscapedPipeHolderLauncher(repoDir: string, pidFile: string) {
   ]);
 }
 
-function installPrCliFixture(repoDir: string, env?: NodeJS.ProcessEnv) {
+function fixtureGit(env: NodeJS.ProcessEnv = process.env) {
+  const selected = execFileSync("which", ["git"], { encoding: "utf8", env }).trim();
+  // Capture backend discovery before isolated bins shadow Git. The adapter must
+  // survive bin/git replacement and deletion of the fixture's linked worktree.
+  return bindGitInvocation(tempDirs.make("openclaw-pr-git-"), selected, env).executable;
+}
+
+function installPrCliFixture(repoDir: string, env: NodeJS.ProcessEnv = process.env) {
   const wrapperSources = copyPrWrapperSources(repoDir);
   const cli = join(repoDir, "scripts/pr");
   chmodSync(cli, 0o755);
   const binDir = join(repoDir, "isolated-bin");
   mkdirSync(binDir);
   for (const command of ["bash", "basename", "dirname", "git"]) {
-    const resolved = execFileSync("which", [command], { encoding: "utf8", env }).trim();
+    const resolved =
+      command === "git"
+        ? fixtureGit(env)
+        : execFileSync("which", [command], { encoding: "utf8", env }).trim();
     symlinkSync(resolved, join(binDir, command));
   }
   return { binDir, cli, wrapperSources };
@@ -848,7 +859,7 @@ describePosix("scripts/pr per-PR operation lock", () => {
     const target = refOid(repoDir, "HEAD");
     execFileSync("git", ["checkout", "--detach", head], { cwd: repoDir });
     const binDir = tempDirs.make("openclaw-pr-query-failure-");
-    const realGit = execFileSync("which", ["git"], { encoding: "utf8" }).trim();
+    const realGit = fixtureGit();
     const proxy = writeFixtureFile(binDir, "git", [
       "#!/usr/bin/env bash",
       'args=("$@")',
@@ -980,35 +991,49 @@ describePosix("scripts/pr per-PR operation lock", () => {
     expect(result.stdout.trim()).toBe(`1\t${successorOid}`);
     expect(result.stderr).toContain("owner changed during recovery");
   });
-  it("runs lock recovery without the normal PR toolchain", () => {
-    const repoDir = createRepo();
-    const inheritedAnchor = createRepo();
-    const { binDir, cli } = installPrCliFixture(repoDir);
-    const ownerOid = gitOutput(repoDir, ["rev-parse", "HEAD"]).trim();
-    execFileSync("git", ["update-ref", lockRef, ownerOid], { cwd: repoDir });
-    execFileSync("git", ["update-ref", lockRef, ownerOid], { cwd: inheritedAnchor });
-    const anchorRefs = gitOutput(inheritedAnchor, ["show-ref"]);
-    const result = spawnSync(
-      cli,
-      ["lock-recover", "42", ownerOid, "--confirmed-no-running-tools"],
-      {
-        cwd: repoDir,
-        encoding: "utf8",
-        env: {
-          ...createIndependentPrFixtureEnv({
-            ...process.env,
-            OPENCLAW_PR_ANCHOR_REPO_ROOT: inheritedAnchor,
-            OPENCLAW_PR_TOOLING_ROOT: inheritedAnchor,
-          }),
-          PATH: binDir,
+  it.each([false, true])(
+    "runs lock recovery without the normal PR toolchain (policy PATH: %s)",
+    (pathDependent) => {
+      const repoDir = createRepo();
+      const inheritedAnchor = createRepo();
+      const env = createIndependentPrFixtureEnv();
+      if (pathDependent) {
+        const policyDir = tempDirs.make("openclaw-pr-policy-discovery-");
+        symlinkSync(fixtureGit(env), join(policyDir, "fixture-git-backend"));
+        const policy = writeFixtureFile(policyDir, "git", [
+          "#!/bin/sh",
+          'exec fixture-git-backend "$@"',
+        ]);
+        chmodSync(policy, 0o755);
+        env.PATH = policyDir + delimiter + (env.PATH ?? "");
+      }
+      const { binDir, cli } = installPrCliFixture(repoDir, env);
+      const ownerOid = gitOutput(repoDir, ["rev-parse", "HEAD"]).trim();
+      execFileSync("git", ["update-ref", lockRef, ownerOid], { cwd: repoDir });
+      execFileSync("git", ["update-ref", lockRef, ownerOid], { cwd: inheritedAnchor });
+      const anchorRefs = gitOutput(inheritedAnchor, ["show-ref"]);
+      const result = spawnSync(
+        cli,
+        ["lock-recover", "42", ownerOid, "--confirmed-no-running-tools"],
+        {
+          cwd: repoDir,
+          encoding: "utf8",
+          env: {
+            ...createIndependentPrFixtureEnv({
+              ...env,
+              OPENCLAW_PR_ANCHOR_REPO_ROOT: inheritedAnchor,
+              OPENCLAW_PR_TOOLING_ROOT: inheritedAnchor,
+            }),
+            PATH: binDir,
+          },
         },
-      },
-    );
-    expect(gitOutput(inheritedAnchor, ["show-ref"])).toBe(anchorRefs);
-    expect(result.status, `${result.stdout}\n${result.stderr}`).toBe(0);
-    expect(result.stdout.trim()).toBe("Recovered the stale operation lock for PR #42.");
-    expect(refExists(repoDir)).toBe(false);
-  });
+      );
+      expect(gitOutput(inheritedAnchor, ["show-ref"])).toBe(anchorRefs);
+      expect(result.status, `${result.stdout}\n${result.stderr}`).toBe(0);
+      expect(result.stdout.trim()).toBe("Recovered the stale operation lock for PR #42.");
+      expect(refExists(repoDir)).toBe(false);
+    },
+  );
   it("keeps selected policy Git for minimal recovery reads and exact-OID deletion", () => {
     const repoDir = createRepo();
     const { binDir, cli } = installPrCliFixture(repoDir);
@@ -1413,7 +1438,7 @@ exec ${shellQuote(mktemp)} "$@"
     const queryExited = join(binDir, "query-exited");
     const validatorStarted = join(binDir, "validator-started");
     const validatorExited = join(binDir, "validator-exited");
-    const realGit = execFileSync("which", ["git"], { encoding: "utf8" }).trim();
+    const realGit = fixtureGit();
     const proxy = writeFixtureFile(binDir, "git", [
       "#!/usr/bin/env bash",
       'args=("$@")',
