@@ -69,6 +69,8 @@ export type SessionGitHubPullRequestBinding = {
   number: number;
   base: SessionGitHubPullRequestSource;
   head: SessionGitHubPullRequestSource;
+  /** Verified publication before first binding; absent on already-admitted legacy bindings. */
+  origin?: "session-publication" | "external-pr";
   /** Prepared initial PR head; absence means its first import is incomplete. */
   preparedHeadCommit?: string;
 };
@@ -674,6 +676,8 @@ export type InternalSessionEntryCore = SessionEntryCore & {
   sessionDiffBaselineCapture?: import("./session-diff-baseline-capture.js").SessionDiffBaselineCapture;
   /** Written only by committed graceful shutdown, consumed by the next startup. */
   resumeAfterRestart?: { queuedInputIds: string[]; hadBackgroundExec?: true };
+  /** Upgrade-only cycle; remove once stable includes the restart redesign (#185730). */
+  mainRestartRecovery?: { cycleId: string };
 };
 
 export interface InternalSessionEntry extends InternalSessionEntryCore {}

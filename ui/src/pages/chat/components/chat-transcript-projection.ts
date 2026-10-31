@@ -160,6 +160,7 @@ export function projectChatTranscript(
     runWorking: Boolean(props.runWorking),
     searchActive: searchFiltering,
     bubbleMode: props.chatBubbleMode === true,
+    session: props.transcriptMetadata ?? activeSession,
   });
   const { collapsedItems, transcriptItems, continuations } = transcriptChain;
   const replyNavigationId = props.replyMessageAccess?.navigationId;
@@ -230,6 +231,7 @@ export function projectChatTranscript(
           assistantGroupCanOwnActiveRunStatus(lastTranscriptItem)
         ? lastTranscriptItem
         : null;
+  const recapRow = props.transcriptMetadata ?? activeSession;
   const resolvedRecap = resolveTurnRecap(state, {
     sessionKey: props.sessionKey,
     agentId: props.currentAgentId,
@@ -243,7 +245,7 @@ export function projectChatTranscript(
         shouldRenderQueuedSendInThread(item),
     ),
     activeRunId: props.runActive ? props.runId : undefined,
-    row: props.transcriptMetadata ?? activeSession,
+    row: recapRow?.key === props.sessionKey ? recapRow : undefined,
     completedRunId: tailStatusOwner?.runId,
     usageByRun: props.runUsageById,
   });
@@ -284,6 +286,7 @@ export function projectChatTranscript(
     runActive: props.runActive,
     asyncQuestions,
     onOpenWorkspaceFile: props.onOpenWorkspaceFile,
+    onFindWorkspaceFile: props.onFindWorkspaceFile,
     onPermissionRetry: props.onPermissionRetry,
     mediaOwner: props.mediaOwner,
     mediaReadAllowed: props.mediaReadAllowed,
@@ -664,6 +667,7 @@ export function projectChatTranscript(
             runWorking: Boolean(props.runWorking),
             searchActive: false,
             bubbleMode: props.chatBubbleMode === true,
+            session: activeSession,
           },
         )
       : transcriptChain;

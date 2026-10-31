@@ -11,12 +11,21 @@ on:
       - "scripts/pr-lib/**"
       - "scripts/pnpm-runner.mts"
       - "scripts/lib/**"
+      # CI planners are Linux-owned; retain inputs used by native worker preparation.
+      - "!scripts/lib/ci-*.mts"
+      - "!scripts/lib/ci-*.mjs"
+      - "scripts/lib/ci-test-timings.mts"
+      - "scripts/lib/ci-test-timings-schema.mts"
+      - "scripts/lib/ci-test-timings-refit.mts"
+      - "scripts/lib/ci-node-test-groups-codec.mts"
+      - "scripts/lib/ci-static-check-evidence.mjs"
       - "scripts/run-vitest*"
       - "scripts/vitest-process-group.mts"
       - "scripts/test-projects*"
       - "scripts/tsx.mjs"
       - "scripts/windows-cmd-helpers.mjs"
       - "test/scripts/pr-*"
+      - "!test/scripts/pr-ci-sweeper*"
       - "test/scripts/exited-descendant-reaper.test-support.ts"
       - "test/helpers/**"
       - "test/vitest/**"
@@ -35,6 +44,14 @@ on:
 
 permissions:
   contents: read
+
+concurrency:
+  # Skipped draft events must not evict useful pending or running PR proof.
+  group: >-
+    ${{ github.event.pull_request.draft
+      && format('{0}-passive-draft-{1}', github.workflow, github.run_id)
+      || format('{0}-pr-{1}', github.workflow, github.event.pull_request.number) }}
+  cancel-in-progress: true
 
 jobs:
   darwin:
