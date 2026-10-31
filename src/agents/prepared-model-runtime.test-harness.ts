@@ -391,11 +391,23 @@ vi.mock("./model-discovery-context.js", async (importOriginal) => {
   return { resolveModelWorkspaceDir, resolveModelPluginMetadataSnapshot: () => undefined };
 });
 
-vi.mock("./models-config.js", () => ({
-  ensureOpenClawModelsJson: (...args: unknown[]) =>
+// mock-isolation: Catalog lifecycle fixtures carry inputs without preparing filesystem context.
+vi.mock("./models-config.prepared.js", () => ({
+  resolveModelsConfigInput: (config: unknown) => config,
+  prepareModelsConfigContext: (config: unknown, _env: unknown, ...args: unknown[]) => [
+    config,
+    ...args,
+  ],
+  ensureOpenClawModelsJson: (args: unknown[]) =>
     preparedModelRuntimeMocks.ensureOpenClawModelsJson(...args),
-  planOpenClawModelsJsonSource: (...args: unknown[]) =>
-    preparedModelRuntimeMocks.planOpenClawModelsJsonSource(...args),
+  planOpenClawModelsJsonSource: (
+    [config, agentDir, options]: [unknown, unknown, Record<string, unknown>],
+    authStore?: unknown,
+  ) =>
+    preparedModelRuntimeMocks.planOpenClawModelsJsonSource(config, agentDir, {
+      ...options,
+      ...(authStore ? { authStore } : {}),
+    }),
 }));
 
 vi.mock("./models-config.providers.implicit.js", () => ({

@@ -107,15 +107,20 @@ it("keeps source secret markers when the same runtime is republished before cont
   expect((await readModels(agentDir)).providers["custom-proxy"].apiKey).toBe("MODEL_ORIGINAL_KEY");
 });
 
-it("retains the pinned model directory after an environment change", async () => {
-  const { config, agentDir, state } = await fixture();
-  setRuntimeConfigSnapshot(config);
-  const pending = ensureOpenClawModelsJson();
-  vi.stubEnv("OPENCLAW_STATE_DIR", path.join(state, "replacement-state"));
-  await pending;
-  expect(await readModels(agentDir)).toEqual({ providers: config.models?.providers });
-  const replacementAgentDir = path.join(state, "replacement-state", "agents", "worker", "agent");
-  await expect(fs.access(path.join(replacementAgentDir, "models.json"))).rejects.toMatchObject({
-    code: "ENOENT",
-  });
-});
+it.each(["cold", "published"])(
+  "retains the %s model directory after an environment change",
+  async (mode) => {
+    const { config, agentDir, state } = await fixture();
+    if (mode === "published") {
+      setRuntimeConfigSnapshot(config);
+    }
+    const pending = ensureOpenClawModelsJson();
+    vi.stubEnv("OPENCLAW_STATE_DIR", path.join(state, "replacement-state"));
+    await pending;
+    expect(await readModels(agentDir)).toEqual({ providers: config.models?.providers });
+    const replacementAgentDir = path.join(state, "replacement-state", "agents", "worker", "agent");
+    await expect(fs.access(path.join(replacementAgentDir, "models.json"))).rejects.toMatchObject({
+      code: "ENOENT",
+    });
+  },
+);

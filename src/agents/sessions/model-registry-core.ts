@@ -4,7 +4,7 @@ import { normalizeProviderId } from "@openclaw/model-catalog-core/provider-id";
 import { projectConfigOntoRuntimeSourceSnapshot } from "../../config/runtime-source-projection.js";
 import type { ModelProviderConfig } from "../../config/types.models.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
-import type { Model, SimpleStreamOptions } from "../../llm/types.js";
+import type { Model } from "../../llm/types.js";
 import type { OAuthProviderInterface } from "../../llm/utils/oauth/types.js";
 import { createSubsystemLogger } from "../../logging/subsystem.js";
 import { warnPluginSdkDeprecation } from "../../plugins/sdk-deprecation.js";
@@ -727,8 +727,10 @@ export class ModelRegistry {
       return;
     }
     // Undefined registration fields preserve the stored provider configuration.
+    // SAFETY: Enumeration and indexed reads use the same ProviderConfigInput object.
     for (const k of Object.keys(config) as (keyof ProviderConfigInput)[]) {
       if (config[k] !== undefined) {
+        // SAFETY: Copy each defined field under its original key into the same provider type.
         (existing as Record<string, unknown>)[k] = config[k];
       }
     }
@@ -777,8 +779,7 @@ export class ModelRegistry {
       getModelRegistryRuntime(this).apiRegistry.registerApiProvider(
         {
           api: config.api!,
-          stream: (model, context, options) =>
-            streamSimple(model, context, options as SimpleStreamOptions),
+          stream: (model, context, options) => streamSimple(model, context, options),
           streamSimple,
         },
         `provider:${providerName}`,

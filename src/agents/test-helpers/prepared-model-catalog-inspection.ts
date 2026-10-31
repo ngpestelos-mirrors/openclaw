@@ -3,7 +3,7 @@ import { resolveStateDir } from "../../config/state-dir.js";
 import { resolveRuntimeWorkerThreadExecArgv } from "../../infra/runtime-worker-url.js";
 import { WorkerTaskPool } from "../../infra/worker-task-pool.js";
 import { createPluginSourceCaptureRoot } from "../../plugins/plugin-source-capture-directory.js";
-import type { planOpenClawModelsJsonSource } from "../models-config.js";
+import type { planOpenClawModelsJsonSource } from "../models-config.prepared.js";
 import type {
   PreparedModelCatalogWorkerInput,
   PreparedModelCatalogWorkerTask,

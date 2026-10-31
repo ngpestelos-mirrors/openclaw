@@ -1,2 +1,2 @@
-# SDK factory defaults/identity and prepared catalog cold-import boundaries.
-92
+# SDK factory identity, prepared catalog imports, and synchronous config capture.
+112

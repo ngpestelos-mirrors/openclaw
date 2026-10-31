@@ -74,6 +74,7 @@ export type StorageBackend = Omit<AuthStorageBackend, "withLockAsync"> & {
 };
 
 function parseStorageData(content: string | undefined): AuthStorageData {
+  // SAFETY: StorageBackend exchanges serialized AuthStorageData with the credential owner.
   return content ? (JSON.parse(content) as AuthStorageData) : {};
 }
 

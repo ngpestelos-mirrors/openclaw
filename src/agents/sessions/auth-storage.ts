@@ -202,6 +202,7 @@ class SqliteAuthStorageBackend implements StorageBackend {
       if (next !== undefined) {
         selectedStore = applyAuthStorageData(
           store,
+          // SAFETY: The AuthStorage mutation serializes its updated credential map into next.
           next ? (JSON.parse(next) as AuthStorageData) : {},
           materializedData,
         );
@@ -248,6 +249,7 @@ class SqliteAuthStorageBackend implements StorageBackend {
             ? store
             : applyAuthStorageData(
                 store,
+                // SAFETY: The AuthStorage mutation serializes its updated credential map into next.
                 next ? (JSON.parse(next) as AuthStorageData) : {},
                 materializedData,
               );
