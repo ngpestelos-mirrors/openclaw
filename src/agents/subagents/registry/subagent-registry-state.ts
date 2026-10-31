@@ -381,9 +381,9 @@ export function consumeFreshSubagentRegistryRows<T>(
 /** Discover registration candidates; mutation admission reloads their current rows in its FIFO. */
 export async function prepareSubagentRegistrationRows(
   childSessionKey: string,
-  childAgentId: string,
   selectedRunIds: readonly string[],
   context: OpenClawStateWorkerContext,
+  childAgentId: string,
 ): Promise<(() => ReadonlyMap<string, SubagentRunRecord>) & { runIds: readonly string[] }> {
   const snapshot = await prepareSubagentRunsCache(
     persistedSubagentRunsReadCache,

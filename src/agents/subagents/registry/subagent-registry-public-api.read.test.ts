@@ -185,9 +185,9 @@ it("reads archived tasks and descendants without restoring them, and fences arch
   expect(prepared.consume((rows) => rows.get("archived-collector")?.runId).ready).toBe(true);
   const registrationRows = await prepareSubagentRegistrationRows(
     archived.childSessionKey,
-    "main",
     [archived.runId],
     captureOpenClawStateWorkerContext(),
+    "main",
   );
   const readGroup = await api.prepareSwarmRunsForGroup("historical-group");
   const unrelated = createRun("unrelated-archive", { cleanup: "keep", cleanupCompletedAt: 201 });

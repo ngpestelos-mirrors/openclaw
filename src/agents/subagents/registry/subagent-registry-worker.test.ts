@@ -375,9 +375,9 @@ it("publishes overlapping durable and runtime-only mutations in FIFO order", asy
   const context = captureOpenClawStateWorkerContext();
   const registrationRows = await prepareSubagentRegistrationRows(
     "agent:main:subagent:overlap",
-    "main",
     [],
     context,
+    "main",
   );
   let writes = 0;
   const { reached, release } = holdFirstAck(() => {
@@ -433,9 +433,9 @@ it("releases unrelated registration rows while following new owners and deletion
     );
     const preparedRows = await prepareSubagentRegistrationRows(
       child,
-      "main",
       ["selected"],
       captureOpenClawStateWorkerContext(),
+      "main",
     );
     const retired = weak(getSubagentRunsSnapshotForRead(new Map()).get("unrelated")!);
     clearSubagentRunsReadCacheForTest();
@@ -452,9 +452,9 @@ it("releases unrelated registration rows while following new owners and deletion
   expect(preparedRows().has("unrelated")).toBe(true);
   const warmRows = await prepareSubagentRegistrationRows(
     child,
-    "main",
     ["unrelated"],
     captureOpenClawStateWorkerContext(),
+    "main",
   );
   await mutateSubagentRuns(["unrelated"], () => postimages([["unrelated", null]]));
   expect(preparedRows().size).toBe(0);
@@ -471,9 +471,9 @@ it("persists prepared-only registration without resurrecting it after a queued d
   expect(loadSubagentRegistryFromSqlite().has(original.runId)).toBe(true);
   const preparedRows = await prepareSubagentRegistrationRows(
     original.childSessionKey,
-    "main",
     [original.runId],
     captureOpenClawStateWorkerContext(),
+    "main",
   );
   const { reached, release } = holdFirstAck();
   const deletion = mutateSubagentRuns([original.runId], () => postimages([[original.runId, null]]));
