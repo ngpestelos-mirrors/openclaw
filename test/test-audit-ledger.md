@@ -3,6 +3,8 @@
 Repository-wide audit started at `96e05f7ca44`. Status: in progress.
 Inventory: 21,443 JS/TS test files, plus native test suites; 860 fixture-named paths.
 Inventory and automated candidate scans are discovery, not completed coverage review.
+Source tables are historical checkpoints; the closing paragraphs give the latest
+completed counts. Retained source review does not claim runtime validation.
 
 | Batch                   | Decision                                                                                                        | Evidence and remaining proof                                                                                                                                                                                                                                                                                         | Validation / landing                                                                                                                                                                          |
 | ----------------------- | --------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -283,12 +285,36 @@ consolidation. Preserve ordinary-channel persistence in the misleading model-run
 case; its mock supplies the reply. Deeper framework dependencies remain bounded.
 The separate 43 upstream suites are also closed; no additional removal is qualified.
 
-Android source coverage is now 105 suites / 1,064 declarations: retain 1,038,
-qualify 19 proof repairs and seven consolidations; 219 declaration files remain.
-Control UI Devices and its node library add 16 suites / 118 declarations, all
-retained. Connection authority, immutable policy receipts, token rotation,
-pairing lifecycle and visible controls cover distinct failures. No native or UI
-runtime result is claimed by this source closure.
+Android source coverage is now 147 suites / 1,534 declarations: retain 1,498,
+qualify 26 proof repairs and ten consolidations; 177 declaration files remain.
+Wear is fully classified. Rich-content and recap candidates retain stronger
+streaming-fence and actual transcript-publication keepers; native proof is pending.
+Control UI Devices, its node library and browser Gateway add 26 suites / 206
+declarations, all retained. Connection authority, token rotation, pairing controls,
+heartbeat recovery, event projection and early subscription handoff protect
+distinct failures. No native or UI runtime result is claimed by this source closure.
+
+Agent prompt/cache, run/lane ownership, tool results and tool policy: 58 suites /
+526 declarations; retain 525 and qualify one unregistered temporary session-store
+fixture for cleanup through the existing owner. This is separate from reply429
+and its 43 upstream suites. No deletion or runtime result is claimed.
+
+Further plugin source closure: File Transfer 21 suites / 162 declarations,
+active-memory 11 / 122, Synology Chat 10 / 91 and OpenShell 11 / 88. All local
+supports and shipped assets remain live. Only File Transfer's helper-level command
+metadata replay has a supported removal candidate; its registered entry already
+checks the exact commands and rejects eager runtime imports. Anthropic Vertex
+and Mantle add 11 provider suites / 62 retained declarations. Broader framework
+dependencies remain bounded; runtime removal qualification is still pending.
+
+Reply duplicate batch starts at `9c4ee988283`. Retire only the setup-failure cleanup
+declaration in `reply-agent-turn-preparation.test.ts` and the DM tool-result replay
+in `dispatch-from-config.progress.test-utils.ts`. The shared preparation table
+checks the identical failure plus exact failure recording and no preflight; the
+routing keeper requires the callback, checks its delivered payload and preserves
+final delivery. Both DM rows predate the split of their original common suite.
+Keep all abort, group/native routing, progress suppression and persistence cases.
+Untouched baseline, retained-keeper fault controls and candidate checks are pending.
 
 Remaining: declaration-level review across remaining core, plugins, UI, native apps,
 root/script suites and shared fixtures; close owner-reading gaps and land subsequent batches.
