@@ -79,7 +79,11 @@ export function admitAgentDatabaseStartupStructure(
   }
   assertSqliteDatabaseHeader(database, pathname);
   try {
-    assertOpenClawAgentCurrentRuntimeSchema(database, { agentId, pathname });
+    assertOpenClawAgentCurrentRuntimeSchema(database, {
+      agentId,
+      pathname,
+      requireCanonicalIndexes: true,
+    });
   } catch (error) {
     if (isSqliteSchemaMismatchError(error)) {
       return false;

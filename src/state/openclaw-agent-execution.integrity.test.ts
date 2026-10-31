@@ -653,7 +653,7 @@ it.each([
   ["two-leases", 0],
   ["two-leases-missing-metadata", 0],
   ["two-leases-stale", 1],
-  ["two-leases-unknown-owner", 0],
+  ["two-leases-unknown-owner", 1],
   ["two-leases-unclean", 1],
   ["prepared-existing", 0],
   ["invalidated", 1],
@@ -665,9 +665,9 @@ it.each([
   ["closed-host-blocked", 0],
   ["closed-host-blocked-last", 0],
   ["closed-host-revoked", 1],
-  ["closed-host-replaced", 1],
-  ["closed-host-no-receipt", 1],
-  ["closed-host-no-receipt-rollback", 1],
+  ["closed-host-replaced", 0],
+  ["closed-host-no-receipt", 0],
+  ["closed-host-no-receipt-rollback", 0],
 ] as const)(
   "native execution borrows only current host integrity proof (%s)",
   async (proof, expectedChecks) => {
