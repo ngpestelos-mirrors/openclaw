@@ -166,6 +166,57 @@ it("reads archived task status and lineage without repopulating resident project
   });
 });
 
+it("finds a retired run model after archival with a cold session projection", async () => {
+  await withRegistryState(async () => {
+    const modelConfig = { agents: { entries: { main: { model: "openai/gpt-4.1" } } } };
+    setRuntimeConfigSnapshot(modelConfig);
+    const child = "agent:main:subagent:model-search-child";
+    const parent = "agent:main:model-search-parent";
+    const now = Date.now();
+    const endedAt = now - 31 * 86_400_000;
+    writeRow(parent, { sessionId: "model-search-parent" });
+    writeRow(child, { sessionId: "model-search-child", spawnedBy: parent });
+    const run = createSubagentRunRecord({
+      runId: "model-search-run",
+      childSessionKey: child,
+      childAgentId: "main",
+      requesterSessionKey: parent,
+      requesterAgentId: "main",
+      model: "openai/retired-archive-only",
+      createdAt: endedAt - 1_000,
+      execution: { status: "terminal", endedAt, outcome: { status: "ok" } },
+      cleanupCompletedAt: endedAt,
+      delivery: { status: "not_required" },
+      completion: { required: false },
+    });
+    await mutateSubagentRuns([run.runId], () => ({
+      value: undefined,
+      postimages: new Map([[run.runId, run]]),
+    }));
+    const opts = { search: "retired-archive-only", limit: 10 };
+    const expected = [
+      expect.objectContaining({
+        key: child,
+        sessionId: "model-search-child",
+        modelProvider: "openai",
+        model: "gpt-4.1",
+      }),
+    ];
+    {
+      using projection = await createTestProjection({ cfg: modelConfig, modelCatalog: [] });
+      expect((await listProjectedSessions({ projection, opts })).sessions).toEqual(expected);
+    }
+    expect(await archiveCompletedSubagentRuns(now)).toBe(1);
+    expect(subagentRuns.has(run.runId)).toBe(false);
+    expect(loadSessionEntry({ agentId: "main", sessionKey: child })).not.toHaveProperty("model");
+    using projection = await createTestProjection({ cfg: modelConfig, modelCatalog: [] });
+    expect((await listProjectedSessions({ projection, opts })).sessions).toEqual(expected);
+    expect(projection.modelSearchMayMatch(opts.search)).toBe(false);
+    expect(subagentRuns.has(run.runId)).toBe(false);
+    expect(projection.state.rowContext.subagentRuns.getDisplaySubagentRun(child)).toBeNull();
+  });
+});
+
 it("keeps mixed descendant generations and physical child links in scoped historical reads", async () => {
   await withRegistryState(async () => {
     setRuntimeConfigSnapshot(cfg);

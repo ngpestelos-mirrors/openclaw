@@ -83,8 +83,12 @@ export function createSessionRowModelFactsReader(params: {
   };
   return {
     modelFacts: read,
-    modelSearchMayMatch(search: string) {
+    modelSearchMayMatch(search: string, rowContext?: SessionListRowContext) {
       const state = params.state();
+      if (rowContext && rowContext.subagentRuns.inputs !== state.rowContext.subagentRuns.inputs) {
+        // Historical vocabulary belongs to this request, not the resident projection cache.
+        return prepareSessionRowModelSearch({ ...state, rowContext, rows: params.rows() })(search);
+      }
       const scope = getPluginRuntimeGatewayRequestScope();
       const registry = getPluginRuntimeGenerationRegistry() ?? getPluginRegistryForContext();
       const dependencies = [
