@@ -341,6 +341,15 @@ matching their bundle's Workboard source. Run Chromium at `--cpu-throttle 1` and
 with `--steps page-<route>-visit,page-<route>-action,page-<route>-leave`.
 Use `--pages --page-phases visit` to validate every route's loaded state before
 the `--page-phases action,leave` sweep; the default includes all three phases.
+Measure first-use costs separately with
+`--steps page-agent-selector-first-open,page-search-advanced-open,page-terminal-composer-input`.
+These explicit steps are excluded from normal `--pages` runs. Keep first-open
+results separate from route visits and warm interactions; the Terminal step
+creates its session before timing ten typed characters and submission.
+The Memory Import action now reviews a ten-file collection before deselecting
+it, so its results are not directly comparable with older deselect-only timings.
+Virtualized inventories use their logical row count for readiness, including
+Cron's first 50 loaded jobs, rather than requiring every row to be mounted.
 The page table includes longest observed main-thread task, standard CLS, all
 layout shifts including those after input, and DOM counts. Unsupported browser
 metrics are null. DOM counts are collected after the measured interval so the
@@ -443,6 +452,14 @@ history, requests two GCs and saves a heap snapshot. Each observation gets its
 own browser process. Reports include process-tree RSS, WebKit resource categories,
 heap class counts, detached DOM and active resource counters.
 
+`--steps memory-working-day` runs ten rounds of session switches, streaming,
+route/settings visits, pickers, dialogs and reconnects in one document. Use
+`--memory-soak-rounds 2` for a short census; the option accepts 1–10 and defaults
+to 10. Every complete round switches 20 sessions, streams five turns, reconnects
+once, and records a parked checkpoint. The fixture remains 200 sessions at every
+length. The manifest and scenario evidence record the selected workload; compare
+only runs with the same round count.
+
 Memory captures are excluded from the latency table. Compare warm and later
 checkpoints within each engine before attributing growth: Inspector/JIT warmup,
 retained Chat panes and bounded caches are not leaks. WebKit snapshot self sizes
@@ -488,6 +505,12 @@ profiling and report median, p95, and min–max; every cell over 20% worse is ma
 for review. These are report-only measurements, not timing gates. Wall time is
 automation-to-assertion time, not INP. Keep failed attempts alongside successful
 captures and compare only runs with the same fixture, viewport, and collection mode.
+
+`bench-control-ui-reconnect.ts` measures recovery from synthetic transport loss,
+sleep, restart, and update. Its `manifest.json` records each input bundle's directory,
+build metadata, and `indexSha256`: the SHA-256 of the original `index.html` bytes,
+before any synthetic update rewrite. Match these hashes to the intended saved
+bundles when comparing results.
 
 Heavy-content steps use `heavy-<fixture>-<action>` IDs. Fixtures are `code`
 (5,000 TypeScript lines), `auto-code` (5,000 language-free lines), `diff`
