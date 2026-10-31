@@ -68,6 +68,9 @@ afterEach(async () => {
   }
 });
 const repoRoot = process.cwd();
+// Fixtures source helpers directly, bypassing scripts/pr's macOS re-exec.
+// Match its system Bash so large heredocs cannot deadlock under Bash 5.3.
+const fixtureBash = process.platform === "darwin" ? "/bin/bash" : "bash";
 const commonScript = join(repoRoot, "scripts/pr-lib/common.sh");
 const lockScript = join(repoRoot, "scripts/pr-lib/operation-lock.sh");
 const processGroupRunner = join(repoRoot, "scripts/pr-lib/process-group-runner.mjs");
@@ -298,7 +301,11 @@ function writeOperationFixture(repoDir: string, name: string, commands: string[]
   const fixture = writeFixtureFile(
     repoDir,
     name,
-    ["#!/usr/bin/env bash", ...bashSource(repoDir), ...commands].join("\n"),
+    [
+      `#!${fixtureBash === "bash" ? "/usr/bin/env bash" : fixtureBash}`,
+      ...bashSource(repoDir),
+      ...commands,
+    ].join("\n"),
   );
   chmodSync(fixture, 0o755);
   return fixture;
@@ -517,9 +524,7 @@ function runLockShell(
   commands: string[],
   parentEnv: NodeJS.ProcessEnv = process.env,
 ) {
-  // Standalone shells bypass scripts/pr's Darwin Bash 5.3 heredoc guard.
-  const bash = process.platform === "darwin" ? "/bin/bash" : "bash";
-  return spawnSync(bash, ["-c", [...bashSource(repoDir), ...commands].join("\n")], {
+  return spawnSync(fixtureBash, ["-c", [...bashSource(repoDir), ...commands].join("\n")], {
     cwd: repoDir,
     env: createIndependentPrFixtureEnv(parentEnv),
     detached: true,
