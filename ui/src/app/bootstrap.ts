@@ -1,6 +1,5 @@
 import "./boot-capabilities.ts";
 import { gatewayCredentialScope } from "@openclaw/gateway-client/browser";
-import type { ControlUiFocusLocation } from "@openclaw/session-url-contract";
 import type { RouteLocation } from "@openclaw/uirouter";
 import { ConnectErrorDetailCodes } from "../../../packages/gateway-protocol/src/connect-error-details.js";
 import type { GatewayBrowserClient } from "../api/gateway.ts";
@@ -12,7 +11,6 @@ import {
   routeIdFromPath,
   startApplicationRouter,
   warmApplicationRouteModule,
-  type ApplicationRouter,
   type RouteId,
 } from "../app-routes.ts";
 import { sessionRefFromPath } from "../app-session-route-paths.ts";
@@ -33,7 +31,6 @@ import {
 import { ControlUiPluginRuntime } from "../plugins/control-ui-runtime.ts";
 import { createAgentSelectionCapability } from "./agent-selection.ts";
 import { selectShellRouteState } from "./app-host-route-state.ts";
-import type { ControlUiDocumentMode } from "./approval-deep-link.ts";
 import { AssistantDock } from "./assistant-dock.ts";
 import { readBootRecord } from "./boot-record.ts";
 import { prepareApplicationStartup } from "./bootstrap-connection.ts";
@@ -56,9 +53,9 @@ import {
 import { startBrowserAuthRecovery } from "./browser-auth-recovery.tsx";
 import { createChatAttachmentHandoff } from "./chat-attachment-handoff.ts";
 import { createChatSubmissions } from "./chat-submissions.ts";
-import { createApplicationConfigCapability, type ReadOnlyConfigNotice } from "./config.ts";
+import { createApplicationConfigCapability } from "./config.ts";
 import { createConnectionBootstrapCoordinator } from "./connection-bootstrap.ts";
-import type { MountedApplicationShell } from "./context-types.ts";
+import type { ApplicationRuntime, MountedApplicationShell } from "./context-types.ts";
 import type { ApplicationNavigationOptions, ApplicationContext } from "./context.ts";
 import { createScopeUpgradeCapability } from "./device-scope-upgrade.ts";
 import type { EarlyApplicationGateway } from "./early-gateway.ts";
@@ -93,23 +90,7 @@ import { openUpdateFailureTriage } from "./update-triage.ts";
 import { seedUserPreferences } from "./user-prefs-cache.ts";
 import { createWebPushCapability } from "./web-push.ts";
 
-export type ApplicationRuntime = {
-  readonly context: ApplicationContext;
-  readonly router: ApplicationRouter;
-  readonly documentMode: ControlUiDocumentMode | null;
-  readonly readOnlyConfig?: ReadOnlyConfigNotice;
-  readonly warmBoot: boolean;
-  readonly focusLocation: ControlUiFocusLocation | null;
-  readonly pendingGatewayConnection: {
-    readonly gatewayUrl: string;
-    readonly token: string | null;
-  } | null;
-  readonly confirmPendingGatewayConnection: () => void;
-  readonly cancelPendingGatewayConnection: () => void;
-  readonly setShell: (shell: MountedApplicationShell | undefined) => void;
-  start: () => Promise<void>;
-  stop: () => void;
-};
+export type { ApplicationRuntime } from "./context-types.ts";
 
 type PendingRouterStartNavigation = {
   location: RouteLocation;
@@ -596,13 +577,21 @@ export function bootstrapApplication(
         void config.refresh({ ifNeeded: true, signal: startupLifecycle.signal });
       }
       const stopRouter = () => router.stop();
+      const earlyNewConnection = earlyGateway !== undefined && !earlyGateway.credentials;
       if (startsApplicationRouter) {
         startupLifecycle.addDisposer(stopRouter);
       }
       const steps: StartupStep[] = [
         () => {
-          gateway.start();
-          return () => gateway.stop();
+          if (!earlyNewConnection) {
+            gateway.start();
+          }
+          return () => {
+            if (earlyNewConnection && !gateway.snapshot.client) {
+              earlyGateway.transport.client.stop();
+            }
+            gateway.stop();
+          };
         },
         () => startGatewayPageActivation(gateway, document, window),
         () => startGatewayPresenceActivity(gateway, document),
@@ -656,7 +645,11 @@ export function bootstrapApplication(
           if (pendingNavigation) {
             history[pendingNavigation.mode](pendingNavigation.location);
           }
-          await startApplicationRouter(router, history, basePath, context);
+          const started = startApplicationRouter(router, history, basePath, context);
+          if (earlyNewConnection) {
+            gateway.start();
+          }
+          await started;
           return stopRouter;
         });
       }
