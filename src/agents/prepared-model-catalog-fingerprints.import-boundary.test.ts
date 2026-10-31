@@ -68,7 +68,7 @@ it("loads prepared catalog construction without the standalone config reader", a
 registerHooks({
   resolve(specifier, context, nextResolve) {
     const resolved = nextResolve(specifier, context);
-    if (resolved.url.endsWith("/agents/models-config.ts") || resolved.url.endsWith("/agents/models-config.js") || ["io.runtime", "io.factory", "validation", "zod-schema"].some(
+    if (resolved.url.endsWith("/agents/models-config.ts") || resolved.url.endsWith("/agents/models-config.js") || ["io.runtime", "io.factory", "validation", "zod-schema", "zod-schema.core", "zod-schema.gateway", "zod-schema.agent-runtime"].some(
       (name) => [".ts", ".js"].some((extension) => resolved.url.endsWith("/config/" + name + extension)),
     )) {
       throw new Error("Prepared catalog loaded standalone config IO: " + resolved.url);
