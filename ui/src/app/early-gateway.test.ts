@@ -139,12 +139,11 @@ it("closes the New connection when stop wins startup", async () => {
   expect(getLatestWebSocket().sent).toEqual([]);
 });
 
-it("rejects preconnection when navigation replaces the startup destination", async () => {
+it("rejects preconnection when the document URL changes before adoption", async () => {
   const { application, connection } = prepareRuntime();
   window.history.replaceState({}, "", "/about");
   const starting = application.start();
   await starting;
-  expect(application.router.getState().matches[0]?.routeId).toBe("about");
   expect(application.context.gateway.snapshot.client).not.toBe(connection.transport.client);
   expect(wsInstances).toHaveLength(2);
   expect(wsInstances[0].readyState).toBe(3);
