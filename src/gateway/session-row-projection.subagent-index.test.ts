@@ -338,6 +338,7 @@ it("keeps mixed descendant generations and physical child links in scoped histor
     writeRow(root, { sessionId: "scope-root" });
     writeRow(key("scope-physical"), { sessionId: "scope-physical", parentSessionKey: root });
     await mutateSubagentRuns([...runs.keys()], () => ({ value: undefined, postimages: runs }));
+    using _ = holdSubagentExecution("scope-physical", key("scope-physical"));
     using projection = await createTestProjection({ cfg, modelCatalog: [] });
     await projection.ensureMaterialized();
     expect(await archiveCompletedSubagentRuns(now)).toBe(2);
@@ -374,7 +375,24 @@ it("keeps mixed descendant generations and physical child links in scoped histor
       value: undefined,
       postimages: new Map([[moved.runId, moved]]),
     }));
-    expect(await readRoot()).toMatchObject({ active: 0, physical: "scope-physical" });
+    expect(await readRoot()).toMatchObject({
+      active: 0,
+      physical: "scope-physical",
+      row: { hasActiveSubagentRun: true },
+    });
+    for (const includeOwnerSessionCounts of [true, false]) {
+      const listed = await listProjectedSessions({
+        projection,
+        key: root,
+        opts: { includeOwnerSessionCounts },
+      });
+      expect(
+        listed.sessions,
+        `includeOwnerSessionCounts=${includeOwnerSessionCounts}`,
+      ).toMatchObject([
+        { key: root, childSessions: [key("scope-physical")], hasActiveSubagentRun: true },
+      ]);
+    }
     expect(subagentRuns.has("scope-archived")).toBe(false);
     expect(subagentRuns.has("scope-archived-leaf")).toBe(false);
   });
