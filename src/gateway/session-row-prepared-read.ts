@@ -39,7 +39,10 @@ export function projectPreparedSessionRunState(
   key: string,
   source: SessionRunSource,
   now: number,
-  rowContext: Parameters<typeof projectGatewaySessionRunState>[0]["rowContext"],
+  rowContext: Pick<
+    SessionListRowContext,
+    "subagentRuns" | "projectedAgentRuns" | "projectedSubagentActivity" | "transientSubagentRuns"
+  >,
 ) {
   let prepared = preparedRunStates.get(source);
   if (!prepared) {
@@ -60,7 +63,7 @@ export function projectPreparedSessionRunState(
     now,
     rowContext,
     projectRunProgress: prepared.progress,
-    cache: prepared.cache,
+    cache: rowContext.transientSubagentRuns ? undefined : prepared.cache,
   });
 }
 

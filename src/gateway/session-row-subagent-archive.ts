@@ -78,6 +78,7 @@ function projectSessionRowSubagentArchive(
       source = current;
       prepared = {
         ...current,
+        transientSubagentRuns: true,
         subagentRuns,
         subagentRunsByChildSessionKey: subagentRuns.runsByChildSessionKey,
       };
@@ -107,21 +108,16 @@ function projectSessionRowSubagentArchive(
           record.agentId,
           { includeChildren: true },
         );
-        const next = {
-          ...record,
-          publicationIdentity:
-            !record.materialized.source.childLinks?.length &&
-            record.materialized.row.swarm === undefined &&
-            swarm === undefined
-              ? record.materialized
-              : undefined,
-          materialized: {
-            ...record.materialized,
-            row: { ...record.materialized.row, swarm },
-            // Temporal presentation caches must not pin historical runs through a resident row.
-            source: { ...record.materialized.source },
-          },
-        };
+        const next =
+          record.materialized.row.swarm === undefined && swarm === undefined
+            ? record
+            : {
+                ...record,
+                materialized: {
+                  ...record.materialized,
+                  row: { ...record.materialized.row, swarm },
+                },
+              };
         descriptions.set(record, next);
         descriptions.set(next, next);
         return next;

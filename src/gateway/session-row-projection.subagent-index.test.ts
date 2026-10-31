@@ -16,6 +16,7 @@ import { setRuntimeConfigSnapshot } from "../config/config.js";
 import { loadSessionEntry, replaceSessionEntrySync } from "../config/sessions/session-accessor.js";
 import { readPreparedSessionEntryChange } from "../config/sessions/session-accessor.sqlite-entry-cache-publication.js";
 import { applySessionEntryExactReplacements } from "../config/sessions/session-accessor.sqlite-replacement-projection.js";
+import * as agentRuns from "../infra/agent-run-registry.js";
 import { onSessionIdentityMutation } from "../sessions/session-lifecycle-events.js";
 import { sessionChanges } from "../sessions/session-row-changes.js";
 import { createDeferredCore } from "../shared/deferred.js";
@@ -181,6 +182,7 @@ it("reads archived task status and lineage without repopulating resident project
       parent,
     ]);
     const present = vi.spyOn(rowPresentation, "presentSessionRow");
+    const progress = vi.spyOn(agentRuns, "prepareProjectedAgentRunProgressState");
     const readLeaf = () =>
       listProjectedSessions({
         projection,
@@ -191,7 +193,9 @@ it("reads archived task status and lineage without repopulating resident project
     const firstLeaf = (await readLeaf()).sessions[0];
     expect(firstLeaf).toMatchObject({ key: child, status: "done", endedAt });
     present.mockClear();
+    progress.mockClear();
     const nextLeaf = (await readLeaf()).sessions[0];
+    expect(progress).not.toHaveBeenCalled();
     expect(present).not.toHaveBeenCalled();
     expect(nextLeaf).toBe(firstLeaf);
     expect(subagentRuns.size).toBe(unrelated.length);

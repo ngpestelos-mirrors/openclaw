@@ -382,8 +382,7 @@ export function prepareProjectedSessionPresentation(
     );
     // Writers replace materialized facts; only live run, placement and clock facts need
     // comparison here. These witnesses never grant disclosure to another recipient.
-    const publicationIdentity = record.publicationIdentity ?? record.materialized;
-    let published = publicationRows?.get(publicationIdentity);
+    let published = publicationRows?.get(record.materialized);
     if (publicationRows) {
       const liveModel = resolveProjectedAgentRunModel({
         agentId: record.agentId,
@@ -440,7 +439,7 @@ export function prepareProjectedSessionPresentation(
       }
       if (!sameFacts(published?.facts, facts)) {
         published = { facts, views: new Map(), target: toProjectedSessionSharingTarget(record) };
-        publicationRows.set(publicationIdentity, published);
+        publicationRows.set(record.materialized, published);
         facts = [];
       }
     }
