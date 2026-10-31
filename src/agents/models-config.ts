@@ -23,7 +23,7 @@ async function prepareContext(
       options,
     );
   }
-  // Capture before the first yield: callers may republish config or change env immediately.
+  // Start the canonical reader before yielding; it owns cold loads and published snapshots.
   // Prepared workers enter below this standalone boundary with their existing facts.
   const captured = await captureRuntimeConfigAsyncReader({ capture: true })();
   const source = projectConfigOntoRuntimeSourceSnapshot(captured.config);
