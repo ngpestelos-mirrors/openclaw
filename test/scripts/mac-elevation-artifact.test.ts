@@ -128,14 +128,13 @@ describe.skipIf(process.platform !== "darwin")(
             2,
           );
           for (const format of requests) {
-            expect(
-              await runMacFixtureTool(
-                "/usr/bin/lipo",
-                ["-archs", path.join(root, format, "object")],
-                root,
-                mac,
-              ),
-            ).toBe("arm64 x86_64");
+            const arches = await runMacFixtureTool(
+              "/usr/bin/lipo",
+              ["-archs", path.join(root, format, "object")],
+              root,
+              mac,
+            );
+            expect(arches.split(/\s+/u).toSorted()).toEqual(["arm64", "x86_64"]);
           }
         } finally {
           tool.mockRestore();
