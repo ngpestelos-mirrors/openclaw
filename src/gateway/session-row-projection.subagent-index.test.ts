@@ -39,6 +39,7 @@ import {
 } from "./session-row-projection.read-fixture.test-support.js";
 import { listProjectedSessions } from "./session-utils-list.js";
 import * as rowProjection from "./session-utils-projection.js";
+import * as rowPresentation from "./session-utils-row.js";
 
 afterEach(() => {
   vi.restoreAllMocks();
@@ -179,6 +180,20 @@ it("reads archived task status and lineage without repopulating resident project
       child,
       parent,
     ]);
+    const present = vi.spyOn(rowPresentation, "presentSessionRow");
+    const readLeaf = () =>
+      listProjectedSessions({
+        projection,
+        key: child,
+        opts: { limit: 1 },
+        acceptsSerializedJson: true,
+      });
+    const firstLeaf = (await readLeaf()).sessions[0];
+    expect(firstLeaf).toMatchObject({ key: child, status: "done", endedAt });
+    present.mockClear();
+    const nextLeaf = (await readLeaf()).sessions[0];
+    expect(present).not.toHaveBeenCalled();
+    expect(nextLeaf).toBe(firstLeaf);
     expect(subagentRuns.size).toBe(unrelated.length);
     expect(projection.state.rowContext.subagentRuns.getDisplaySubagentRun(child)).toBeNull();
   });

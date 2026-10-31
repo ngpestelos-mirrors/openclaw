@@ -114,6 +114,8 @@ export type Row = {
   /** One accepted selection snapshot shared by recents and list consumers. */
   selectionSnapshot?: SelectionRow;
   materialized?: ReturnType<typeof rowProjection.materializeSessionRow>;
+  /** Request-owned history can reuse a leaf's resident publication identity. */
+  publicationIdentity?: ReturnType<typeof rowProjection.materializeSessionRow>;
   materializedSequence?: number;
   profileRevision?: number;
   subagentRevision?: number;

@@ -109,6 +109,12 @@ function projectSessionRowSubagentArchive(
         );
         const next = {
           ...record,
+          publicationIdentity:
+            !record.materialized.source.childLinks?.length &&
+            record.materialized.row.swarm === undefined &&
+            swarm === undefined
+              ? record.materialized
+              : undefined,
           materialized: {
             ...record.materialized,
             row: { ...record.materialized.row, swarm },
