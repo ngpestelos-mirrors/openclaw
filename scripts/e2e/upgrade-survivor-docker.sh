@@ -13,8 +13,8 @@ LIMITS_SUMMARY=""
 run_completed="0"
 diagnostics_ready=0
 is_scheduler_installed_recovery() {
-  [ -n "${OPENCLAW_UPGRADE_SURVIVOR_INSTALLED_RECOVERY_CUT:-}" ] &&
-    [ "${OPENCLAW_DOCKER_ALL_LANE_NAME:-}" = "package-installed-recovery-${OPENCLAW_UPGRADE_SURVIVOR_INSTALLED_RECOVERY_CUT}" ]
+  # Only the scheduler's retained producer identity assigns host finalization.
+  [ -n "${DOCKER_E2E_CONTAINER_CIDFILE:-}" ]
 }
 cleanup_outer() {
   local exit_status="$?"

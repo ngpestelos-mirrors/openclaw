@@ -7,6 +7,7 @@ import {
 } from "node:child_process";
 import { createHash } from "node:crypto";
 import {
+  chmodSync,
   copyFileSync,
   existsSync,
   linkSync,
@@ -3724,14 +3725,26 @@ exit ${exitCode}
   );
 
   it.each([
-    { publishedBaseline: false, scenario: "base", timeout: "" },
-    { publishedBaseline: true, scenario: "base", timeout: "" },
-    { publishedBaseline: false, scenario: "package-installed-recovery", timeout: "" },
-    { publishedBaseline: false, scenario: "package-installed-recovery", timeout: "1.5s" },
-    { publishedBaseline: false, scenario: "package-installed-recovery", timeout: "0" },
+    ...[
+      { publishedBaseline: false, scenario: "base", timeout: "" },
+      { publishedBaseline: true, scenario: "base", timeout: "" },
+      { publishedBaseline: false, scenario: "package-installed-recovery", timeout: "" },
+      { publishedBaseline: false, scenario: "package-installed-recovery", timeout: "1.5s" },
+      { publishedBaseline: false, scenario: "package-installed-recovery", timeout: "0" },
+    ].map((entry) => Object.assign(entry, { cut: "", schedulerOwned: false })),
+    ...[
+      { cut: "older-runtime", schedulerOwned: false },
+      { cut: "anchor-before", schedulerOwned: true },
+      { cut: "anchor-before", schedulerOwned: false },
+    ].map((entry) =>
+      Object.assign(
+        { publishedBaseline: false, scenario: "package-installed-recovery", timeout: "" },
+        entry,
+      ),
+    ),
   ])(
-    "publishes on the host and preserves Docker outcomes/budget: $scenario, published=$publishedBaseline, timeout=$timeout",
-    ({ publishedBaseline, scenario, timeout }) => {
+    "publishes on the host and preserves Docker outcomes/budget: $scenario, published=$publishedBaseline, timeout=$timeout, cut=$cut, scheduler=$schedulerOwned",
+    ({ publishedBaseline, scenario, timeout, cut, schedulerOwned }) => {
       for (const [exitCode, capturePresent, summaryStatus] of [
         [42, true, null],
         [42, false, null],
@@ -3747,6 +3760,7 @@ exit ${exitCode}
         const publicRoot = join(workDir, "public");
         const binDir = join(workDir, "bin");
         mkdirSync(join(artifacts, "diagnostics"), { recursive: true });
+        chmodSync(artifacts, schedulerOwned ? 0o2770 : 0o700);
         mkdirSync(registry);
         writeFileSync(
           join(artifacts, "diagnostics", "raw.json"),
@@ -3807,6 +3821,9 @@ exit ${exitCode}
 set -euo pipefail
 if [ "$1" = run ]; then
   printf "%s\\n" "$@" >"$TMPDIR/docker-args"
+  if [ -n "\${DOCKER_E2E_CONTAINER_CIDFILE:-}" ]; then
+    printf '%064d' 1 >"$DOCKER_E2E_CONTAINER_CIDFILE"
+  fi
   if [ ! -e "$TMPDIR/skip-optional-logs" ]; then
     test ! -e "$TMPDIR/public"
   fi
@@ -3857,7 +3874,9 @@ exit 0
               OPENCLAW_UPGRADE_SURVIVOR_ROOT_MANAGED_VPS: "0",
               OPENCLAW_UPGRADE_SURVIVOR_LIVE_MODELS: "",
               OPENCLAW_UPGRADE_SURVIVOR_LIVE_OPENAI: "0",
-              OPENCLAW_UPGRADE_SURVIVOR_INSTALLED_RECOVERY_CUT: "",
+              OPENCLAW_UPGRADE_SURVIVOR_INSTALLED_RECOVERY_CUT: cut,
+              OPENCLAW_DOCKER_ALL_LANE_NAME: cut ? `package-installed-recovery-${cut}` : "",
+              DOCKER_E2E_CONTAINER_CIDFILE: schedulerOwned ? join(workDir, "producer.cid") : "",
               OPENCLAW_DOCKER_ALL_LOG_DIR: "public",
             },
           });
@@ -3876,7 +3895,13 @@ exit 0
         expect(dockerArgs).toContain(`${artifacts}:/tmp/openclaw-upgrade-survivor-artifacts`);
         expect(dockerArgs).not.toContain(publicRoot);
         expect(dockerArgs).not.toContain(":/tmp/openclaw-upgrade-survivor-artifacts/diagnostics");
-        if (capturePresent) {
+        expect(statSync(artifacts).mode & 0o7777).toBe(schedulerOwned ? 0o2770 : 0o777);
+        if (schedulerOwned) {
+          expect(dockerArgs).toContain("--group-add");
+          expect(readFileSync(join(workDir, "producer.cid"), "utf8")).toMatch(/^[a-f0-9]{64}$/u);
+          expect(existsSync(publicRoot)).toBe(false);
+          expect(result.stderr).not.toContain("diagnostics missing");
+        } else if (capturePresent) {
           const { text } = publishedDiagnostic(publicRoot, "failure.json");
           expect(text).toContain("startup failure");
           expect(text).not.toContain("HOST_PUBLICATION_SECRET");
