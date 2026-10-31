@@ -332,7 +332,10 @@ export function createSessionRowAncestorReads(owner: {
                     subagentArchive = archive;
                     subagentArchiveKeys = keys;
                   };
-                  const archive = prepareSessionRowSubagentArchive(keys);
+                  const archive = prepareSessionRowSubagentArchive({
+                    kind: "sessions",
+                    sessionKeys: keys,
+                  });
                   if (archive instanceof Promise) {
                     return archive.then(accept);
                   }

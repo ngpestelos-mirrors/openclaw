@@ -30,20 +30,25 @@ export async function withCurrentSessionRowSubagentArchive<T>(read: () => Promis
 }
 
 /** Historical facts belong to this read, never the projection's resident registry index. */
-export function prepareSessionRowSubagentArchive(
-  sessionKeys?: readonly string[],
-): SessionRowSubagentArchiveRead | Promise<SessionRowSubagentArchiveRead> {
+export function prepareSessionRowSubagentArchive(scope?: {
+  kind: "sessions" | "children";
+  sessionKeys: readonly string[];
+}): SessionRowSubagentArchiveRead | Promise<SessionRowSubagentArchiveRead> {
   const archive = prepareSubagentArchiveSessionListRead(
-    sessionKeys ? { kind: "sessions", sessionKeys, descendants: true } : { kind: "all" },
+    scope?.kind === "children"
+      ? { kind: "children", sessionKeys: scope.sessionKeys }
+      : scope
+        ? { kind: "sessions", sessionKeys: scope.sessionKeys, descendants: true }
+        : { kind: "all" },
   );
   return archive instanceof Promise
-    ? archive.then((read) => projectSessionRowSubagentArchive(read, sessionKeys))
-    : projectSessionRowSubagentArchive(archive, sessionKeys);
+    ? archive.then((read) => projectSessionRowSubagentArchive(read, scope))
+    : projectSessionRowSubagentArchive(archive, scope);
 }
 
 function projectSessionRowSubagentArchive(
   archive: Awaited<ReturnType<typeof prepareSubagentArchiveSessionListRead>>,
-  sessionKeys?: readonly string[],
+  scope?: { kind: "sessions" | "children"; sessionKeys: readonly string[] },
 ): SessionRowSubagentArchiveRead {
   let source: SessionListRowContext | undefined;
   let prepared: SessionListRowContext | undefined;
@@ -59,11 +64,11 @@ function projectSessionRowSubagentArchive(
       const subagentRuns =
         prepared && source?.subagentRuns.revision === current.subagentRuns.revision
           ? prepared.subagentRuns.atTime(Date.now())
-          : sessionKeys
+          : scope
             ? buildSubagentSessionListReadIndex(
                 Date.now(),
-                sessionKeys,
-                archive.readSessionRuns(sessionKeys),
+                scope.sessionKeys,
+                archive.readSessionRuns(scope.sessionKeys, scope.kind),
               )
             : buildSubagentRunReadIndexFromRuns({
                 ...current.subagentRuns.inputs,

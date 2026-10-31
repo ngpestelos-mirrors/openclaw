@@ -224,20 +224,27 @@ export function prepareSubagentArchiveSessionListRead(scope: SubagentArchiveRead
     runs,
     isCurrent,
     assertSourceCurrent,
-    readSessionRuns(sessionKeys: readonly string[]) {
+    readSessionRuns(sessionKeys: readonly string[], kind: "sessions" | "children") {
       assertSourceCurrent();
       const cache = persistedSubagentSessionListRunsReadCache;
       const compact = readContext
         ? loadPersistedSubagentRunsForRead(cache, readContext)
         : new Map<string, SubagentRunReadRecord>();
       // Archived intermediaries connect the requested roots to current resident descendants.
-      const hot = mergeSubagentRunReadScope(subagentRuns, cache, compact, {
-        sessionKeys: [
-          ...sessionKeys,
-          ...Array.from(runs.values(), (entry) => entry.childSessionKey),
-        ],
-        descendants: true,
-      });
+      const hot = mergeSubagentRunReadScope(
+        subagentRuns,
+        cache,
+        compact,
+        kind === "children"
+          ? { childSessionKeys: sessionKeys }
+          : {
+              sessionKeys: [
+                ...sessionKeys,
+                ...Array.from(runs.values(), (entry) => entry.childSessionKey),
+              ],
+              descendants: true,
+            },
+      );
       return new Map([...runs, ...hot]);
     },
     assertCurrent() {

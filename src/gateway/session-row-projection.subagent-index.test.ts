@@ -60,9 +60,10 @@ it("reads archived task status and lineage without repopulating resident project
     const parent = "agent:main:actual-requester";
     const now = Date.now();
     const endedAt = now - 31 * 86_400_000;
-    writeRow(parent, { sessionId: "actual-requester" });
+    writeRow(parent, { sessionId: "actual-requester", label: "Synthetic archive parent" });
     writeRow(child, {
       sessionId: "kept-history",
+      label: "Synthetic archive child",
       spawnedBy: "agent:main:stale-requester",
     });
     const run = createSubagentRunRecord({
@@ -157,6 +158,23 @@ it("reads archived task status and lineage without repopulating resident project
         { groupId: "kept-history", done: 1, children: [{ sessionKey: child, status: "done" }] },
       ],
     });
+    archiveReads.mockClear();
+    const searched = await listProjectedSessions({
+      projection,
+      opts: { search: "Synthetic archive", limit: 10, ownerFirst: true },
+    });
+    expect(searched.sessions).toEqual(
+      listed.sessions.map((row) => Object.assign({}, row, { snapshotAt: expect.any(Number) })),
+    );
+    expect(
+      archiveReads.mock.calls.flatMap(([, command]) =>
+        command.type === "subagents.runs" && command.scope.kind === "archive"
+          ? [command.scope.scope]
+          : [],
+      ),
+    ).toEqual([
+      { kind: "sessions", sessionKeys: expect.arrayContaining([parent, child]), descendants: true },
+    ]);
     expect(await resolveApprovalSessionAudienceWithFallback(child, "main")).toEqual([
       child,
       parent,
@@ -210,10 +228,58 @@ it("finds a retired run model after archival with a cold session projection", as
     expect(subagentRuns.has(run.runId)).toBe(false);
     expect(loadSessionEntry({ agentId: "main", sessionKey: child })).not.toHaveProperty("model");
     using projection = await createTestProjection({ cfg: modelConfig, modelCatalog: [] });
+    const executeRead = stateReads.executeExistingOpenClawStateRead;
+    const archiveReads = vi.spyOn(stateReads, "executeExistingOpenClawStateRead");
     expect((await listProjectedSessions({ projection, opts })).sessions).toEqual(expected);
+    const scopes = archiveReads.mock.calls.flatMap(([, command]) =>
+      command.type === "subagents.runs" && command.scope.kind === "archive"
+        ? [command.scope.scope]
+        : [],
+    );
+    expect(scopes).not.toContainEqual({ kind: "all" });
+    expect(scopes).toContainEqual({
+      kind: "children",
+      sessionKeys: expect.arrayContaining([child]),
+    });
     expect(projection.modelSearchMayMatch(opts.search)).toBe(false);
     expect(subagentRuns.has(run.runId)).toBe(false);
     expect(projection.state.rowContext.subagentRuns.getDisplaySubagentRun(child)).toBeNull();
+    writeRow(child, { sessionId: "model-search-child", spawnedBy: parent, label: opts.search });
+    let removedLabel = false;
+    archiveReads.mockImplementation(async (...args) => {
+      const result = await executeRead(...args);
+      const command = args[1];
+      if (!removedLabel && command.type === "subagents.runs" && command.scope.kind === "archive") {
+        const scope = command.scope.scope;
+        if (scope.kind === "sessions" && scope.sessionKeys.includes(child)) {
+          removedLabel = true;
+          writeRow(child, { sessionId: "model-search-child", spawnedBy: parent });
+        }
+      }
+      return result;
+    });
+    expect((await listProjectedSessions({ projection, opts })).sessions).toEqual(expected);
+    expect(removedLabel).toBe(true);
+    archiveReads.mockImplementation(executeRead);
+    const latest = createSubagentRunRecord({
+      ...run,
+      runId: "model-search-latest",
+      generation: 2,
+      model: "openai/current-only",
+      createdAt: now,
+      execution: { status: "terminal", endedAt: now, outcome: { status: "ok" } },
+      cleanupCompletedAt: now,
+    });
+    await mutateSubagentRuns([latest.runId], () => ({
+      value: undefined,
+      postimages: new Map([[latest.runId, latest]]),
+    }));
+    expect((await listProjectedSessions({ projection, opts })).sessions).toEqual([]);
+    expect(
+      (await listProjectedSessions({ projection, opts: { ...opts, search: "current-only" } }))
+        .sessions,
+    ).toEqual(expected);
+    expect(subagentRuns.has(run.runId)).toBe(false);
   });
 });
 
