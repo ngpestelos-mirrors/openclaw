@@ -285,17 +285,18 @@ consolidation. Preserve ordinary-channel persistence in the misleading model-run
 case; its mock supplies the reply. Deeper framework dependencies remain bounded.
 The separate 43 upstream suites are also closed; no additional removal is qualified.
 
-Android source coverage is now 147 suites / 1,534 declarations: retain 1,498,
-qualify 26 proof repairs and ten consolidations; 177 declaration files remain.
+Android source coverage is now 184 suites / 2,006 declarations: retain 1,965,
+qualify 27 proof repairs, 13 consolidations and one dependency-arithmetic deletion;
+140 declaration files remain.
 Wear is fully classified. Rich-content and recap candidates retain stronger
 streaming-fence and actual transcript-publication keepers; native proof is pending.
-Control UI Devices, its node library and browser Gateway add 26 suites / 206
+Control UI Devices, its node library, browser Gateway and Gateway state add 36 suites / 246
 declarations, all retained. Connection authority, token rotation, pairing controls,
 heartbeat recovery, event projection and early subscription handoff protect
 distinct failures. No native or UI runtime result is claimed by this source closure.
 
-Agent prompt/cache, run/lane ownership, tool results and tool policy: 58 suites /
-526 declarations; retain 525 and qualify one unregistered temporary session-store
+Agent prompt/cache, run/lane ownership, tool results, tool policy and assembly:
+80 suites / 653 declarations; retain 652 and qualify one unregistered temporary session-store
 fixture for cleanup through the existing owner. This is separate from reply429
 and its 43 upstream suites. No deletion or runtime result is claimed.
 
@@ -307,6 +308,17 @@ checks the exact commands and rejects eager runtime imports. Anthropic Vertex
 and Mantle add 11 provider suites / 62 retained declarations. Broader framework
 dependencies remain bounded; runtime removal qualification is still pending.
 
+Diagnostics OTel adds 12 suites / 86 declarations: retain 83, qualify one content
+capture proof repair and two consolidations. Only the obsolete NodeSDK replay
+layer is a removal candidate; every private-provider sampler and span-limit
+assertion remains. Both local supports and shipped assets remain reachable.
+AgentsAPI adds ten suites / 96 retained declarations. Wire bytes, attachment
+custody, SQLite bindings and native continuation protect separate boundaries;
+the binding test facade has dynamic shared consumers and remains live.
+Cua Computer adds 12 suites / 83 retained declarations. Its lone redundant numeric
+enum assertion is absorbed by installed-SDK equality and actual scroll dispatch;
+runtime qualification remains pending.
+
 Reply duplicate batch starts at `9c4ee988283`. Retire only the setup-failure cleanup
 declaration in `reply-agent-turn-preparation.test.ts` and the DM tool-result replay
 in `dispatch-from-config.progress.test-utils.ts`. The shared preparation table
@@ -314,7 +326,16 @@ checks the identical failure plus exact failure recording and no preflight; the
 routing keeper requires the callback, checks its delivered payload and preserves
 final delivery. Both DM rows predate the split of their original common suite.
 Keep all abort, group/native routing, progress suppression and persistence cases.
-Untouched baseline, retained-keeper fault controls and candidate checks are pending.
+Untouched baseline: 178 tests passed across all three registering suites. Skipping
+presentation settlement made all three shared keeper rows fail; dropping the DM
+tool handoff made the retained routing keeper fail its delivered-payload assertion.
+Both production files were restored byte for byte. The candidate removes 33 test
+lines and two declarations, with no production change. The candidate passes 176
+tests across the same three suites. Targeted compilation, typed lint and formatting
+pass. Every removal-check phase matched baseline: zero unused files and script
+exports; the same three production and three full-tree export findings remain.
+No suppression was added. Review and landing:
+[PR #189313](https://github.com/openclaw/openclaw/pull/189313).
 
 Remaining: declaration-level review across remaining core, plugins, UI, native apps,
 root/script suites and shared fixtures; close owner-reading gaps and land subsequent batches.
