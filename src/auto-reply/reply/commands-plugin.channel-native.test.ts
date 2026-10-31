@@ -31,6 +31,10 @@ import {
   resetGlobalHookRunner,
 } from "../../plugins/hook-runner-global.js";
 import { addTestHook } from "../../plugins/hooks.test-fixtures.js";
+import {
+  bindLegacyPluginSdkResourceHost,
+  LegacyPluginSdkResourceHost,
+} from "../../plugins/legacy-sdk-resource-host.js";
 import { loadOpenClawPlugins } from "../../plugins/loader.js";
 import { waitForPluginCacheRetirement } from "../../plugins/plugin-cache.js";
 import type { PluginRegistry } from "../../plugins/registry-types.js";
@@ -107,7 +111,7 @@ async function withChannelCommandPlugin(
 ) {
   const channelId = options.channelId ?? "discord";
   await withAdminIngress(
-    async ({ cfg, state, admins, context, gateway }) => {
+    async ({ cfg, state, admins, context, gateway, resolveGatewayContext }) => {
       const bridge = Symbol.for(`openclaw.channel-command-native-test.${randomUUID()}`);
       const storePath = path.join(state.sessionsDir("main"), "sessions.json");
       const sessionKey = `agent:main:${channelId}:channel:maintainers`;
@@ -200,7 +204,7 @@ async function withChannelCommandPlugin(
           gateway,
           createDirectChatContext({
             getRuntimeConfig: () => cfg,
-            resolveGatewayContext: () => gateway,
+            resolveGatewayContext,
             validateAgentRuntimeApprovalAuthority: createAgentRuntimeApprovalAuthorityValidator(),
             getGatewayMethodRegistry: () => createRequestGatewayMethodRegistry(),
             trackExecution: trackAsyncWork,
@@ -215,6 +219,8 @@ async function withChannelCommandPlugin(
       setRuntimeConfigSnapshot(cfg);
       let registry: PluginRegistry | undefined;
       const blockers: string[] = [];
+      const sdkHost = new LegacyPluginSdkResourceHost();
+      bindLegacyPluginSdkResourceHost(resolveGatewayContext, sdkHost);
       try {
         registry = loadOpenClawPlugins({
           config: cfg,
@@ -251,7 +257,7 @@ async function withChannelCommandPlugin(
           });
           // Match startChannel's resolver without inheriting a request-local client.
           await withPluginRuntimeGatewayContextResolver(
-            () => gateway,
+            resolveGatewayContext,
             () =>
               withReplyDispatcher({
                 dispatcher,
@@ -336,18 +342,22 @@ async function withChannelCommandPlugin(
           },
         });
       } finally {
-        for (const blocker of blockers.splice(0)) {
-          releaseSwarmRun(blocker);
+        try {
+          for (const blocker of blockers.splice(0)) {
+            releaseSwarmRun(blocker);
+          }
+          Reflect.deleteProperty(globalThis, bridge);
+          resetGlobalHookRunner();
+          resetPluginRuntimeStateForTest();
+          if (registry) {
+            await expect(disposePluginRegistryInstances(registry)).resolves.toMatchObject({
+              failures: [],
+            });
+          }
+          await expect(waitForPluginCacheRetirement()).resolves.toMatchObject({ failures: [] });
+        } finally {
+          await sdkHost.close();
         }
-        Reflect.deleteProperty(globalThis, bridge);
-        resetGlobalHookRunner();
-        resetPluginRuntimeStateForTest();
-        if (registry) {
-          await expect(disposePluginRegistryInstances(registry)).resolves.toMatchObject({
-            failures: [],
-          });
-        }
-        await expect(waitForPluginCacheRetirement()).resolves.toMatchObject({ failures: [] });
       }
     },
     options.authority ?? "role",

@@ -469,11 +469,33 @@ async function readProjectedSessions(params: {
     const materializedBefore = projection.materializedCount;
     diagnostics?.mark("materialize");
     const waitStarted = performance.now();
+    let prepareSyncMs = 0;
+    const measurePreparation = <T>(read: () => T): T => {
+      const started = performance.now();
+      const syncCpu = diagnostics?.startSyncCpu();
+      try {
+        return read();
+      } finally {
+        diagnostics?.finishSyncCpu("prepareThreadCpuMs", syncCpu);
+        prepareSyncMs += performance.now() - started;
+        if (diagnostics) {
+          diagnostics.projection.prepareSyncMs = prepareSyncMs;
+        }
+      }
+    };
     let yieldCount = 0;
     let searchIdentities: Awaited<ReturnType<typeof prepareSessionSearchIdentityNames>> | undefined;
     let subagentArchive: Awaited<ReturnType<typeof prepareSessionRowSubagentArchive>> | undefined;
     let broadArchive = false;
     let searchHistoryKeys: Set<string> | undefined;
+    const prepareList = (now: number) =>
+      prepareProjectedSessionList({
+        ...params,
+        now,
+        searchIdentities,
+        subagentArchive,
+        metadataPrepared: true,
+      });
     do {
       yieldCount++;
       await projection.prepareSelection({ ...selectionPreparation, yieldForCatalog: true });
@@ -499,19 +521,12 @@ async function readProjectedSessions(params: {
         );
       } else if (opts.search?.trim()) {
         searchHistoryKeys = new Set();
-        const { filters } = prepareProjectedSessionList({
-          projection,
-          opts,
-          key: exactKey,
-          context,
-          client,
-          now: Date.now(),
-          searchIdentities,
-          metadataPrepared: true,
+        measurePreparation(() => {
+          const { filters } = prepareList(Date.now());
+          withAgentRosterFactsBatch(filters.cfg, () =>
+            filterSessionEntries({ ...filters, collectSearchHistory: searchHistoryKeys }),
+          );
         });
-        withAgentRosterFactsBatch(filters.cfg, () =>
-          filterSessionEntries({ ...filters, collectSearchHistory: searchHistoryKeys }),
-        );
         if (searchHistoryKeys.size) {
           subagentArchive = await prepareSessionRowSubagentArchive({
             kind: "children",
@@ -524,7 +539,6 @@ async function readProjectedSessions(params: {
       (subagentArchive && !subagentArchive.isCurrent()) ||
       (searchIdentities && searchIdentities.cfg !== projection.state.cfg)
     );
-    let prepareSyncMs = 0;
     const assertSelectionHistoryCurrent = () => {
       if (subagentArchive && !subagentArchive.isCurrent()) {
         throw new SessionRowSubagentArchivePending();
@@ -536,61 +550,46 @@ async function readProjectedSessions(params: {
     };
     const selectPage = () => {
       assertSelectionHistoryCurrent();
-      const started = performance.now();
-      const syncCpu = diagnostics?.startSyncCpu();
       try {
-        diagnostics?.mark("storeLoad");
-        const now = Date.now();
-        const { presentation, presentationForRead, prepared, filters, ownerRunningCandidateKeys } =
-          prepareProjectedSessionList({
-            projection,
-            opts,
-            key: exactKey,
-            context,
-            client,
+        return measurePreparation(() => {
+          diagnostics?.mark("storeLoad");
+          const now = Date.now();
+          const preparation = prepareList(now);
+          const { presentation, prepared, filters } = preparation;
+          const preparedSearchHistory = searchHistoryKeys;
+          if (preparedSearchHistory) {
+            filters.requireSearchHistory = (key) => {
+              if (!preparedSearchHistory.has(key)) {
+                throw new SessionRowSubagentArchivePending();
+              }
+            };
+          }
+          diagnostics?.mark("filterSetup");
+          const select = (retained?: WeakMap<object, SessionListFilteredEntries>) =>
+            withAgentRosterFactsBatch(prepared.cfg, () =>
+              selectSessionEntries({
+                ...filters,
+                defaultLimit: 100,
+                partitions: prepared.partitions,
+                retained,
+              }),
+            );
+          const selection =
+            params.acceptsSerializedJson && exactKey === undefined
+              ? presentation.select(opts, select)
+              : select();
+          return {
             now,
-            searchIdentities,
-            subagentArchive,
-            metadataPrepared: true,
-          });
-        const preparedSearchHistory = searchHistoryKeys;
-        if (preparedSearchHistory) {
-          filters.requireSearchHistory = (key) => {
-            if (!preparedSearchHistory.has(key)) {
-              throw new SessionRowSubagentArchivePending();
-            }
+            presentationForRead: preparation.presentationForRead,
+            prepared,
+            selection: projectSessionOwnerRunningCounts(
+              filters,
+              selection,
+              preparation.ownerRunningCandidateKeys,
+            ),
           };
-        }
-        diagnostics?.mark("filterSetup");
-        const select = (retained?: WeakMap<object, SessionListFilteredEntries>) =>
-          withAgentRosterFactsBatch(prepared.cfg, () =>
-            selectSessionEntries({
-              ...filters,
-              defaultLimit: 100,
-              partitions: prepared.partitions,
-              retained,
-            }),
-          );
-        const selection =
-          params.acceptsSerializedJson && exactKey === undefined
-            ? presentation.select(opts, select)
-            : select();
-        return {
-          now,
-          presentationForRead,
-          prepared,
-          selection: projectSessionOwnerRunningCounts(
-            filters,
-            selection,
-            ownerRunningCandidateKeys,
-          ),
-        };
+        });
       } finally {
-        diagnostics?.finishSyncCpu("prepareThreadCpuMs", syncCpu);
-        prepareSyncMs += performance.now() - started;
-        if (diagnostics) {
-          diagnostics.projection.prepareSyncMs = prepareSyncMs;
-        }
         diagnostics?.mark("materialize");
       }
     };
@@ -615,9 +614,9 @@ async function readProjectedSessions(params: {
       (read) => {
         // The page's relationship read cannot certify off-page search totals or facets.
         assertSelectionHistoryCurrent();
-        const resumed = performance.now();
         const { now, presentationForRead, prepared, selection } = page;
-        const presentation = presentationForRead(read);
+        const presentation = measurePreparation(() => presentationForRead(read));
+        const resumed = performance.now();
         const { cfg, getTarget } = prepared;
         diagnostics?.mark("sharing");
         diagnostics?.mark("rows");

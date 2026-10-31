@@ -34,6 +34,7 @@ import {
   releaseAgentRunDelegatedAuthority,
 } from "../../../infra/agent-run-registry.js";
 import { withTimeout } from "../../../infra/fs-safe.js";
+import { LegacyPluginSdkResourceHost } from "../../../plugins/legacy-sdk-resource-host.js";
 import { getActivePluginRegistry } from "../../../plugins/runtime.js";
 import { withPluginRuntimeGatewayRequestScope } from "../../../plugins/runtime/gateway-request-scope.js";
 import { beginSessionEffect } from "../../../sessions/session-controller.lifecycle.js";
@@ -131,6 +132,7 @@ vi.mock("../../embedded-agent.js", async () => {
 const parentSessionKey = "agent:main:subagent:production-boundary-parent";
 const parentRunId = "production-boundary-parent";
 let state: OpenClawTestState;
+let sdkResourceHost: LegacyPluginSdkResourceHost;
 let stateDir = "";
 let runtimeConfig: OpenClawConfig;
 let settleRootWork: ReturnType<typeof observeRootWork>;
@@ -145,6 +147,7 @@ async function writeTestConfig(maxChildrenPerAgent?: number) {
 }
 
 beforeEach(async () => {
+  sdkResourceHost = new LegacyPluginSdkResourceHost();
   state = await createOpenClawTestState({
     label: "spawn-production-boundary",
     prepareProfileCatalog: true,
@@ -193,19 +196,26 @@ beforeEach(async () => {
 });
 
 afterEach(async ({ task }) => {
-  // Join finite completion tails before asserting that their registry roots retired.
-  await settleSubagentRegistryPersistenceWork(() => settleRootWork());
-  // Retire workspace observers before fixture cleanup removes their roots.
-  const { closeSkillsWatchers } = await import("../../../skills/runtime/refresh.js");
-  await closeSkillsWatchers(true);
-  await resetSubagentRegistryForTests({ persist: false });
-  vi.mocked(runSubagentAnnounceFlow).mockReset();
-  vi.mocked(callGateway).mockReset();
-  clearRuntimeConfigSnapshot();
-  clearConfigCache();
-  releaseProfileCatalog?.();
-  releaseProfileCatalog = undefined;
-  await cleanupPreparedModelRuntimeHarness(state, task.result?.state === "fail");
+  try {
+    // Join finite completion tails before asserting that their registry roots retired.
+    await settleSubagentRegistryPersistenceWork(() => settleRootWork());
+    // Retire workspace observers before fixture cleanup removes their roots.
+    const { closeSkillsWatchers } = await import("../../../skills/runtime/refresh.js");
+    await closeSkillsWatchers(true);
+    await resetSubagentRegistryForTests({ persist: false });
+    vi.mocked(runSubagentAnnounceFlow).mockReset();
+    vi.mocked(callGateway).mockReset();
+    clearRuntimeConfigSnapshot();
+    clearConfigCache();
+    releaseProfileCatalog?.();
+    releaseProfileCatalog = undefined;
+  } finally {
+    try {
+      await sdkResourceHost.close();
+    } finally {
+      await cleanupPreparedModelRuntimeHarness(state, task.result?.state === "fail");
+    }
+  }
 });
 
 async function createBoundParent(
@@ -228,6 +238,7 @@ async function createBoundParent(
   }
   return await createSpawnBoundaryParent({
     stateDir,
+    sdkResourceHost,
     parentSessionKey,
     parentRunId,
     operatorAuthority,
@@ -419,6 +430,7 @@ describe("recursive spawn production boundary", () => {
       clearRuntimeConfigSnapshot();
       const bound = await createSpawnBoundaryParent({
         stateDir,
+        sdkResourceHost,
         parentSessionKey,
         parentRunId,
         requesterOrigin: { sessionKey: parentSessionKey, messageProvider: "telegram", senderId },

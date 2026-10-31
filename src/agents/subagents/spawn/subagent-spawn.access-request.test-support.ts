@@ -10,10 +10,6 @@ import {
 } from "../../../config/sessions/session-accessor.js";
 import { GatewayScheduler } from "../../../infra/gateway-scheduler.js";
 import * as fetchGuard from "../../../infra/net/fetch-guard.js";
-import {
-  bindLegacyPluginSdkResourceHost,
-  LegacyPluginSdkResourceHost,
-} from "../../../plugins/legacy-sdk-resource-host.js";
 import type { ProviderPlugin } from "../../../plugins/types.js";
 import { loadBundledPluginFacade } from "../../../test-utils/bundled-plugin-public-surface.js";
 import { createTestRegistry } from "../../../test-utils/channel-plugins.js";
@@ -53,13 +49,8 @@ export function registerAccessRequestSpawnCases(
         { cyberAccessProgram: selection === "inherited" ? program : undefined },
       );
       const scheduler = new GatewayScheduler();
-      const sdkHost = new LegacyPluginSdkResourceHost();
-      sdkHost.bindScheduler(scheduler);
-      bindLegacyPluginSdkResourceHost(bound.resolveGatewayContext, sdkHost);
-      onTestFinished(async () => {
-        await sdkHost.close();
-        await scheduler.stop();
-      });
+      bound.sdkResourceHost.bindScheduler(scheduler);
+      onTestFinished(() => scheduler.stop());
       const runtimeMocks = getPreparedModelRuntimeMocks();
       Object.assign(runtimeMocks.pluginMetadataSnapshot.index, { diagnostics: [] });
       const access = [
