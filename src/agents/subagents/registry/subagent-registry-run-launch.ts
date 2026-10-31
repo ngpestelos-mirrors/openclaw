@@ -234,6 +234,7 @@ export class SubagentLaunchManager extends SubagentRecoveryManager {
       assertCurrent();
       preparedRows = await prepareSubagentRegistrationRows(
         childSessionKey,
+        childAgentId,
         [
           runId,
           ...Array.from(

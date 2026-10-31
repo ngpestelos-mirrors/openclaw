@@ -60,6 +60,7 @@ import type {
 } from "./subagent-registry-read.types.js";
 import { readAllSubagentRunsInWorker } from "./subagent-registry.store.read.js";
 import type { SubagentRunMaintenanceRecord, SubagentRunRecord } from "./subagent-registry.types.js";
+import { isSubagentRunGenerationCandidate } from "./subagent-run-generation.js";
 
 const persistedSubagentRunsReadCache: SubagentRunsCache<SubagentRunRecord> = {
   state: {},
@@ -380,6 +381,7 @@ export function consumeFreshSubagentRegistryRows<T>(
 /** Discover registration candidates; mutation admission reloads their current rows in its FIFO. */
 export async function prepareSubagentRegistrationRows(
   childSessionKey: string,
+  childAgentId: string,
   selectedRunIds: readonly string[],
   context: OpenClawStateWorkerContext,
 ): Promise<(() => ReadonlyMap<string, SubagentRunRecord>) & { runIds: readonly string[] }> {
@@ -418,6 +420,15 @@ export async function prepareSubagentRegistrationRows(
       archived.set(id, entry);
     }
   }
+  // Raw session keys can name different owners; only this owner's generations share a FIFO.
+  const generationRunIds = new Set<string>();
+  for (const rows of [prepared, archived]) {
+    for (const entry of rows.values()) {
+      if (isSubagentRunGenerationCandidate(entry, childSessionKey, childAgentId)) {
+        generationRunIds.add(entry.runId);
+      }
+    }
+  }
   // Carry discovery IDs across hot-to-archive moves; the mutation reads fresh rows in its FIFO.
   return Object.assign(
     () => {
@@ -433,7 +444,7 @@ export async function prepareSubagentRegistrationRows(
         },
       );
     },
-    { runIds: [...new Set([...prepared.keys(), ...archived.keys()])] },
+    { runIds: [...generationRunIds] },
   );
 }
 
