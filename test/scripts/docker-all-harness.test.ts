@@ -1485,13 +1485,16 @@ describe("Docker scheduler trusted harness execution", () => {
       `,
     );
     const { result, logDir } = runFixture(fixture, "split", [name], {
-      env:
-        mode === "timeout-no-tuple"
+      env: {
+        GITHUB_ACTIONS: "true",
+        OPENCLAW_DOCKER_ALL_FAILURE_TAIL_LINES: "1",
+        ...(mode === "timeout-no-tuple"
           ? {
               OPENCLAW_CURRENT_PACKAGE_VERSION: "",
               OPENCLAW_CURRENT_PACKAGE_SHA256: "",
             }
-          : {},
+          : {}),
+      },
     });
     expect(result.status, result.stdout + result.stderr).toBe(mode === "signal" ? 143 : 1);
     expect(readFileSync(joined, "utf8")).toBe("joined");
@@ -1514,6 +1517,16 @@ describe("Docker scheduler trusted harness execution", () => {
             : mode === "signal-publisher"
               ? 128
               : 1,
+    );
+    const annotations = result.stderr
+      .split("\n")
+      .filter((line) => line.startsWith("::error title=Upgrade survivor failure::"));
+    expect(annotations).toEqual(
+      mode.startsWith("timeout") || mode === "signal"
+        ? [
+            `::error title=Upgrade survivor failure::phase=${timedOut ? "installed-recovery-timeout" : "installed-recovery"}; exitStatus=128; signal=none`,
+          ]
+        : [],
     );
     const privateRoot = readFileSync(privateRootFile, "utf8");
     expect(privateRoot.startsWith(logDir + path.sep)).toBe(false);

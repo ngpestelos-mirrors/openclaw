@@ -1037,7 +1037,9 @@ function runOwnedShellCommand({
                 cause: errors[0],
               });
         }
-        if (exitCode !== 0 && env.GITHUB_ACTIONS === "true") {
+        // Publication can succeed while reporting a failed lane. Its private
+        // receipt carries that outcome independently of the publisher's exit.
+        if (env.GITHUB_ACTIONS === "true") {
           printUpgradeFailureMetadata(failureMetadata);
         }
         resolve({
