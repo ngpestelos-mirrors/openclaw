@@ -103,6 +103,7 @@ it.each(["stop", "different URL"])(
 );
 
 it("retains protocol retry and signs only the replacement socket's challenge", async () => {
+  vi.spyOn(Math, "random").mockReturnValue(0);
   const retired = challenge();
   await vi.advanceTimersByTimeAsync(DEFAULT_PREAUTH_HANDSHAKE_TIMEOUT_MS);
   expect(retired.lastClose?.reason).toBe("connect timeout");
@@ -122,14 +123,9 @@ it("retains protocol retry and signs only the replacement socket's challenge", a
 
 it("retires a constructor failure so the application can create its ordinary client", async () => {
   preconnect.client.stop();
-  vi.stubGlobal(
-    "WebSocket",
-    class {
-      constructor() {
-        throw new Error("synthetic socket construction failure");
-      }
-    },
-  );
+  vi.stubGlobal("WebSocket", function BrokenWebSocket() {
+    throw new Error("synthetic socket construction failure");
+  });
   preconnect = GatewayBrowserClient.preconnect(url)!;
   expect(preconnect.adopt({ url, token: "canonical-token" })).toBeNull();
   vi.stubGlobal("WebSocket", MockWebSocket);

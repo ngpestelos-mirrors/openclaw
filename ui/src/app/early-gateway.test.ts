@@ -9,11 +9,12 @@ import {
   wsInstances,
 } from "../api/gateway-socket.test-support.ts";
 import type { startControlUi } from "../main.runtime.ts";
+import { createStorageMock } from "../test-helpers/storage.ts";
 import { prepareApplicationStartup } from "./bootstrap-connection.ts";
 import { bootstrapApplication } from "./bootstrap.ts";
 import { startEarlyApplicationGateway, type EarlyApplicationGateway } from "./early-gateway.ts";
 import * as gatewayCredentials from "./gateway-store.credentials.ts";
-import { loadSettings, saveSettings } from "./settings.ts";
+import { loadSettings, persistSessionToken, saveSettings } from "./settings.ts";
 
 const mainRuntime = vi.hoisted(() => ({ startControlUi: vi.fn<typeof startControlUi>() }));
 vi.mock("../main.runtime.ts", () => mainRuntime);
@@ -26,12 +27,14 @@ beforeEach(() => {
   useNodeFakeTimers();
   vi.stubGlobal("WebSocket", MockWebSocket);
   vi.stubGlobal("crypto", { randomUUID: () => "new-preconnect-proof" });
+  vi.stubGlobal("localStorage", createStorageMock());
+  vi.stubGlobal("sessionStorage", createStorageMock());
   wsInstances.length = 0;
-  localStorage.clear();
-  sessionStorage.clear();
   document.documentElement.removeAttribute("data-openclaw-remote-ingress");
   window.history.replaceState({}, "", "/new");
-  saveSettings({ ...loadSettings(), gatewayUrl: "ws://127.0.0.1:18789", token: "synthetic-token" });
+  const gatewayUrl = "ws://127.0.0.1:18789";
+  saveSettings({ ...loadSettings(), gatewayUrl });
+  persistSessionToken(gatewayUrl, "synthetic-token");
   mainRuntime.startControlUi.mockImplementation(async (_initial, connection) => {
     early = connection;
   });
@@ -46,8 +49,6 @@ afterEach(() => {
   vi.restoreAllMocks();
   vi.useRealTimers();
   vi.unstubAllGlobals();
-  localStorage.clear();
-  sessionStorage.clear();
 });
 
 function prepareRuntime() {
@@ -72,7 +73,7 @@ it("prepares credentials once at adoption and starts New before publishing hello
     .spyOn(gatewayCredentials, "createGatewayCredentials")
     .mockImplementation((ownsWarmBoot) => {
       const credentials = originalCreate(ownsWarmBoot);
-      const prepare = credentials.prepare;
+      const prepare = credentials.prepare.bind(credentials);
       vi.spyOn(credentials, "prepare").mockImplementation((...args) => {
         prepareCalls += 1;
         routerStartsAtPreparation = readRouterStarts();
@@ -153,11 +154,15 @@ it.each(["native", "confirmation", "document", "relay"])(
   "keeps %s startup with its ordinary owner",
   (boundary) => {
     const initial = prepareApplicationStartup();
-    if (boundary === "native")
+    if (boundary === "native") {
       initial.startup.nativeClient = { clientName: "openclaw-control-ui", mode: "webchat" };
-    else if (boundary === "confirmation") initial.hasPendingGateway = true;
-    else if (boundary === "document") initial.ownsWarmBoot = false;
-    else document.documentElement.setAttribute("data-openclaw-remote-ingress", "true");
+    } else if (boundary === "confirmation") {
+      initial.hasPendingGateway = true;
+    } else if (boundary === "document") {
+      initial.ownsWarmBoot = false;
+    } else {
+      document.documentElement.setAttribute("data-openclaw-remote-ingress", "true");
+    }
     expect(startEarlyApplicationGateway(initial)).toBeUndefined();
     expect(wsInstances).toHaveLength(0);
   },
