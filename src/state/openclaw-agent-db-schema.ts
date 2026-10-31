@@ -191,7 +191,7 @@ export function* agentDatabaseIntegrityBeforeMutationSteps(
   }
   if (userVersion === OPENCLAW_AGENT_SCHEMA_VERSION && !hasPendingCurrentVersionMigration) {
     if (
-      !integrityCheck &&
+      integrityCheck !== "full" &&
       admitAgentDatabaseStartupStructure(database, pathname, agentId, startupIntegrity, diagnostics)
     ) {
       return false;
