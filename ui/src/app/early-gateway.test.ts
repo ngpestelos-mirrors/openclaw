@@ -64,7 +64,7 @@ function prepareRuntime() {
   return { application: runtime, connection: early! };
 }
 
-it("prepares credentials once at adoption and starts New before publishing hello", async () => {
+it("prepares credentials once at adoption before starting New", async () => {
   const originalCreate = gatewayCredentials.createGatewayCredentials;
   let prepareCalls = 0;
   let routerStartsAtPreparation = 0;
@@ -101,7 +101,7 @@ it("prepares credentials once at adoption and starts New before publishing hello
   await runtime.start();
   await vi.advanceTimersByTimeAsync(0);
   expect(prepareCalls).toBe(1);
-  expect(routerStartsAtPreparation).toBe(1);
+  expect(routerStartsAtPreparation).toBe(0);
   expect(runtime.context.gateway.snapshot.client).toBe(early?.transport.client);
   expect(wsInstances).toHaveLength(1);
   expect(routerStart).toHaveBeenCalledOnce();
@@ -128,7 +128,7 @@ it("prepares credentials once at adoption and starts New before publishing hello
   );
 });
 
-it("closes the unadopted New socket when stop wins startup", async () => {
+it("closes the New connection when stop wins startup", async () => {
   const { application, connection } = prepareRuntime();
   const stop = vi.spyOn(connection.transport.client, "stop");
   const starting = application.start();
@@ -141,8 +141,8 @@ it("closes the unadopted New socket when stop wins startup", async () => {
 
 it("rejects preconnection when navigation replaces the startup destination", async () => {
   const { application, connection } = prepareRuntime();
+  window.history.replaceState({}, "", "/about");
   const starting = application.start();
-  application.context.navigate("about");
   await starting;
   expect(application.router.getState().matches[0]?.routeId).toBe("about");
   expect(application.context.gateway.snapshot.client).not.toBe(connection.transport.client);

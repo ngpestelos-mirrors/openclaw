@@ -583,9 +583,7 @@ export function bootstrapApplication(
       }
       const steps: StartupStep[] = [
         () => {
-          if (!earlyNewConnection) {
-            gateway.start();
-          }
+          gateway.start();
           return () => {
             if (earlyNewConnection && !gateway.snapshot.client) {
               earlyGateway.transport.client.stop();
@@ -645,11 +643,7 @@ export function bootstrapApplication(
           if (pendingNavigation) {
             history[pendingNavigation.mode](pendingNavigation.location);
           }
-          const started = startApplicationRouter(router, history, basePath, context);
-          if (earlyNewConnection) {
-            gateway.start();
-          }
-          await started;
+          await startApplicationRouter(router, history, basePath, context);
           return stopRouter;
         });
       }
