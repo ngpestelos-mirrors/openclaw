@@ -216,7 +216,7 @@ jobs:
           fi
 
       - name: Prepare Git owner
-        uses: openclaw/openclaw/.github/actions/git-owner@c30efcb58a050bc5c449381e732125662e87faae
+        uses: openclaw/openclaw/.github/actions/git-owner@159d00bed3fb5be9bab9f3e9a546ee6714ee20b2
 
       - name: Checkout selected ref
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
