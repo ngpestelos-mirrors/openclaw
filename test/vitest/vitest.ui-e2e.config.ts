@@ -27,7 +27,6 @@ const uiE2eIncludePatterns = [
 // These files own their server instead of leasing the global production bundle.
 // Keep any shared source-module optimizer cache under one worker.
 export const uiE2ePrivateServerTestFiles = [
-  "ui/src/e2e/toast-page-offset.e2e.test.ts",
   "ui/src/e2e/activity-run-inspector.real-gateway.e2e.test.ts",
   "ui/src/e2e/agent-file-lifecycle.real-gateway.e2e.test.ts",
   "ui/src/e2e/background-work.real-gateway.e2e.test.ts",
@@ -37,7 +36,6 @@ export const uiE2ePrivateServerTestFiles = [
   "ui/src/e2e/chat-collaborator-scroll.real-gateway.e2e.test.ts",
   "ui/src/e2e/chat-completed-assistant.real-gateway.e2e.test.ts",
   "ui/src/e2e/chat-composer-websearch-kill-switch.real-gateway.e2e.test.ts",
-  "ui/src/e2e/skill-workshop-plugin-enable.real-gateway.e2e.test.ts",
   "ui/src/e2e/chat-daybreak.real-gateway.e2e.test.ts",
   "ui/src/e2e/chat-html-csp.real-gateway.e2e.test.ts",
   "ui/src/e2e/chat-html-publication.real-gateway.e2e.test.ts",
@@ -92,9 +90,11 @@ export const uiE2ePrivateServerTestFiles = [
   "ui/src/e2e/shell-module-loading.e2e.test.ts",
   "ui/src/e2e/sidebar-account-footer.e2e.test.ts",
   "ui/src/e2e/sidebar-boot-imports.e2e.test.ts",
+  "ui/src/e2e/skill-workshop-plugin-enable.real-gateway.e2e.test.ts",
   "ui/src/e2e/stale-build-recovery.production.e2e.test.ts",
   "ui/src/e2e/terminal-fonts.e2e.test.ts",
   "ui/src/e2e/terminal-runtime.e2e.test.ts",
+  "ui/src/e2e/toast-page-offset.e2e.test.ts",
   "ui/src/pages/plugins/plugins-base-path.e2e.test.ts",
   "ui/src/pages/workboard/workboard-distribution.e2e.test.ts",
 ].map((file) => resolveUiTypeScriptPath(file));
