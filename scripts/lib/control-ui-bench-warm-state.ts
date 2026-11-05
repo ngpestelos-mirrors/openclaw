@@ -130,7 +130,7 @@ export async function persistColdLoadWarmState(input: {
         session: Object.entries(sessionStorage),
       },
       messages: record.snapshot.messages.length,
-      ...(input.rowFacts ? { snapshotBytes } : {}),
+      snapshotBytes,
       ...(input.lateRowFacts
         ? {
             displayFacts: {

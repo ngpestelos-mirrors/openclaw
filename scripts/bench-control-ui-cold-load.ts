@@ -1464,7 +1464,7 @@ try {
     : "";
   const warmProbes =
     values["warm-reload"] || firstLoad
-      ? `\n${paneChromeScript}\n${values["active-transcript"] ? `(${installWarmReloadTranscriptProbe.toString()})(${JSON.stringify(values["active-transcript-reader"] ? "reader" : "end")});` : ""}\n(${warmReloadProbe.toString()})(${JSON.stringify({ rowFacts: values["row-facts"], avatars: values["transcript-avatars"], lateRowFacts: values["late-row-facts"], witnesses: transcriptWitness?.witnesses })}, ${values["pane-chrome-probe"] ? "__paneChrome.sample" : "undefined"});`
+      ? `\n${paneChromeScript}\n${values["active-transcript"] || values["archived-session"] || values["chat-dashboard-route"] ? `(${installWarmReloadTranscriptProbe.toString()})(${JSON.stringify(values["active-transcript-reader"] ? "reader" : "end")});` : ""}\n(${warmReloadProbe.toString()})(${JSON.stringify({ rowFacts: values["row-facts"], avatars: values["transcript-avatars"], lateRowFacts: values["late-row-facts"], witnesses: transcriptWitness?.witnesses })}, ${values["pane-chrome-probe"] ? "__paneChrome.sample" : "undefined"});`
       : "";
   // The last history case is the fixture's full-window fallback. Witness mode
   // measures a changed transcript, so it must not replay the unchanged-cursor delta.
@@ -1637,12 +1637,16 @@ try {
           .getByText("Team metric 1", { exact: true })
           .waitFor();
       }
-      await page
-        .frameLocator(".chat-tool-card__preview-frame")
-        .last()
-        .frameLocator("iframe")
-        .getByText("Team metric 12", { exact: true })
-        .waitFor();
+      if (values["active-transcript"]) {
+        await page.getByText("Verification 24", { exact: true }).waitFor();
+      } else {
+        await page
+          .frameLocator(".chat-tool-card__preview-frame")
+          .last()
+          .frameLocator("iframe")
+          .getByText("Team metric 12", { exact: true })
+          .waitFor();
+      }
       if (face === "dashboard") {
         await page.waitForFunction(() => {
           const ready = Reflect.get(window, "__readWidgetReadiness")();
@@ -2580,6 +2584,7 @@ try {
             entry.messageCount === transcriptWitness.liveMessageCount,
         ) &&
         (values["active-transcript-reader"] || observed.attached.live) &&
+        (!values["active-transcript"] || Boolean(warmReload?.transcriptStability?.anchor)) &&
         (values["active-transcript"] || !observed.attached.saved) &&
         (values["active-transcript-reader"] || observed.live.paintMs !== null);
       await writeFile(
