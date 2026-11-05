@@ -860,6 +860,7 @@ export function warmReloadProbe(
         );
       }
       return {
+        transcriptStability: Reflect.get(window, "__activeTranscriptReload")?.read(),
         milestones,
         transcriptPresentation: {
           at: performance.now(),
