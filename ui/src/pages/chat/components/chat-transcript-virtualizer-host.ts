@@ -88,6 +88,7 @@ export class ChatSessionVirtualizerHost implements ChatTranscriptSession {
     this.scheduleEndReconcile();
   };
   readonly layout = new TranscriptLayoutOwner(this.recordEndLayoutCorrection);
+  readonly isEndAnchored = () => this.canAutoFollow() && this.endAnchor.atEnd;
   private readonly reconcileEnd = () => {
     if (this.connected && !this.offsetState.pendingInteractionAnchor) {
       this.commitComposerResize(true);
@@ -485,10 +486,9 @@ export class ChatSessionVirtualizerHost implements ChatTranscriptSession {
       rows.length !== this.rowKeys.length ||
       rows.some((row, index) => row.key !== this.rowKeys[index]);
     const nextKeys = rowModelChanged ? rows.map((row) => row.key) : this.rowKeys;
-    const virtualizer = this.virtualizer;
     const nextRowKeys = rowModelChanged
       ? nextKeys
-      : virtualizer.getVirtualItems().map(({ index }) => rows[index]!.key);
+      : this.virtualizer.getVirtualItems().map(({ index }) => rows[index]!.key);
     return this.mcpAppUnmountGate.render(
       rowModelChanged ? nextKeys : JSON.stringify(nextRowKeys),
       () => {
@@ -525,7 +525,7 @@ export class ChatSessionVirtualizerHost implements ChatTranscriptSession {
           this.syncRows(nextKeys);
         } else {
           this.appliedHeaderHeight = reconcileTranscriptHeaderMargin(
-            virtualizer,
+            this.virtualizer,
             this.headerHeight,
             this.appliedHeaderHeight,
           );
@@ -541,7 +541,7 @@ export class ChatSessionVirtualizerHost implements ChatTranscriptSession {
           onCommit: () => this.connected && this.didCommit(),
           rows,
           getContent: (index) => renderRow(rows[index]!),
-          virtualizer,
+          virtualizer: this.virtualizer,
           overlay,
           header: header?.content ?? null,
           scrollElementRef: this.scrollElementRef,
@@ -558,7 +558,7 @@ export class ChatSessionVirtualizerHost implements ChatTranscriptSession {
       () =>
         leavingTranscriptMcpAppRows(this.threadInnerElement, () =>
           rowModelChanged
-            ? previewTranscriptRowKeys(virtualizer, nextKeys, this.focusedRowKey)
+            ? previewTranscriptRowKeys(this.virtualizer, nextKeys, this.focusedRowKey)
             : new Set(nextRowKeys),
         ),
       {
