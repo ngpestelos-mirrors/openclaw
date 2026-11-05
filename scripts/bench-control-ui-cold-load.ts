@@ -1466,12 +1466,20 @@ try {
     values["warm-reload"] || firstLoad
       ? `\n${paneChromeScript}\n${values["active-transcript"] || values["archived-session"] || values["chat-dashboard-route"] ? `(${installWarmReloadTranscriptProbe.toString()})(${JSON.stringify(values["active-transcript-reader"] ? "reader" : "end")});` : ""}\n(${warmReloadProbe.toString()})(${JSON.stringify({ rowFacts: values["row-facts"], avatars: values["transcript-avatars"], lateRowFacts: values["late-row-facts"], witnesses: transcriptWitness?.witnesses })}, ${values["pane-chrome-probe"] ? "__paneChrome.sample" : "undefined"});`
       : "";
-  // The last history case is the fixture's full-window fallback. Witness mode
-  // measures a changed transcript, so it must not replay the unchanged-cursor delta.
+  // Changed history must not replay the unchanged-cursor delta. Active reloads
+  // retain the server's bounded window instead of prepending the entire fixture.
   const historyCases = asNullableRecord(fixture.scenario.methodResponses?.["chat.history"])?.cases;
   const witnessHistory =
     transcriptWitness && Array.isArray(historyCases)
-      ? asNullableRecord(asNullableRecord(historyCases.at(-1))?.response)
+      ? asNullableRecord(
+          asNullableRecord(
+            values["active-transcript"]
+              ? historyCases.find(
+                  (entry) => asNullableRecord(asNullableRecord(entry)?.match)?.limit === 80,
+                )
+              : historyCases.at(-1),
+          )?.response,
+        )
       : undefined;
   if (transcriptWitness && !Array.isArray(witnessHistory?.messages)) {
     throw new Error("Transcript witness requires the fixture's complete history response");
@@ -1492,6 +1500,17 @@ try {
     const witnessLive = localStorage.getItem(${JSON.stringify(witnessPhaseKey)}) === "live";
     const witnessMessages = witnessLive ? ${JSON.stringify(transcriptWitness.variants.live)} : ${JSON.stringify(transcriptWitness.variants.saved)};
     window.openclawControlUiE2eGateway.setHistoryMessages(witnessMessages);
+    ${
+      values["active-transcript"]
+        ? `
+    const totalMessages = witnessLive ? ${transcriptWitness.totalMessages.live} : ${transcriptWitness.totalMessages.saved};
+    for (const method of ["chat.history", "chat.startup"]) window.openclawControlUiE2eGateway.setMethodResponse(method, {
+      ...${JSON.stringify({ ...witnessHistory, messages: [] })}, messages: witnessMessages, totalMessages,
+      hasMore: totalMessages > witnessMessages.length,
+      nextOffset: totalMessages > witnessMessages.length ? witnessMessages.length : undefined,
+    });`
+        : ""
+    }
     if (witnessLive && ${values["transcript-witness-hold"]}) window.openclawControlUiE2eGateway.deferNext("chat.startup");
   `
     : "";
