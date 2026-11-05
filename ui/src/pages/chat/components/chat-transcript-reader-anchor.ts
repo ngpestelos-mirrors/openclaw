@@ -10,7 +10,10 @@ type ReaderAnchorHost = {
   readonly virtualizer: TranscriptVirtualizer;
   readonly layout: TranscriptLayoutOwner;
   readonly offsetState: TranscriptOffsetState;
-  readonly renderer: { readonly columnElement: HTMLElement | undefined };
+  readonly renderer: {
+    readonly columnElement: HTMLElement | undefined;
+    queueAfterCommit(effect: () => void): void;
+  };
   readonly initialRange: { readonly pending: boolean };
   readonly prependAnchor: { readonly messageKey: string | null };
   readonly headerHeight: number;
@@ -152,7 +155,7 @@ export class TranscriptReaderAnchor {
       correction += delta;
       this.unlanded.set(key, (this.unlanded.get(key) ?? 0) + delta);
     }
-    this.onRowsMeasured();
+    this.host.renderer.queueAfterCommit(this.onRowsMeasured);
     if (!correction) {
       return;
     }
