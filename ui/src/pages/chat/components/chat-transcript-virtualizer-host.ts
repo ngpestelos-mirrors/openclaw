@@ -93,12 +93,15 @@ export class ChatSessionVirtualizerHost implements ChatTranscriptSession {
       this.commitComposerResize(true);
       // Initial layout owns positioning until the visible range is measured.
       if (!this.initialRange.pending) {
-        this.presentation.reconcileEnd(
-          this,
-          this.endAnchor,
+        this.endAnchor.reconcile(
+          this.scrollElement,
           this.canAutoFollow(),
           this.offsetState.pendingScrollOffset !== null || this.offsetState.touchActive,
-          this.offsetState.scrollCommand?.behavior ?? "auto",
+          () =>
+            this.scrollToEnd({
+              source: "auto",
+              behavior: this.offsetState.scrollCommand?.behavior ?? "auto",
+            }),
         );
       }
     }
@@ -133,14 +136,15 @@ export class ChatSessionVirtualizerHost implements ChatTranscriptSession {
       this.renderer.connect();
       if (this.connected && this.virtualizer.scrollElement !== this.scrollElement) {
         this.layout.connect(this.scrollElement, this.callbacks);
-        const { _willUpdate: updateVirtualizer } = this.virtualizer;
-        updateVirtualizer();
+        this.virtualizer._willUpdate();
         this.invalidate();
       }
     });
   }
   private readonly rowRefs: TranscriptRowRefs;
-  private readonly readerAnchor = new TranscriptReaderAnchor(this);
+  private readonly scheduleEndReconcile = () =>
+    this.connected && this.endAnchor.scheduleReconcile(this.reconcileEnd);
+  private readonly readerAnchor = new TranscriptReaderAnchor(this, () => this.invalidate());
   private readonly captureInteractionResize = (event: Event) => {
     const anchor = resolveChatTranscriptInteractionAnchor(event);
     if (!anchor) {
@@ -162,6 +166,7 @@ export class ChatSessionVirtualizerHost implements ChatTranscriptSession {
   readonly prependAnchor = new TranscriptPrependAnchor(
     this.messageElements.elements,
     this.recordEndLayoutCorrection,
+    () => (this.canAutoFollow() && this.endAnchor.atEnd ? this.rowKeys.at(-1) : null),
   );
   private candidateMessageRowKeysById: ReadonlyMap<string, string> = new Map();
   private candidateMessageRowsByKey: ReadonlyMap<string, string> = new Map();
@@ -205,7 +210,6 @@ export class ChatSessionVirtualizerHost implements ChatTranscriptSession {
       onChange: () => {
         this.readerAnchor.flush();
         invalidate();
-        this.scheduleEndReconcile();
       },
       count: 0,
       getScrollElement: () => this.scrollElement,
@@ -308,9 +312,7 @@ export class ChatSessionVirtualizerHost implements ChatTranscriptSession {
     const target = this.callbacks.geometryEventTarget;
     this.stopGeometry =
       target && listen(target, SIDEBAR_GEOMETRY_COMMIT_EVENT, this.handleGeometryCommit);
-    // Virtual-core exposes its lifecycle hooks as bound arrow functions.
-    const { _didMount: mountVirtualizer } = this.virtualizer;
-    this.cleanupVirtualizer = mountVirtualizer();
+    this.cleanupVirtualizer = this.virtualizer._didMount();
     if (this.offsetState.pendingScrollOffset) {
       this.invalidate();
     }
@@ -337,9 +339,6 @@ export class ChatSessionVirtualizerHost implements ChatTranscriptSession {
     }
   }
 
-  private readonly scheduleEndReconcile = () =>
-    this.connected && this.endAnchor.scheduleReconcile(this.reconcileEnd);
-
   update(): void {
     if (this.threadInnerElement) {
       this.renderer.commit();
@@ -349,23 +348,27 @@ export class ChatSessionVirtualizerHost implements ChatTranscriptSession {
     }
   }
 
+  private readonly reconcileReader = () => {
+    if (
+      !this.offsetState.touchActive &&
+      this.prependAnchor.update(this.virtualizer, this.readerAnchor.rowsMeasured)
+    ) {
+      this.offsetState.syncNativeOffset?.();
+      this.invalidate();
+    }
+    this.reconcileEnd();
+  };
+
   private readonly didCommit = () => {
     this.entryAnimations.didCommit();
     this.layout.connect(this.scrollElement, this.callbacks);
     this.positionRail.update();
-    const { _willUpdate: updateVirtualizer } = this.virtualizer;
-    updateVirtualizer();
+    this.virtualizer._willUpdate();
     this.rowRefs.observeConnected();
     const interactionResizePending = this.offsetState.pendingInteractionAnchor !== null;
     this.reconcileInteractionResize();
-    if (
-      !this.offsetState.touchActive &&
-      this.prependAnchor.update(this.scrollElement, this.virtualizer, () =>
-        this.presentation.measureRows(),
-      )
-    ) {
-      this.offsetState.syncNativeOffset?.();
-      this.invalidate();
+    if (!interactionResizePending) {
+      this.renderer.queueAfterCommit(this.reconcileReader);
     }
     if (!this.initialRange.pending || (this.layout.ready && this.rowKeys.length === 0)) {
       applyPendingScrollOffset(this.scrollRestoreHost);
@@ -591,7 +594,7 @@ export class ChatSessionVirtualizerHost implements ChatTranscriptSession {
   scrollToEnd({ source = "manual", behavior = "auto" }: ChatScrollToEndOptions = {}): boolean {
     // Hydration/resize follow cannot replace a saved reader. A new latest
     // command intentionally supersedes restoration.
-    if (source === "auto" && (this.offsetState.pendingScrollOffset || !this.canAutoFollow())) {
+    if (source === "auto" && (!this.readerAnchor.endReady || !this.canAutoFollow())) {
       return false;
     }
     if (source !== "auto") {
