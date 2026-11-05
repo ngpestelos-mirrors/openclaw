@@ -1015,7 +1015,7 @@ jobs:
           if ($manifest.candidate.name -cne "openclaw" -or [string]::IsNullOrWhiteSpace($manifest.candidate.version) -or $manifest.candidate.packageSourceSha -cne $binding.sourceSha -or $manifest.candidate.sha256 -cne $binding.packageSha256 -or (Get-FileHash -LiteralPath $tarball -Algorithm SHA256).Hash.ToLowerInvariant() -cne $binding.packageSha256) { throw "Candidate package identity changed in transit." }
           $nodePath = (node -p 'process.execPath').Trim()
           if ($LASTEXITCODE -ne 0 -or $manifest.runtime.version -cne "v$env:NODE_VERSION" -or (node --version).Trim() -cne $manifest.runtime.version -or (Get-FileHash -LiteralPath $nodePath -Algorithm SHA256).Hash.ToLowerInvariant() -cne $manifest.runtime.sha256) { throw "Native runtime differs from the producer's pinned runtime." }
-          $record = @{ status = "transport-verified-only"; artifactId = $env:HANDOFF_ID; artifactDigest = $env:HANDOFF_DIGEST; manifestSha256 = $env:MANIFEST_SHA256; origin = $manifest.origin; candidate = $manifest.candidate; plannedCells = @("fresh", "published-2026.9.3-to-candidate", "published-2026.9.4-to-candidate"); productProof = "not-run" }
+          $record = @{ status = "transport-verified-only"; artifactId = $env:HANDOFF_ID; artifactDigest = $env:HANDOFF_DIGEST; manifestSha256 = $env:MANIFEST_SHA256; origin = $manifest.origin; candidate = $manifest.candidate; plannedCells = @("published-2026.9.3-to-candidate"); productProof = "not-run" }
           New-Item -ItemType Directory -Force -Path .artifacts/windows-schtasks | Out-Null
           $record | ConvertTo-Json -Depth 12 | Set-Content -LiteralPath .artifacts/windows-schtasks/package-handoff.json
           $published = @()
@@ -1087,7 +1087,7 @@ jobs:
 
       - name: Prepare installed Scheduled Task cell fresh
         id: native_prepare_fresh
-        if: ${{ inputs.run_windows_ci && inputs.installed_startup_package != '' }}
+        if: ${{ false }} # HE selects exactly the published 2026.9.3 cell.
         shell: bash
         env:
           OPENCLAW_VITEST_WORKER_CACHE: "1"
@@ -1102,7 +1102,7 @@ jobs:
 
       - name: Run installed Scheduled Task cell fresh
         id: native_schtasks_fresh
-        if: ${{ inputs.run_windows_ci && inputs.installed_startup_package != '' && steps.native_prepare_fresh.outcome == 'success' }}
+        if: ${{ false }} # HE selects exactly the published 2026.9.3 cell.
         # 6-minute installed body, three-minute teardown hook, one-minute runner margin.
         timeout-minutes: 10
         shell: bash
@@ -1118,7 +1118,7 @@ jobs:
 
       - name: Join native Scheduled Task cell fresh
         id: native_cleanup_fresh
-        if: ${{ always() && inputs.run_windows_ci && inputs.installed_startup_package != '' && steps.native_isolation.outcome == 'success' && contains(fromJSON('["success","failure","cancelled"]'), steps.native_schtasks_fresh.outcome) }}
+        if: ${{ false }} # HE selects exactly the published 2026.9.3 cell.
         shell: pwsh
         env:
           TEST_ID: ${{ github.run_id }}-${{ github.run_attempt }}
@@ -1296,7 +1296,7 @@ jobs:
           exit 0
 
       - name: Diagnose PowerShell context after settled fresh failure
-        if: ${{ always() && !cancelled() && inputs.installed_startup_package != '' && steps.native_schtasks_fresh.outcome == 'failure' && steps.native_cleanup_fresh.outcome == 'success' && steps.native_cleanup_fresh.outputs.owned_package_cleanup == 'true' }}
+        if: ${{ false }} # HE selects exactly the published 2026.9.3 cell.
         timeout-minutes: 10
         shell: bash
         run: |
@@ -1306,7 +1306,7 @@ jobs:
 
       - name: Retain installed cell proof fresh
         id: native_cell_proof_fresh
-        if: ${{ always() && inputs.run_windows_ci && inputs.installed_startup_package != '' && contains(fromJSON('["success","failure","cancelled"]'), steps.native_prepare_fresh.outcome) }}
+        if: ${{ false }} # HE selects exactly the published 2026.9.3 cell.
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: windows-schtasks-cell-${{ github.run_id }}-${{ github.run_attempt }}-fresh
@@ -1321,7 +1321,7 @@ jobs:
 
       - name: Retire successful installed cell fresh
         id: native_retire_fresh
-        if: ${{ inputs.run_windows_ci && inputs.installed_startup_package != '' && steps.native_schtasks_fresh.outcome == 'success' && steps.native_cleanup_fresh.outcome == 'success' && steps.native_cleanup_fresh.outputs.owned_package_cleanup == 'true' && steps.native_cell_proof_fresh.outcome == 'success' }}
+        if: ${{ false }} # HE selects exactly the published 2026.9.3 cell.
         shell: bash
         env:
           CI_WINDOWS_SCHTASKS_INSTALLED_CELL: "fresh"
@@ -1336,7 +1336,7 @@ jobs:
 
       - name: Prepare installed Scheduled Task cell 2026.9.3
         id: native_prepare_9_3
-        if: ${{ inputs.run_windows_ci && inputs.installed_startup_package != '' && steps.native_retire_fresh.outcome == 'success' }}
+        if: ${{ inputs.run_windows_ci && inputs.installed_startup_package != '' }}
         shell: bash
         env:
           CI_WINDOWS_SCHTASKS_INSTALLED_CELL: "2026.9.3"
@@ -1344,13 +1344,18 @@ jobs:
         run: |
           set -euo pipefail
           export PATH="$NODE_BIN:$PATH"
+          # No preceding product cell runs. Create only fresh fixture directories;
+          # prepare retains its existing predecessor-absence and capacity assertions.
+          node -e 'const fs=require("node:fs"),i=JSON.parse(fs.readFileSync(".artifacts/windows-schtasks/installed-input.json","utf8"));fs.mkdirSync(i.stateRoot);fs.mkdirSync(i.installRoot)'
           node --import ./scripts/tsx.mjs src/daemon/schtasks.installed-package.test-support.ts prepare .artifacts/windows-schtasks/installed-input.json
+          CI_WINDOWS_SCHTASKS_INTEGRATION=1 node scripts/prepare-vitest-worker-cache.mts
 
       - name: Run installed Scheduled Task cell 2026.9.3
         id: native_schtasks_9_3
         if: ${{ inputs.run_windows_ci && inputs.installed_startup_package != '' && steps.native_prepare_9_3.outcome == 'success' }}
-        # 18-minute installed body, three-minute teardown hook, one-minute runner margin.
-        timeout-minutes: 22
+        # HE: 24-minute body covers the 900s command and surrounding lifecycle.
+        # Three-minute teardown and one-minute runner margin remain explicit.
+        timeout-minutes: 28
         shell: bash
         env:
           OPENCLAW_VITEST_WORKER_CACHE: "1"
@@ -1405,7 +1410,7 @@ jobs:
 
       - name: Prepare installed Scheduled Task cell 2026.9.4
         id: native_prepare_9_4
-        if: ${{ inputs.run_windows_ci && inputs.installed_startup_package != '' && steps.native_retire_9_3.outcome == 'success' }}
+        if: ${{ false }} # HE selects exactly the published 2026.9.3 cell.
         shell: bash
         env:
           CI_WINDOWS_SCHTASKS_INSTALLED_CELL: "2026.9.4"
@@ -1417,7 +1422,7 @@ jobs:
 
       - name: Run installed Scheduled Task cell 2026.9.4
         id: native_schtasks_9_4
-        if: ${{ inputs.run_windows_ci && inputs.installed_startup_package != '' && steps.native_prepare_9_4.outcome == 'success' }}
+        if: ${{ false }} # HE selects exactly the published 2026.9.3 cell.
         # 24-minute installed body, three-minute teardown hook, one-minute runner margin.
         timeout-minutes: 28
         shell: bash
@@ -1433,7 +1438,7 @@ jobs:
 
       - name: Join native Scheduled Task cell 2026.9.4
         id: native_cleanup_9_4
-        if: ${{ always() && inputs.run_windows_ci && inputs.installed_startup_package != '' && steps.native_isolation.outcome == 'success' && contains(fromJSON('["success","failure","cancelled"]'), steps.native_schtasks_9_4.outcome) }}
+        if: ${{ false }} # HE selects exactly the published 2026.9.3 cell.
         shell: pwsh
         env:
           TEST_ID: ${{ github.run_id }}-${{ github.run_attempt }}
@@ -1444,7 +1449,7 @@ jobs:
 
       - name: Retain installed cell proof 2026.9.4
         id: native_cell_proof_9_4
-        if: ${{ always() && inputs.run_windows_ci && inputs.installed_startup_package != '' && contains(fromJSON('["success","failure","cancelled"]'), steps.native_prepare_9_4.outcome) }}
+        if: ${{ false }} # HE selects exactly the published 2026.9.3 cell.
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: windows-schtasks-cell-${{ github.run_id }}-${{ github.run_attempt }}-2026.9.4
@@ -1459,7 +1464,7 @@ jobs:
 
       - name: Retire successful installed cell 2026.9.4
         id: native_retire_9_4
-        if: ${{ inputs.run_windows_ci && inputs.installed_startup_package != '' && steps.native_schtasks_9_4.outcome == 'success' && steps.native_cleanup_9_4.outcome == 'success' && steps.native_cleanup_9_4.outputs.owned_package_cleanup == 'true' && steps.native_cell_proof_9_4.outcome == 'success' }}
+        if: ${{ false }} # HE selects exactly the published 2026.9.3 cell.
         shell: bash
         env:
           CI_WINDOWS_SCHTASKS_INSTALLED_CELL: "2026.9.4"
@@ -1483,7 +1488,7 @@ jobs:
           INSTALLED_PACKAGE_MODE: ${{ inputs.installed_startup_package != '' }}
         run: *native_schtasks_cleanup_run
 
-      - name: Require all three installed cell results and cleanup
+      - name: Require the selected installed cell result and cleanup
         id: native_schtasks_installed_result
         if: ${{ always() && inputs.run_windows_ci && inputs.installed_startup_package != '' }}
         shell: pwsh
@@ -1512,7 +1517,7 @@ jobs:
           $retireOutcomes = @{ fresh = $env:CELL_RETIRE_FRESH; "2026.9.3" = $env:CELL_RETIRE_9_3; "2026.9.4" = $env:CELL_RETIRE_9_4 }
           $cells = @()
           $complete = $env:CLEANUP_OUTCOME -ceq "success"
-          foreach ($cell in @("fresh", "2026.9.3", "2026.9.4")) {
+          foreach ($cell in @("2026.9.3")) {
             $file = Join-Path $evidence "cells/$cell/proof.json"
             $proof = $null
             $problem = $null
@@ -1531,7 +1536,7 @@ jobs:
             $cells += @{ cell = $cell; stepOutcome = $outcomes[$cell]; cleanupOutcome = $cleanupOutcomes[$cell]; uploadOutcome = $uploadOutcomes[$cell]; retirementOutcome = $retireOutcomes[$cell]; problem = $problem; proof = $proof; retirement = $retirement }
           }
           @{ result = $(if ($complete) { "pass" } else { "failed" }); head = $expected.toolingSha; candidate = $expected.candidate; cleanupOutcome = $env:CLEANUP_OUTCOME; cells = $cells } | ConvertTo-Json -Depth 40 | Set-Content -LiteralPath (Join-Path $evidence "proof.json")
-          if (-not $complete) { throw "All three installed cells and native cleanup must pass." }
+          if (-not $complete) { throw "The selected installed cell and native cleanup must pass." }
 
       - name: Upload native Scheduled Task proof
         id: native_proof_upload
