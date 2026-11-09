@@ -171,7 +171,39 @@ describe("real MCP SDK token HTTP and durable owner", () => {
     expect(fetchFn).toHaveBeenCalledOnce();
   });
 
-  it.each(["lost-response", "503", "nested-rejection", "invalid-success", "rejected-fresh"])(
+  it.each([
+    ["DNS lookup", { code: "EAI_AGAIN", syscall: "getaddrinfo" }],
+    ["refused connect", { code: "ECONNREFUSED", syscall: "connect" }],
+  ])("restores the grant after a %s failure before the token request", async (_, cause) => {
+    seed();
+    const fetchFn = vi.fn<typeof fetch>(async () => {
+      throw new TypeError("fetch failed", {
+        cause: Object.assign(new Error(`${cause.syscall} ${cause.code} auth.example.test`), cause),
+      });
+    });
+    await expect(refresh(fetchFn)).rejects.toMatchObject({
+      message: "MCP OAuth refresh did not start.",
+      oauthRefreshOutcome: { phase: "before-dispatch", outcome: "not-attempted" },
+    });
+    const row = await read();
+    expect(row.refreshClaim).toBeUndefined();
+    expect(row.tokens).toMatchObject({
+      access_token: "synthetic-old-access",
+      refresh_token: "synthetic-old-refresh",
+    });
+    fetchFn.mockImplementation(async () => tokens());
+    await expect(refresh(fetchFn)).resolves.toBe("synthetic-new-access");
+    expect(fetchFn).toHaveBeenCalledTimes(2);
+  });
+
+  it.each([
+    "lost-response",
+    "reset-after-connect",
+    "503",
+    "nested-rejection",
+    "invalid-success",
+    "rejected-fresh",
+  ])(
     "fences %s without SDK fallback deleting client provenance or replaying a grant",
     async (failure) => {
       seed(failure === "rejected-fresh" ? Date.now() + 3_600_000 : undefined);
@@ -179,6 +211,14 @@ describe("real MCP SDK token HTTP and durable owner", () => {
         expect(resolveRequestUrl(url)).toBe(endpoint);
         if (failure === "lost-response" || failure === "rejected-fresh") {
           throw new TypeError("synthetic consumed response lost");
+        }
+        if (failure === "reset-after-connect") {
+          throw new TypeError("fetch failed", {
+            cause: Object.assign(new Error("read ECONNRESET"), {
+              code: "ECONNRESET",
+              syscall: "read",
+            }),
+          });
         }
         if (failure === "503") {
           return Response.json({ error: "temporarily_unavailable" }, { status: 503 });
