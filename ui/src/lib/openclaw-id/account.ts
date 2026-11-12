@@ -291,7 +291,7 @@ function pause(ms: number, signal: AbortSignal): Promise<void> {
 export type OpenClawIdLinkOutcome =
   | "linked"
   | "linked_elsewhere"
-  | "profile_linked"
+  | "profile_changed"
   | "owner_profile";
 
 /**
