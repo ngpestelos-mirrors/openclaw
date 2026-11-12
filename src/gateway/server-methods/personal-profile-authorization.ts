@@ -3,6 +3,7 @@ import { prepareUserProfileRolePolicyAuthority } from "../../state/user-channel-
 import { hasCurrentGatewayOperatorAccess } from "../operator-access-policy.js";
 import {
   resolveOperatorRolePolicy,
+  resolveAdministratorMemberRolePolicy,
   resolveOperatorRolePolicyForProfile,
   resolveOperatorRolePolicyForAssignment,
 } from "../operator-role-policy.js";
@@ -45,7 +46,8 @@ export function currentPersonalProfileClient(
   const cfg = context.getRuntimeConfig();
   const profileId = typeof owner === "string" ? owner : owner?.profileId;
   const policy =
-    typeof owner === "object"
+    resolveAdministratorMemberRolePolicy(client, cfg) ??
+    (typeof owner === "object"
       ? resolveOperatorRolePolicyForAssignment(
           owner.profileId,
           owner.role,
@@ -54,7 +56,7 @@ export function currentPersonalProfileClient(
         )
       : profileId
         ? resolveOperatorRolePolicyForProfile(profileId, cfg)
-        : resolveOperatorRolePolicy(client, cfg);
+        : resolveOperatorRolePolicy(client, cfg));
   const granted = client.connect.scopes ?? [];
   const scopes = policy ? intersectOperatorScopes(granted, policy.scopes) : granted;
   if (

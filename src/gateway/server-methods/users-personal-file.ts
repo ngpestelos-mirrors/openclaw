@@ -24,7 +24,10 @@ import {
   readResidentUserProfileId,
   readResidentUserProfileIdentity,
 } from "../../state/user-profile-list.js";
-import { resolveOperatorRolePolicyForAssignment } from "../operator-role-policy.js";
+import {
+  resolveAdministratorMemberRolePolicy,
+  resolveOperatorRolePolicyForAssignment,
+} from "../operator-role-policy.js";
 import { isGatewayClientProfilePending } from "./gateway-client-identity.js";
 import { isIneligiblePersonalGatewayCaller } from "./gateway-personal-caller.js";
 import { respondError } from "./response.js";
@@ -118,12 +121,14 @@ function preparePersonalFile(options: GatewayRequestHandlerOptions, requestedAge
     }
     const cfg = context.getRuntimeConfig();
     const profile = readResidentUserProfileIdentity(canonicalId);
-    const policy = resolveOperatorRolePolicyForAssignment(
-      canonicalId,
-      profile?.role ?? null,
-      cfg,
-      profile?.githubLogin ?? null,
-    );
+    const policy =
+      resolveAdministratorMemberRolePolicy(client, cfg) ??
+      resolveOperatorRolePolicyForAssignment(
+        canonicalId,
+        profile?.role ?? null,
+        cfg,
+        profile?.githubLogin ?? null,
+      );
     if (
       ![
         client.connect.scopes ?? [],

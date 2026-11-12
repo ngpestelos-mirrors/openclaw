@@ -6,6 +6,7 @@ import { ensureProfileIdForEmail } from "../../state/user-profile-email.js";
 import {
   resolveGatewayOperatorRoleActor,
   resolveOperatorRolePolicyForAssignment,
+  resolveAdministratorMemberRolePolicy,
 } from "../operator-role-policy.js";
 import { ADMIN_SCOPE } from "../operator-scopes.js";
 import { readGatewayRequestMutationAuthority } from "./session-mutation-guards.js";
@@ -136,14 +137,15 @@ export async function prepareUserProfileAdministration(options: GatewayRequestHa
     lifetime.expectedProfileBinding?.assertCurrent();
     const cfg = context.getRuntimeConfig();
     const policy =
-      actor?.kind === "system"
+      resolveAdministratorMemberRolePolicy(client, cfg) ??
+      (actor?.kind === "system"
         ? undefined
         : resolveOperatorRolePolicyForAssignment(
             sharedOwner ? authenticatedProfileId : role?.profileId,
             role?.role ?? null,
             cfg,
             role?.githubLogin ?? null,
-          );
+          ));
     if (policy && !policy.scopes.includes("operator.admin")) {
       throw new Error("Profile administration requires operator.admin");
     }

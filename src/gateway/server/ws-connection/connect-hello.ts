@@ -52,6 +52,7 @@ import { ADMIN_SCOPE } from "../../method-scopes.js";
 import { scheduleNodeConnectionNotification } from "../../node-connection-notifications.js";
 import {
   resolveGatewayOperatorRoleActor,
+  resolveAdministratorMemberRolePolicy,
   resolveOperatorRolePolicy,
   resolveOperatorRolePolicyForProfile,
 } from "../../operator-role-policy.js";
@@ -197,9 +198,12 @@ export async function sendGatewayHello(
           activityClient,
           resolveGatewayOperatorRoleActor(activityClient)?.kind === "system"
             ? undefined
-            : resolveOperatorRolePolicyForProfile(
-                activityClient.authenticatedUserProfile?.profileId,
-                buildRequestContext().getCommittedRuntimeConfig?.() ?? context.configSnapshot,
+            : (
+                resolveAdministratorMemberRolePolicy(activityClient, context.configSnapshot) ??
+                resolveOperatorRolePolicyForProfile(
+                  activityClient.authenticatedUserProfile?.profileId,
+                  buildRequestContext().getCommittedRuntimeConfig?.() ?? context.configSnapshot,
+                )
               )?.scopes,
           activityClient.authenticatedUserProfile?.profileId,
         )

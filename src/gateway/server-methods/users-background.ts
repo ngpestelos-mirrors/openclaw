@@ -15,7 +15,10 @@ import {
   uploadUserBackground,
 } from "../../state/user-background.js";
 import { prepareUserProfileRoleAuthority } from "../../state/user-channel-identity-operations.js";
-import { resolveOperatorRolePolicyForAssignment } from "../operator-role-policy.js";
+import {
+  resolveAdministratorMemberRolePolicy,
+  resolveOperatorRolePolicyForAssignment,
+} from "../operator-role-policy.js";
 import { isGatewayClientProfilePending } from "./gateway-client-identity.js";
 import { isIneligiblePersonalGatewayCaller } from "./gateway-personal-caller.js";
 import { readGatewayRequestMutationAuthority } from "./session-mutation-guards.js";
@@ -58,12 +61,14 @@ export async function prepareUserBackgroundAction(
     ) {
       throw new Error("Background request no longer belongs to a connected profile");
     }
-    const policy = resolveOperatorRolePolicyForAssignment(
-      owner,
-      profile.role,
-      context.getRuntimeConfig(),
-      profile.githubLogin ?? null,
-    );
+    const policy =
+      resolveAdministratorMemberRolePolicy(client, context.getRuntimeConfig()) ??
+      resolveOperatorRolePolicyForAssignment(
+        owner,
+        profile.role,
+        context.getRuntimeConfig(),
+        profile.githubLogin ?? null,
+      );
     if (
       ![client.connect.scopes ?? [], ...(policy ? [policy.scopes] : [])].every((allowedScopes) =>
         roleScopesAllow({ role: "operator", requestedScopes: [scope], allowedScopes }),
