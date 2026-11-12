@@ -204,7 +204,10 @@ export async function resolveGatewayConnectProfileAdmission(params: {
   const profileRequired =
     Boolean(state.authResult.delegation) ||
     isNamedOperatorRoleEnforcementEnabled(context.configSnapshot) ||
-    hasGatewayOperatorAccessPolicies(context.configSnapshot);
+    hasGatewayOperatorAccessPolicies(context.configSnapshot, {
+      openclawIdPrincipal:
+        state.authMethod === "trusted-proxy" ? state.authResult.openclawId : undefined,
+    });
   if (
     !ownerProfileExpected &&
     (!authenticatedUserId || (params.resolveAuthenticatedGitHubIdentity && !profileRequired))

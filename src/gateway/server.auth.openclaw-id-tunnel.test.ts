@@ -24,6 +24,7 @@ import * as profileWrites from "../state/user-profile-writes.js";
 import { GATEWAY_CLIENT_MODES, GATEWAY_CLIENT_NAMES } from "../utils/message-channel.js";
 import { markGatewayIngressTransport } from "./ingress-attribution.js";
 import { setDeviceTokenBindingOwner } from "./openclaw-id/device-token-binding.js";
+import { MEMBER_ROLE_PRESETS as PRESETS } from "./openclaw-id/member-role-presets.js";
 import {
   setOpenClawIdTunnelPrincipalResolver,
   setOpenClawIdTunnelPrincipalLookup,
@@ -64,6 +65,7 @@ const CONTROL_UI_SCOPES = [
   "operator.pairing",
   "operator.questions",
 ];
+
 const PRINCIPALS: Record<string, OpenClawIdTunnelPrincipal> = {
   [OWNER_KEY]: { kind: "owner", peerKey: OWNER_KEY },
   [OPERATOR_KEY]: { kind: "member", peerKey: OPERATOR_KEY, accountId: "acct_op", role: "operator" },
@@ -98,6 +100,7 @@ beforeAll(async () => {
     gateway: {
       auth: { mode: "token", token: TOKEN },
       controlUi: { allowedOrigins: [BROWSER_ORIGIN] },
+      roles: { definitions: PRESETS },
     },
   });
   started = await createGatewaySuiteHarness();
@@ -277,6 +280,7 @@ describe("OpenClaw ID tunnel devices on a token-mode Gateway", () => {
       const gateway = {
         auth: { mode: "token" as const, token: TOKEN },
         controlUi: { allowedOrigins: [BROWSER_ORIGIN] },
+        roles: { definitions: PRESETS },
       };
       await writeConfigFile({
         gateway: {
@@ -285,6 +289,7 @@ describe("OpenClaw ID tunnel devices on a token-mode Gateway", () => {
           roles: {
             default: "member",
             definitions: {
+              ...PRESETS,
               member: {
                 sessions: { others: "none" },
                 agents: "*",
@@ -347,11 +352,17 @@ describe("OpenClaw ID tunnel devices on a token-mode Gateway", () => {
     },
   );
 
-  test("a viewer member reads but is refused chat.send", async () => {
+  test("a viewer reads conversations but cannot read logs or the user directory or send", async () => {
     const { ws, res } = await connectTunnel(VIEWER_KEY);
     try {
       expect(res.ok).toBe(true);
-      expect(grantedScopes(res)).toEqual(["operator.read"]);
+      expect(grantedScopes(res)).toEqual(["operator.sessions.read"]);
+      for (const method of ["users.self", "sessions.list"]) {
+        expect((await rpcReq(ws, method, {})).ok, method).toBe(true);
+      }
+      for (const method of ["logs.tail", "users.list"]) {
+        expect((await rpcReq(ws, method, {})).error?.message, method).toMatch(/missing scope/);
+      }
       const send = await rpcReq(ws, "chat.send", {
         sessionKey: "main",
         message: "hi",
@@ -368,7 +379,7 @@ describe("OpenClaw ID tunnel devices on a token-mode Gateway", () => {
     const { ws, res } = await connectTunnel(VIEWER_KEY, { token: TOKEN });
     try {
       expect(res.ok).toBe(true);
-      expect(grantedScopes(res)).toEqual(["operator.read"]);
+      expect(grantedScopes(res)).toEqual(["operator.sessions.read"]);
     } finally {
       ws.close();
     }
@@ -380,7 +391,7 @@ describe("OpenClaw ID tunnel devices on a token-mode Gateway", () => {
     try {
       expect(res.ok).toBe(true);
       expect(helloAuth(res)?.method).toBe("trusted-proxy");
-      expect(grantedScopes(res)).toEqual(["operator.read"]);
+      expect(grantedScopes(res)).toEqual(["operator.sessions.read"]);
       expect((await rpcReq(ws, "config.patch", {})).ok).toBe(false);
     } finally {
       ws.close();
@@ -495,6 +506,7 @@ describe("OpenClaw ID tunnel devices on a token-mode Gateway", () => {
     const gateway = {
       auth: { mode: "token" as const, token: TOKEN },
       controlUi: { allowedOrigins: [BROWSER_ORIGIN] },
+      roles: { definitions: PRESETS },
     };
     const browserIdentity = makeIdentityPath(`openclaw-tunnel-managed-${randomUUID()}.sqlite`);
     const tunnel = await connectTunnel(OWNER_KEY, { identityPath: browserIdentity });
@@ -566,6 +578,7 @@ describe("OpenClaw ID tunnel devices on a token-mode Gateway", () => {
     const gateway = {
       auth: { mode: "token" as const, token: TOKEN },
       controlUi: { allowedOrigins: [BROWSER_ORIGIN] },
+      roles: { definitions: PRESETS },
     };
     await writeConfigFile({ gateway: { ...gateway, nodes: { pairing } } });
     sshProbe.mockClear();

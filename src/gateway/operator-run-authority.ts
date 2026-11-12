@@ -222,7 +222,7 @@ export function captureChannelOperatorRunAuthority(input: {
   const metadata = getProcessGatewayPluginMetadataSnapshot();
   const membershipPolicy = openclawIdTunnelRolePolicy(params.openclawIdPrincipal);
   const resolveRole = (cfg: OpenClawConfig) =>
-    membershipPolicy ??
+    openclawIdTunnelRolePolicy(params.openclawIdPrincipal) ??
     resolveOperatorRolePolicyForAssignment(
       params.profileId,
       params.assignedRole,
@@ -253,7 +253,7 @@ export function captureChannelOperatorRunAuthority(input: {
     readCurrentRoleFacts: () => ({
       assignedRole: params.assignedRole,
       githubLogin: params.githubLogin ?? null,
-      ...(membershipPolicy ? { policy: membershipPolicy } : {}),
+      ...(membershipPolicy ? { policy: resolveRole(params.getRuntimeConfig()) } : {}),
     }),
     get modelPolicy() {
       return modelPolicy.readCurrent();
@@ -427,7 +427,7 @@ export async function captureGatewayOperatorRunAuthority(input: {
   const resolveCurrentRole = (cfg = getConfig()) => {
     const profile = assertProfileCurrent();
     return (
-      membershipPolicy ??
+      openclawIdTunnelRolePolicy(openclawIdPrincipal) ??
       resolveOperatorRolePolicyForAssignment(
         profileId,
         profile.assignedRole,
@@ -649,7 +649,7 @@ export async function captureGatewayOperatorRunAuthority(input: {
       rolePolicy: prepareRunRolePolicy(capturedSourcePolicy),
       readCurrentRoleFacts: () => ({
         ...assertProfileCurrent(),
-        ...(membershipPolicy ? { policy: membershipPolicy } : {}),
+        ...(membershipPolicy ? { policy: resolveCurrentRole() } : {}),
       }),
       source: source.token,
       invocation: params.invocationAuthority,

@@ -159,7 +159,6 @@ async function restoreGatewayOperatorSnapshot(params: {
       subscriptions.push(() => ingress.signal.removeEventListener("abort", revoke));
     }
     const principal = snapshot.openclawIdPrincipal;
-    const membershipPolicy = openclawIdTunnelRolePolicy(principal);
     if (principal) {
       await prepareOpenClawIdTunnelPrincipal(principal);
     }
@@ -213,7 +212,7 @@ async function restoreGatewayOperatorSnapshot(params: {
           !isOperatorRoleSourcePolicyCurrent(
             snapshot.rolePolicy,
             sourceRolePolicy(
-              membershipPolicy ??
+              openclawIdTunnelRolePolicy(principal) ??
                 resolveOperatorRolePolicyForAssignment(
                   snapshot.profileId,
                   snapshot.assignedRole,
@@ -320,12 +319,10 @@ async function restoreGatewayOperatorSnapshot(params: {
     assertPolicy = () => {
       try {
         const { profile, cfg } = assertFacts();
-        const access = resumeGatewayOperatorAccessGrant(
-          profile,
-          cfg,
-          snapshot.grant,
-          accessAuthority,
-        );
+        const access = resumeGatewayOperatorAccessGrant(profile, cfg, snapshot.grant, {
+          retained: accessAuthority,
+          openclawIdPrincipal: principal,
+        });
         if (access && !accessAuthority) {
           accessAuthority = access;
           const onAbort = () => revoke(access.signal.reason);
