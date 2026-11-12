@@ -223,13 +223,19 @@ export function openclawIdTunnelRolePolicy(
   );
 }
 
+export class OpenClawIdPrincipalChangedError extends Error {
+  constructor() {
+    super("OpenClaw ID membership authority changed");
+  }
+}
+
 /** Wait only for local authority hydration; recovery does not count as a tunnel admission. */
 export async function prepareOpenClawIdTunnelPrincipal(
   principal: OpenClawIdTunnelPrincipal,
 ): Promise<void> {
   await prepareLookup?.();
   if (!isOpenClawIdTunnelPrincipalCurrent(principal)) {
-    throw new Error("OpenClaw ID membership authority changed");
+    throw new OpenClawIdPrincipalChangedError();
   }
 }
 
