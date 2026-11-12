@@ -177,7 +177,9 @@ const profileBinding = {
 const avatarParams = { profileId: profile.id, mime: "image/png", avatarBase64: "AQ==" };
 const nameParams = { profileId: profile.id, displayName: "Ada" };
 const roleConfig = {
-  getRuntimeConfig: () => ({ gateway: { roles: { definitions: { guest: {} } } } }),
+  getRuntimeConfig: () => ({
+    gateway: { roles: { default: "guest", definitions: { guest: {} } } },
+  }),
 };
 const effects = [
   ensureProfileIdForEmail,
@@ -623,4 +625,21 @@ it.each(
     expectFailure(respond);
     expectUntouched(refresh);
   }
+});
+
+it("requires gateway.roles.default to assign a named role from definitions alone", async () => {
+  setUserProfileRole.mockReturnValue({ ...profile, role: "guest" });
+  const respond = await runUsersHandler(
+    "users.setRole",
+    { profileId: profile.id, role: "guest" },
+    adminClient,
+    {
+      getRuntimeConfig: () => ({ gateway: { roles: { definitions: { guest: {} } } } }),
+    },
+  );
+  expectError(respond, {
+    code: "INVALID_REQUEST",
+    message: expect.stringContaining("gateway.roles.default"),
+  });
+  expect(setUserProfileRole).not.toHaveBeenCalled();
 });

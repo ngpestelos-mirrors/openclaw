@@ -37,6 +37,7 @@ import { ADMIN_SCOPE, APPROVALS_SCOPE } from "../../method-scopes.js";
 import { serializeEventPayload } from "../../node-registry.js";
 import { openclawIdTunnelRolePolicy } from "../../openclaw-id/tunnel-principal.js";
 import { isOperatorApprovalRuntimeToken } from "../../operator-approval-runtime-token.js";
+import { isNamedOperatorRoleEnforcementEnabled } from "../../operator-role-enforcement.js";
 import { resolveOperatorRolePolicyForAssignment } from "../../operator-role-policy.js";
 import {
   buildPluginNodeCapabilityScopedHostUrl,
@@ -211,7 +212,7 @@ export async function attachAuthenticatedGatewayConnect(
     assertCurrent: profileLifecycle.assertCurrent,
     recordTiming: context.recordAttachTiming,
   });
-  const rolesConfigured = Boolean(context.configSnapshot.gateway?.roles);
+  const rolesConfigured = isNamedOperatorRoleEnforcementEnabled(context.configSnapshot);
   // Only an owner-bound ingress grant receives the shared owner role bypass;
   // an OpenClaw ID owner device is the Gateway owner.
   const openclawIdPrincipal =

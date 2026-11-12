@@ -15,6 +15,7 @@ import { onUserProfilesChanged, readUserProfileVersion } from "../state/user-pro
 import { captureResidentUserProfileAccess } from "../state/user-profile-list.js";
 import type { UserProfileAccessFacts } from "../state/user-profiles.types.js";
 import type { GatewayOperatorAccessAuthority } from "./operator-access-policy.types.js";
+import { isNamedOperatorRoleEnforcementEnabled } from "./operator-role-enforcement.js";
 import { resolveOperatorRolePolicyForAssignment } from "./operator-role-policy.js";
 
 export const GATEWAY_OPERATOR_ACCESS_DENIED_MESSAGE =
@@ -75,7 +76,10 @@ export function hasGatewayOperatorAccessPolicies(config: OpenClawConfig): boolea
   return (
     usesGitHubRoleAssignments(config, null) ||
     currentAccessPolicies().length > 0 ||
-    Object.values(config.gateway?.roles?.definitions ?? {}).some((role) => role.accessPolicyPlugin)
+    (isNamedOperatorRoleEnforcementEnabled(config) &&
+      Object.values(config.gateway?.roles?.definitions ?? {}).some(
+        (role) => role.accessPolicyPlugin,
+      ))
   );
 }
 
@@ -83,6 +87,7 @@ function usesGitHubRoleAssignments(config: OpenClawConfig, assignedRole: string 
   const roles = config.gateway?.roles;
   return Boolean(
     roles &&
+    isNamedOperatorRoleEnforcementEnabled(config) &&
     Object.keys(roles.assignments?.byGithubLogin ?? {}).length > 0 &&
     (!assignedRole || !Object.hasOwn(roles.definitions, assignedRole)),
   );
