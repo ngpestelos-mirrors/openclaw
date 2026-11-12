@@ -144,6 +144,7 @@ describe("shared GitHub publication requester authority", () => {
     onTestFinished(system.release);
     expect(system.requester.snapshot).toEqual({
       version: 1,
+      authenticationSource: "non-member",
       actor: { kind: "system" },
       scopes: ["operator.admin"],
       grant: null,
@@ -308,6 +309,7 @@ describe("shared GitHub publication requester authority", () => {
     const stored = f.readRequester(accepted.requestId);
     expect(stored).toEqual({
       version: 1,
+      authenticationSource: "non-member",
       actor: { kind: "operator", profileId: f.guestProfile },
       scopes: guestScopes,
       grant: null,
@@ -652,6 +654,7 @@ describe("shared GitHub publication requester authority", () => {
         expect(f.guestSource.client.internal?.operatorAccessAuthority).toBeNull();
         expect(f.guest.snapshot).toEqual({
           version: 1,
+          authenticationSource: "non-member",
           actor: { kind: "operator", profileId: f.guestProfile },
           scopes: guestScopes,
           grant: null,

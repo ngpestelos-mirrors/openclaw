@@ -10,6 +10,7 @@ const requesterSchema = z
       z.strictObject({ kind: z.literal("system") }),
     ]),
     scopes: z.array(z.string().min(1)),
+    authenticationSource: z.enum(["openclaw-id-member", "non-member"]).optional(),
     openclawIdPrincipal: openClawIdRecoveryPrincipalSchema.optional(),
     grant: z
       .strictObject({
@@ -29,6 +30,11 @@ const requesterSchema = z
       .optional(),
   })
   .refine((value) => value.actor.kind !== "system" || value.grant === null)
+  .refine((value) =>
+    value.authenticationSource === "openclaw-id-member"
+      ? value.openclawIdPrincipal !== undefined
+      : value.authenticationSource !== "non-member" || value.openclawIdPrincipal === undefined,
+  )
   .refine(
     (value) =>
       !value.openclawIdPrincipal ||
@@ -84,6 +90,7 @@ function immutableRequester(
     version: 1,
     actor: Object.freeze(value.actor),
     scopes: Object.freeze([...new Set(value.scopes)].toSorted()),
+    ...(value.authenticationSource ? { authenticationSource: value.authenticationSource } : {}),
     ...(value.openclawIdPrincipal
       ? {
           openclawIdPrincipal: Object.freeze({
@@ -132,6 +139,11 @@ export function matchesGitHubPublicationRequester(
     encodeGitHubPublicationRequester(original) ===
     encodeGitHubPublicationRequester({
       ...current,
+      // A historical retry keeps the accepted unknown source and its recovery checks.
+      authenticationSource:
+        !original.authenticationSource && current.authenticationSource === "non-member"
+          ? undefined
+          : current.authenticationSource,
       grant:
         current.grant && original.grant
           ? { ...current.grant, aliasBindingIds: original.grant.aliasBindingIds }
