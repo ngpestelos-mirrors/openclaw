@@ -630,12 +630,13 @@ export const usersHandlers: GatewayRequestHandlers = {
       return definitions && Object.hasOwn(definitions, role) ? undefined : unknownRoleMessage;
     };
     try {
-      if (role !== null && (await context.openclawIdService?.isMemberProfile(profileId))) {
-        respondError(
-          respond,
-          ErrorCodes.INVALID_REQUEST,
-          "This member's role is managed on the Access page.",
-        );
+      const isMemberProfile =
+        role !== null
+          ? await context.openclawIdService?.prepareMemberProfileCheck(profileId)
+          : undefined;
+      const memberRoleMessage = "This member's role is managed on the Access page.";
+      if (isMemberProfile?.()) {
+        respondError(respond, ErrorCodes.INVALID_REQUEST, memberRoleMessage);
         return;
       }
       const assignmentError = roleAssignmentError();
@@ -648,6 +649,9 @@ export const usersHandlers: GatewayRequestHandlers = {
       const profile = await setCanonicalUserProfileRole(profileId, role, {
         assertCurrent: () => {
           assertCurrent();
+          if (isMemberProfile?.()) {
+            throw new Error(memberRoleMessage);
+          }
           const error = roleAssignmentError();
           if (error) {
             throw new Error(error);
