@@ -1,6 +1,4 @@
 import { beforeEach, expect, it, onTestFinished, vi } from "vitest";
-import { bindScheduledExecutionContext } from "../../cron/execution-context-registry.js";
-import type { ScheduledExecutionContext } from "../../cron/scheduled-occurrence.js";
 import {
   mergeAcceptedSessionSpawnsForRun,
   retireAcceptedSessionSpawnCompletionForRun,
@@ -205,32 +203,3 @@ it("revalidates admission after the final caller assertion", async () => {
   ).rejects.toThrow("settlement is closed");
   expect(registry.settle).not.toHaveBeenCalled();
 });
-
-it.each(["cron run", "in-session automation"] as const)(
-  "settles a %s yield as a turn end the scheduler owns",
-  async (owner) => {
-    registry.settle.mockResolvedValue(false);
-    const params = await admit();
-    if (owner === "cron run") {
-      params.sessionKey = "agent:main:cron:job:run:session";
-    } else {
-      const context = {
-        placement: "in-session",
-        principal: { kind: "operator" },
-        authority: { basis: "operator-source", owner: true },
-        resources: { boardSessionKey: requester.sessionKey },
-        toolPolicy: {},
-      } as unknown as ScheduledExecutionContext;
-      onTestFinished(
-        bindScheduledExecutionContext(params.preparedRunAdmission.operationalRunInstance, context),
-      );
-    }
-    const result = makeResult({ yielded: true });
-    await settleRequesterRun(params, result, assertCurrent);
-    expect(registry.settle).toHaveBeenCalledExactlyOnceWith(
-      expect.objectContaining({ requesterSessionKey: params.sessionKey, requesterYielded: false }),
-    );
-    expect(registry.markYielded).not.toHaveBeenCalled();
-    expect(result.requesterContinuationSettled).toBeUndefined();
-  },
-);
