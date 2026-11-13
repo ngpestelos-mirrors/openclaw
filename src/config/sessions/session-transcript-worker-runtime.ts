@@ -28,12 +28,11 @@ import {
   armDatabaseWorkerIdleRetirement,
   clearDatabaseWorkerIdleRetirement,
   historyLane,
-  maintenanceLane,
+  sessionStoreLane,
   pruneHistoryDatabases,
   refreshDatabaseWorkerPressureSubscription,
   rotateDatabaseWorkers,
   settleSessionHistoryWorkerEviction,
-  targetDiscoveryLane,
   type HistoryDatabaseResource,
   type SessionHistoryDatabaseTarget,
   type SessionHistoryWorkerLane,
@@ -85,7 +84,7 @@ export function runSessionBranchSummaryWorkerRequest(
   return withSessionHistoryWorkerDatabase(
     database,
     (owner) => owner.readBranchSummaries({ request: read }, signal),
-    maintenanceLane,
+    sessionStoreLane,
   );
 }
 
@@ -211,7 +210,7 @@ export function retainSessionHistoryWorkerDatabase(
           !(options.readIdentity
             ? hasSqliteDatabaseSchemaAdmissionForIdentity(options.readIdentity)
             : hasSqliteDatabaseSchemaAdmissionForPath(readOptions.path));
-        const requestLane = cold ? targetDiscoveryLane : requestedLane;
+        const requestLane = cold ? sessionStoreLane : requestedLane;
         if (requestLane !== requestedLane) {
           clearDatabaseWorkerIdleRetirement(requestLane);
           requestLane.pending++;
