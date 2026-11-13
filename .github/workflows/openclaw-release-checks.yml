@@ -1637,7 +1637,7 @@ jobs:
       actions: read
       contents: read
       id-token: write
-    uses: openclaw/openclaw-windows-node/.github/workflows/release-candidate-e2e.yml@f0592215f27100d9ecece33d3069daac76a4125c
+    uses: openclaw/openclaw-windows-node/.github/workflows/release-candidate-e2e.yml@ec49620b03d301fc9e0b7ccc753135beb132bd2b
     with:
       candidate_artifact_name: ${{ needs.prepare_release_package.outputs.windows_node_artifact_name }}
       candidate_artifact_run_id: ${{ github.run_id }}
@@ -1659,7 +1659,7 @@ jobs:
       actions: read
       contents: read
       id-token: write
-    uses: openclaw/openclaw-windows-node/.github/workflows/release-candidate-e2e.yml@f0592215f27100d9ecece33d3069daac76a4125c
+    uses: openclaw/openclaw-windows-node/.github/workflows/release-candidate-e2e.yml@ec49620b03d301fc9e0b7ccc753135beb132bd2b
     with:
       candidate_artifact_name: ${{ needs.prepare_release_package.outputs.windows_node_artifact_name }}
       candidate_artifact_run_id: ${{ github.run_id }}
@@ -1681,7 +1681,7 @@ jobs:
       actions: read
       contents: read
       id-token: write
-    uses: openclaw/openclaw-windows-node/.github/workflows/release-candidate-e2e.yml@f0592215f27100d9ecece33d3069daac76a4125c
+    uses: openclaw/openclaw-windows-node/.github/workflows/release-candidate-e2e.yml@ec49620b03d301fc9e0b7ccc753135beb132bd2b
     with:
       candidate_artifact_name: ${{ needs.prepare_release_package.outputs.windows_node_artifact_name }}
       candidate_artifact_run_id: ${{ github.run_id }}
