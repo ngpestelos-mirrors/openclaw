@@ -89,13 +89,13 @@ it.each([
 const prewarm = vi.hoisted(() => ({
   read: vi.fn<(input: SessionTranscriptWorkerRequest) => Promise<unknown>>(),
   modules: Array.from({ length: 4 }, () => vi.fn(() => ({}))),
-  startup: undefined as { prewarmHistory: true } | undefined,
+  startup: undefined as unknown,
   loadsAtRegistration: [] as number[],
   broadEntryLoads: 0,
   open: vi.fn(() => ({ found: false, reason: "database-missing" })),
 }));
 
-// mock-isolation: Each module load represents one new worker's startup data.
+// mock-isolation: Run the worker entry with startup data prepared by its actual pool.
 vi.mock("node:worker_threads", async (importOriginal) => ({
   ...(await importOriginal<typeof import("node:worker_threads")>()),
   get workerData() {
@@ -124,7 +124,6 @@ vi.mock("../../state/openclaw-agent-db-readonly.js", () => ({
 
 it("dispatches private entry and runtime-target reads without the broad entry worker", async () => {
   vi.resetModules();
-  prewarm.startup = undefined;
   prewarm.broadEntryLoads = 0;
   vi.doMock("./session-entry-read.worker.js", async (importOriginal) => {
     prewarm.broadEntryLoads++;
@@ -155,23 +154,43 @@ it("dispatches private entry and runtime-target reads without the broad entry wo
   expect(prewarm.broadEntryLoads).toBe(0);
 });
 
-it.each([false, true])(
-  "prepares presentation before serving only for foreground history workers (foreground=%s)",
-  async (foreground) => {
-    vi.resetModules();
-    prewarm.startup = foreground ? { prewarmHistory: true } : undefined;
-    prewarm.modules.forEach((loaded) => loaded.mockClear());
-    prewarm.open.mockClear();
-    // mock-isolation: Fresh workers have independent module caches and no previous warm request.
-    vi.doMock("../../gateway/session-history-worker-reader.js", () => prewarm.modules[0]!());
-    // mock-isolation: Observe each fresh worker's presentation imports without loading the kernel.
-    vi.doMock("../../gateway/chat-history-page-kernel.js", () => prewarm.modules[1]!());
-    // mock-isolation: Observe each fresh worker's presentation imports without loading response code.
-    vi.doMock("../../gateway/chat-history-response-page.js", () => prewarm.modules[2]!());
-    // mock-isolation: Observe each fresh worker's presentation imports without loading snapshot code.
-    vi.doMock("../../gateway/session-history-snapshot.js", () => prewarm.modules[3]!());
+it("keeps database prewarming independent of presentation imports", async () => {
+  vi.resetModules();
+  const starts = new Map<unknown, () => unknown>();
+  // mock-isolation: Native library qualification is covered by the worker-pool tests.
+  vi.doMock("../../infra/bun-sqlite-library.js", async (importOriginal) => ({
+    ...(await importOriginal<typeof import("../../infra/bun-sqlite-library.js")>()),
+    ensureSqliteLibrarySelected: () => ({ source: "runtime" }),
+    captureSqliteWorkerClosePolicy: () => false,
+  }));
+  // mock-isolation: Capture real pool preparation without starting a native worker.
+  vi.doMock("../../infra/worker-task-pool.js", async (importOriginal) => {
+    const actual = await importOriginal<typeof import("../../infra/worker-task-pool.js")>();
+    return {
+      ...actual,
+      createOwnedWorkerTaskPool: (...args: Parameters<typeof actual.createOwnedWorkerTaskPool>) => {
+        const pool = actual.createOwnedWorkerTaskPool(...args);
+        starts.set(pool.run, () => args[0].prepareWorker?.().options.workerData);
+        return pool;
+      },
+    };
+  });
+  const { historyLane } = await import("./session-transcript-worker-resources.js");
+  prewarm.startup = starts.get(historyLane.pool.run)?.();
+  expect(prewarm.startup).toBeDefined();
+  prewarm.modules.forEach((loaded) => loaded.mockClear());
+  prewarm.open.mockClear();
+  // mock-isolation: Fresh workers have independent module caches and no previous warm request.
+  vi.doMock("../../gateway/session-history-worker-reader.js", () => prewarm.modules[0]!());
+  // mock-isolation: Observe each fresh worker's presentation imports without loading the kernel.
+  vi.doMock("../../gateway/chat-history-page-kernel.js", () => prewarm.modules[1]!());
+  // mock-isolation: Observe each fresh worker's presentation imports without loading response code.
+  vi.doMock("../../gateway/chat-history-response-page.js", () => prewarm.modules[2]!());
+  // mock-isolation: Observe each fresh worker's presentation imports without loading snapshot code.
+  vi.doMock("../../gateway/session-history-snapshot.js", () => prewarm.modules[3]!());
+  try {
     await import("./session-transcript.worker.js");
-    expect(prewarm.loadsAtRegistration).toEqual(Array(4).fill(Number(foreground)));
+    expect(prewarm.loadsAtRegistration).toEqual([0, 0, 0, 0]);
     // Missing stores are allowed; database admission still runs independently of code preparation.
     await expect(
       prewarm.read({
@@ -185,7 +204,15 @@ it.each([false, true])(
     });
     expect(prewarm.open).toHaveBeenCalledOnce();
     for (const loaded of prewarm.modules) {
-      expect(loaded).toHaveBeenCalledTimes(Number(foreground));
+      expect(loaded).not.toHaveBeenCalled();
     }
-  },
-);
+  } finally {
+    const { closeOpenClawStateDatabaseAsync } =
+      await import("../../state/openclaw-state-db-cache.js");
+    await closeOpenClawStateDatabaseAsync();
+    starts.clear();
+    prewarm.startup = undefined;
+    vi.doUnmock("../../infra/worker-task-pool.js");
+    vi.doUnmock("../../infra/bun-sqlite-library.js");
+  }
+});

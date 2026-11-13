@@ -28,21 +28,10 @@ import type {
 
 type TranscriptReply = SessionTranscriptWorkerReply<keyof SessionTranscriptWorkerValues>;
 
-const startup:
-  | { databaseEngineSelection?: DatabaseEngineSelection; prewarmHistory?: true }
-  | undefined = workerData;
+// History lanes also serve hydration and identity reads; load presentation only on demand.
+const startup: { databaseEngineSelection?: DatabaseEngineSelection } | undefined = workerData;
 if (startup?.databaseEngineSelection) {
   installDatabaseEngineSelection(startup.databaseEngineSelection);
-}
-
-// Pool tasks can choose any idle worker, including one created first for a light read.
-if (startup?.prewarmHistory) {
-  await Promise.all([
-    import("../../gateway/session-history-worker-reader.js"),
-    import("../../gateway/chat-history-page-kernel.js"),
-    import("../../gateway/chat-history-response-page.js"),
-    import("../../gateway/session-history-snapshot.js"),
-  ]);
 }
 
 let releaseReadValidation:
