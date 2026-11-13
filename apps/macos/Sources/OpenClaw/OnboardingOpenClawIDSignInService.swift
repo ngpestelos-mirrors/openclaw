@@ -7,7 +7,7 @@ import UniformTypeIdentifiers
 /// What sign-in-first enrollment needs from the app, injectable for tests.
 @MainActor
 struct OnboardingOpenClawIDSignInEnvironment {
-    var signIn: () async throws -> String
+    var signIn: (_ freshLogin: Bool) async throws -> String
     var cancelSignIn: () -> Void = {}
     var discovery: (MacOpenClawIDConfiguration) -> any OpenClawIDNodeEnrollmentHTTP = { _ in
         OpenClawIDNodeEnrollmentURLSession()
@@ -45,6 +45,7 @@ final class OnboardingOpenClawIDSignInService: OnboardingOpenClawIDService {
     private let nodeInvitations: OnboardingNodeInvitationService
     private let databaseURL: URL
     private var session: OpenClawIDDiscoverySession?
+    private var freshLogin = false
     private var claws: [OpenClawIDDiscoveryClaw] = []
     private var claw: OpenClawIDDiscoveryClaw?
     private var approval: Task<(MacOpenClawIDDevice, OpenClawIDDiscoverySession), Error>?
@@ -70,9 +71,9 @@ final class OnboardingOpenClawIDSignInService: OnboardingOpenClawIDService {
             databaseURL: MacOpenClawIDDeviceStore.shared.databaseURL,
             nodeInvitations: OnboardingNodeInvitationService(),
             environment: .init(
-                signIn: {
+                signIn: { freshLogin in
                     guard let signIn else { throw MacOpenClawIDSignInError.refused }
-                    return try await signIn.signIn()
+                    return try await signIn.signIn(freshLogin: freshLogin)
                 },
                 cancelSignIn: { signIn?.cancel() },
                 describeNode: { try await MacNodeModeCoordinator.shared.openClawIDEnrollmentDescription() },
@@ -113,6 +114,10 @@ final class OnboardingOpenClawIDSignInService: OnboardingOpenClawIDService {
             return try await self.nodeInvitations.perform(action)
         case .checkApproval where self.approval == nil:
             return try await self.nodeInvitations.perform(action)
+        case .switchAccount:
+            self.cancel()
+            self.freshLogin = true
+            return try await self.signIn()
         case .signIn:
             return try await self.signIn()
         case let .selectClaw(id):
@@ -163,6 +168,9 @@ final class OnboardingOpenClawIDSignInService: OnboardingOpenClawIDService {
         self.compare = nil
         self.nodeInvitations.cancel()
         self.claw = nil
+        self.claws = []
+        self.session = nil
+        self.freshLogin = false
     }
 
     private func discovery(_ configuration: MacOpenClawIDConfiguration) -> OpenClawIDDiscoveryAccount {
@@ -172,7 +180,7 @@ final class OnboardingOpenClawIDSignInService: OnboardingOpenClawIDService {
     private func signIn() async throws -> OnboardingOpenClawIDStep {
         guard let configuration else { throw CocoaError(.featureUnsupported) }
         let idToken: String
-        do { idToken = try await self.environment.signIn() } catch MacOpenClawIDSignInError.cancelled {
+        do { idToken = try await self.environment.signIn(self.freshLogin) } catch MacOpenClawIDSignInError.cancelled {
             return .signIn
         } catch {
             return .problem(.signInFailed)
