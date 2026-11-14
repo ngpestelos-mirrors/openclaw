@@ -78,7 +78,7 @@ jobs:
           echo "workflow_sha=$REQUEST_HEAD_SHA" >> "$GITHUB_OUTPUT"
 
       - name: Prepare Git owner
-        uses: openclaw/openclaw/.github/actions/git-owner@88095dc00eef288c3829909d4dc64a9e249fa7ef
+        uses: openclaw/openclaw/.github/actions/git-owner@04e941df29283d3c7a2e770c552a464e465f47ad
 
       - name: Checkout selected tag
         env:
