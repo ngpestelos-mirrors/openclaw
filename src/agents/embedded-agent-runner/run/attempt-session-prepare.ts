@@ -3,6 +3,7 @@ import { supportsClaudeInHistorySystemMessages } from "@openclaw/llm-core";
 import { getOwnedSessionTranscriptReader } from "../../../config/sessions/transcript-write-context.js";
 import { OPENCLAW_EMBEDDED_CONTEXT_ENGINE_HOST } from "../../../context-engine/host-compat.js";
 import type { ContextEngine } from "../../../context-engine/types.js";
+import { toolRepeatDiagnostics } from "../../../logging/diagnostic-tool-loop.js";
 import { getGlobalHookRunner } from "../../../plugins/hook-runner-global.js";
 import type { PluginMetadataSnapshot } from "../../../plugins/plugin-metadata-snapshot.types.js";
 import {
@@ -11,6 +12,7 @@ import {
 } from "../../../sessions/input-provenance.js";
 import type { PersistedUserTurnMessage } from "../../../sessions/user-turn-transcript.types.js";
 import { createPreparedEmbeddedAgentSettingsManager } from "../../agent-project-settings.js";
+import { isAgentToolRepeatGuardEnabled } from "../../agent-scope.js";
 import {
   applyAgentAutoCompactionGuard,
   isSilentOverflowProneModel,
@@ -76,10 +78,6 @@ import {
 import { resolveSessionBoundaryPromptCacheKey } from "./session-boundary-prompt-cache-key.js";
 import { resolveEmbeddedSessionContextLimits } from "./session-context-limits.js";
 import { withEmbeddedAttemptToolActivity } from "./tool-activity-heartbeat.js";
-import {
-  createToolLoopBatchAdmission,
-  installToolLoopRecoveryCleanup,
-} from "./tool-loop-recovery.js";
 import type { EmbeddedRunAttemptParams } from "./types.js";
 
 export async function prepareEmbeddedAttemptAgentSession(input: {
@@ -217,14 +215,14 @@ export async function prepareEmbeddedAttemptAgentSession(input: {
       attempt,
       input.sessionAgentId,
     ),
-    beforeToolBatch: clientTools.catalogToolHookContext
-      ? createToolLoopBatchAdmission(clientTools.catalogToolHookContext)
-      : undefined,
+    toolRepeatPolicy: {
+      enabled: isAgentToolRepeatGuardEnabled(attempt.config, input.sessionAgentId),
+      onVerdict: toolRepeatDiagnostics({ ...attempt, agentId: input.sessionAgentId }),
+    },
   });
   // Publish ownership before post-construction hooks. Outer cleanup must dispose
   // the session if prompt or terminal-hook installation fails.
   input.onSessionCreated(activeSession);
-  installToolLoopRecoveryCleanup({ agent: activeSession.agent, runId: attempt.runId });
   const setActiveSessionSystemPrompt = (nextSystemPrompt: string) => {
     input.onSystemPromptChanged(nextSystemPrompt);
     activeSession.setBaseSystemPrompt(nextSystemPrompt.trim());

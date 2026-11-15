@@ -96,5 +96,6 @@ export function projectAgentToolDefinition(tool: AnyAgentTool) {
     parameters: tool.parameters,
     executionMode: tool.executionMode,
     ...(tool.async === false ? { async: false as const } : {}),
+    ...(tool.repeatable ? { repeatable: tool.repeatable } : {}),
   };
 }

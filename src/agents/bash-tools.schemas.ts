@@ -143,6 +143,12 @@ export const nodeExecSchema = Type.Object({
   node: execSchema.properties.node,
 });
 
+/** list, poll and log only observe sessions: safe to interrupt and expected to repeat. */
+export function isProcessObservationAction(args: unknown): boolean {
+  const action = (args as { action?: unknown } | null | undefined)?.action;
+  return action === "list" || action === "poll" || action === "log";
+}
+
 export const processSchema = Type.Object({
   action: Type.String({
     enum: [...PROCESS_TOOL_ACTIONS],
