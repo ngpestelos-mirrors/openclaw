@@ -477,7 +477,8 @@ For full diagnosis ladders, use [Gateway Troubleshooting](/gateway/troubleshooti
 
 Use `gateway.resources.profile` to select `auto` (default), `standard`, or `lean`.
 Auto provisionally selects lean at or below 2 GiB effective memory or 2 available
-CPUs. **Both profiles currently retain the same worker behavior.**
+CPUs. Lean runs the core SQLite, transcript, state-read and catalog workers as endpoints
+of one shared host worker; standard keeps the existing worker layout.
 `openclaw status` reports the running Gateway's decision and live direct-worker
 census; `--json` exposes the same facts under `resources`. See
 [resource profile configuration](/gateway/config-gateway#gateway.resources.profile)
