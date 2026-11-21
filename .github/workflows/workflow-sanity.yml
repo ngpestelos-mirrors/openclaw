@@ -111,7 +111,7 @@ jobs:
 
       - name: Prepare Git owner
         if: steps.scope.outputs.changed == 'true'
-        uses: openclaw/openclaw/.github/actions/git-owner@c30efcb58a050bc5c449381e732125662e87faae
+        uses: openclaw/openclaw/.github/actions/git-owner@a8a7ce94eb544f3c39cf25f674471c3f1e3fe4ab
 
       - name: Prepare trusted workflow audit configs
         if: github.event_name == 'pull_request' && steps.scope.outputs.changed == 'true'
