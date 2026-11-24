@@ -424,10 +424,14 @@ function resolveCommandAuthorizationState(
 
   const enforceOwner = Boolean(plugin?.commands?.enforceOwnerForCommands);
   const senderIsOwnerByIdentity = Boolean(matchedSender);
-  const senderIsOwnerByScope =
-    isInternalMessageChannel(ctx.Provider) &&
-    Array.isArray(ctx.GatewayClientScopes) &&
-    ctx.GatewayClientScopes.includes("operator.admin");
+  // An admitted Gateway turn answers from its grant; other internal callers still use scopes.
+  // Both are trusted only as far as the internal Gateway provider is.
+  const turnGrant = isInternalMessageChannel(ctx.Provider) ? ctx.TurnGrant : undefined;
+  const senderIsOwnerByScope = turnGrant
+    ? turnGrant.owner
+    : isInternalMessageChannel(ctx.Provider) &&
+      Array.isArray(ctx.GatewayClientScopes) &&
+      ctx.GatewayClientScopes.includes("operator.admin");
   const ownerAllowlistConfigured = explicitOwners.length > 0;
   const senderIsOwner =
     senderIsOwnerByIdentity ||
@@ -448,11 +452,14 @@ function resolveCommandAuthorizationState(
       (providerResolutionError && commandsAllowFromConfigured)
     ) {
       if (!providerResolutionError) {
-        access = commandsAllowFromList?.some(
-          (entry) => isWildcardAllowFromEntry(entry) || senderCandidates.includes(entry),
-        )
-          ? "commands"
-          : "denied";
+        // An admin can edit commands.allowFrom itself, so the list cannot hold it back.
+        access =
+          turnGrant?.commands === "all" ||
+          commandsAllowFromList?.some(
+            (entry) => isWildcardAllowFromEntry(entry) || senderCandidates.includes(entry),
+          )
+            ? "commands"
+            : "denied";
       }
     } else if (commandAuthorized) {
       // Global ownership does not revoke channel-admitted session resets; explicit

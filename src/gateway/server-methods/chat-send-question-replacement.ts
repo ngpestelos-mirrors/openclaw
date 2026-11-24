@@ -1,5 +1,5 @@
 import { performance } from "node:perf_hooks";
-import { GATEWAY_CLIENT_NAMES } from "../../../packages/gateway-protocol/src/client-info.js";
+import type { TurnGrant } from "../../agents/admitted-run-operator-authority.types.js";
 import {
   getActiveAgentRunDelegatedAuthority,
   getAgentRunContext,
@@ -20,16 +20,15 @@ export function captureChatSendQuestionReplacement(
   sessionKey: string,
   runId: string | undefined,
   isCommand: boolean,
+  grant: TurnGrant | undefined,
 ) {
   if (
+    !grant?.questionReplace ||
     !options ||
     !runId ||
     isCommand ||
-    request.systemInputProvenance ||
-    request.turnKind !== "main" ||
     request.p.queueMode !== "steer" ||
-    !request.rawMessage.trim() ||
-    request.clientInfo?.id !== GATEWAY_CLIENT_NAMES.CONTROL_UI
+    !request.rawMessage.trim()
   ) {
     return undefined;
   }

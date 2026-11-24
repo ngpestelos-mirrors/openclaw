@@ -385,6 +385,7 @@ async function executeAgentRun(
                   sessionMutationCommitGuard: params.assertGatewayLifetimeCurrent,
                 },
                 params.resolvedSessionKey,
+                // Internal starts keep no authoring until they admit from their recorded source.
                 !params.inputProvenance &&
                   !params.isOneShotModelRun &&
                   !params.request.internalEvents &&
@@ -393,7 +394,9 @@ async function executeAgentRun(
                   params.sessionEffects !== "internal" &&
                   !params.request.suppressPromptPersistence &&
                   !params.request.swarmCollector &&
-                  params.request.lane !== "subagent",
+                  params.request.lane !== "subagent"
+                  ? prepared.operatorAuthority?.grant
+                  : undefined,
               )
             : undefined;
         finalizePreparedAgentRunUserTurn(prepared.userTurn);

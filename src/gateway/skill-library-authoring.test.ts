@@ -14,6 +14,7 @@ import { linkEmail, setUserProfileRole } from "../state/user-profile-writes.work
 import { ensureProfileForEmail } from "../state/user-profiles.js";
 import { closeStateDatabaseForTest } from "../test-utils/database-cleanup.js";
 import { requireNativeSqliteDatabase } from "../test-utils/native-sqlite.js";
+import { decideTurnGrant } from "./operator-admission.js";
 import type { OperatorScope } from "./operator-scopes.js";
 import {
   libraryAuthority,
@@ -78,10 +79,12 @@ async function setup() {
   });
   return { alice, bob, request };
 }
+const grantFor = (owner: SkillLibraryRequestOwner) =>
+  decideTurnGrant(owner.client?.connect.scopes ?? []);
 const authoring = async (owner: SkillLibraryRequestOwner) =>
-  (await prepareGatewaySkillAuthoring(owner, sessionKey, true))!;
+  (await prepareGatewaySkillAuthoring(owner, sessionKey, grantFor(owner)))!;
 const prepareTurn = (owner: SkillLibraryRequestOwner, prepare = async () => {}) =>
-  prepareGatewaySkillLibraryTurn({ owner, sessionKey, isHumanTurn: true }, prepare, () => {});
+  prepareGatewaySkillLibraryTurn({ owner, sessionKey, grant: grantFor(owner) }, prepare, () => {});
 async function admitted(
   capability: NonNullable<Awaited<ReturnType<typeof prepareGatewaySkillAuthoring>>>,
   runId = "ordinary-turn",
@@ -205,12 +208,18 @@ describe("human personal namespace authority", () => {
   it("requires admission, refuses synthetic authority, and invalidates a mixed-person steer", async () => {
     const { alice, bob, request } = await setup();
     const owner = request(alice.id);
-    expect(await prepareGatewaySkillAuthoring(owner, "agent:main:shared", false)).toBeUndefined();
+    expect(
+      await prepareGatewaySkillAuthoring(
+        owner,
+        "agent:main:shared",
+        decideTurnGrant(["operator.read"]),
+      ),
+    ).toBeUndefined();
     expect(
       await prepareGatewaySkillAuthoring(
         { ...owner, client: { ...owner.client!, internal: { syntheticClient: true } } },
         "agent:main:shared",
-        true,
+        grantFor(owner),
       ),
     ).toBeUndefined();
     const capability = await authoring(owner);

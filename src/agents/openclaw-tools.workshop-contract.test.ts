@@ -7,6 +7,7 @@ import { Value } from "typebox/value";
 import { afterEach, assert, beforeEach, describe, expect, it, vi } from "vitest";
 import { setRuntimeConfigSnapshot } from "../config/runtime-snapshot.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
+import { decideTurnGrant } from "../gateway/operator-admission.js";
 import { handleGatewayRequest } from "../gateway/server-methods.js";
 import type { GatewayRequestOptions } from "../gateway/server-methods/types.js";
 import { prepareGatewaySkillAuthoring } from "../gateway/skill-library-authoring.js";
@@ -645,7 +646,11 @@ describe("Workshop through the OpenClaw tool set", () => {
         },
         context: { getRuntimeConfig: () => ownerConfig },
       } as Parameters<typeof prepareGatewaySkillAuthoring>[0];
-      const capability = await prepareGatewaySkillAuthoring(owner, "agent:main:contract", true);
+      const capability = await prepareGatewaySkillAuthoring(
+        owner,
+        "agent:main:contract",
+        decideTurnGrant(["operator.admin"]),
+      );
       expect(capability?.defaultTarget).toBe(multiple ? "personal" : "workspace");
       const admission = prepareSystemAgentRunAdmission(
         config,

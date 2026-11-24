@@ -346,7 +346,7 @@ export async function admitScheduledOccurrence(
           },
           parentRow,
           operatorSourceRequester
-            ? run.operatorAuthority?.requesterOwner === true
+            ? run.operatorAuthority?.grant.owner === true
             : requesterOwner?.owner,
         );
         result = buildScheduledExecutionContext(job, facts);

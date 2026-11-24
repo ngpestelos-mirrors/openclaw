@@ -79,7 +79,7 @@ export async function runCronAdmissionCase(
         expect([...authority.scopes].toSorted()).toEqual([...WRITER].toSorted());
         if (isOccurrence) {
           expect(params.attempt.runId).not.toBe(creatorRunId);
-          expect(authority.requesterOwner).toBe(true);
+          expect(authority.grant.owner).toBe(true);
         } else {
           const tool = tools.toolsRaw.find((candidate) => candidate.name === AUTOMATIONS_TOOL_NAME);
           assert(params.attempt.admittedRunContext);

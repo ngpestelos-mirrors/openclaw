@@ -552,6 +552,7 @@ export async function handleChatSendWithStorage(
         sessionKey,
         messageInjectionTarget?.runId,
         isInternalTextSlashCommandTurn,
+        admission.operatorAuthority?.grant,
       ),
       logGateway: context.logGateway,
       assertCurrent:
@@ -648,7 +649,7 @@ export async function handleChatSendWithStorage(
           context,
           sessionMutationCommitGuard: assertInputAdmissionCurrent,
         },
-        isHumanTurn: !options && !systemInputProvenance && request.turnKind === "main",
+        grant: admission.operatorAuthority?.grant,
       },
       cronCreatorAuthority,
       assertDashboardReadCurrent,

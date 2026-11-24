@@ -168,7 +168,12 @@ export function prepareChatSendUserTurn(params: {
   session: Pick<PreparedChatSendSession, "agentId" | "clientRunId" | "sessionKey"> &
     Partial<Pick<PreparedChatSendSession, "cfg">>;
   admission: Pick<AdmittedChatSend, "originatingRoute"> &
-    Partial<Pick<AdmittedChatSend, "assertWorkAdmissionCurrent" | "assertClientUploadAllowed">>;
+    Partial<
+      Pick<
+        AdmittedChatSend,
+        "assertWorkAdmissionCurrent" | "assertClientUploadAllowed" | "operatorAuthority"
+      >
+    >;
   attachments: PreparedChatSendAttachments;
   client: GatewayRequestHandlerOptions["client"];
   logGateway: GatewayRequestContext["logGateway"];
@@ -290,6 +295,7 @@ export function prepareChatSendUserTurn(params: {
     SessionCreation: { ...creation, ...(sandbox ? { sandbox } : {}) },
     ...resolveChatSendCallerContext(client, request.clientInfo, originatingChannel),
     GatewayRunToolBindings: request.toolBindings,
+    TurnGrant: admission.operatorAuthority?.grant,
     GatewayUiCommandTarget: gatewayUiCommandTarget,
   };
   const recoveredRequester = readQueuedChatInputAdmission(session.clientRunId)?.requesterProfile;
