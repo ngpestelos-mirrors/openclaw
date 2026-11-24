@@ -11,15 +11,10 @@ export type AdmittedRunOperatorRoleFacts = Readonly<{
   policy?: GatewayOperatorRoleDefinition;
 }>;
 
-/**
- * What a turn may do, decided once by `decideTurnGrant` in `gateway/operator-admission.ts`.
- * Frozen and in memory only; a replay admits again from its recorded source.
- */
+/** What a turn may do; only `decideTurnGrant` produces it. In memory only; replays re-admit. */
 export type TurnGrant = Readonly<{
-  /** Owner-only tools and owner-only commands. */
   owner: boolean;
   skillAuthoring: boolean;
-  /** May replace the pending question it steers; selection stays with the question owner. */
   questionReplace: boolean;
   /** `all` passes `commands.allowFrom`; otherwise the list decides. */
   commands: "none" | "all";

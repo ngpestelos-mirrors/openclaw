@@ -1,4 +1,3 @@
-import { isDeepStrictEqual } from "node:util";
 import {
   getAdmittedRunDelegatedAuthority,
   type AdmittedRunContext,
@@ -68,22 +67,7 @@ async function prepareGatewaySkillLibrarySession(
   if (!grantsSkillAuthoring(options, grant)) {
     return undefined;
   }
-  const client = options.client;
-  const authority = libraryAuthority(options);
-  const scopes = [...authority.scopes];
-  return prepareSkillLibrarySession({
-    ...authority,
-    assertCurrent() {
-      authority.assertCurrent();
-      if (
-        options.client !== client ||
-        client?.authenticatedUserProfile?.profileId !== authority.profileId ||
-        !isDeepStrictEqual(client?.connect.scopes ?? [], scopes)
-      ) {
-        throw new SkillLibraryError("AUTHORITY_EXPIRED", "Skill library requester changed. Retry.");
-      }
-    },
-  });
+  return prepareSkillLibrarySession(libraryAuthority(options));
 }
 
 export async function prepareGatewaySkillLibraryTurn(
@@ -160,21 +144,21 @@ export async function prepareGatewaySkillAuthoring(
           "Personal authoring run was not admitted.",
         );
       }
-      const grant = {
+      const binding = {
         profileId,
         revoke: () => {
           revoked = true;
         },
       };
       const grants = active.get(sessionKey) ?? new Set();
-      grants.add(grant);
+      grants.add(binding);
       active.set(sessionKey, grants);
       const stop = registerAgentRunDelegatedAuthorityClosedHandler((closed) => {
         if (closed !== owner) {
           return;
         }
         revoked = true;
-        grants.delete(grant);
+        grants.delete(binding);
         if (!grants.size) {
           active.delete(sessionKey);
         }

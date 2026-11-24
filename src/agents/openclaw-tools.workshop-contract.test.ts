@@ -18,7 +18,6 @@ import { workshopPluginConfig } from "../skills/test-support/workshop-config.tes
 import { activateWorkshopPluginForTest } from "../skills/test-support/workshop-plugin.test-support.js";
 import { resolveOpenClawStateSqlitePath } from "../state/openclaw-state-db.paths.js";
 import { prepareUserProfileCatalog } from "../state/user-profile-list.js";
-import { setUserProfileRole } from "../state/user-profile-writes.worker.js";
 import { ensureProfileForEmail } from "../state/user-profiles.js";
 import { closeStateDatabaseForTest } from "../test-utils/database-cleanup.js";
 import {
@@ -710,20 +709,6 @@ describe("Workshop through the OpenClaw tool set", () => {
         await expect(fs.stat(path.join(root, "personal"))).rejects.toMatchObject({
           code: "ENOENT",
         });
-        if (!multiple) {
-          // A demoted admin keeps the definition but loses workspace writes.
-          setUserProfileRole(alice.id, "reader");
-          await expect(
-            invoke("skill_workshop", {
-              action: "create",
-              name: "demoted",
-              content: skill("demoted"),
-            }),
-          ).rejects.toThrow("current administrator authority");
-          await expect(fs.stat(path.join(root, "demoted"))).rejects.toMatchObject({
-            code: "ENOENT",
-          });
-        }
       } finally {
         admission.close();
         catalog.release();

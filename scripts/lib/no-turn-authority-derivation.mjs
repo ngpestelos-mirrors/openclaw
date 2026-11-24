@@ -33,7 +33,6 @@ export const TURN_FLAG_FILES = new Set([
   "src/gateway/approval-channel-custody.ts",
   "src/gateway/operator-admission.ts",
   "src/gateway/operator-run-authority.ts",
-  "src/gateway/server-methods/chat-send-question-replacement.ts",
   "src/gateway/server-methods/chat-send-request.ts",
   "src/gateway/server-methods/chat-user-turn-recorder.ts",
   "src/gateway/server-methods/restart.ts",
@@ -104,7 +103,7 @@ export const OWNER_PRODUCER_FILES = new Set([
 
 // Capability modules read the grant, never how the turn started. Deny list, because transcript
 // and delivery code read provenance legitimately.
-const CAPABILITY_MODULES = [
+const CAPABILITY_MODULES = new Set([
   "src/gateway/skill-library-authoring.ts",
   "src/gateway/server-methods/chat-send-question-replacement.ts",
   "src/gateway/server-methods/cron-creator-authority-admission.ts",
@@ -113,9 +112,9 @@ const CAPABILITY_MODULES = [
   "src/security/dangerous-tools.ts",
   "src/agents/automations-run-scope.ts",
   `${BOUNDARY_GUARD_FIXTURE_ROOT}/turn-authority-derivation-violation.ts`,
-];
+]);
 const isCapabilityModule = (path) =>
-  CAPABILITY_MODULES.includes(path) ||
+  CAPABILITY_MODULES.has(path) ||
   (path.startsWith("src/gateway/github-publication-") && path.endsWith(".ts"));
 const PROVENANCE_READS = new Set([
   "systemInputProvenance",

@@ -42,7 +42,7 @@ const cases = [
 // Shrink only. When a file leaves a list, lower its ceiling in the same change; never raise one.
 const allowlists = [
   ["no-operator-permission-read", "", ADMISSION_FILES, 62],
-  ["no-turn-authority-derivation", "Turn-kind flag:", TURN_FLAG_FILES, 22],
+  ["no-turn-authority-derivation", "Turn-kind flag:", TURN_FLAG_FILES, 21],
   ["no-turn-authority-derivation", "Owner status:", OWNER_PRODUCER_FILES, 51],
   ["no-turn-authority-derivation", "Capability module:", CAPABILITY_PROVENANCE_FILES, 4],
 ] as const;
@@ -70,7 +70,7 @@ it("drops every allowlist entry that no longer trips its check", () => {
       ),
     }),
   );
-  const files = [...new Set(allowlists.flatMap(([, , list]) => [...list]))];
+  const files = [...new Set(allowlists.flatMap((allowlist) => [...allowlist[2]]))];
   const run = spawnSync(
     process.execPath,
     [

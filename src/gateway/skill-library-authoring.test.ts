@@ -1,4 +1,3 @@
-import { constants } from "node:sqlite";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { useAutoCleanupTempDirTracker } from "../../test/helpers/temp-dir.js";
 import { prepareSystemAgentRunAdmission } from "../agents/admitted-run-context.js";
@@ -8,12 +7,10 @@ import type { AnyAgentTool } from "../agents/tools/common.js";
 import { withGatewayToolCallerIdentity } from "../agents/tools/gateway-caller-context.js";
 import { createSkillLibraryTool } from "../agents/tools/skill-library-tool.js";
 import { listSkillLibrary, readSkillLibrary, saveSkillLibrary } from "../skills/library/service.js";
-import { openOpenClawStateDatabase } from "../state/openclaw-state-db.js";
 import { prepareUserProfileCatalog } from "../state/user-profile-list.js";
 import { linkEmail, setUserProfileRole } from "../state/user-profile-writes.worker.js";
 import { ensureProfileForEmail } from "../state/user-profiles.js";
 import { closeStateDatabaseForTest } from "../test-utils/database-cleanup.js";
-import { requireNativeSqliteDatabase } from "../test-utils/native-sqlite.js";
 import { decideTurnGrant } from "./operator-admission.js";
 import type { OperatorScope } from "./operator-scopes.js";
 import {
@@ -115,23 +112,22 @@ async function admitted(
 }
 
 describe("human personal namespace authority", () => {
-  it("checks workspace authority from committed profile facts without a main-thread read", async () => {
+  it("decides workspace authority once, from the turn grant", async () => {
     const { alice, request } = await setup();
     const owner = request(alice.id);
     owner.client!.connect.scopes = ["operator.admin"];
     owner.context.getRuntimeConfig = () => roles("administrator", "operator.admin");
     const run = await admitted(await authoring(owner));
-    const db = requireNativeSqliteDatabase(openOpenClawStateDatabase().db);
+    const writer = await admitted(await authoring(request(alice.id)), "writer-turn");
     try {
-      db.setAuthorizer(() => constants.SQLITE_DENY);
       await expect(run.assertWorkspaceCurrent()).resolves.toBeUndefined();
-      db.setAuthorizer(null);
+      // A role change applies to the next turn; this admitted turn finishes.
       setUserProfileRole(alice.id, "reader");
-      db.setAuthorizer(() => constants.SQLITE_DENY);
-      await expect(run.assertWorkspaceCurrent()).rejects.toThrow("current administrator authority");
+      await expect(run.assertWorkspaceCurrent()).resolves.toBeUndefined();
+      await expect(writer.assertWorkspaceCurrent()).rejects.toThrow("administrator authority");
     } finally {
-      db.setAuthorizer(null);
       run.close();
+      writer.close();
     }
   });
 
@@ -237,27 +233,6 @@ describe("human personal namespace authority", () => {
     );
     expect((await listSkillLibrary(libraryAuthority(owner))).entries).toHaveLength(0);
   });
-  it.each(["profile", "scopes"] as const)(
-    "refuses a prepared session after replacing requester %s",
-    async (change) => {
-      const { alice, bob, request } = await setup();
-      const owner = request(alice.id);
-      await expect(
-        prepareTurn(owner, async () => {
-          if (change === "profile") {
-            owner.client!.authenticatedUserProfile = {
-              profileId: bob.id,
-              displayName: null,
-              hasAvatar: false,
-              updatedAt: 1,
-            };
-          } else {
-            owner.client!.connect.scopes = ["operator.read"];
-          }
-        }),
-      ).rejects.toMatchObject({ code: "AUTHORITY_EXPIRED" });
-    },
-  );
   it("enforces current roles at publication after staging", async () => {
     const { alice, request } = await setup();
     const owner = request(alice.id);
