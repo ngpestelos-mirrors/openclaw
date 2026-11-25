@@ -436,6 +436,16 @@ describe("prompt cache observability", () => {
     }
     expect(beginOpenAIObservation(retained).previousCacheRead).toBe(8_000);
 
+    for (let index = 0; index < 513; index++) {
+      beginOpenAIObservation({ sessionId: scopedKey(`tracker-pressure-${index}`) });
+    }
+    expect(beginOpenAIObservation(retained)).toMatchObject({
+      previousCacheRead: null,
+      changes: null,
+    });
+
+    seedObservation(retained);
+    expect(beginOpenAIObservation(retained).previousCacheRead).toBe(8_000);
     cleanupSessionResources();
     expect(beginOpenAIObservation(retained).previousCacheRead).toBeNull();
   });
