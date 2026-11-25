@@ -421,6 +421,7 @@ export function mountMentionComposerEditor(
       ),
       mentionTheme,
     ],
+    restoresAtomicRanges: (effect) => effect.is(restoreMentions) && effect.value.length > 0,
     sync(view, previous) {
       const next = input.value;
       const nextMentions = readHumanMentions(next, mentions()) ?? [];
