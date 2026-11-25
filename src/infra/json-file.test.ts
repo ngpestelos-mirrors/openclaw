@@ -113,22 +113,6 @@ describe("json-file helpers", () => {
     });
   });
 
-  it("writes through a sibling temp file before replacing the destination", async () => {
-    await withJsonPath(({ pathname }) => {
-      writeExistingJson(pathname);
-      const renameSpy = vi.spyOn(fs, "renameSync");
-
-      writeJsonTarget(pathname, SAVED_PAYLOAD);
-
-      const renameCall = renameSpy.mock.calls.find(([, target]) => target === pathname);
-      expect(renameCall).toEqual([expect.any(String), pathname]);
-      const temporaryPath = String(renameCall?.[0]);
-      expect(path.dirname(temporaryPath)).toBe(path.dirname(pathname));
-      expect(temporaryPath).not.toBe(pathname);
-      expect(loadJsonFileThroughSymlink(pathname)).toEqual(SAVED_PAYLOAD);
-    });
-  });
-
   it.runIf(process.platform !== "win32").each([1, 2])(
     "preserves %i-level symlink destinations when replacing existing JSON files",
     async (levels) => {

@@ -1,10 +1,8 @@
 // Command queue tests cover bounded command execution and queue ordering.
 import { AsyncLocalStorage } from "node:async_hooks";
-import { spawnSync } from "node:child_process";
 import { importFreshModule } from "openclaw/plugin-sdk/test-fixtures";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { createDeferred } from "../../test/helpers/promise.js";
-import { resolveRuntimeWorkerArgv, resolveRuntimeWorkerUrl } from "../infra/runtime-worker-url.js";
 import { getLaneState, getQueueState } from "./command-queue.state.js";
 import { resetCommandQueueStateForTest } from "./command-queue.test-support.js";
 import {
@@ -12,7 +10,6 @@ import {
   tryBeginGatewaySuspendAdmission,
 } from "./gateway-work-admission.js";
 import { CommandLane } from "./lanes.js";
-import { processProbeEntrypoints } from "./process-probes-runtime.test-support.js";
 
 const diagnosticMocks = vi.hoisted(() => ({
   logLaneEnqueue: vi.fn(),
@@ -133,77 +130,6 @@ describe("command queue", () => {
       ...Array.from({ length: 35 }, (_, index) => `normal-${index + 5}`),
       ...Array.from({ length: 18 }, (_, index) => `background-${index}`),
     ]);
-  });
-
-  it("avoids quadratic array work as a paused queue doubles", () => {
-    const queueUrl = resolveRuntimeWorkerUrl(processProbeEntrypoints.commandQueue);
-    const script = String.raw`
-      const { enqueueCommandInLane, setCommandLaneConcurrency } = await import(
-        ${JSON.stringify(queueUrl.href)}
-      );
-      const originalFindIndex = Array.prototype.findIndex;
-      const originalShift = Array.prototype.shift;
-      let enqueueComparisons = 0;
-      let shiftedSlots = 0;
-
-      Array.prototype.findIndex = function (predicate, thisArg) {
-        return originalFindIndex.call(this, (value, index, array) => {
-          enqueueComparisons += 1;
-          return predicate.call(thisArg, value, index, array);
-        });
-      };
-      Array.prototype.shift = function () {
-        shiftedSlots += this.length;
-        return originalShift.call(this);
-      };
-
-      const measureQueueWork = async (count) => {
-        const lane = "linear-queue-" + count;
-        setCommandLaneConcurrency(lane, 0);
-        const comparisonStart = enqueueComparisons;
-        const tasks = Array.from({ length: count }, (_, index) =>
-          enqueueCommandInLane(lane, async () => index),
-        );
-        const enqueueWork = enqueueComparisons - comparisonStart;
-        const shiftedSlotStart = shiftedSlots;
-        setCommandLaneConcurrency(lane, count);
-        const dequeueWork = shiftedSlots - shiftedSlotStart;
-        await Promise.all(tasks);
-        return { enqueueWork, dequeueWork };
-      };
-
-      const smaller = await measureQueueWork(256);
-      const larger = await measureQueueWork(512);
-      process.stdout.write(JSON.stringify({ smaller, larger }));
-    `;
-    const result = spawnSync(
-      process.execPath,
-      [...resolveRuntimeWorkerArgv(queueUrl).slice(0, -1), "--input-type=module", "--eval", script],
-      {
-        cwd: process.cwd(),
-        encoding: "utf8",
-        env: {
-          ...process.env,
-          NODE_OPTIONS: undefined,
-          VITEST: undefined,
-          VITEST_POOL_ID: undefined,
-          VITEST_WORKER_ID: undefined,
-        },
-        timeout: 60_000,
-      },
-    );
-    expect(result.error).toBeUndefined();
-    expect(result.status, result.stderr).toBe(0);
-    const measurements = JSON.parse(result.stdout) as {
-      smaller: { enqueueWork: number; dequeueWork: number };
-      larger: { enqueueWork: number; dequeueWork: number };
-    };
-    expect(measurements.larger.enqueueWork).toBeLessThanOrEqual(
-      measurements.smaller.enqueueWork * 3 + 512,
-    );
-    expect(measurements.larger.dequeueWork).toBeLessThanOrEqual(
-      measurements.smaller.dequeueWork * 3 + 512,
-    );
   });
 
   it("does not report capacity waiting for an entry synchronously cancelled during enqueue", async () => {

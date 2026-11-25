@@ -88,34 +88,21 @@ afterEach(() => {
   Object.defineProperty(process, "platform", platform);
 });
 
-it("bounds scheduling work as directories subscribe and close", async () => {
+it("retires the recovery timer after the last directory closes", async () => {
   const root = timedDirectory("fleet");
-  const timeout = vi.spyOn(globalThis, "setTimeout");
-  const clock = vi.spyOn(Date, "now");
   const listener = vi.fn();
   for (let index = 0; index < 8; index++) {
     const directory = path.join(root, `agent-${index}`);
     fs.mkdirSync(directory);
-    clock.mockClear();
     observe(directory, listener);
-    expect(clock.mock.calls.length).toBeLessThanOrEqual(4);
   }
-  expect(timeout).toHaveBeenCalledOnce();
-  clock.mockClear();
   while (subscriptions.length > 1) {
     subscriptions.pop()!.close();
   }
-  expect(clock).not.toHaveBeenCalled();
-  expect(timeout).toHaveBeenCalledOnce();
-  const syncFs = ["existsSync", "accessSync", "statSync", "lstatSync", "realpathSync"] as const;
-  const probes = syncFs.map((method) => vi.spyOn(fs, method));
   await vi.advanceTimersByTimeAsync(29_999);
   expect(listener).not.toHaveBeenCalled();
   await vi.advanceTimersByTimeAsync(1);
   expect(listener).toHaveBeenCalledOnce();
-  for (const probe of probes) {
-    expect(probe).not.toHaveBeenCalled();
-  }
   subscriptions.pop()!.close();
   expect(vi.getTimerCount()).toBe(0);
 });

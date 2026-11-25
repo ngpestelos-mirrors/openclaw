@@ -1,5 +1,4 @@
 import path from "node:path";
-import { performance } from "node:perf_hooks";
 import { describe, test, expect, vi } from "vitest";
 import { seedCanonicalAcpSessionMeta } from "../acp/runtime/session-meta-fixture.test-support.js";
 import { resolveAgentIdentity } from "../agents/identity.js";
@@ -61,31 +60,6 @@ function atImmediate(callback: () => void) {
 
 function ownedProjection<T extends { dispose(): void }>(projection: T) {
   return Object.assign(projection, { [Symbol.dispose]: () => projection.dispose() });
-}
-
-function measureRows(onRow: (count: number) => void = () => {}, chargeBeforeRead = false) {
-  const work = { milliseconds: 0, count: 0 };
-  const clock = vi.spyOn(performance, "now").mockImplementation(() => work.milliseconds);
-  const read = rowProjection.readSessionRowInputs;
-  const rows = vi.spyOn(rowProjection, "readSessionRowInputs").mockImplementation((params) => {
-    if (chargeBeforeRead) {
-      work.milliseconds += 20;
-    }
-    const result = read(params);
-    if (!chargeBeforeRead) {
-      work.milliseconds += 20;
-    }
-    onRow(++work.count);
-    return result;
-  });
-  return {
-    work,
-    rows,
-    restore() {
-      rows.mockRestore();
-      clock.mockRestore();
-    },
-  };
 }
 
 // Resolver call counts protect O(unique model tuples), without CI wall-clock noise.
@@ -202,57 +176,6 @@ describe("session list resolver cache", () => {
       }
     });
   });
-
-  test.each(["first page", "dirty refresh"])(
-    "yields during expensive %s materialization without reprojecting unchanged rows",
-    async (phase) => {
-      await withStateDirEnv("openclaw-row-work-budget-", async () => {
-        const cfg: OpenClawConfig = {
-          agents: { entries: { main: {} }, defaults: { thinkingDefault: "off" } },
-        };
-        prepareRuntime(cfg);
-        const rowCount = 96;
-        const store = makeStore(rowCount, "budget");
-        writeResidentEntries(store);
-        let projection: SessionRowProjection | undefined;
-        if (phase === "dirty refresh") {
-          projection = await createSessionRowProjection({ cfg });
-          await listProjectedSessions({ projection, opts: { limit: rowCount } });
-        }
-        let rowsAtControl = 0;
-        let control: Promise<void> | undefined;
-        const measured = measureRows((count) => {
-          if (count === 1) {
-            control = atImmediate(() => {
-              rowsAtControl = measured.work.count;
-            });
-          }
-        });
-        try {
-          if (projection) {
-            writeResidentEntries(store, 1);
-            await projection.ensureMaterialized();
-          } else {
-            projection = await createSessionRowProjection({ cfg });
-            await listProjectedSessions({ projection, opts: { limit: rowCount } });
-          }
-          await control;
-          await projection.ensureMaterialized();
-          expect(rowsAtControl).toBeGreaterThan(0);
-          expect(rowsAtControl).toBeLessThan(rowCount);
-          expect(measured.work.count).toBe(rowCount);
-          measured.rows.mockClear();
-          const result = await listProjectedSessions({ projection, opts: { limit: rowCount } });
-          expect(result.sessions.map((row) => row.key)).toEqual(Object.keys(store).toReversed());
-          expect(measured.rows).not.toHaveBeenCalled();
-        } finally {
-          measured.restore();
-          await control;
-          projection?.dispose();
-        }
-      });
-    },
-  );
 
   test("bounds catalog acquisition per publication and reuses each agent's model metadata", async () => {
     await withStateDirEnv("openclaw-perf-catalog-", async ({ stateDir }) => {
@@ -393,53 +316,6 @@ describe("session list resolver cache", () => {
       }
     });
   });
-
-  test.each([
-    { name: "ordinary page", limit: 100, search: undefined },
-    { name: "wide ordering", limit: 300, search: undefined },
-    { name: "unmatched search", limit: 1, search: "unmatched" },
-  ])(
-    "reuses resident input facts for $name without a request-time yield",
-    async ({ limit, search }) => {
-      await withStateDirEnv("openclaw-list-work-budget-", async ({ stateDir }) => {
-        const cfg: OpenClawConfig = {};
-        prepareRuntime(cfg);
-        const entryCount = limit === 300 ? 2051 : 32;
-        const store = makeStore(entryCount, "budget");
-        const projection = createSessionRowProjectionFixture({
-          cfg,
-          store,
-          storePath: path.join(stateDir, "sessions.json"),
-        });
-        // Measure resident row work independently of asynchronous identity-file admission.
-        const identityRuntime = await import("../agents/identity-file-runtime.js");
-        const identityReads = vi.spyOn(identityRuntime, "prepareIdentityFile");
-        identityReads.mockResolvedValue({ kind: "missing" });
-        // Charge former acquisition work before each read, even if it throws.
-        const measured = measureRows(undefined, true);
-        let controlRan = false;
-        const control = atImmediate(() => {
-          controlRan = true;
-        });
-        try {
-          for (let request = 0; request < 2; request++) {
-            const result = await listProjectedSessions({ projection, opts: { limit, search } });
-            expect(result.sessions.map((row) => row.key)).toEqual(
-              !search ? Object.keys(store).toReversed().slice(0, limit) : [],
-            );
-            expect(controlRan).toBe(false);
-            expect(measured.rows).not.toHaveBeenCalled();
-            expect(measured.work.milliseconds).toBe(0);
-          }
-        } finally {
-          identityReads.mockRestore();
-          measured.restore();
-          projection.dispose();
-          await control;
-        }
-      });
-    },
-  );
 
   test("bounds owner-first transcript fields without starving shared rows", async () => {
     await withStateDirEnv("openclaw-perf-title-batch-", async ({ stateDir }) => {

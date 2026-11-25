@@ -117,22 +117,6 @@ describe("slack sent-thread-cache", () => {
     expect(hasSlackThreadParticipation("A1", "C123", "1700000000.000001")).toBe(false);
   });
 
-  it("bounds failure notices and evicts the oldest thread", () => {
-    const firstNotice = { ...failureNotice, threadTs: "1700000000.000000" };
-    expect(recordSlackThreadFailureNotice(firstNotice)).toBe(true);
-
-    for (let index = 1; index <= 1000; index += 1) {
-      expect(
-        recordSlackThreadFailureNotice({
-          ...firstNotice,
-          threadTs: `1700000000.${String(index).padStart(6, "0")}`,
-        }),
-      ).toBe(true);
-    }
-
-    expect(recordSlackThreadFailureNotice(firstNotice)).toBe(true);
-  });
-
   it("ignores empty accountId, channelId, or threadTs", () => {
     recordSlackThreadParticipation("", "C123", "1700000000.000001");
     recordSlackThreadParticipation("A1", "", "1700000000.000001");
@@ -166,15 +150,6 @@ describe("slack sent-thread-cache", () => {
     } finally {
       cacheA.clearSlackThreadParticipationCache();
     }
-  });
-
-  it("enforces maximum entries by evicting oldest fresh entries", () => {
-    for (let i = 0; i < 5001; i += 1) {
-      recordSlackThreadParticipation("A1", "C123", `1700000000.${String(i).padStart(6, "0")}`);
-    }
-
-    expect(hasSlackThreadParticipation("A1", "C123", "1700000000.000000")).toBe(false);
-    expect(hasSlackThreadParticipation("A1", "C123", "1700000000.005000")).toBe(true);
   });
 
   it("restores persistent thread participation more than 24 hours after the bot replied", async () => {

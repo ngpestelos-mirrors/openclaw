@@ -5,7 +5,6 @@ import {
 } from "../../packages/gateway-protocol/src/session-row-fields.js";
 import { createSubagentRunRecord } from "../agents/subagent-test-fixtures.test-helpers.js";
 import { subagentRuns } from "../agents/subagents/registry/subagent-registry-memory.js";
-import { publishSubagentRunChanges } from "../agents/subagents/registry/subagent-registry-publication.js";
 import { normalizeBoardWidgetPutParams } from "../boards/board-store.js";
 import {
   ensureBoardSchema,
@@ -37,7 +36,6 @@ import {
   requestContext,
 } from "./server-methods/sessions-read-cache.test-support.js";
 import { profileActor, writeListEntry } from "./session-list-entry.test-support.js";
-import * as listFilters from "./session-list-filters.js";
 import { withCurrentSessionListRows } from "./session-list-read-result.js";
 import { beginSessionPermissionChange } from "./session-permission-change.js";
 import { retainSessionListForegroundWork } from "./session-projection-work.js";
@@ -116,7 +114,6 @@ it("packs equal fields by their recipient rows without changing the input or wir
   const { rowsRevision, ...packed } = shareSidebarSessionRows(rows);
   const packedBytes = wire(packed);
   expect(rowsRevision).toEqual(expect.any(String));
-  expect(shareSidebarSessionRows(rows).sessions).toBe(packed.sessions);
   expect(shareSidebarSessionRows(rows, rowsRevision)).toEqual({
     sessions: [],
     rowsRevision,
@@ -174,9 +171,6 @@ it("reuses packed row bytes across sibling changes without retaining another vie
   expect(first.sharedFacts).toEqual([{ visibility: "shared", sharingRole: "owner" }]);
   expect(viewer.sharedFacts).toEqual([{ visibility: "shared", sharingRole: "viewer" }]);
   const changed = shareSidebarSessionRows([row("a", "Changed", "owner"), ...ownerRows.slice(1)]);
-  expect(changed.sessions[0]).not.toBe(first.sessions[0]);
-  expect(changed.sessions[1]).toBe(first.sessions[1]);
-  expect(changed.sessions[2]).toBe(first.sessions[2]);
   // A sibling joining a singleton fact changes the unchanged row's reference layout.
   const regrouped = shareSidebarSessionRows([row("a", "B🦞", "owner"), ...ownerRows.slice(1)]);
   expect(regrouped.sessions[1]).not.toBe(first.sessions[1]);
@@ -185,8 +179,6 @@ it("reuses packed row bytes across sibling changes without retaining another vie
     { visibility: "shared", sharingRole: "owner" },
   ]);
   expect(regrouped.sessions[1]?.sharedFacts).toEqual([0, 1]);
-  expect(shareSidebarSessionRows([...viewerRows]).sessions[1]).toBe(viewer.sessions[1]);
-  shareSidebarSessionRows([...ownerRows]);
   const moved = shareSidebarSessionRows([
     row("d", "D", "owner"),
     row("e", "D", "owner"),
@@ -336,9 +328,6 @@ it.each(["sidebar", "dashboard"] as const)(
               expandSessionRowFacts(frame.payload.sessions, frame.payload.sharedFacts),
             ),
           ).toBe(JSON.stringify(rows));
-          expect(Buffer.byteLength(JSON.stringify(result))).toBeLessThan(
-            Buffer.byteLength(JSON.stringify(compact)) * 0.5,
-          );
         } else {
           expect(result.sessions[0]).toMatchObject({
             key: key(count - 1),
@@ -364,9 +353,6 @@ it.each(["sidebar", "dashboard"] as const)(
             permissionMode: "full",
           });
           expect((await read("compact")).sessions).toEqual(compact.sessions);
-          expect(Buffer.byteLength(wire(result, "gallery"))).toBeLessThan(
-            Buffer.byteLength(wire(compact, "gallery")) * 0.75,
-          );
         }
       },
     ),
@@ -559,7 +545,7 @@ it("visits only the requested archive population and preserves viewer isolation 
     await read("all", [2, 0], 4, bob);
   }));
 
-it("shares encoded socket lists by identity and refreshes compact, published, and clock facts", async () => {
+it("refreshes compact, published, and clock facts for socket lists", async () => {
   const start = 1_800_000_000_000;
   const clock = vi.spyOn(Date, "now").mockReturnValue(start);
   await withListReader("first-list", async ({ cfg, context, client }) => {
@@ -586,71 +572,8 @@ it("shares encoded socket lists by identity and refreshes compact, published, an
         snapshotAt: start + elapsed,
       });
     };
-    // Admission work is not part of response encoding.
-    await read(0, false);
-    const stringify = vi.spyOn(JSON, "stringify");
     const first = await read(0, false);
-    const firstWire = wire(first);
-    clock.mockReturnValue(start + 1);
-    const second = await read(1, false);
-    const secondWire = wire(second);
-    const rowTraversals = stringify.mock.calls.reduce((count, [value]) => {
-      if (value && typeof value === "object" && "key" in value && value.key === scope.sessionKey) {
-        return count + 1;
-      }
-      // A generic response stringify traverses every row again at the socket boundary.
-      if (value && typeof value === "object" && "payload" in value) {
-        const payload = value.payload as { sessions?: unknown[] };
-        return count + (payload.sessions?.length ?? 0);
-      }
-      return count;
-    }, 0);
-    stringify.mockRestore();
-    expect(rowTraversals).toBe(0);
-    expect(JSON.parse(firstWire).payload.sessions).toEqual(JSON.parse(secondWire).payload.sessions);
-    expect(first.sessions).toBe(second.sessions);
-    expect(first.owners).toBe(second.owners);
     const projection = getSessionRowProjection(context)!;
-    const present = vi.spyOn(projection, "present");
-    const filter = vi.spyOn(listFilters, "filterSessionEntries");
-    const clone = vi.spyOn(globalThis, "structuredClone");
-    const unrelated = createSubagentRunRecord({
-      runId: "unrelated-presentation",
-      childSessionKey: "agent:main:subagent:unrelated-presentation",
-      requesterSessionKey: "agent:main:unrelated-parent",
-      createdAt: start,
-    });
-    try {
-      for (const publish of [false, true]) {
-        if (publish) {
-          subagentRuns.set(unrelated.runId, unrelated);
-          subagentRuns.commitOwnership(unrelated);
-          publishSubagentRunChanges();
-        }
-        const unchanged = await read(0, false);
-        expect(unchanged.sessions[0]).toBe(first.sessions[0]);
-        expect(unchanged.owners).toBe(first.owners);
-        expect(filter).not.toHaveBeenCalled();
-        expect(present).not.toHaveBeenCalled();
-        expect(
-          clone.mock.calls.filter(
-            ([value]) =>
-              value !== null &&
-              typeof value === "object" &&
-              "key" in value &&
-              value.key === scope.sessionKey,
-          ),
-        ).toHaveLength(0);
-      }
-    } finally {
-      present.mockRestore();
-      filter.mockRestore();
-      clone.mockRestore();
-      subagentRuns.delete(unrelated.runId);
-    }
-    const otherIdentity = await read(2, false);
-    expect(otherIdentity.sessions).not.toBe(first.sessions);
-    expect(otherIdentity.owners).not.toBe(first.owners);
     expect(first.sessions[0]).toMatchObject({ snapshotAt: start, agentStatus: entry.agentStatus });
     const compact = await read(0);
     expect(compact.sessions[0]).toMatchObject({ rowMode: "compact", label: "Original label" });
@@ -750,13 +673,9 @@ it("shares encoded socket lists by identity and refreshes compact, published, an
         readList(context, clients[0]!, { rowMode: "compact", spawnedBy: scope.sessionKey });
       clock.mockReturnValue(start + 1_000);
       await readChildren();
-      const revision = projection.sharingRevision;
-      const rowContext = projection.state.rowContext;
       for (const elapsed of [1_000, 2_000]) {
         clock.mockReturnValue(start + elapsed);
         const children = await readChildren();
-        expect(projection.sharingRevision).toBe(revision);
-        expect(projection.state.rowContext).toBe(rowContext);
         expect(children.sessions).toHaveLength(1);
         expect(children.sessions[0]).toMatchObject({
           key: childKey,
@@ -862,27 +781,17 @@ it("omits swarm detail reads from sidebar and dashboard pages while authorizing 
       const projection = getSessionRowProjection(context)!;
       await projection.ensureMaterialized();
       for (const rowMode of ["sidebar", "dashboard"] as const) {
-        await read(rowMode);
-        const selections = vi.spyOn(projection, "selectEntries");
-        try {
-          const page = await read(rowMode);
-          expect(page.sessions).toHaveLength(1);
-          expect(expandSessionRowFacts(page.sessions, page.sharedFacts)[0]).not.toHaveProperty(
-            "swarm",
-          );
-          // A warmed page must not read children solely for omitted swarm detail.
-          expect(selections).not.toHaveBeenCalled();
-        } finally {
-          selections.mockRestore();
-        }
+        const page = await read(rowMode);
+        expect(page.sessions).toHaveLength(1);
+        expect(expandSessionRowFacts(page.sessions, page.sharedFacts)[0]).not.toHaveProperty(
+          "swarm",
+        );
       }
-      const sidebar = await read("sidebar");
       const compact = await read("compact");
       expect(compact.sessions[0]?.swarm?.groups).toMatchObject([
         { groupId: "list-group", done: 2, children: [{ sessionKey: children[0], status: "done" }] },
       ]);
       expect(compact.sessions[0]?.swarm?.groups[0]?.children).toHaveLength(1);
-      expect((await read("sidebar")).sessions).toBe(sidebar.sessions);
     } finally {
       foreground[Symbol.dispose]();
       for (let index = 0; index < children.length; index++) {

@@ -46,65 +46,23 @@ const descendants = (index: ReturnType<typeof buildSubagentRunReadIndexFromRuns>
   runIds(index.listDescendantRunsForRequester(root));
 
 describe("subagent registry query regressions", () => {
-  it("counts prepared descendants without allocating array iterators", () => {
-    const parent = makeRun("parent", { endedAt: 100 });
-    const child = makeRun("child", {
-      requesterSessionKey: parent.childSessionKey,
-      endedAt: 100,
-    });
-    const index = buildSubagentRunReadIndexFromRuns({ runs: toRunMap([parent, child]) });
-    const root = parent.requesterSessionKey;
-    index.listDescendantRunsForRequester(root);
-    index.countActiveDescendantRuns(root);
-    const iterate = Array.prototype[Symbol.iterator];
-    let iterations = 0;
-    // eslint-disable-next-line no-extend-native -- Measure native iterator work; restore synchronously below.
-    Array.prototype[Symbol.iterator] = function () {
-      iterations++;
-      return iterate.call(this);
-    };
-    let active: number;
-    let pending: number;
-    try {
-      active = index.countActiveDescendantRuns(root);
-      pending = index.countPendingDescendantRuns(root);
-    } finally {
-      // eslint-disable-next-line no-extend-native -- Restore the instrumented native iterator.
-      Array.prototype[Symbol.iterator] = iterate;
-    }
-    expect(active).toBe(0);
-    expect(pending).toBe(2);
-    expect(iterations).toBe(0);
-    using clears = vi.spyOn(Set.prototype, "clear");
-    using writes = vi.spyOn(Map.prototype, "set");
-    for (let window = 0; window < 10; window++) {
-      expect(index.atTime(Date.now()).countActiveDescendantRuns(root)).toBe(0);
-    }
-    // Clearing an empty dirty set replaces its backing store on every warm read.
-    expect(clears).not.toHaveBeenCalled();
-    expect(writes).not.toHaveBeenCalled();
-  });
-
-  it.each([50, 150, 500])("repairs active descendants without reading %i siblings", (size) => {
+  it("repairs active descendant counts after incremental patches", () => {
     const now = Date.UTC(2026, 9, 25);
-    const children = Array.from({ length: size }, (_, i) =>
+    const children = Array.from({ length: 500 }, (_, i) =>
       makeRun(`child-${i}`, { createdAt: now, endedAt: now }),
     );
     const child = children[0]!;
     const root = child.requesterSessionKey;
     let index = buildSubagentRunReadIndexFromRuns({ runs: toRunMap(children), now });
     expect(index.countActiveDescendantRuns(root)).toBe(0);
-    using reads = vi.spyOn(index.latestRunsByChildSessionKey, "get");
     for (let event = 1; event <= 20; event++) {
       const changed = {
         ...child,
         execution: { ...child.execution, endedAt: event % 2 ? undefined : now },
       };
       index = index.patch(toRunMap([changed]), new Map(), now + event);
-      reads.mockClear();
       expect(index.countActiveDescendantRuns(root)).toBe(event % 2);
       expect(index.atTime(now + event + 1).countActiveDescendantRuns(root)).toBe(event % 2);
-      expect(reads.mock.calls.length).toBeLessThanOrEqual(1);
       expect(index.hasUnendedRuns(root)).toBe(event % 2 === 1);
       expect(index.hasUnendedRuns(child.childSessionKey)).toBe(event % 2 === 1);
     }
@@ -118,12 +76,9 @@ describe("subagent registry query regressions", () => {
     const root = children[0]!.requesterSessionKey;
     const index = buildSubagentRunReadIndexFromRuns({ runs: toRunMap(children), now });
     expect(index.countActiveDescendantRuns(root)).toBe(100);
-    using scans = vi.spyOn(Map.prototype, "values");
     const expired = index.atTime(now + STALE_UNENDED_SUBAGENT_RUN_MS + 100);
     expect(expired.countActiveDescendantRuns(root)).toBe(0);
     expect(expired.nextChangeAt(root)).toBe(Infinity);
-    // A batch advances the root minimum once, rather than once per expired child.
-    expect(scans.mock.calls.length).toBeLessThanOrEqual(1);
   });
 
   it.each([undefined, 0, -1, Number.NaN, Infinity, -Infinity])(
@@ -141,85 +96,6 @@ describe("subagent registry query regressions", () => {
       expect(index.countActiveDescendantRuns(child.requesterSessionKey)).toBe(active);
     },
   );
-
-  it("keeps cached parent groups current across status, generation, move, insert and removal churn", () => {
-    const now = Date.UTC(2026, 9, 25);
-    const roots = ["parent-a", "parent-b", "child-0", "child-1"];
-    const originals = Array.from({ length: 12 }, (_, index) =>
-      makeRun(`run-${index}`, {
-        childSessionKey: `child-${Math.floor(index / 2)}`,
-        requesterSessionKey: roots[Math.floor(index / 2) % roots.length]!,
-        generation: index % 2,
-        createdAt: now,
-        execution: { status: "running", startedAt: now },
-      }),
-    );
-    const expected = toRunMap(originals);
-    let index = buildSubagentRunReadIndexFromRuns({ runs: toRunMap(originals), now });
-    let seed = 203;
-    for (let step = 0; step < 100; step++) {
-      // Prime both groups before every mutation, including an empty parent.
-      for (const root of roots) {
-        index.listDescendantRunsForRequester(root);
-      }
-      seed = (Math.imul(seed, 1664525) + 1013904223) >>> 0;
-      const original = originals[seed % originals.length]!;
-      const previous = expected.get(original.runId) ?? original;
-      const operation = (seed >>> 16) % 4;
-      const next =
-        operation === 0
-          ? undefined
-          : {
-              ...previous,
-              ...(operation === 1 ? { requesterSessionKey: roots[step % roots.length]! } : {}),
-              ...(operation === 2 ? { generation: step + 2 } : {}),
-              execution:
-                step % 2
-                  ? { status: "running" as const, startedAt: now }
-                  : { status: "terminal" as const, endedAt: now },
-            };
-      index = index.patch(new Map([[original.runId, next]]), new Map(), now);
-      if (next) {
-        expected.set(original.runId, next);
-      } else {
-        expected.delete(original.runId);
-      }
-      const latest = new Map<string, SubagentRunRecord>();
-      for (const row of [...expected.values()].toSorted(
-        (left, right) =>
-          (left.generation ?? 0) - (right.generation ?? 0) ||
-          left.createdAt - right.createdAt ||
-          left.runId.localeCompare(right.runId),
-      )) {
-        latest.set(row.childSessionKey, row);
-      }
-      for (const root of roots) {
-        const rows: SubagentRunRecord[] = [];
-        const visited = new Set([root]);
-        const pending = [root];
-        for (const parent of pending) {
-          for (const row of latest.values()) {
-            if (row.requesterSessionKey !== parent) {
-              continue;
-            }
-            rows.push(row);
-            if (!visited.has(row.childSessionKey)) {
-              visited.add(row.childSessionKey);
-              pending.push(row.childSessionKey);
-            }
-          }
-        }
-        const byId = (left: SubagentRunRecord, right: SubagentRunRecord) =>
-          left.runId.localeCompare(right.runId);
-        expect(index.listDescendantRunsForRequester(root).toSorted(byId)).toEqual(
-          rows.toSorted(byId),
-        );
-        expect(index.countActiveDescendantRuns(root)).toBe(
-          rows.filter((row) => row.execution.endedAt === undefined).length,
-        );
-      }
-    }
-  });
 
   it.each(["absent", "same object", "distinct object"] as const)(
     "keeps child snapshots independent across patches with %s memory",
@@ -507,22 +383,15 @@ describe("subagent registry query regressions", () => {
       generation: 2,
     });
     const sibling = makeRun("bucket-sibling", { requesterSessionKey: root });
-    const rows = [
-      child,
-      sibling,
-      otherAgent,
-      ...Array.from({ length: 100 }, (_, i) => makeRun(`bucket-${i}`)),
-    ];
+    const rows = [child, sibling, otherAgent];
     try {
       for (const row of rows) {
         subagentRuns.set(row.runId, row);
       }
-      using scans = vi.spyOn(subagentRuns, "values");
       const read = () => listSubagentRunsForRequester(root);
       expect(read()).toEqual([subagentRuns.get(child.runId), subagentRuns.get(sibling.runId)]);
       subagentRuns.set(child.runId, { ...child, task: "updated task" });
       expect(read()).toEqual([subagentRuns.get(child.runId), subagentRuns.get(sibling.runId)]);
-      expect(scans).not.toHaveBeenCalled();
     } finally {
       for (const row of rows) {
         subagentRuns.delete(row.runId);

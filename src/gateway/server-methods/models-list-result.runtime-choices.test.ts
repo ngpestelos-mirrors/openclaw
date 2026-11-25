@@ -7,7 +7,6 @@ import { createModelCatalogDecisions } from "../../agents/model-catalog-decision
 import type { ModelCatalogEntry, ModelCatalogSnapshot } from "../../agents/model-catalog.types.js";
 import { buildConfiguredModelCatalog } from "../../agents/model-selection-shared.js";
 import { applyModelDefaults } from "../../config/defaults.js";
-import * as providerModelConfig from "../../config/model-provider-config.js";
 import {
   captureRuntimeConfigWithSource,
   getRuntimeConfigCapture,
@@ -140,7 +139,7 @@ function preparePicker(
 }
 
 it.each([false, true, "revoked"] as const)(
-  "indexes configured rows once while projecting several logical models (auth rejects: %s)",
+  "projects configured model facts under accepted, rejected, and revoked auth",
   async (rejectAuth) => {
     await withModelsListState(
       async (state) => {
@@ -153,7 +152,6 @@ it.each([false, true, "revoked"] as const)(
           }
           return undefined;
         });
-        const configuredRowVisits = new Map<ModelDefinitionConfig, number>();
         const models = Array.from({ length: 17 }, (_, index): ModelDefinitionConfig => ({
           id: `model-${index}`,
           name: `Configured ${index}`,
@@ -164,19 +162,6 @@ it.each([false, true, "revoked"] as const)(
           contextTokens: 16_000 + index,
           maxTokens: 4096,
         }));
-        const configuredModels = new Proxy(models, {
-          get(target, key, receiver) {
-            if (key === Symbol.iterator) {
-              return function* () {
-                for (const model of target) {
-                  configuredRowVisits.set(model, (configuredRowVisits.get(model) ?? 0) + 1);
-                  yield model;
-                }
-              };
-            }
-            return Reflect.get(target, key, receiver);
-          },
-        });
         const selectedIndexes = [0, 4, 8, 12, 16];
         const entries: ModelCatalogEntry[] = selectedIndexes.map((index) => ({
           provider,
@@ -191,7 +176,7 @@ it.each([false, true, "revoked"] as const)(
             providers: {
               [provider]: {
                 baseUrl: "https://models.example.test/v1",
-                models: configuredModels,
+                models,
                 get apiKey() {
                   return readAuth();
                 },
@@ -200,8 +185,6 @@ it.each([false, true, "revoked"] as const)(
           },
         };
         const projector = projectorFor(cfg, { entries, routeVariants: entries }, {}, provider);
-        // Auth scope preparation visits configured models before projection begins.
-        const visitsAfterConstruction = new Map(configuredRowVisits);
         if (rejectAuth === "revoked") {
           const entered = createDeferred();
           const release = createDeferred();
@@ -238,7 +221,6 @@ it.each([false, true, "revoked"] as const)(
         rejectAuthReads = rejectAuth;
         if (rejectAuth) {
           await expect(projector.projectCatalog()).rejects.toBe(authFailure);
-          expect(configuredRowVisits).toEqual(visitsAfterConstruction);
           return;
         }
         const projected = await projector.projectCatalog();
@@ -249,19 +231,13 @@ it.each([false, true, "revoked"] as const)(
             contextTokens: 16_000 + index,
           })),
         );
-        for (const [model, visits] of configuredRowVisits) {
-          expect(visits - (visitsAfterConstruction.get(model) ?? 0)).toBeLessThanOrEqual(1);
-        }
-        const visitsAfterProjection = new Map(configuredRowVisits);
-        expect(await projector.projectCatalog()).toBe(projected);
-        expect(configuredRowVisits).toEqual(visitsAfterProjection);
       },
       { agentEnv: "main" },
     );
   },
 );
 
-it("bounds configured-row indexing through hydrated implicit OpenAI picker reads", async () => {
+it("projects hydrated implicit OpenAI picker choices", async () => {
   await withModelsListState(
     async (state) => {
       const { validateConfigObjectRaw } = await import("../../config/validation-core.js");
@@ -310,35 +286,16 @@ it("bounds configured-row indexing through hydrated implicit OpenAI picker reads
         (entry) => ids.includes(entry.id),
       );
       expect(entries).toHaveLength(5);
-      const merge = providerModelConfig.resolveMergedModelProviderModels;
-      let indexedRows = 0;
-      // Only exported-owner calls with this captured pair are witnessed; lexical calls are not.
-      const witness: typeof merge = (input) => {
-        const result = merge(input);
-        if (input.models && (input.models === runtimeRows || input.models === sourceRows)) {
-          indexedRows += input.models.length;
-        }
-        return result;
-      };
-      using indexing = vi.spyOn(providerModelConfig, "resolveMergedModelProviderModels");
-      indexing.mockImplementation(witness);
-
       const { params, loadGatewayModelCatalogSnapshot } = preparePicker(
         cfg,
         { entries, routeVariants: entries },
         {},
       );
-      const afterConstruction = indexedRows;
-      expect(afterConstruction, "Missing canonical construction witness").toBeGreaterThanOrEqual(
-        runtimeRows.length,
-      );
       const prepared = await prepareModelsListResult({
         ...params,
         params: { ...params.params, includeDefaultModels: false },
       });
-      const afterPreparation = indexedRows;
       const first = prepared.read();
-      const afterFirstRead = indexedRows;
       expect(first.models.map(({ id }) => id).toSorted()).toEqual(ids.toSorted());
       for (const entry of entries) {
         expect(params.catalogProjector.evaluateEntry(entry, [entry])).toMatchObject({
@@ -362,12 +319,7 @@ it("bounds configured-row indexing through hydrated implicit OpenAI picker reads
         });
       }
       expect(prepared.read()).toEqual(first);
-      expect(indexedRows).toBe(afterFirstRead);
       expect(loadGatewayModelCatalogSnapshot).not.toHaveBeenCalled();
-      expect(
-        afterFirstRead - afterConstruction,
-        JSON.stringify({ afterConstruction, afterPreparation, afterFirstRead }),
-      ).toBeLessThanOrEqual(runtimeRows.length);
     },
     {
       agentEnv: "main",

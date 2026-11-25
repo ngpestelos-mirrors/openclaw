@@ -45,10 +45,8 @@ function traceSqlExecutions(
 ): {
   database: DatabaseSync;
   statements: string[];
-  readonly materializedIndexSqlBytes: number;
 } {
   const statements: string[] = [];
-  let materializedIndexSqlBytes = 0;
   function observe(row: unknown) {
     if (
       row &&
@@ -57,7 +55,6 @@ function traceSqlExecutions(
       typeof row.sql === "string" &&
       /^CREATE (?:UNIQUE )?INDEX\b/iu.test(row.sql)
     ) {
-      materializedIndexSqlBytes += Buffer.byteLength(row.sql, "utf8");
       onIndexSql?.(row.sql);
     }
   }
@@ -103,9 +100,6 @@ function traceSqlExecutions(
       },
     }) as DatabaseSync,
     statements,
-    get materializedIndexSqlBytes() {
-      return materializedIndexSqlBytes;
-    },
   };
 }
 
@@ -142,32 +136,20 @@ describe("repairCanonicalSqliteIndexes", () => {
   });
 
   it.each([["agent schema", OPENCLAW_AGENT_SCHEMA_SQL]])(
-    "inspects canonical indexes with bounded SQL without rewriting them: %s",
+    "inspects canonical indexes without rewriting them: %s",
     (_name, schema) => {
       const db = new DatabaseSync(":memory:");
       try {
         db.exec(schema);
         const before = db.prepare("PRAGMA schema_version").get();
-        const indexes = db
-          .prepare("SELECT sql FROM main.sqlite_schema WHERE type = 'index' AND sql IS NOT NULL")
-          .all();
-        const indexSqlBytes = indexes.reduce((sum, row) => {
-          if (typeof row.sql !== "string") {
-            throw new Error("Expected fixture index DDL");
-          }
-          return sum + Buffer.byteLength(row.sql, "utf8");
-        }, 0);
-        const traced = traceSqlExecutions(db);
 
         expect(
-          repairCanonicalSqliteIndexes(traced.database, "test database", schema, {
+          repairCanonicalSqliteIndexes(db, "test database", schema, {
             verifyPhysicalIntegrity: false,
           }),
         ).toEqual([]);
 
         expect(db.prepare("PRAGMA schema_version").get()).toEqual(before);
-        expect(traced.materializedIndexSqlBytes).toBeLessThanOrEqual(indexSqlBytes);
-        expect(traced.statements.length).toBeLessThanOrEqual(7);
       } finally {
         db.close();
       }

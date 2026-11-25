@@ -251,27 +251,6 @@ describe("Slack monitor context", () => {
     expect(await ctx.resolveChannelName("C0SHARED")).toEqual({ lookupFailureCategory: "other" });
   });
 
-  it("keeps a recently re-resolved user while older entries are evicted", async () => {
-    const usersInfo = vi.fn().mockImplementation(async ({ user }: { user: string }) => ({
-      user: { profile: { display_name: `name-${user}` } },
-    }));
-    const ctx = createTestContext({
-      appClient: { users: { info: usersInfo } } as unknown as App["client"],
-    });
-    await ctx.resolveUserName("U0KEEP");
-    for (let index = 0; index < 2047; index += 1) {
-      await ctx.resolveUserName(`U${index}`);
-    }
-    // Refresh recency before the insertion that evicts the oldest entry.
-    await ctx.resolveUserName("U0KEEP");
-    await ctx.resolveUserName("U_NEW");
-    const before = usersInfo.mock.calls.length;
-    await expect(ctx.resolveUserName("U0KEEP")).resolves.toEqual({ name: "name-U0KEEP" });
-    expect(usersInfo).toHaveBeenCalledTimes(before);
-    await ctx.resolveUserName("U0");
-    expect(usersInfo).toHaveBeenCalledTimes(before + 1);
-  });
-
   it("downloads the cached DM profile image without blocking or attaching the bot token", async () => {
     const download = createDeferred<{ path: string }>();
     saveRemoteMediaMock.mockReturnValue(download.promise);

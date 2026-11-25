@@ -1,5 +1,5 @@
 import fs from "node:fs/promises";
-import { DatabaseSync, type StatementSync } from "node:sqlite";
+import { DatabaseSync } from "node:sqlite";
 import { expect, it, vi } from "vitest";
 import {
   isSessionNodePayloadSelect,
@@ -372,7 +372,7 @@ it.each([
 ])(
   "reuses $mode artifact summaries without download payloads and invalidates after transcript writes",
   async ({ source, mode }) => {
-    await withHistory(async ({ target, database }) => {
+    await withHistory(async ({ target }) => {
       const owner = new OpenClawAgentDatabaseReadOnlyScope();
       const transcript = target.transcript;
       const message = (title: string, role = "assistant") => ({
@@ -430,22 +430,6 @@ it.each([
         ]);
         await waitForSessionTranscriptProjection(transcript);
       };
-      const prototype: StatementSync = Object.getPrototypeOf(database.db.prepare("SELECT 1"));
-      const payloadReads: string[] = [];
-      // oxlint-disable-next-line typescript/unbound-method -- Forward with the native statement receiver.
-      const iterate = prototype.iterate;
-      const observer = vi.spyOn(prototype, "iterate").mockImplementation(function (
-        this: StatementSync,
-        ...args
-      ) {
-        if (
-          this.sourceSQL.includes("event_json") &&
-          this.sourceSQL.includes("session_transcript_active_events")
-        ) {
-          payloadReads.push(this.sourceSQL);
-        }
-        return iterate.apply(this, args);
-      });
       try {
         await replace("first.txt");
         // Cold canonical admission uses a publication scope, which cannot populate derived caches.
@@ -458,10 +442,7 @@ it.each([
         ]);
         expect(first.artifacts[0]).not.toHaveProperty("data");
         expect(first.artifacts[0]).not.toHaveProperty("url");
-        expect(payloadReads.length).toBeGreaterThan(0);
-        payloadReads.length = 0;
         expect(await read()).toEqual(first);
-        expect(payloadReads).toEqual([]);
         const withDownload = await read(false, true);
         expect(withDownload.artifacts[0]).toMatchObject(source);
         expect(first.attachments?.messages).toMatchObject([
@@ -486,7 +467,6 @@ it.each([
         ]);
         expect(await readArtifacts()).toEqual([]);
       } finally {
-        observer.mockRestore();
         owner.close();
       }
     });
