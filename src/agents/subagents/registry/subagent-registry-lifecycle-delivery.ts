@@ -33,7 +33,7 @@ import { getCurrentSubagentRunOwner } from "./subagent-registry-memory.js";
 import { assertSubagentRegistryWriteSourceCurrent } from "./subagent-registry-persistence.js";
 import { resolveYieldedRunContinuation } from "./subagent-registry-run-pause.js";
 import type { SubagentRunRecord } from "./subagent-registry.types.js";
-import { isSubagentPausedByYield } from "./subagent-requester-turn-custody.js";
+import { isSubagentPausedByYield, hasRequesterTurn } from "./subagent-requester-turn-custody.js";
 import { compareSubagentRunGeneration, isSameSubagentRunOwner } from "./subagent-run-generation.js";
 import { hasSubagentRunEnded } from "./subagent-run-liveness.js";
 
@@ -79,7 +79,7 @@ export const recordAnnounceDeliveryResult = (
       const siblings = [...runs.values()].filter(
         (sibling) =>
           sibling.requesterSessionKey === entry.requesterSessionKey &&
-          sibling.requesterTurnRunId === requesterTurnRunId &&
+          hasRequesterTurn(sibling, requesterTurnRunId) &&
           sibling.expectsCompletionMessage === true,
       );
       if (
