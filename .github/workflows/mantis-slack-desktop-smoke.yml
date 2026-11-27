@@ -137,7 +137,7 @@ jobs:
           fetch-depth: 0
 
       - name: Prepare Git owner
-        uses: openclaw/openclaw/.github/actions/git-owner@88095dc00eef288c3829909d4dc64a9e249fa7ef
+        uses: openclaw/openclaw/.github/actions/git-owner@a8a7ce94eb544f3c39cf25f674471c3f1e3fe4ab
 
       - name: Setup Node environment
         uses: ./.github/actions/setup-node-env
